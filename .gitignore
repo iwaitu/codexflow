@@ -28,3 +28,4 @@ __pycache__/
 # code-intelligence index and assistant tool state (local only)
 .codegraph/
 .omc/
+.committee-review/
