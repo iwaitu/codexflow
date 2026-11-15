@@ -1,0 +1,74 @@
+{
+  "name": "dependency-upgrade-retry-after-unmet",
+  "description": "Needs the fault proxy in front of the model (faultproxy.py --mode lowerversion): in every first forge attempt the first write that changes a package version is changed so the package keeps the version the project has, and the attempt is cut once a write landed. The host then finds packages below the version it fetched, queues one more attempt on the last code task with the missing packages named, and that attempt (not touched by the proxy) must finish the upgrade: jobs complete, verification passes, and a retry for dependency_contract_unmet is on record. Other retries (for example no_persisted_changes, when the kept version makes a write a no-op) are expected and not counted. Without the proxy no retry happens and the scenario fails on that check (inconclusive, not a pass).",
+  "repo": "https://github.com/iwaitu/cleanapp-bug.git",
+  "steps": [
+    {
+      "name": "clone the project",
+      "say": "把这个项目拉下来：https://github.com/iwaitu/cleanapp-bug.git",
+      "repo": true,
+      "timeout_min": 8,
+      "expect": {
+        "reply_not_empty": true,
+        "jobs": {
+          "none": true
+        }
+      }
+    },
+    {
+      "name": "ask about vulnerabilities",
+      "say": "这个项目的 NuGet 依赖有没有已知的安全漏洞？有的话给我一个升级方案，哪些能直接升，哪些要我拍板。先别改代码。",
+      "timeout_min": 10,
+      "expect": {
+        "reply_not_empty": true,
+        "jobs": {
+          "none": true
+        }
+      }
+    },
+    {
+      "name": "plan",
+      "say": "SharpCompress 先不动。其余有漏洞的包全部升级，只升到简报里宿主已取包的目标版本，别的包都不要动。给我一份正式计划（走 create_session_plan），我看过再批准，先别执行。",
+      "timeout_min": 14,
+      "expect": {
+        "tools_include": [
+          "create_session_plan"
+        ],
+        "tasklist_min": 1,
+        "jobs": {
+          "none": true
+        }
+      }
+    },
+    {
+      "name": "approve and execute",
+      "say": "计划我看过了，批准，开始执行。",
+      "accept_debt": true,
+      "timeout_min": 12,
+      "wait_jobs": {
+        "timeout_min": 40
+      },
+      "expect": {
+        "jobs": {
+          "completed_min": 1,
+          "failed_max": 0,
+          "retried_min": 1,
+          "retry_detail_code": "dependency_contract_unmet"
+        }
+      }
+    },
+    {
+      "name": "verify",
+      "verify": {
+        "timeout_min": 20
+      },
+      "expect": {
+        "verify": {
+          "build_passed": true,
+          "tests_passed": true,
+          "audit_state": "Pass"
+        }
+      }
+    }
+  ]
+}

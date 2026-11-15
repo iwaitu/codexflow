@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <!-- The local host: one user, one SQLite file, loopback only. It needs Docker and a model endpoint, nothing else. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>CodexFlow.Local</AssemblyName>
+    <RootNamespace>CodexFlow.Local</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CodexFlow.Orchestration\CodexFlow.Orchestration.csproj" />
+    <ProjectReference Include="..\CodexFlow.Gateway.Http\CodexFlow.Gateway.Http.csproj" />
+    <ProjectReference Include="..\CodexFlow.Storage.Sqlite\CodexFlow.Storage.Sqlite.csproj" />
+  </ItemGroup>
+
+</Project>

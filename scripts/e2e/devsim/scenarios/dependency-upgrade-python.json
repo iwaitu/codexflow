@@ -1,0 +1,77 @@
+{
+  "name": "dependency-upgrade-python",
+  "description": "Upgrade the one vulnerable Python dependency of the 'python-upgrade' fixture (idna 3.6) to the version the host's advisory scan names (3.15): ask, plan, approve, execute, host verification in the language's own container, security gate passes. Plan granularity is not asserted.",
+  "repo": "fixture:python-upgrade",
+  "steps": [
+    {
+      "name": "clone the project",
+      "say": "把这个项目拉下来：{repo}",
+      "repo": true,
+      "timeout_min": 8,
+      "expect": {
+        "reply_not_empty": true,
+        "jobs": {
+          "none": true
+        }
+      }
+    },
+    {
+      "name": "ask about vulnerabilities",
+      "say": "这个项目的 Python 依赖有没有已知的安全漏洞？有的话告诉我该升到哪个版本。先别改代码。",
+      "timeout_min": 10,
+      "expect": {
+        "reply_not_empty": true,
+        "jobs": {
+          "none": true
+        },
+        "reply_contains_any": [
+          "3.15"
+        ]
+      }
+    },
+    {
+      "name": "plan",
+      "say": "把有漏洞的包升级到你刚才说的最低修复版本，别的依赖都不要动。给我一份正式计划（走 create_session_plan），我看过再批准，先别执行。",
+      "timeout_min": 14,
+      "expect": {
+        "tools_include": [
+          "create_session_plan"
+        ],
+        "tasklist_min": 1,
+        "jobs": {
+          "none": true
+        }
+      }
+    },
+    {
+      "name": "approve and execute",
+      "say": "计划我看过了，批准，开始执行。",
+      "timeout_min": 12,
+      "wait_jobs": {
+        "timeout_min": 40
+      },
+      "expect": {
+        "jobs": {
+          "completed_min": 1,
+          "failed_max": 0
+        }
+      }
+    },
+    {
+      "name": "verify",
+      "verify": {
+        "timeout_min": 20
+      },
+      "expect": {
+        "verify": {
+          "build_passed": true,
+          "tests_passed": true,
+          "audit_state_in": [
+            "Pass",
+            "NeedsReview"
+          ]
+        }
+      }
+    }
+  ]
+}

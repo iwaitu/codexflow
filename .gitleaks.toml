@@ -1,0 +1,8 @@
+# Configuration for scanning THIS repository with gitleaks (the secret scan the verification image runs on user code uses docker/verification/gitleaks.toml).
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "A fake key used by a test that checks the key is stored but never read back through the service"
+paths = ['''CodexFlow\.Core\.Tests/Configuration/LayeredConfigurationTests\.cs''']
+regexes = ['''sk-abcdef123456''']

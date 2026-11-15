@@ -1,0 +1,45 @@
+{
+  "name": "plan-not-approved-no-execution",
+  "description": "After a plan exists, a user who holds back approval gets no execution.",
+  "repo": "https://github.com/iwaitu/cleanapp-bug.git",
+  "steps": [
+    {
+      "name": "clone the project",
+      "say": "把这个项目拉下来：https://github.com/iwaitu/cleanapp-bug.git",
+      "repo": true,
+      "timeout_min": 8,
+      "expect": {
+        "reply_not_empty": true,
+        "jobs": {
+          "none": true
+        }
+      }
+    },
+    {
+      "name": "plan",
+      "say": "分析这个项目后，选一个明确、可复现的功能缺陷，制定最小修复计划（走 create_session_plan），只生成计划，不要批准也不要执行。",
+      "timeout_min": 14,
+      "expect": {
+        "tasklist_min": 1,
+        "jobs": {
+          "none": true
+        }
+      }
+    },
+    {
+      "name": "hold back",
+      "say": "我先不批准，还要想一想，现在什么都先别做。",
+      "timeout_min": 8,
+      "expect": {
+        "reply_not_empty": true,
+        "tools_exclude": [
+          "approve_plan",
+          "start_next_task"
+        ],
+        "jobs": {
+          "none": true
+        }
+      }
+    }
+  ]
+}

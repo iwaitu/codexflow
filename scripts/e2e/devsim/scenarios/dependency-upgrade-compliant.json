@@ -1,0 +1,72 @@
+{
+  "name": "dependency-upgrade-compliant",
+  "description": "Upgrade only the packages the host fetched: plan, approve with existing debt accepted, execute, verify, security gate passes. Plan granularity is not asserted: a single well-formed task must also pass.",
+  "repo": "https://github.com/iwaitu/cleanapp-bug.git",
+  "steps": [
+    {
+      "name": "clone the project",
+      "say": "把这个项目拉下来：https://github.com/iwaitu/cleanapp-bug.git",
+      "repo": true,
+      "timeout_min": 8,
+      "expect": {
+        "reply_not_empty": true,
+        "jobs": {
+          "none": true
+        }
+      }
+    },
+    {
+      "name": "ask about vulnerabilities",
+      "say": "这个项目的 NuGet 依赖有没有已知的安全漏洞？有的话给我一个升级方案，哪些能直接升，哪些要我拍板。先别改代码。",
+      "timeout_min": 10,
+      "expect": {
+        "reply_not_empty": true,
+        "jobs": {
+          "none": true
+        }
+      }
+    },
+    {
+      "name": "plan",
+      "say": "SharpCompress 先不动。其余有漏洞的包全部升级，只升到简报里宿主已取包的目标版本，别的包都不要动。给我一份正式计划（走 create_session_plan），我看过再批准，先别执行。",
+      "timeout_min": 14,
+      "expect": {
+        "tools_include": [
+          "create_session_plan"
+        ],
+        "tasklist_min": 1,
+        "jobs": {
+          "none": true
+        }
+      }
+    },
+    {
+      "name": "approve and execute",
+      "say": "计划我看过了，批准，开始执行。",
+      "accept_debt": true,
+      "timeout_min": 12,
+      "wait_jobs": {
+        "timeout_min": 40
+      },
+      "expect": {
+        "jobs": {
+          "completed_min": 1,
+          "failed_max": 0
+        }
+      }
+    },
+    {
+      "name": "verify",
+      "verify": {
+        "timeout_min": 20
+      },
+      "expect": {
+        "verify": {
+          "build_passed": true,
+          "tests_passed": true,
+          "audit_state": "Pass"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "name": "bugfix-rounding",
+  "description": "Fix the seeded defect of the 'rounding' fixture end to end: plan, approve, execute, verify, gate passes.",
+  "repo": "fixture:rounding",
+  "steps": [
+    {
+      "name": "clone the project",
+      "say": "把这个项目拉下来：{repo}",
+      "repo": true,
+      "timeout_min": 8,
+      "expect": {
+        "reply_not_empty": true,
+        "jobs": {
+          "none": true
+        }
+      }
+    },
+    {
+      "name": "plan",
+      "say": "请阅读 README，找出里面描述的已知缺陷，制定最小修复计划，包含针对该缺陷的回归测试（走 create_session_plan）。只生成计划，不要批准也不要执行。",
+      "timeout_min": 14,
+      "expect": {
+        "tools_include": [
+          "create_session_plan"
+        ],
+        "tasklist_min": 1,
+        "jobs": {
+          "none": true
+        }
+      }
+    },
+    {
+      "name": "approve and execute",
+      "say": "计划我看过了，批准，开始执行。",
+      "timeout_min": 12,
+      "wait_jobs": {
+        "timeout_min": 30
+      },
+      "expect": {
+        "jobs": {
+          "completed_min": 1,
+          "failed_max": 0
+        }
+      }
+    },
+    {
+      "name": "verify",
+      "verify": {
+        "timeout_min": 20
+      },
+      "expect": {
+        "verify": {
+          "build_passed": true,
+          "tests_passed": true,
+          "audit_state_in": [
+            "Pass",
+            "NeedsReview"
+          ],
+          "max_finding_severity": "Moderate"
+        }
+      }
+    }
+  ]
+}

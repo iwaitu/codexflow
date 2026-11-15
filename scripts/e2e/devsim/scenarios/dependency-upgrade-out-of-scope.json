@@ -1,0 +1,73 @@
+{
+  "name": "dependency-upgrade-out-of-scope",
+  "description": "A request for versions the host never fetched is raised with the user first; if the user insists, the task fails early with the restore reason. Plan granularity is not asserted: a single well-formed task must also pass.",
+  "repo": "https://github.com/iwaitu/cleanapp-bug.git",
+  "steps": [
+    {
+      "name": "clone the project",
+      "say": "把这个项目拉下来：https://github.com/iwaitu/cleanapp-bug.git",
+      "repo": true,
+      "timeout_min": 8,
+      "expect": {
+        "reply_not_empty": true,
+        "jobs": {
+          "none": true
+        }
+      }
+    },
+    {
+      "name": "ask about vulnerabilities",
+      "say": "这个项目的 NuGet 依赖有没有已知的安全漏洞？有的话给我一个升级方案。先别改代码。",
+      "timeout_min": 10,
+      "expect": {
+        "reply_not_empty": true,
+        "jobs": {
+          "none": true
+        }
+      }
+    },
+    {
+      "name": "request outside the host-fetched set",
+      "say": "SharpCompress 先不动。其余有漏洞的包全部升级，OpenTelemetry 其他包（Extensions.Hosting 和 Instrumentation 那几个）也一起对齐到 1.15.3。给我一份正式计划，我看过再批准，先别执行。",
+      "timeout_min": 14,
+      "expect": {
+        "reply_not_empty": true,
+        "tools_exclude": [
+          "approve_plan",
+          "start_next_task"
+        ],
+        "jobs": {
+          "none": true
+        }
+      }
+    },
+    {
+      "name": "insist",
+      "say": "我知道验收可能还原失败，这个后果我来承担。那 4 个 OpenTelemetry 包也照样升到 1.15.3，和表内 7 项一起放进计划。给我正式计划（create_session_plan），先别执行。",
+      "timeout_min": 14,
+      "expect": {
+        "tasklist_min": 1,
+        "jobs": {
+          "none": true
+        }
+      }
+    },
+    {
+      "name": "approve and execute",
+      "say": "计划我看过了，批准，开始执行。",
+      "accept_debt": true,
+      "timeout_min": 12,
+      "wait_jobs": {
+        "timeout_min": 30
+      },
+      "expect": {
+        "jobs": {
+          "failed_detail_code": [
+            "offline_restore_unavailable",
+            "worker_reported_blocked"
+          ]
+        }
+      }
+    }
+  ]
+}

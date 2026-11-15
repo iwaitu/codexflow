@@ -1,0 +1,26 @@
+# build output
+bin/
+obj/
+TestResults/
+*.user
+.vs/
+.vscode/
+
+# local runtime state: the SQLite database, the access token, advisory data, caches
+.codexflow/
+.codexflow-data/
+osv-advisories/
+verification-caches/
+downloads/
+
+# local tooling and scratch
+.tmp/
+*.log
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# secrets never belong in the repository
+.env
+*.pfx
+*.key

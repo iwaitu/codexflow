@@ -1,0 +1,357 @@
+{
+  "schema": 1,
+  "reviewedBy": "claude-audit-delegate: read-only static listing of PackageReference elements (per project + ProjectReference closure) in C:/cfw/shadows/cleanapp-bug/TASK_SOFTDELETE_FIX_001 (git HEAD 3aefa3c7e1e8282e4081cd4a5b9172cf74b1dfab); all versions exact, no props/targets/central package management, no project code run. AppHost group: Aspire.AppHost.Sdk 9.5.0 (from the <Sdk> element) and the SDK implicit Dashboard/Orchestration linux-x64 packages are fetched via PackageDownload only (SDK not executed).",
+  "reviewedAtUtc": "2026-11-07T17:35:31Z",
+  "targetFramework": "net10.0",
+  "groups": [
+    {
+      "name": "CleanApp.AppHost",
+      "packages": [
+        {
+          "id": "Aspire.Hosting.AppHost",
+          "version": "13.1.0"
+        },
+        {
+          "id": "Microsoft.AspNetCore.Authentication.JwtBearer",
+          "version": "10.0.2"
+        },
+        {
+          "id": "Microsoft.AspNetCore.Diagnostics.EntityFrameworkCore",
+          "version": "10.0.2"
+        },
+        {
+          "id": "Microsoft.AspNetCore.Identity.EntityFrameworkCore",
+          "version": "10.0.2"
+        },
+        {
+          "id": "Microsoft.AspNetCore.OpenApi",
+          "version": "10.0.2"
+        },
+        {
+          "id": "Microsoft.AspNetCore.SignalR.StackExchangeRedis",
+          "version": "10.0.2"
+        },
+        {
+          "id": "Microsoft.EntityFrameworkCore.Sqlite",
+          "version": "10.0.2"
+        },
+        {
+          "id": "Microsoft.EntityFrameworkCore.Tools",
+          "version": "10.0.2"
+        },
+        {
+          "id": "Microsoft.Extensions.Caching.StackExchangeRedis",
+          "version": "10.0.2"
+        },
+        {
+          "id": "Microsoft.Extensions.Http.Resilience",
+          "version": "10.2.0"
+        },
+        {
+          "id": "Microsoft.Extensions.Identity.Stores",
+          "version": "10.0.2"
+        },
+        {
+          "id": "Microsoft.Extensions.ServiceDiscovery",
+          "version": "10.2.0"
+        },
+        {
+          "id": "Microsoft.VisualStudio.Azure.Containers.Tools.Targets",
+          "version": "1.23.0"
+        },
+        {
+          "id": "MongoDB.Driver",
+          "version": "3.6.0"
+        },
+        {
+          "id": "OpenTelemetry.Exporter.OpenTelemetryProtocol",
+          "version": "1.15.0"
+        },
+        {
+          "id": "OpenTelemetry.Extensions.Hosting",
+          "version": "1.15.0"
+        },
+        {
+          "id": "OpenTelemetry.Instrumentation.AspNetCore",
+          "version": "1.15.0"
+        },
+        {
+          "id": "OpenTelemetry.Instrumentation.Http",
+          "version": "1.15.0"
+        },
+        {
+          "id": "OpenTelemetry.Instrumentation.Runtime",
+          "version": "1.15.0"
+        },
+        {
+          "id": "StackExchange.Redis",
+          "version": "2.10.1"
+        },
+        {
+          "id": "Swashbuckle.AspNetCore",
+          "version": "10.1.0"
+        },
+        {
+          "id": "Ulid",
+          "version": "1.4.1"
+        }
+      ],
+      "sdkPackages": [
+        {
+          "id": "Aspire.AppHost.Sdk",
+          "version": "9.5.0"
+        },
+        {
+          "id": "Aspire.Dashboard.Sdk.linux-x64",
+          "version": "13.1.0"
+        },
+        {
+          "id": "Aspire.Hosting.Orchestration.linux-x64",
+          "version": "13.1.0"
+        }
+      ]
+    },
+    {
+      "name": "CleanApp.Core",
+      "packages": [
+        {
+          "id": "Microsoft.AspNetCore.Identity.EntityFrameworkCore",
+          "version": "10.0.2"
+        },
+        {
+          "id": "Microsoft.EntityFrameworkCore.Sqlite",
+          "version": "10.0.2"
+        },
+        {
+          "id": "Microsoft.EntityFrameworkCore.Tools",
+          "version": "10.0.2"
+        },
+        {
+          "id": "Microsoft.Extensions.Identity.Stores",
+          "version": "10.0.2"
+        },
+        {
+          "id": "MongoDB.Driver",
+          "version": "3.6.0"
+        },
+        {
+          "id": "Ulid",
+          "version": "1.4.1"
+        }
+      ]
+    },
+    {
+      "name": "CleanApp.Domain",
+      "packages": [
+        {
+          "id": "Microsoft.Extensions.Identity.Stores",
+          "version": "10.0.2"
+        },
+        {
+          "id": "Ulid",
+          "version": "1.4.1"
+        }
+      ]
+    },
+    {
+      "name": "CleanApp.Infrastructure",
+      "packages": [
+        {
+          "id": "Microsoft.AspNetCore.Identity.EntityFrameworkCore",
+          "version": "10.0.2"
+        },
+        {
+          "id": "Microsoft.EntityFrameworkCore.Sqlite",
+          "version": "10.0.2"
+        },
+        {
+          "id": "Microsoft.EntityFrameworkCore.Tools",
+          "version": "10.0.2"
+        },
+        {
+          "id": "Microsoft.Extensions.Identity.Stores",
+          "version": "10.0.2"
+        },
+        {
+          "id": "Ulid",
+          "version": "1.4.1"
+        }
+      ]
+    },
+    {
+      "name": "CleanApp.ServiceDefaults",
+      "packages": [
+        {
+          "id": "Microsoft.Extensions.Http.Resilience",
+          "version": "10.2.0"
+        },
+        {
+          "id": "Microsoft.Extensions.ServiceDiscovery",
+          "version": "10.2.0"
+        },
+        {
+          "id": "OpenTelemetry.Exporter.OpenTelemetryProtocol",
+          "version": "1.15.0"
+        },
+        {
+          "id": "OpenTelemetry.Extensions.Hosting",
+          "version": "1.15.0"
+        },
+        {
+          "id": "OpenTelemetry.Instrumentation.AspNetCore",
+          "version": "1.15.0"
+        },
+        {
+          "id": "OpenTelemetry.Instrumentation.Http",
+          "version": "1.15.0"
+        },
+        {
+          "id": "OpenTelemetry.Instrumentation.Runtime",
+          "version": "1.15.0"
+        }
+      ]
+    },
+    {
+      "name": "CleanApp",
+      "packages": [
+        {
+          "id": "Microsoft.AspNetCore.Authentication.JwtBearer",
+          "version": "10.0.2"
+        },
+        {
+          "id": "Microsoft.AspNetCore.Diagnostics.EntityFrameworkCore",
+          "version": "10.0.2"
+        },
+        {
+          "id": "Microsoft.AspNetCore.Identity.EntityFrameworkCore",
+          "version": "10.0.2"
+        },
+        {
+          "id": "Microsoft.AspNetCore.OpenApi",
+          "version": "10.0.2"
+        },
+        {
+          "id": "Microsoft.AspNetCore.SignalR.StackExchangeRedis",
+          "version": "10.0.2"
+        },
+        {
+          "id": "Microsoft.EntityFrameworkCore.Sqlite",
+          "version": "10.0.2"
+        },
+        {
+          "id": "Microsoft.EntityFrameworkCore.Tools",
+          "version": "10.0.2"
+        },
+        {
+          "id": "Microsoft.Extensions.Caching.StackExchangeRedis",
+          "version": "10.0.2"
+        },
+        {
+          "id": "Microsoft.Extensions.Http.Resilience",
+          "version": "10.2.0"
+        },
+        {
+          "id": "Microsoft.Extensions.Identity.Stores",
+          "version": "10.0.2"
+        },
+        {
+          "id": "Microsoft.Extensions.ServiceDiscovery",
+          "version": "10.2.0"
+        },
+        {
+          "id": "Microsoft.VisualStudio.Azure.Containers.Tools.Targets",
+          "version": "1.23.0"
+        },
+        {
+          "id": "MongoDB.Driver",
+          "version": "3.6.0"
+        },
+        {
+          "id": "OpenTelemetry.Exporter.OpenTelemetryProtocol",
+          "version": "1.15.0"
+        },
+        {
+          "id": "OpenTelemetry.Extensions.Hosting",
+          "version": "1.15.0"
+        },
+        {
+          "id": "OpenTelemetry.Instrumentation.AspNetCore",
+          "version": "1.15.0"
+        },
+        {
+          "id": "OpenTelemetry.Instrumentation.Http",
+          "version": "1.15.0"
+        },
+        {
+          "id": "OpenTelemetry.Instrumentation.Runtime",
+          "version": "1.15.0"
+        },
+        {
+          "id": "StackExchange.Redis",
+          "version": "2.10.1"
+        },
+        {
+          "id": "Swashbuckle.AspNetCore",
+          "version": "10.1.0"
+        },
+        {
+          "id": "Ulid",
+          "version": "1.4.1"
+        }
+      ]
+    },
+    {
+      "name": "CleanAppCoreTests",
+      "packages": [
+        {
+          "id": "Microsoft.AspNetCore.Identity.EntityFrameworkCore",
+          "version": "10.0.2"
+        },
+        {
+          "id": "Microsoft.EntityFrameworkCore.InMemory",
+          "version": "10.0.2"
+        },
+        {
+          "id": "Microsoft.EntityFrameworkCore.Sqlite",
+          "version": "10.0.2"
+        },
+        {
+          "id": "Microsoft.EntityFrameworkCore.Tools",
+          "version": "10.0.2"
+        },
+        {
+          "id": "Microsoft.Extensions.Identity.Stores",
+          "version": "10.0.2"
+        },
+        {
+          "id": "Microsoft.NET.Test.Sdk",
+          "version": "18.0.1"
+        },
+        {
+          "id": "MongoDB.Driver",
+          "version": "3.6.0"
+        },
+        {
+          "id": "Moq",
+          "version": "4.20.72"
+        },
+        {
+          "id": "Ulid",
+          "version": "1.4.1"
+        },
+        {
+          "id": "coverlet.collector",
+          "version": "6.0.4"
+        },
+        {
+          "id": "xunit",
+          "version": "2.9.3"
+        },
+        {
+          "id": "xunit.runner.visualstudio",
+          "version": "3.1.5"
+        }
+      ]
+    }
+  ]
+}
