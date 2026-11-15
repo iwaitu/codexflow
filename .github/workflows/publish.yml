@@ -1,0 +1,118 @@
+name: publish
+
+# Pushing a tag vX.Y.Z publishes the five CodexFlow.* packages to nuget.org, at the version in Directory.Build.props (the tag must say the same).
+# What is pushed is the package set that ci.yml built and checked in this same run, not a second build. The push waits for approval of the
+# "nuget" environment, and signs in to nuget.org with a short-lived key from GitHub's OIDC token (a NuGet trusted-publishing policy), so no NuGet
+# key is stored in this repository. How to release, and the one-time setup: docs/releasing.md
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: "true"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+
+jobs:
+  guard:
+    name: The tag is a release of main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: The tag equals the declared version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="$(python3 -I scripts/ci/check_packages.py --print-version --props Directory.Build.props)"
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::the tag is $TAG but Directory.Build.props declares $version; change one so they agree, then tag again"
+            exit 1
+          fi
+          echo "releasing $version"
+
+      - name: The tagged commit is on main
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_SHA is not on main; only a commit that is on main can be released"
+            exit 1
+          fi
+
+  ci:
+    name: Gates
+    needs: guard
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: Publish to nuget.org
+    needs: [guard, ci]
+    runs-on: ubuntu-latest
+    environment: nuget
+    permissions:
+      contents: write   # the GitHub release
+      id-token: write   # the OIDC token that nuget.org exchanges for a short-lived key
+    env:
+      NUGET_USER: ${{ vars.NUGET_USER }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: packages
+          path: packages
+
+      - name: The downloaded packages are the five, from this commit
+        run: python3 -I scripts/ci/check_packages.py --packages packages --props Directory.Build.props --commit "$GITHUB_SHA"
+
+      - name: A nuget.org user is configured
+        run: |
+          if [ -z "$NUGET_USER" ]; then
+            echo "::error::set the repository variable NUGET_USER (the nuget.org profile name that owns the trusted-publishing policy); see docs/releasing.md"
+            exit 1
+          fi
+
+      - name: Sign in to nuget.org
+        id: login
+        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
+        with:
+          user: ${{ vars.NUGET_USER }}
+
+      - name: Push the packages
+        env:
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
+        run: dotnet nuget push "packages/*.nupkg" --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+      - name: Wait until all five are visible on nuget.org
+        run: |
+          version="$(python3 -I scripts/ci/check_packages.py --print-version --props Directory.Build.props)"
+          ids="CodexFlow.Contracts CodexFlow.Core CodexFlow.Orchestration CodexFlow.Gateway.Http CodexFlow.Storage.Sqlite"
+          # nuget.org validates and indexes a push after it returns, which takes minutes; wait up to 30.
+          for attempt in $(seq 1 60); do
+            missing=""
+            for id in $ids; do
+              lower="$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')"
+              if ! curl -fsS "https://api.nuget.org/v3-flatcontainer/$lower/index.json" 2>/dev/null | grep -q "\"$version\""; then
+                missing="$missing $id"
+              fi
+            done
+            if [ -z "$missing" ]; then
+              echo "all five packages are live at $version"
+              exit 0
+            fi
+            echo "attempt $attempt: not yet visible:$missing"
+            sleep 30
+          done
+          echo "::error::not visible on nuget.org after 30 minutes:$missing (check the package validation status on nuget.org; the push itself succeeded)"
+          exit 1
+
+      - name: GitHub release with the packages attached
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" packages/*.nupkg --verify-tag --generate-notes --title "$TAG"

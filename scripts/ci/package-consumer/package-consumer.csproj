@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <!-- Not part of CodexFlow.slnx. The release pipeline packs the five libraries, then restores them from the packed folder (plus nuget.org for what
+       they depend on) into this project and builds it, to prove the packages can be installed and used by someone who only has the packages:
+       CODEXFLOW_PACKED=<packed folder> dotnet build scripts/ci/package-consumer -p:CodexFlowVersion=<version> (with CODEXFLOW_PACKED set to the packed folder; see nuget.config) -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CodexFlow.Storage.Sqlite" Version="$(CodexFlowVersion)" />
+    <PackageReference Include="CodexFlow.Gateway.Http" Version="$(CodexFlowVersion)" />
+  </ItemGroup>
+
+</Project>

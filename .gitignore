@@ -24,3 +24,7 @@ __pycache__/
 .env
 *.pfx
 *.key
+
+# code-intelligence index and assistant tool state (local only)
+.codegraph/
+.omc/
