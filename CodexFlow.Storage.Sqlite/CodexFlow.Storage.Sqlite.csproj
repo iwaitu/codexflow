@@ -1,5 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <PackageId>CodexFlow.Storage.Sqlite</PackageId>
+    <Description>CodexFlow state in one SQLite file: jobs, plans, sessions, conversations, the job event history and an expiring key-value store.</Description>
+  </PropertyGroup>
+
   <!-- State of the local host in one SQLite file: jobs, plans, sessions, conversations, the job event history and an expiring
        key-value store. Depends on CodexFlow.Orchestration only. -->
   <PropertyGroup>

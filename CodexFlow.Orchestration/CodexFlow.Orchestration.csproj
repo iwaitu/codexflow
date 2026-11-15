@@ -1,5 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <PackageId>CodexFlow.Orchestration</PackageId>
+    <Description>The part of CodexFlow a host runs: the gateway, the background job runner and the host-side acceptance of a result.</Description>
+  </PropertyGroup>
+
   <!-- The part of CodexFlow that a host runs: gateway, job runner and host-side acceptance. It depends on CodexFlow.Core and
        CodexFlow.Contracts only, never on a database server, a user system or a web framework, so the local host and the platform host
        can both build on it. -->

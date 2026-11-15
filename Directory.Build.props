@@ -1,0 +1,23 @@
+<Project>
+
+  <!-- Shared by every project. Only the five library projects are packages (each one switches IsPackable on and names itself);
+       the host (CodexFlow.Local) and the tests are not. All packages share one version so they always match each other. -->
+  <PropertyGroup>
+    <VersionPrefix>0.1.0</VersionPrefix>
+    <VersionSuffix>preview.1</VersionSuffix>
+    <Authors>iwaitu</Authors>
+    <Copyright>Copyright (c) 2026 iwaitu</Copyright>
+    <PackageLicenseExpression>MPL-2.0</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/iwaitu/codexflow</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/iwaitu/codexflow.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>ai;agent;coding-agent;orchestration;codexflow</PackageTags>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(IsPackable)' == 'true'">
+    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
+
+</Project>

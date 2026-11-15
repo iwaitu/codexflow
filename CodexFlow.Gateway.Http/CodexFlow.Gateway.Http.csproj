@@ -1,5 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <PackageId>CodexFlow.Gateway.Http</PackageId>
+    <Description>The HTTP surface of the CodexFlow gateway: chat, the event stream, jobs and artifact verification (ASP.NET Core controllers).</Description>
+  </PropertyGroup>
+
   <!-- The HTTP surface of the gateway: chat, the event stream, jobs and artifact verification. Both hosts serve these controllers;
        each host decides who the "Bearer" caller is and what the "ActiveUser" policy means. -->
   <PropertyGroup>

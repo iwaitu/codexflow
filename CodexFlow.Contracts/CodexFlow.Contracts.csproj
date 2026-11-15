@@ -1,6 +1,12 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <PackageId>CodexFlow.Contracts</PackageId>
+    <Description>Request, response and event types shared by every CodexFlow host and client.</Description>
+  </PropertyGroup>
+
+  <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
