@@ -1,0 +1,173 @@
+name: ci
+
+# Every gate a release needs, in one place: build and test, a secret scan, a dependency vulnerability check, and packing the five NuGet packages
+# and proving they can be installed. publish.yml calls this workflow on a version tag and publishes the packages built HERE, so what is
+# tested is the very file that is pushed.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: "true"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+  # Fewer passing tests than this means the run stopped finding tests, not that tests were fixed. Lower it on purpose, in the commit that removes tests.
+  MIN_PASSED_TESTS: "1700"
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+
+      - name: Build
+        run: dotnet build CodexFlow.slnx -c Release
+
+      # The Docker isolation tests (Category=DockerIsolation) need a Docker daemon and the verification image from docker/verification; they run
+      # locally and are not part of this gate. Everything else is offline.
+      - name: Test
+        run: dotnet test CodexFlow.Core.Tests -c Release --no-build --filter "Category!=DockerIsolation" --logger "trx;LogFileName=core.trx" --results-directory TestResults
+
+      - name: The tests found, passed and did not fall below the floor
+        run: python3 -I scripts/ci/check_tests.py --min-passed "$MIN_PASSED_TESTS" TestResults/*.trx
+
+      - name: Tests of the gate scripts themselves
+        run: python3 -I -m unittest discover -s scripts/ci/tests -v
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: test-results
+          path: TestResults
+          if-no-files-found: ignore
+
+  pack:
+    name: Pack and install the packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+
+      - name: Pack the five libraries
+        run: dotnet pack CodexFlow.slnx -c Release -o "$RUNNER_TEMP/packages"
+
+      - name: Exactly the five packages, at the declared version, from this commit
+        run: python3 -I scripts/ci/check_packages.py --packages "$RUNNER_TEMP/packages" --props Directory.Build.props --commit "$(git rev-parse HEAD)"
+
+      - name: A project that has only the packed packages can restore and build against them
+        env:
+          CODEXFLOW_PACKED: ${{ runner.temp }}/packages
+          NUGET_PACKAGES: ${{ runner.temp }}/consumer-package-cache
+        run: |
+          version="$(python3 -I scripts/ci/check_packages.py --print-version --props Directory.Build.props)"
+          dotnet build scripts/ci/package-consumer -c Release -p:CodexFlowVersion="$version"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packages
+          path: ${{ runner.temp }}/packages/*.nupkg
+          if-no-files-found: error
+          retention-days: 14
+
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Scan the current tree
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo" \
+            ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            dir /repo --config /repo/.gitleaks.toml --redact --no-banner
+
+      - name: Scan the whole Git history
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo" \
+            ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            git /repo --config /repo/.gitleaks.toml --log-opts=--all --redact --no-banner
+
+      - name: The scanner still flags a synthetic secret (exit code exactly 1)
+        run: |
+          # gitleaks exits 1 when it FOUND something and 0 when it found nothing; anything else means the scan did not run.
+          # The token is made up here, in a temp folder outside the repository, and is never committed.
+          canary="$(mktemp -d)"
+          token="ghp_$(head -c 64 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 36)"
+          printf 'token = "%s"\n' "$token" > "$canary/canary.txt"
+          code=0
+          docker run --rm -v "$canary:/scan:ro" ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f dir /scan --redact --no-banner > "$canary.log" 2>&1 || code=$?
+          if [ "$code" -eq 1 ]; then
+            echo "gitleaks flagged the synthetic secret as expected (exit 1)"
+          elif [ "$code" -eq 0 ]; then
+            echo "::error::gitleaks did NOT flag the synthetic secret: the scan above proves nothing"
+            exit 1
+          else
+            echo "::error::the canary scan did not run (exit $code)"
+            tail -n 5 "$canary.log" || true
+            exit 1
+          fi
+
+  dependency-audit:
+    name: Dependency vulnerabilities
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore CodexFlow.slnx
+
+      - name: No direct or transitive package has a known vulnerability
+        run: |
+          dotnet list CodexFlow.slnx package --vulnerable --include-transitive --format json > vulnerabilities.json
+          if grep -q '"problems"' vulnerabilities.json; then
+            echo "::error::the vulnerability check could not run for every project"
+            cat vulnerabilities.json
+            exit 1
+          fi
+          if grep -q '"vulnerabilities"' vulnerabilities.json; then
+            echo "::error::a package with a known vulnerability is referenced"
+            cat vulnerabilities.json
+            exit 1
+          fi
+          echo "no vulnerable package, direct or transitive"
+
+  required:
+    name: ci-required
+    if: always()
+    needs: [test, pack, secret-scan, dependency-audit]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every gate passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "results: $RESULTS"
+          for r in $RESULTS; do
+            if [ "$r" != "success" ]; then
+              echo "::error::a gate did not succeed ($r)"
+              exit 1
+            fi
+          done
