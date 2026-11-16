@@ -200,23 +200,28 @@ class GatewayClient:
         current = json.loads(text) if status == 200 else {}
         self.self_approval_protection = bool(current.get("selfApprovalProtection", True))
 
-        if self.execution_profile == "docker-auto":
+        profile_targets = {
+            "docker-auto": ("Docker", "FullAuto"),
+            "local-auto": ("Local", "FullAuto"),
+        }
+        if self.execution_profile in profile_targets:
+            target_backend, target_mode = profile_targets[self.execution_profile]
             backend = str(current.get("backend") or "")
             mode = str(current.get("permissionMode") or "")
-            if backend.lower() != "docker" or mode.lower() != "fullauto":
+            if backend.lower() != target_backend.lower() or mode.lower() != target_mode.lower():
                 if not self.control_token:
                     raise GatewayError(
-                        "--execution-profile docker-auto requires host configured with Execution:Backend=Docker and "
-                        "PermissionMode=FullAuto (or pass --control-token-file to switch it via control plane)."
+                        f"--execution-profile {self.execution_profile} requires host configured with Execution:Backend={target_backend} and "
+                        f"PermissionMode={target_mode} (or pass --control-token-file to switch it via control plane)."
                     )
                 put_status, put_text = self.request(
                     "PUT",
                     "/api/settings/execution",
-                    {"backend": "Docker", "permissionMode": "FullAuto"},
+                    {"backend": target_backend, "permissionMode": target_mode},
                     use_control=True,
                 )
                 if put_status != 200:
-                    raise GatewayError(f"Applying execution profile docker-auto failed: {put_status} {put_text[:300]}")
+                    raise GatewayError(f"Applying execution profile {self.execution_profile} failed: {put_status} {put_text[:300]}")
                 current = json.loads(put_text)
                 self.self_approval_protection = bool(current.get("selfApprovalProtection", True))
 

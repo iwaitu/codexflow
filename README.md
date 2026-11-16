@@ -2,16 +2,16 @@ English | [简体中文](README.zh-CN.md)
 
 # CodexFlow
 
-A local host for an AI coding agent: chat → plan → approve → execute in isolated Docker containers → verify (build, tests, secret scan, dependency vulnerability scan, model review).
-All state lives in a single SQLite file, depending only on Docker and a model endpoint.
+A local host for an AI coding agent: chat → plan → approve → execute locally with permission prompts (or optionally in isolated Docker containers) → verify (optional Docker container build, tests, secret scan, dependency vulnerability scan, model review).
+All state lives in a single SQLite file, depending only on the .NET 10 SDK and a model endpoint (Docker is optional).
 
 **Status: Early stage.** There is no `codexflow` CLI yet; interact with it via the local host's HTTP API, and drive/verify workflows using the scenario scripts in `scripts/e2e/devsim`.
 
 ## Requirements
 
 - .NET 10 SDK
-- Docker (both verification and user code run inside containers)
 - An OpenAI-compatible chat endpoint (`ChatCompletions` mode)
+- Docker *(optional)*: required only when configuring `Execution:Backend=Docker` for container-isolated execution and full verification/security audit gates
 
 ## Running
 
@@ -27,12 +27,13 @@ dotnet run --project CodexFlow.Local
 
 - Listens only on `127.0.0.1`, port configured by `Local:Port` (default `5206`).
 - Generates an access token on startup and writes it to `host.token` next to the database (default `.codexflow/host.token`); requests missing a token or using an invalid token return `401`.
-- Startup preflight checks verify that model settings are complete, the model endpoint responds, and the Docker daemon is available. Any issues are reported together and the process exits with code `1`. Set `Local:SkipPreflight=true` to disable.
+- Startup preflight checks verify that model settings are complete and the model endpoint responds (and check the Docker daemon only when `Execution:Backend=Docker`). Any issues are reported together and the process exits with code `1`. Set `Local:PreflightMode=Off` (or `Report`) to disable/soften preflight checks.
+- Default execution backend is `Local` with `PermissionMode=Ask` (every untrusted code execution requires approval; under `Local` mode, verification/audit skips container checks by default unless `Execution:Backend=Docker` is enabled). Existing configs that already customized `Isolation` automatically migrate to `Execution:Backend=Docker`.
 - Default state database is `.codexflow/state.db`, configured by `Storage:SqlitePath`, with migrations applied automatically on startup.
 
-### Verification Container Image
+### Verification Container Image (Optional, Docker Backend Only)
 
-Verification and user code run inside the `codexflow-verification` image, which must be built first:
+When using `Execution:Backend=Docker`, verification and user code run inside the `codexflow-verification` image, which must be built first:
 
 ```bash
 docker build -t codexflow-verification:10.0.403-gitleaks8.30.1 docker/verification

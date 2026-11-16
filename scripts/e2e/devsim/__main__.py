@@ -144,8 +144,8 @@ def main(argv: list[str] | None = None) -> int:
                        help="access token file of a local host (.codexflow/host.token); replaces the account login")
         p.add_argument("--control-token-file", default=None,
                        help="control-plane token file (.codexflow/control.token); defaults to sibling control.token next to --token-file")
-        p.add_argument("--execution-profile", choices=["docker-auto"], default=None,
-                       help="preferred headless execution profile: verifies/configures Docker backend with AutoInWorkspace/FullAuto")
+        p.add_argument("--execution-profile", choices=["docker-auto", "local-auto"], default=None,
+                       help="preferred headless execution profile: verifies/configures Docker or Local backend with FullAuto")
         p.add_argument("--auto-approve", action="store_true",
                        help="automatically approve interactive execution requests via control-plane API and record requestDigests "
                             "(on Local backend requires Local:UnsafeFileControlToken=true and marks selfApprovalProtection=false)")
@@ -201,6 +201,12 @@ def main(argv: list[str] | None = None) -> int:
         print("choose scenarios by name or pass --all" + (f"; unknown: {unknown}" if unknown else ""), file=sys.stderr)
         return 2
     selected = scenarios if take_all else [by_name[name] for name in names]
+    if take_all and args.execution_profile in ("docker-auto", "local-auto"):
+        target_backend = "Docker" if args.execution_profile == "docker-auto" else "Local"
+        selected = [
+            scenario for scenario in selected
+            if not scenario.get("backends") or target_backend in scenario["backends"]
+        ]
     out_root = Path(args.root if args.command == "nightly" else args.out) if (args.command == "nightly" or args.out) else None
 
     started = time.time()

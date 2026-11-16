@@ -3,6 +3,7 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 using CodexFlow.Core.Constants;
+using CodexFlow.Core.Execution;
 using CodexFlow.Core.Hashline.Models;
 using CodexFlow.Core.Models;
 using Xunit;
@@ -103,7 +104,7 @@ public class CodexPromptCompositionTests
     [Fact]
     public void GetForgePrompt_ExplainsThatEveryCommandRunsInAFreshContainer()
     {
-        var prompt = CodexPrompts.GetForgePrompt(new CodexSession { Id = "s-forge-exec" });
+        var prompt = CodexPrompts.GetForgePrompt(new CodexSession { Id = "s-forge-exec" }, executionBackend: ExecutionBackend.Docker);
 
         Assert.Contains("命令执行环境", prompt, StringComparison.Ordinal);
         Assert.Contains("--no-restore", prompt, StringComparison.Ordinal);
@@ -126,7 +127,7 @@ public class CodexPromptCompositionTests
     [Fact]
     public void GetForgePrompt_SaysWhichContainerACommandRunsIn_AndRecommendsNoCommandTheWhitelistRefuses()
     {
-        var prompt = CodexPrompts.GetForgePrompt(new CodexSession { Id = "s-forge-images" });
+        var prompt = CodexPrompts.GetForgePrompt(new CodexSession { Id = "s-forge-images" }, executionBackend: ExecutionBackend.Docker);
 
         Assert.Contains("容器镜像由命令的第一个词决定", prompt, StringComparison.Ordinal);
         Assert.Contains("没有 dotnet", prompt, StringComparison.Ordinal);
@@ -138,7 +139,7 @@ public class CodexPromptCompositionTests
     [Fact]
     public void GetForgePrompt_TellsNodeAndPythonWorkersThatTheirContainerHasNoInstalledDependencies()
     {
-        var prompt = CodexPrompts.GetForgePrompt(new CodexSession { Id = "s-forge-node-python" });
+        var prompt = CodexPrompts.GetForgePrompt(new CodexSession { Id = "s-forge-node-python" }, executionBackend: ExecutionBackend.Docker);
 
         Assert.Contains("没有 `node_modules`", prompt, StringComparison.Ordinal);
         Assert.Contains("npm ci --offline", prompt, StringComparison.Ordinal);
@@ -151,7 +152,7 @@ public class CodexPromptCompositionTests
     [Fact]
     public void GetForgePrompt_NamesTheOfflinePackageFolders_AndSaysARestoreFromThemIsNotAMissingEdit()
     {
-        var prompt = CodexPrompts.GetForgePrompt(new CodexSession { Id = "s-forge-offline" });
+        var prompt = CodexPrompts.GetForgePrompt(new CodexSession { Id = "s-forge-offline" }, executionBackend: ExecutionBackend.Docker);
 
         Assert.Contains("/restore-cache-extra", prompt, StringComparison.Ordinal);
         Assert.Contains("备用包目录", prompt, StringComparison.Ordinal);
@@ -190,5 +191,20 @@ public class CodexPromptCompositionTests
         Assert.Contains("读代码只能帮助你定位验证入口", prompt, StringComparison.Ordinal);
         Assert.Contains("至少选择一类真正执行", prompt, StringComparison.Ordinal);
         Assert.Contains("`partial` 仅用于真实的环境限制", prompt, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void GetForgePrompt_DefaultsToLocalExecution_AndAppliesBackendBidirectionally()
+    {
+        var defaultPrompt = CodexPrompts.GetForgePrompt(new CodexSession { Id = "s-forge-default-local" });
+        Assert.Contains("当前为本地执行模式", defaultPrompt, StringComparison.Ordinal);
+        Assert.Contains("没有网络隔离，也没有文件系统隔离", defaultPrompt, StringComparison.Ordinal);
+
+        var switchedToDocker = CodexPrompts.ApplyExecutionBackendEnvironment(defaultPrompt, ExecutionBackend.Docker);
+        Assert.Contains("每条 `exec_cmd` 都在一个全新的容器里运行", switchedToDocker, StringComparison.Ordinal);
+        Assert.DoesNotContain("当前为本地执行模式", switchedToDocker, StringComparison.Ordinal);
+
+        var switchedBackToLocal = CodexPrompts.ApplyExecutionBackendEnvironment(switchedToDocker, ExecutionBackend.Local);
+        Assert.Contains("当前为本地执行模式", switchedBackToLocal, StringComparison.Ordinal);
     }
 }

@@ -481,6 +481,36 @@ public sealed class P3ApiAndWorkspaceAdmissionTests : IDisposable
             Assert.Equal("Reachable", s.ModelProbeStatus);
         });
         Assert.Equal(1, calls);
+
+        // Unconfigured Execution:Backend defaults to Local, so HostPreflight.RunAsync does not fail without Docker.
+        var defaultPreflightCfg = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["VllmAgent:ApiUrl"] = "https://mock-llm.invalid/v1",
+                ["VllmAgent:ApiKey"] = "sk-test-1234567890",
+                ["VllmAgent:Model"] = "gpt-test",
+                ["VllmAgent:ApiMode"] = "Responses"
+            })
+            .Build();
+        var defaultIssues = await HostPreflight.RunAsync(
+            defaultPreflightCfg,
+            dockerProbe: _ => Task.FromResult<string?>("docker unavailable"));
+        Assert.Empty(defaultIssues);
+
+        var dockerPreflightCfg = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Execution:Backend"] = "Docker",
+                ["VllmAgent:ApiUrl"] = "https://mock-llm.invalid/v1",
+                ["VllmAgent:ApiKey"] = "sk-test-1234567890",
+                ["VllmAgent:Model"] = "gpt-test",
+                ["VllmAgent:ApiMode"] = "Responses"
+            })
+            .Build();
+        var dockerIssues = await HostPreflight.RunAsync(
+            dockerPreflightCfg,
+            dockerProbe: _ => Task.FromResult<string?>("docker unavailable"));
+        Assert.Contains(dockerIssues, i => string.Equals(i.Component, "Docker", StringComparison.OrdinalIgnoreCase));
     }
 
     private sealed class CountingHttpMessageHandler(Func<Task<HttpResponseMessage>> respond) : HttpMessageHandler

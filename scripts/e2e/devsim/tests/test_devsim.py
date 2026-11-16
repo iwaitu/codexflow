@@ -497,6 +497,58 @@ class ApprovalAndProfileTests(unittest.TestCase):
             self.assertTrue(res.done)
             self.assertEqual(["digest-from-heartbeat", "digest-from-replay-gap"], gateway.approved_digests)
 
+    def test_local_verification_expectations_and_local_auto_profile(self):
+        receipt = {
+            "verificationStatus": "skipped(requires_docker_backend)",
+            "verifiedWithoutIsolation": True,
+            "verificationNotice": "未在隔离环境中验证",
+            "audit": {"state": "NotRun"},
+        }
+        checks = s.evaluate(
+            {
+                "verify": {
+                    "verification_status": "skipped(requires_docker_backend)",
+                    "verified_without_isolation": True,
+                    "audit_state": "NotRun",
+                }
+            },
+            chat=None,
+            jobs=[],
+            tasklist=None,
+            receipt=receipt,
+            failure_codes=[],
+        )
+        self.assertTrue(all(check["ok"] for check in checks), checks)
+        condensed = s._condense_receipt(receipt)
+        self.assertEqual("skipped(requires_docker_backend)", condensed["verification_status"])
+        self.assertTrue(condensed["verified_without_isolation"])
+        self.assertEqual("未在隔离环境中验证", condensed["verification_notice"])
+
+        with tempfile.TemporaryDirectory() as directory:
+            host_tok = Path(directory) / "host.token"
+            ctrl_tok = Path(directory) / "control.token"
+            host_tok.write_text("normal-token-12345678", encoding="utf-8")
+            ctrl_tok.write_text("control-token-87654321", encoding="utf-8")
+
+            calls = []
+            gateway = c.GatewayClient(
+                "http://127.0.0.1:1",
+                token_file=str(host_tok),
+                execution_profile="local-auto",
+            )
+
+            def fake_request(method, path, body=None, timeout=60, *, use_control=False):
+                calls.append((method, path, body, use_control))
+                if method == "GET" and path == "/api/settings/execution":
+                    return 200, '{"backend":"Local","permissionMode":"Ask","controlPlaneAvailable":true,"selfApprovalProtection":false}'
+                if method == "PUT" and path == "/api/settings/execution":
+                    return 200, '{"backend":"Local","permissionMode":"FullAuto","controlPlaneAvailable":true,"selfApprovalProtection":false}'
+                raise AssertionError(f"unexpected {method} {path}")
+
+            gateway.request = fake_request
+            gateway.login()
+            self.assertTrue(any(m == "PUT" and b == {"backend": "Local", "permissionMode": "FullAuto"} and ctrl for (m, _, b, ctrl) in calls))
+
 
 if __name__ == "__main__":
     unittest.main()

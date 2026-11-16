@@ -128,7 +128,7 @@ var initialBackend = Enum.TryParse<ExecutionBackend>(
     ignoreCase: true,
     out var parsedBackend)
     ? parsedBackend
-    : ExecutionBackend.Docker;
+    : ExecutionBackend.Local;
 var unsafeFileControlToken = LocalHostCredentials.ResolveUserLevelUnsafeFileControlToken(globalSettingsPath, args);
 
 using var startupLoggerFactory = LoggerFactory.Create(lb => lb.AddConsole());

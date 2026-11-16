@@ -21,15 +21,18 @@ python scripts/e2e/devsim run --all --api http://127.0.0.1:5205
 
 本地宿主（`CodexFlow.Local`）拆分了普通面（`host.token`）与控制面（`control.token`），且 `Ask` 模式下未批准的命令不会启动。无人值守跑 `devsim` 有两种方式：
 
-1. **推荐：`--execution-profile docker-auto`**（Docker 后端 + `AutoInWorkspace` / `FullAuto`）
-   - 宿主启动时配置 `Execution__Backend=Docker` 与 `Execution__PermissionMode=FullAuto`（或传入 `--token-file .codexflow/host.token`，同目录 `control.token` 会自动用于切换配置与计划审批按钮）。
-   - 命令示例：
+1. **使用 `--execution-profile local-auto` 或 `docker-auto`**
+   - `docker-auto`（Docker 后端 + `FullAuto`）：宿主启动时配置 `Execution__Backend=Docker` 与 `Execution__PermissionMode=FullAuto`（或传入 `--token-file .codexflow/host.token`，同目录 `control.token` 会自动用于切换配置与计划审批按钮）。
      ```bash
      python scripts/e2e/devsim run --all --api http://127.0.0.1:5206 --token-file .codexflow/host.token --execution-profile docker-auto
      ```
+   - `local-auto`（Local 后端 + `FullAuto`）：使用默认 `Local` 后端无容器执行时可用 `--execution-profile local-auto`，并配合专门的本地场景（如 `bugfix-discounts-local`）：
+     ```bash
+     python scripts/e2e/devsim run bugfix-discounts-local --api http://127.0.0.1:5206 --token-file .codexflow/host.token --execution-profile local-auto
+     ```
 2. **控制面自动审批：`--auto-approve`**
    - 运行器通过控制面 API（`GET /api/gateway/session/{id}/approvals` + `POST /api/gateway/approvals/{approvalId}`）自动批准挂起的执行请求，并在场景结果 JSON（`approved_request_digests`）与 `summary.md` 中记录所有被批准的 `requestDigest`。
-   - **用于 `Backend=Local` 时**：独立运行的本地后端默认不生成 `control.token`。必须在用户级配置（`~/.codexflow/appsettings.json`）或宿主环境变量中显式开启 `Local:UnsafeFileControlToken=true`（项目 `codexflow.yml` 不能开启）。开启后，宿主、审计记录与 `devsim` 报告都会醒目标注 **`防自批保证不成立 (selfApprovalProtection: false)`**。
+   - **用于默认 `Backend=Local` + `PermissionMode=Ask` 时**：独立运行的本地后端默认不生成 `control.token`。必须在用户级配置（`~/.codexflow/appsettings.json`）或宿主环境变量中显式开启 `Local:UnsafeFileControlToken=true`（项目 `codexflow.yml` 不能开启）。开启后，宿主、审计记录与 `devsim` 报告都会醒目标注 **`防自批保证不成立 (selfApprovalProtection: false)`**。
 
 ## 场景
 

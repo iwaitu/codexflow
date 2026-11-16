@@ -179,6 +179,44 @@ public sealed class WindowsLaunchAndToolsTests : IDisposable
         Assert.Contains("没有网络隔离，也没有文件系统隔离", prompt, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task LocalExecution_SetsSessionAppDataOnWindows_SoDotnetNugetSucceeds()
+    {
+        var workspace = Path.Combine(_root, "ws-nuget");
+        Directory.CreateDirectory(workspace);
+
+        using var service = new LocalExecutionService(
+            Options.Create(new IsolationOptions { StagingRoot = Path.Combine(_root, "staging-nuget") }),
+            NullLogger<LocalExecutionService>.Instance);
+
+        var ctx = new TrustedExecutionContext
+        {
+            UserId = "u1",
+            SessionId = "s-nuget",
+            JobId = "j1",
+            TaskId = "t1",
+            AttemptId = "a1",
+            WorkspaceRoot = workspace,
+            Network = new ExecutionNetworkPolicy(ExecutionNetworkMode.Host)
+        };
+
+        var open = await service.OpenSessionAsync(ctx, new IsolatedSessionOptions("local", StageWorkspace: false), CancellationToken.None);
+        Assert.True(open.Decision.IsAllowed);
+        await using var session = open.Session!;
+
+        var result = await session.RunAsync(
+            new IsolatedCommandRequest(["dotnet", "nuget", "locals", "http-cache", "--list"]),
+            CancellationToken.None);
+
+        Assert.Equal(IsolatedCommandStatus.Completed, result.Status);
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("http-cache:", result.Stdout, StringComparison.OrdinalIgnoreCase);
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Contains(session.Layout.HomeDir, result.Stdout, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
     private sealed class LocalLayoutRecordingService : IIsolatedExecutionService
     {
         public ExecutionBackend ActiveBackend => ExecutionBackend.Local;

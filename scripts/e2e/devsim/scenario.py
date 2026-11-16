@@ -24,7 +24,10 @@ STEP_KEYS = {"name", "say", "repo", "accept_debt", "approve_upgrades", "timeout_
 EXPECT_KEYS = {"reply_not_empty", "reply_contains_any", "reply_not_contains", "tools_include", "tools_exclude", "chat_error",
                "jobs", "tasklist_min", "tasklist_max", "verify"}
 JOB_EXPECT_KEYS = {"none", "completed_min", "failed_max", "failed_detail_code", "retried_min", "retried_max", "retry_detail_code"}
-VERIFY_EXPECT_KEYS = {"build_passed", "tests_passed", "audit_state", "audit_state_in", "max_finding_severity", "failure_code"}
+VERIFY_EXPECT_KEYS = {
+    "build_passed", "tests_passed", "audit_state", "audit_state_in",
+    "max_finding_severity", "failure_code", "verification_status", "verified_without_isolation",
+}
 SEVERITY_RANK = {"Low": 1, "Moderate": 2, "High": 3, "Critical": 4}
 
 
@@ -145,7 +148,13 @@ def evaluate(expect: dict[str, Any], *, chat: Any, jobs: list[dict[str, Any]], t
     wanted_verify = expect.get("verify")
     if wanted_verify is not None:
         receipt = receipt or {}
-        mapping = {"build_passed": "buildPassed", "tests_passed": "testsPassed", "failure_code": "failureCode"}
+        mapping = {
+            "build_passed": "buildPassed",
+            "tests_passed": "testsPassed",
+            "failure_code": "failureCode",
+            "verification_status": "verificationStatus",
+            "verified_without_isolation": "verifiedWithoutIsolation",
+        }
         for key, field in mapping.items():
             if key in wanted_verify:
                 actual = receipt.get(field)
@@ -204,6 +213,9 @@ def _condense_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
     return {
         "failure_code": receipt.get("failureCode"), "build_passed": receipt.get("buildPassed"), "tests_passed": receipt.get("testsPassed"),
         "build_exit_code": receipt.get("buildExitCode"), "message": str(receipt.get("message") or "")[:300],
+        "verification_status": receipt.get("verificationStatus"),
+        "verified_without_isolation": receipt.get("verifiedWithoutIsolation"),
+        "verification_notice": receipt.get("verificationNotice"),
         "audit": {
             "state": audit.get("state", audit.get("State")), "reason": audit.get("reasonCode", audit.get("ReasonCode")),
             "layers": [{"name": layer.get("name"), "state": layer.get("state"), "reason": layer.get("reasonCode"),

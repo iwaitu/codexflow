@@ -61,7 +61,7 @@ public sealed class ExecutionSettingsService : IExecutionSettingsService
         => GlobalSettingsFileStore.ReadLocked(_path, root =>
         {
             var section = root[SectionName] as JObject;
-            var backend = ParseEnum(section?["Backend"]?.ToString(), ExecutionBackend.Docker);
+            var backend = ParseEnum(section?["Backend"]?.ToString(), ExecutionBackend.Local);
             var permission = ParseEnum(section?["PermissionMode"]?.ToString(), ExecutionPermissionMode.Ask);
             return new ExecutionSettingsView(backend, permission);
         });
@@ -87,7 +87,7 @@ public sealed class ExecutionSettingsService : IExecutionSettingsService
 
             root[SectionName] = section;
             var view = new ExecutionSettingsView(
-                ParseEnum(section["Backend"]?.ToString(), ExecutionBackend.Docker),
+                ParseEnum(section["Backend"]?.ToString(), ExecutionBackend.Local),
                 ParseEnum(section["PermissionMode"]?.ToString(), ExecutionPermissionMode.Ask));
             return (true, view);
         });

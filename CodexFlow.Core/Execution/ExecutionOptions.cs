@@ -26,9 +26,10 @@ public sealed class ExecutionOptions
     public const string SectionName = "Execution";
 
     /// <summary>
-    /// Execution backend for untrusted code tools. Remains Docker until P2, P1-4 Phase 1, and upgrade migration are ready.
+    /// Execution backend for untrusted code tools. Defaults to <see cref="ExecutionBackend.Local"/>;
+    /// Docker isolation is optional and enabled via explicit configuration or legacy-config migration.
     /// </summary>
-    public ExecutionBackend Backend { get; set; } = ExecutionBackend.Docker;
+    public ExecutionBackend Backend { get; set; } = ExecutionBackend.Local;
 
     public ExecutionPermissionMode PermissionMode { get; set; } = ExecutionPermissionMode.Ask;
 
@@ -189,7 +190,7 @@ public sealed class ExecutionPermissionClamp :
                 _hasObservedBaseline = true;
             }
 
-            var backend = _controlPlaneBackendOverride ?? _lastObservedRawBackend ?? ExecutionBackend.Docker;
+            var backend = _controlPlaneBackendOverride ?? _lastObservedRawBackend ?? ExecutionBackend.Local;
             var mode = _effectiveMode ?? _lastObservedRawConfigMode ?? ExecutionPermissionMode.Ask;
             return (backend, mode);
         }
@@ -226,7 +227,7 @@ public sealed class ExecutionPermissionClamp :
                 _hasObservedBaseline = true;
             }
 
-            var liveBackend = _controlPlaneBackendOverride ?? _lastObservedRawBackend ?? ExecutionBackend.Docker;
+            var liveBackend = _controlPlaneBackendOverride ?? _lastObservedRawBackend ?? ExecutionBackend.Local;
             var liveMode = _effectiveMode ?? _lastObservedRawConfigMode ?? ExecutionPermissionMode.Ask;
 
             var isRelaxingMode = permissionMode is { } targetMode &&

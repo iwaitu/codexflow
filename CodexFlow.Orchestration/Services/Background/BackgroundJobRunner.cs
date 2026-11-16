@@ -2529,7 +2529,7 @@ namespace CodexFlow.Services.Background
                         .Cast<AIFunction>()
                         .ToList();
                     var executionBackend = sp.GetService<Microsoft.Extensions.Options.IOptionsMonitor<CodexFlow.Core.Execution.ExecutionOptions>>()?.CurrentValue.Backend
-                        ?? CodexFlow.Core.Execution.ExecutionBackend.Docker;
+                        ?? CodexFlow.Core.Execution.ExecutionBackend.Local;
                     var rawSystemPrompt = CodexFlow.Core.Constants.CodexPrompts.ApplyExecutionBackendEnvironment(
                         workerDefinition.BuildSystemPrompt(workerSession),
                         executionBackend);

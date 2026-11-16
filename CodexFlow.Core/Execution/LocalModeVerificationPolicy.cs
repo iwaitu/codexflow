@@ -42,7 +42,7 @@ public static class LocalModeVerificationPolicy
             backend = !string.IsNullOrWhiteSpace(rawBackend) &&
                       Enum.TryParse<ExecutionBackend>(rawBackend, ignoreCase: true, out var parsedBackend)
                 ? parsedBackend
-                : ExecutionBackend.Docker;
+                : ExecutionBackend.Local;
         }
 
         var rawPolicy = configuration["ArtifactVerification:LocalModePolicy"];

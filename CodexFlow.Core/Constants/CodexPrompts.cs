@@ -72,7 +72,7 @@ public static class CodexPrompts
     private static string BuildForgePromptTemplate(
         HashlineOptions? hashlineOptions = null,
         CodexSession? session = null,
-        ExecutionBackend executionBackend = ExecutionBackend.Docker)
+        ExecutionBackend executionBackend = ExecutionBackend.Local)
         => CodexPromptSectionComposer.Compose(
             """
             你名为 Ivilson-Forge，是项目组的高级开发工程师。
@@ -334,7 +334,7 @@ public static class CodexPrompts
     public static string GetForgePrompt(
         CodexSession? session = null,
         HashlineOptions? hashlineOptions = null,
-        ExecutionBackend executionBackend = ExecutionBackend.Docker)
+        ExecutionBackend executionBackend = ExecutionBackend.Local)
     {
         var prompt = BuildForgePromptTemplate(hashlineOptions, session, executionBackend);
         if (session == null || string.IsNullOrEmpty(session.ActiveTaskId))
@@ -884,14 +884,16 @@ Target Path: {escapedTargetPath}
 
     public static string ApplyExecutionBackendEnvironment(string prompt, ExecutionBackend backend)
     {
-        if (backend == ExecutionBackend.Docker || string.IsNullOrEmpty(prompt))
+        if (string.IsNullOrEmpty(prompt))
         {
             return prompt;
         }
 
         var dockerBody = BuildCommandExecutionEnvironmentBody(ExecutionBackend.Docker);
         var localBody = BuildCommandExecutionEnvironmentBody(ExecutionBackend.Local);
-        return prompt.Replace(dockerBody, localBody, StringComparison.Ordinal);
+        return backend == ExecutionBackend.Local
+            ? prompt.Replace(dockerBody, localBody, StringComparison.Ordinal)
+            : prompt.Replace(localBody, dockerBody, StringComparison.Ordinal);
     }
 
     public static string BuildCommandExecutionEnvironmentBody(ExecutionBackend backend)

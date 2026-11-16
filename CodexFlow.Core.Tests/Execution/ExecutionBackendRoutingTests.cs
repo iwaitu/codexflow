@@ -135,6 +135,8 @@ public sealed class ExecutionBackendRoutingTests : IDisposable
         var freshPath = Path.Combine(_tempDir, "fresh.json");
         var freshService = new ExecutionSettingsService(freshPath);
         Assert.False(freshService.MigrateLegacyIsolationIfNeeded());
+        Assert.Equal(ExecutionBackend.Local, freshService.Read().Backend);
+        Assert.Equal(ExecutionPermissionMode.Ask, freshService.Read().PermissionMode);
 
         freshService.Update(new ExecutionSettingsUpdate(PermissionMode: ExecutionPermissionMode.AutoInWorkspace));
         Assert.Equal(ExecutionPermissionMode.AutoInWorkspace, freshService.EffectivePermissionMode);
@@ -200,5 +202,29 @@ public sealed class ExecutionBackendRoutingTests : IDisposable
         Assert.Same(
             clamp,
             Assert.Single(provider.GetServices<IPostConfigureOptions<ExecutionOptions>>().OfType<ExecutionPermissionClamp>()));
+    }
+
+    [Fact]
+    public void DefaultExecutionOptions_DefaultsToLocalAndAsk_AndHostPreflightDoesNotRequireDocker()
+    {
+        var emptyConfig = new ConfigurationBuilder().Build();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddCodexIsolatedExecution(emptyConfig);
+
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions
+        {
+            ValidateOnBuild = true,
+            ValidateScopes = true
+        });
+
+        var effective = provider.GetRequiredService<IOptionsMonitor<ExecutionOptions>>().CurrentValue;
+        Assert.Equal(ExecutionBackend.Local, effective.Backend);
+        Assert.Equal(ExecutionPermissionMode.Ask, effective.PermissionMode);
+        Assert.Equal(ExecutionBackend.Local, provider.GetRequiredService<IIsolatedExecutionService>().ActiveBackend);
+
+        var clamp = provider.GetRequiredService<ExecutionPermissionClamp>();
+        var resolved = clamp.ResolveEffective(provider.GetRequiredService<IOptionsMonitor<ExecutionOptions>>());
+        Assert.Equal((ExecutionBackend.Local, ExecutionPermissionMode.Ask), resolved);
     }
 }

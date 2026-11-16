@@ -72,7 +72,7 @@ public static class HostPreflight
         var backendRaw = configuration[$"{ExecutionOptions.SectionName}:Backend"];
         var backend = !string.IsNullOrWhiteSpace(backendRaw) && Enum.TryParse<ExecutionBackend>(backendRaw, ignoreCase: true, out var parsedBackend)
             ? parsedBackend
-            : ExecutionBackend.Docker;
+            : ExecutionBackend.Local;
 
         if (backend == ExecutionBackend.Docker)
         {

@@ -2,16 +2,16 @@
 
 # CodexFlow
 
-在本机运行的 AI 编码助手宿主：对话 → 出计划 → 你批准 → 在隔离的 Docker 容器里执行 → 验收（构建、测试、密钥扫描、依赖漏洞扫描、模型审查）。
-状态全部保存在一个 SQLite 文件里，只依赖 Docker 和一个模型接口。
+在本机运行的 AI 编码助手宿主：对话 → 出计划 → 你批准 → 默认在本地按权限分级审批执行（也可选切换到隔离的 Docker 容器）→ 验收（Docker 模式下执行构建、测试、密钥扫描、依赖漏洞扫描、模型审查；本地模式默认跳过容器验收并明确标注）。
+状态全部保存在一个 SQLite 文件里，只依赖 .NET 10 SDK 和一个模型接口（Docker 为可选项）。
 
 **状态：早期。** 还没有 `codexflow` 命令行；现在通过本地宿主的 HTTP 接口使用，并用 `scripts/e2e/devsim` 里的场景脚本驱动和检查。
 
 ## 需要什么
 
 - .NET 10 SDK
-- Docker（验收和用户代码都在容器里执行）
 - 一个 OpenAI 兼容的聊天接口（`ChatCompletions` 模式）
+- Docker *（可选）*：仅当配置 `Execution:Backend=Docker` 启用容器隔离执行和完整容器验收门禁时需要
 
 ## 运行
 
@@ -27,12 +27,13 @@ dotnet run --project CodexFlow.Local
 
 - 只监听 `127.0.0.1`，端口由 `Local:Port` 配置（默认 5206）。
 - 启动时生成访问令牌，写在数据库旁边的 `host.token`（默认 `.codexflow/host.token`）；请求不带令牌或令牌不对返回 401。
-- 启动检查：模型设置齐全且接口能答、Docker 守护进程可用；有问题会一次全报，然后以退出码 1 退出。`Local:SkipPreflight=true` 可以关掉。
+- 启动检查：模型设置齐全且接口能答；仅当 `Execution:Backend=Docker` 时才要求 Docker 守护进程可用。有问题会一次全报，然后以退出码 1 退出。可用 `Local:PreflightMode=Off`（或 `Report`）调整启动检查行为。
+- 默认执行后端为 `Local`、默认权限模式为 `Ask`（每次调用代码执行工具都需审批；本地模式下默认跳过容器验证并在回执中标注“未在隔离环境中验证”）。已有自定义 `Isolation` 节的旧配置会在启动时自动迁移保留 `Execution:Backend=Docker`。
 - 状态数据库默认 `.codexflow/state.db`，由 `Storage:SqlitePath` 配置，启动时自动应用迁移。
 
-### 验收用的容器镜像
+### 验收用的容器镜像（可选，仅 Docker 后端需要）
 
-验收和用户代码在 `codexflow-verification` 镜像里执行，需要先构建：
+当配置 `Execution:Backend=Docker` 时，验收和用户代码在 `codexflow-verification` 镜像里执行，需要先构建：
 
 ```bash
 docker build -t codexflow-verification:10.0.403-gitleaks8.30.1 docker/verification

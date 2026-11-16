@@ -591,7 +591,7 @@ internal sealed class LocalExecutionSession : IIsolatedExecutionSession
     [
         "PATH", "Path", "SystemRoot", "WINDIR", "windir", "COMSPEC", "ComSpec", "PATHEXT",
         "OS", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS", "ProgramFiles", "ProgramFiles(x86)",
-        "CommonProgramFiles", "DOTNET_ROOT", "DOTNET_CLI_TELEMETRY_OPTOUT",
+        "CommonProgramFiles", "ProgramData", "ALLUSERSPROFILE", "DOTNET_ROOT", "DOTNET_CLI_TELEMETRY_OPTOUT",
         "NUGET_PACKAGES", "npm_config_cache", "PIP_CACHE_DIR",
         "LANG", "LC_ALL", "TERM"
     ];
@@ -960,6 +960,16 @@ internal sealed class LocalExecutionSession : IIsolatedExecutionSession
         env["USERPROFILE"] = _homeDir;
         env["TEMP"] = _tempDir;
         env["TMP"] = _tempDir;
+
+        if (OperatingSystem.IsWindows())
+        {
+            var appData = Path.Combine(_homeDir, "AppData", "Roaming");
+            var localAppData = Path.Combine(_homeDir, "AppData", "Local");
+            Directory.CreateDirectory(appData);
+            Directory.CreateDirectory(localAppData);
+            env["APPDATA"] = appData;
+            env["LOCALAPPDATA"] = localAppData;
+        }
 
         // Preserve user package caches so isolated HOME does not force re-downloading dependencies.
         PreserveCacheIfUnset(env, "NUGET_PACKAGES", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".nuget", "packages"));

@@ -25,6 +25,11 @@ public sealed class LocalModeVerificationPolicyTests : IDisposable
     [Fact]
     public void Evaluate_LocalDefaultsToSkip_AndHonorsBlock()
     {
+        var unconfigured = new ConfigurationBuilder().Build();
+        var evalUnconfigured = LocalModeVerificationPolicy.Evaluate(unconfigured);
+        Assert.True(evalUnconfigured.IsLocalBackend);
+        Assert.Equal(LocalVerificationModePolicy.Skip, evalUnconfigured.Policy);
+
         var defaultLocal = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?> { ["Execution:Backend"] = "Local" })
             .Build();
