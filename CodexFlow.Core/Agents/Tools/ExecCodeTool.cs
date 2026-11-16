@@ -143,13 +143,20 @@ public class ExecCodeTool(ILogger<ExecCodeTool> logger, ToolIsolationGate? isola
             Array.Copy(launchArgs, 0, frozenArgv, 1, launchArgs.Length);
 
             var timeout = TimeSpan.FromSeconds(DefaultTimeoutSeconds);
+            await using var outputThrottler = new CodexFlow.Core.Execution.Approval.ToolOutputEventThrottler(
+                _gate.Gateway,
+                context.SessionId,
+                Name,
+                $"exec-{Guid.NewGuid():N}"[..12]);
             var run = await session.RunAsync(
                 new IsolatedCommandRequest(
                     frozenArgv,
                     StdIn: stdIn,
                     Timeout: timeout,
+                    OnOutput: line => outputThrottler.Append(line.Stream, line.Text),
                     PreResolvedExecutable: authorization.IsPreResolvedExecutable),
                 ct).ConfigureAwait(false);
+            await outputThrottler.FlushAsync(ct).ConfigureAwait(false);
             ct.ThrowIfCancellationRequested();
 
             switch (run.Status)

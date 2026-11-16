@@ -59,4 +59,46 @@ public interface ICodexGateway
     /// 关闭指定 Session 的处理循环和所有 SSE 订阅
     /// </summary>
     ValueTask CloseSessionAsync(string sessionId);
+
+    /// <summary>
+    /// 取消指定 Session 当前正在运行的主对话回合，并将挂起的审批请求以 deny 结束。
+    /// 若当前存在可取消的活跃回合，返回 <see langword="true"/>；否则返回 <see langword="false"/>。
+    /// </summary>
+    Task<bool> CancelTurnAsync(string sessionId, CancellationToken ct = default);
+
+    /// <summary>
+    /// 获取指定 Session 通道的权威状态快照元数据（epoch、最新事件序号、活跃回合及实时工具结果）。
+    /// </summary>
+    GatewayChannelSnapshotState? GetChannelSnapshotState(string sessionId);
 }
+
+public sealed record GatewayChannelToolResultSnapshot(
+    string ToolName,
+    string? CallId,
+    bool Success,
+    string Result,
+    bool Truncated);
+
+public sealed record GatewayChannelToolOutputSnapshot(
+    string Tool,
+    string CommandTaskId,
+    string? Stdout,
+    string? Stderr,
+    bool Throttled,
+    int? SuppressedLines);
+
+public sealed record GatewayChannelSnapshotState(
+    string SessionId,
+    string Epoch,
+    long AsOfEventId,
+    bool IsTurnActive,
+    string? ActiveMessageId,
+    string? ActiveConversationId,
+    IReadOnlyList<GatewayChannelToolResultSnapshot> ActiveToolResults,
+    string? PartialContent = null,
+    string? PartialThinking = null,
+    bool ActiveContentTruncated = false,
+    bool ToolResultsTruncated = false,
+    IReadOnlyList<GatewayChannelToolOutputSnapshot>? ActiveToolOutputs = null,
+    bool ToolOutputsTruncated = false,
+    bool HasTurnTelemetry = false);

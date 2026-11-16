@@ -31,28 +31,208 @@ public class GitService : IGitService
             WorkingDirectory = path,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
-            StandardOutputEncoding = System.Text.Encoding.UTF8,
-            StandardErrorEncoding = System.Text.Encoding.UTF8,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
             UseShellExecute = false,
             CreateNoWindow = true
         };
 
+        ApplySanitizedGitEnvironment(startInfo);
+        return await ExecuteGitProcessAsync(startInfo, TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Executes a read-only git inspection command while neutralizing ALL repository-local clean/smudge/process
+    /// filters and external diff/textconv drivers discovered in git configuration.
+    /// </summary>
+    private static async Task<(int ExitCode, string Output, string Error)> RunSafeReadOnlyGitCommandAsync(
+        string path,
+        params string[] commandArgs)
+    {
+        var (filterPrefixes, diffPrefixes) = await DiscoverConfiguredDriversAsync(path).ConfigureAwait(false);
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "git",
+            WorkingDirectory = path,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+
+        ApplySanitizedGitEnvironment(startInfo);
+        AddSafeBaseGitConfigArgs(startInfo);
+
+        foreach (var prefix in filterPrefixes)
+        {
+            startInfo.ArgumentList.Add("-c");
+            startInfo.ArgumentList.Add($"{prefix}.clean=");
+            startInfo.ArgumentList.Add("-c");
+            startInfo.ArgumentList.Add($"{prefix}.smudge=");
+            startInfo.ArgumentList.Add("-c");
+            startInfo.ArgumentList.Add($"{prefix}.process=");
+            startInfo.ArgumentList.Add("-c");
+            startInfo.ArgumentList.Add($"{prefix}.required=false");
+        }
+
+        foreach (var prefix in diffPrefixes)
+        {
+            startInfo.ArgumentList.Add("-c");
+            startInfo.ArgumentList.Add($"{prefix}.command=");
+            startInfo.ArgumentList.Add("-c");
+            startInfo.ArgumentList.Add($"{prefix}.textconv=");
+            startInfo.ArgumentList.Add("-c");
+            startInfo.ArgumentList.Add($"{prefix}.cachetextconv=false");
+        }
+
+        foreach (var arg in commandArgs)
+        {
+            startInfo.ArgumentList.Add(arg);
+        }
+
+        return await ExecuteGitProcessAsync(startInfo, TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+    }
+
+    private static async Task<(string[] FilterPrefixes, string[] DiffPrefixes)> DiscoverConfiguredDriversAsync(string path)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "git",
+            WorkingDirectory = path,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+
+        ApplySanitizedGitEnvironment(startInfo);
+        startInfo.ArgumentList.Add("--no-pager");
+        startInfo.ArgumentList.Add("config");
+        startInfo.ArgumentList.Add("--list");
+        startInfo.ArgumentList.Add("--name-only");
+        startInfo.ArgumentList.Add("--null");
+
+        var res = await ExecuteGitProcessAsync(startInfo, TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+        if (res.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"Failed to inspect repository git configuration before read-only diff (exit {res.ExitCode}): {res.Error}");
+        }
+
+        if (string.IsNullOrEmpty(res.Output))
+        {
+            return ([], []);
+        }
+
+        // Git subsection names (e.g. filter.evil vs filter.Evil) are case-sensitive.
+        var filterPrefixes = new HashSet<string>(StringComparer.Ordinal);
+        var diffPrefixes = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var key in res.Output.Split('\0', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (key.Any(char.IsControl))
+            {
+                continue;
+            }
+
+            var lastDot = key.LastIndexOf('.');
+            if (lastDot <= 0)
+            {
+                continue;
+            }
+
+            if (key.StartsWith("filter.", StringComparison.OrdinalIgnoreCase) && lastDot > "filter.".Length)
+            {
+                filterPrefixes.Add("filter." + key["filter.".Length..lastDot]);
+            }
+            else if (key.StartsWith("diff.", StringComparison.OrdinalIgnoreCase) && lastDot > "diff.".Length)
+            {
+                diffPrefixes.Add("diff." + key["diff.".Length..lastDot]);
+            }
+        }
+
+        return (filterPrefixes.ToArray(), diffPrefixes.ToArray());
+    }
+
+    private static void AddSafeBaseGitConfigArgs(ProcessStartInfo startInfo)
+    {
+        var nullDev = OperatingSystem.IsWindows() ? "NUL" : "/dev/null";
+        startInfo.ArgumentList.Add("--no-pager");
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add($"core.hooksPath={nullDev}");
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add("core.quotepath=false");
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add("core.fsmonitor=false");
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add("commit.gpgSign=false");
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add("tag.gpgSign=false");
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add("protocol.ext.allow=never");
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add("core.pager=");
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add("credential.helper=");
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add("diff.external=");
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add("diff.noprefix=false");
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add("diff.mnemonicPrefix=false");
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add("diff.srcPrefix=a/");
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add("diff.dstPrefix=b/");
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add("core.alternateRefsCommand=");
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add($"core.attributesFile={nullDev}");
+    }
+
+    private static void ApplySanitizedGitEnvironment(ProcessStartInfo startInfo)
+    {
         // Repository code must not be invoked through inherited Git configuration or environment overrides.
         foreach (var key in startInfo.Environment.Keys.Where(key => key.StartsWith("GIT_", StringComparison.OrdinalIgnoreCase)).ToArray())
+        {
             startInfo.Environment.Remove(key);
+        }
+
+        var nullDev = OperatingSystem.IsWindows() ? "NUL" : "/dev/null";
         startInfo.Environment["GIT_CONFIG_NOSYSTEM"] = "1";
-        startInfo.Environment["GIT_CONFIG_GLOBAL"] = OperatingSystem.IsWindows() ? "NUL" : "/dev/null";
+        startInfo.Environment["GIT_CONFIG_GLOBAL"] = nullDev;
+        startInfo.Environment["GIT_ATTR_NOSYSTEM"] = "1";
         startInfo.Environment["GIT_TERMINAL_PROMPT"] = "0";
         startInfo.Environment["GIT_NO_REPLACE_OBJECTS"] = "1";
+        startInfo.Environment["GIT_ASKPASS"] = string.Empty;
+        startInfo.Environment["GIT_SSH_COMMAND"] = "false";
+        startInfo.Environment["GIT_PAGER"] = string.Empty;
+    }
 
+    private static async Task<(int ExitCode, string Output, string Error)> ExecuteGitProcessAsync(
+        ProcessStartInfo startInfo,
+        TimeSpan timeout)
+    {
         using var process = new Process { StartInfo = startInfo };
         process.Start();
 
-        var output = await process.StandardOutput.ReadToEndAsync().ConfigureAwait(false);
-        var error = await process.StandardError.ReadToEndAsync().ConfigureAwait(false);
-        await process.WaitForExitAsync().ConfigureAwait(false);
-
-        return (process.ExitCode, output, error);
+        using var cts = new CancellationTokenSource(timeout);
+        var outputTask = process.StandardOutput.ReadToEndAsync(cts.Token);
+        var errorTask = process.StandardError.ReadToEndAsync(cts.Token);
+        try
+        {
+            await process.WaitForExitAsync(cts.Token).ConfigureAwait(false);
+            return (process.ExitCode, await outputTask.ConfigureAwait(false), await errorTask.ConfigureAwait(false));
+        }
+        catch (OperationCanceledException)
+        {
+            try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+            return (-1, string.Empty, $"git command timed out after {timeout.TotalSeconds:0}s.");
+        }
     }
 
     private static string QuoteGitArgument(string value)
@@ -65,10 +245,15 @@ public class GitService : IGitService
     /// characters/NUL, or contains a quote could be read by git as an option or break out of the quoting, so such a ref
     /// is refused (fail closed: throwing is safer than returning an empty "no changes" list for a scope check).
     /// </summary>
-    private static string QuoteRefArgument(string value, string parameterName)
+    private static void ValidateSafeRefArgument(string value, string parameterName)
     {
         if (string.IsNullOrWhiteSpace(value) || value[0] == '-' || value.Any(c => char.IsControl(c) || char.IsWhiteSpace(c) || c == '"'))
             throw new ArgumentException("Git ref is empty or not a safe revision argument.", parameterName);
+    }
+
+    private static string QuoteRefArgument(string value, string parameterName)
+    {
+        ValidateSafeRefArgument(value, parameterName);
         return QuoteGitArgument(value);
     }
 
@@ -865,16 +1050,19 @@ public class GitService : IGitService
 
         var changes = new List<GitFileChange>();
         var seenPaths = new HashSet<string>(StringComparer.Ordinal);
-        var quotedBase = QuoteRefArgument(baseRef, nameof(baseRef));
+        ValidateSafeRefArgument(baseRef, nameof(baseRef));
 
         // 1. Tracked changes (staged + unstaged) against the base ref. Raw NUL-delimited and rename-free: a rename is
         //    reported as delete(old)+add(new), so an out-of-scope source cannot hide behind an in-scope destination.
-        const string safe = "diff --no-ext-diff --no-textconv --no-renames -z";
-        var nameStatusResult = await RunGitCommandAsync(path, $"{safe} --name-status {quotedBase} --").ConfigureAwait(false);
+        var nameStatusResult = await RunSafeReadOnlyGitCommandAsync(
+            path,
+            "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "-z", "--name-status", baseRef, "--").ConfigureAwait(false);
         if (nameStatusResult.ExitCode == 0 && !string.IsNullOrWhiteSpace(nameStatusResult.Output))
         {
             var statsByPath = new Dictionary<string, (int Additions, int Deletions)>(StringComparer.Ordinal);
-            var numstatResult = await RunGitCommandAsync(path, $"{safe} --numstat {quotedBase} --").ConfigureAwait(false);
+            var numstatResult = await RunSafeReadOnlyGitCommandAsync(
+                path,
+                "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "-z", "--numstat", baseRef, "--").ConfigureAwait(false);
             if (numstatResult.ExitCode == 0 && !string.IsNullOrWhiteSpace(numstatResult.Output))
             {
                 foreach (var statRaw in numstatResult.Output.Split('\0', StringSplitOptions.RemoveEmptyEntries))
@@ -900,7 +1088,7 @@ public class GitService : IGitService
         }
 
         // 2. Untracked new files (invisible to `git diff`, so they would otherwise escape the security audit).
-        var untrackedResult = await RunGitCommandAsync(path, "ls-files -z --others --exclude-standard").ConfigureAwait(false);
+        var untrackedResult = await RunSafeReadOnlyGitCommandAsync(path, "ls-files", "-z", "--others", "--exclude-standard").ConfigureAwait(false);
         if (untrackedResult.ExitCode == 0 && !string.IsNullOrWhiteSpace(untrackedResult.Output))
         {
             foreach (var filePath in untrackedResult.Output.Split('\0', StringSplitOptions.RemoveEmptyEntries))
@@ -919,25 +1107,40 @@ public class GitService : IGitService
         ArgumentNullException.ThrowIfNull(path);
         ArgumentNullException.ThrowIfNull(baseRef);
 
+        ValidateSafeRefArgument(baseRef, nameof(baseRef));
+        var fullRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
         var builder = new StringBuilder();
-        var diffResult = await RunGitCommandAsync(path, $"diff --find-renames --binary {QuoteGitArgument(baseRef)}").ConfigureAwait(false);
+        var diffResult = await RunSafeReadOnlyGitCommandAsync(
+            path,
+            "diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--binary", baseRef, "--").ConfigureAwait(false);
         if (diffResult.ExitCode == 0 && !string.IsNullOrWhiteSpace(diffResult.Output))
         {
             builder.AppendLine(diffResult.Output.TrimEnd());
         }
 
-        var untrackedResult = await RunGitCommandAsync(path, "ls-files --others --exclude-standard").ConfigureAwait(false);
+        var untrackedResult = await RunSafeReadOnlyGitCommandAsync(path, "ls-files", "-z", "--others", "--exclude-standard").ConfigureAwait(false);
         if (untrackedResult.ExitCode == 0 && !string.IsNullOrWhiteSpace(untrackedResult.Output))
         {
-            foreach (var rawPath in untrackedResult.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            foreach (var rawPath in untrackedResult.Output.Split('\0', StringSplitOptions.RemoveEmptyEntries))
             {
                 var normalized = rawPath.Replace('\\', '/');
-                var fullPath = Path.Combine(path, normalized);
+                if (IsInternalMetadataRelativePath(normalized))
+                {
+                    continue;
+                }
+
                 builder.AppendLine();
                 builder.AppendLine($"diff --git a/{normalized} b/{normalized}");
                 builder.AppendLine("new file mode 100644");
                 builder.AppendLine("--- /dev/null");
                 builder.AppendLine($"+++ b/{normalized}");
+
+                if (!TryResolveSafeUntrackedFilePath(fullRoot, normalized, out var fullPath, out var skipReason))
+                {
+                    builder.AppendLine("@@");
+                    builder.AppendLine($"+[{skipReason}]");
+                    continue;
+                }
 
                 try
                 {
@@ -986,6 +1189,82 @@ public class GitService : IGitService
         }
 
         return builder.ToString();
+    }
+
+    private static bool IsInternalMetadataRelativePath(string normalizedRelativePath)
+    {
+        foreach (var seg in normalizedRelativePath.Split('/', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (string.Equals(seg, ".git", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(seg, ".codexflow", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryResolveSafeUntrackedFilePath(
+        string fullRoot,
+        string normalizedRelativePath,
+        out string fullPath,
+        out string skipReason)
+    {
+        fullPath = string.Empty;
+        skipReason = string.Empty;
+
+        var segments = normalizedRelativePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length == 0 || segments.Any(static s => s is "." or ".."))
+        {
+            skipReason = "untracked file path skipped: unsafe relative segments";
+            return false;
+        }
+
+        var candidate = Path.GetFullPath(Path.Combine(fullRoot, Path.Combine(segments)));
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        var prefix = fullRoot.EndsWith(Path.DirectorySeparatorChar)
+            ? fullRoot
+            : fullRoot + Path.DirectorySeparatorChar;
+        if (!candidate.StartsWith(prefix, comparison))
+        {
+            skipReason = "untracked file path skipped: escapes repository root";
+            return false;
+        }
+
+        var current = fullRoot;
+        for (var i = 0; i < segments.Length; i++)
+        {
+            current = Path.Combine(current, segments[i]);
+            if (i < segments.Length - 1)
+            {
+                var di = new DirectoryInfo(current);
+                if (di.Exists && ((di.Attributes & FileAttributes.ReparsePoint) != 0 || di.LinkTarget is not null))
+                {
+                    skipReason = "untracked symlink directory omitted";
+                    return false;
+                }
+            }
+            else
+            {
+                var fi = new FileInfo(current);
+                if (fi.Exists && ((fi.Attributes & FileAttributes.ReparsePoint) != 0 || fi.LinkTarget is not null))
+                {
+                    skipReason = "symlink untracked file omitted";
+                    return false;
+                }
+
+                var di = new DirectoryInfo(current);
+                if (di.Exists && ((di.Attributes & FileAttributes.ReparsePoint) != 0 || di.LinkTarget is not null))
+                {
+                    skipReason = "symlink untracked path omitted";
+                    return false;
+                }
+            }
+        }
+
+        fullPath = candidate;
+        return true;
     }
 
     public async Task<string?> GetFileAtRefAsync(string path, string relativePath, string gitRef = "HEAD~1")

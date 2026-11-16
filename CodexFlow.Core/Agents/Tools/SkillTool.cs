@@ -310,12 +310,19 @@ public sealed class SkillTool(
                     : authorization.EffectiveArgv[i];
             }
 
+            await using var outputThrottler = new CodexFlow.Core.Execution.Approval.ToolOutputEventThrottler(
+                _gate.Gateway,
+                context.SessionId,
+                Name,
+                $"skill-{Guid.NewGuid():N}"[..13]);
             var run = await session.RunAsync(
                 new IsolatedCommandRequest(
                     frozenArgv,
                     Timeout: TimeSpan.FromMinutes(2),
+                    OnOutput: line => outputThrottler.Append(line.Stream, line.Text),
                     PreResolvedExecutable: authorization.IsPreResolvedExecutable),
                 ct).ConfigureAwait(false);
+            await outputThrottler.FlushAsync(ct).ConfigureAwait(false);
             ct.ThrowIfCancellationRequested();
 
             if (run.Status is not (IsolatedCommandStatus.Completed or IsolatedCommandStatus.Failed))

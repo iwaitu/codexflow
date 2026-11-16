@@ -5,11 +5,15 @@
 using System.Security.Claims;
 using CodexFlow.Application;
 using CodexFlow.Core.Abstractions;
+using CodexFlow.Core.Configuration;
+using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Core.Gateway;
+using CodexFlow.Core.Services;
 using CodexFlow.Gateway;
 using CodexFlow.Core.Agents;
 using CodexFlow.Core.Models;
 using CodexFlow.Logging;
+using CodexFlow.Orchestration.Hosting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -39,6 +43,10 @@ public class CodexGatewayController : ControllerBase
     private readonly IWorkspaceVectorStoreService? _workspaceVectorStoreService;
     private readonly ContextCompressionTriggerOptions _contextCompressionTriggerOptions;
     private readonly ILogger<CodexGatewayController> _logger;
+    private readonly IWorkspaceSettingsService? _workspaceSettingsService;
+    private readonly IWorkspaceRootProvider? _workspaceRootProvider;
+    private readonly IControlPlaneStateProvider? _controlPlane;
+    private readonly IWorkflowAuditStore? _auditStore;
 
     /// <summary>
     /// Initializes the gateway controller.
@@ -50,6 +58,10 @@ public class CodexGatewayController : ControllerBase
     /// <param name="taskListService">Optional task list snapshot service.</param>
     /// <param name="workspaceVectorStoreService">Optional workspace vector lifecycle service.</param>
     /// <param name="contextCompressionTriggerOptions">Resolved model context budget and auto-compression thresholds.</param>
+    /// <param name="workspaceSettingsService">Optional workspace allow-list settings service.</param>
+    /// <param name="workspaceRootProvider">Optional data-directory workspace root provider.</param>
+    /// <param name="controlPlane">Optional control-plane credential posture provider.</param>
+    /// <param name="auditStore">Optional workflow audit store.</param>
     public CodexGatewayController(
         ICodexGateway gateway,
         IChatService chatService,
@@ -57,7 +69,11 @@ public class CodexGatewayController : ControllerBase
         ILogger<CodexGatewayController> logger,
         ITaskListService? taskListService = null,
         IWorkspaceVectorStoreService? workspaceVectorStoreService = null,
-        ContextCompressionTriggerOptions? contextCompressionTriggerOptions = null)
+        ContextCompressionTriggerOptions? contextCompressionTriggerOptions = null,
+        IWorkspaceSettingsService? workspaceSettingsService = null,
+        IWorkspaceRootProvider? workspaceRootProvider = null,
+        IControlPlaneStateProvider? controlPlane = null,
+        IWorkflowAuditStore? auditStore = null)
     {
         _gateway = gateway;
         _chatService = chatService;
@@ -66,6 +82,10 @@ public class CodexGatewayController : ControllerBase
         _workspaceVectorStoreService = workspaceVectorStoreService;
         _contextCompressionTriggerOptions = contextCompressionTriggerOptions ?? new ContextCompressionTriggerOptions();
         _logger = logger;
+        _workspaceSettingsService = workspaceSettingsService;
+        _workspaceRootProvider = workspaceRootProvider;
+        _controlPlane = controlPlane;
+        _auditStore = auditStore;
     }
 
     /// <summary>
@@ -166,6 +186,119 @@ public class CodexGatewayController : ControllerBase
 
         var workspaces = await _chatService.GetWorkspaces(userId);
         return Ok(workspaces);
+    }
+
+    /// <summary>
+    /// P3-3: Opens an arbitrary local folder as a workspace after enforcing strict admission checks,
+    /// persisting it to <c>Workspace:AllowedLocalRepositoryRoots</c>, and recording an audit entry.
+    /// Requires control-plane credentials.
+    /// </summary>
+    [HttpPost("workspaces")]
+    [Authorize(Policy = ControlPlaneAuthConstants.ControlPlanePolicy)]
+    [ProducesResponseType(typeof(OpenLocalWorkspaceResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status503ServiceUnavailable)]
+    public async Task<IActionResult> OpenLocalWorkspace(
+        [FromBody] OpenLocalWorkspaceRequest request,
+        CancellationToken ct = default)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrEmpty(userId)) return Unauthorized();
+
+        var controlPlaneState = _controlPlane ?? HttpContext?.RequestServices.GetService<IControlPlaneStateProvider>();
+        if (!ControlPlaneAuthConstants.IsControlPlanePrincipal(User, controlPlaneState))
+        {
+            return Forbid();
+        }
+
+        if (request is null || string.IsNullOrWhiteSpace(request.Path))
+        {
+            return BadRequest(new GatewayErrorResponse("invalid_request", "Workspace path is required."));
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.Name)
+            && string.Equals(request.Name.Trim(), "默认工作区", StringComparison.Ordinal))
+        {
+            return BadRequest(new GatewayErrorResponse("reserved_name", "The default workspace name is reserved."));
+        }
+
+        var admissionEnv = new WorkspaceAdmissionEnvironment(
+            DataDirectory: _workspaceRootProvider?.DataDirectory ?? HttpContext?.RequestServices.GetService<IConfiguration>()?["Local:DataDirectory"],
+            GlobalDirectory: CodexFlowPaths.GlobalDirectory());
+        var decision = LocalWorkspaceAdmissionPolicy.Evaluate(request.Path, admissionEnv);
+        if (!decision.Allowed || string.IsNullOrEmpty(decision.CanonicalPath))
+        {
+            return BadRequest(new GatewayErrorResponse($"workspace_denied:{decision.Reason}", decision.Message));
+        }
+
+        if (_workspaceSettingsService is null)
+        {
+            return StatusCode(503, new GatewayErrorResponse("settings_unavailable", "Workspace settings persistence is not configured on this host."));
+        }
+
+        var addedToAllowedRoots = _workspaceSettingsService.AddAllowedLocalRepositoryRoot(decision.CanonicalPath);
+        var (sessionId, workspaceName, created) = await _chatService.CreateOrOpenExternalWorkspaceSession(
+            userId,
+            decision.CanonicalPath,
+            request.Name).ConfigureAwait(false);
+
+        await _sessionManager.GetOrCreateSessionAsync(sessionId, userId, decision.CanonicalPath, (Uri?)null).ConfigureAwait(false);
+        if (created && _workspaceVectorStoreService is not null)
+        {
+            await _workspaceVectorStoreService.EnsureCollectionAsync(sessionId).ConfigureAwait(false);
+        }
+
+        var selfApprovalProtection = controlPlaneState?.SelfApprovalProtection ?? true;
+        FullTextAuditLogger.Log(
+            _logger,
+            "workspace_opened",
+            sessionId,
+            0,
+            0,
+            new
+            {
+                userId,
+                workspacePath = decision.CanonicalPath,
+                workspaceName,
+                created,
+                addedToAllowedRoots,
+                selfApprovalProtection
+            });
+
+        if (_auditStore is not null)
+        {
+            var auditId = $"ws-{Guid.NewGuid():N}";
+            var payloadJson = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                userId,
+                workspacePath = decision.CanonicalPath,
+                workspaceName,
+                created,
+                addedToAllowedRoots,
+                selfApprovalProtection
+            });
+            await _auditStore.StartAsync(new WorkflowRunRecord
+            {
+                Id = auditId,
+                Name = "workspace_opened",
+                SkillName = "gateway",
+                SessionId = sessionId,
+                UserId = userId,
+                WorkspacePath = decision.CanonicalPath,
+                Status = "completed",
+                Output = payloadJson,
+                CompletedAtUtc = DateTime.UtcNow
+            }, ct).ConfigureAwait(false);
+            await _auditStore.CompleteAsync(auditId, "completed", payloadJson, null, ct).ConfigureAwait(false);
+        }
+
+        return Ok(new OpenLocalWorkspaceResponse(
+            sessionId,
+            workspaceName,
+            decision.CanonicalPath,
+            created,
+            addedToAllowedRoots));
     }
 
     /// <summary>
@@ -796,6 +929,21 @@ public class BootstrapRequest
     /// </summary>
     public string? TargetSessionId { get; set; }
 }
+
+public sealed record OpenLocalWorkspaceRequest(
+    string Path,
+    string? Name = null);
+
+public sealed record OpenLocalWorkspaceResponse(
+    string SessionId,
+    string WorkspaceName,
+    string WorkspacePath,
+    bool Created,
+    bool AddedToAllowedRoots);
+
+public sealed record GatewayErrorResponse(
+    string Code,
+    string Message);
 
 /// <summary>Validates a structured action request and turns it into the trusted action; the controller attaches the result.</summary>
 public static class GatewayStructuredActionMapper

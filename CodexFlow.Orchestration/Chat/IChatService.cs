@@ -13,7 +13,6 @@ namespace CodexFlow.Application
 {
     public interface IChatService : CodexFlow.Orchestration.Hosting.IGatewayChatStore
     {
-        Task AddMessageWithToolcall(string userId, string conversationId, string userContent, string aiContent, int tokenUsed, string toolCall, string model, string replayId = "", string systemPrompt = "", string? thinkingContent = null);
         Task<string> Create(string userid, string model = "gpt-3.5-turbo", string name = "");
         Task<string> GetUserLatestConversationId(string userid);
         Task<List<IvilsonChatMessage>> GetConversationMessages(string conversationId);
@@ -26,6 +25,13 @@ namespace CodexFlow.Application
         // Session Management
         Task<string> CreateSession(string userId, string name);
         Task<PageOf<IvilsonSession>> GetSessions(string userId, int page, int pageSize);
+        Task<PageOf<IvilsonSession>> GetSessionsPaged(string userId, int page, int pageSize, bool includeArchived = false);
+        Task<(string SessionId, string WorkspaceName, bool Created)> CreateOrOpenExternalWorkspaceSession(string userId, string canonicalWorkspacePath, string? name = null);
+        Task<IvilsonSession?> RenameSession(string sessionId, string userId, string name);
+        Task<IvilsonSession?> SetSessionArchived(string sessionId, string userId, bool isArchived);
+        Task<PageOf<IvilsonConversation>> GetSessionConversations(string sessionId, string userId, int page, int pageSize, bool includeArchived = false);
+        Task<IvilsonConversation?> RenameConversation(string conversationId, string userId, string name);
+        Task<IvilsonConversation?> SetConversationArchived(string conversationId, string userId, bool isArchived);
         Task UpdateSessionStage(string sessionId, int stage);
         Task UpdateSessionFacts(string sessionId, string factsJson);
         Task UpdateSessionPlan(string sessionId, string planJson);

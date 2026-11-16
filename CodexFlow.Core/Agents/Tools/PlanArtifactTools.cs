@@ -442,7 +442,16 @@ public sealed class RequestPlanApprovalTool(
             artifact = await approvalService.RequestApprovalAsync(artifact.Id, ct).ConfigureAwait(false);
             return CodexToolResult.Succeeded(
                 "PLAN_APPROVAL_REQUESTED",
-                metadata: new { plan_artifact_id = artifact.Id, status = artifact.Status.ToString(), markdown = artifact.Markdown });
+                metadata: new
+                {
+                    plan_artifact_id = artifact.Id,
+                    plan_version = artifact.Version,
+                    markdown_hash = PlanArtifactSupport.ComputeMarkdownHash(artifact.Markdown),
+                    goal = artifact.Goal,
+                    task_count = artifact.Tasks.Count,
+                    status = artifact.Status.ToString(),
+                    markdown = artifact.Markdown
+                });
         }
         catch (InvalidOperationException ex)
         {

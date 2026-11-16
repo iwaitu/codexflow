@@ -111,6 +111,7 @@ public sealed class GatewayRuntimeEventAdapter : IQueryRuntimeEventSink
             QueryRuntimeEventType.ThinkingDelta,
             QueryRuntimeEventType.ThinkingEnded,
             QueryRuntimeEventType.ToolCallRequested,
+            QueryRuntimeEventType.ToolExecutionStarted,
             QueryRuntimeEventType.ToolExecutionCompleted,
             QueryRuntimeEventType.ConversationIdSet,
             QueryRuntimeEventType.SystemNotice,
@@ -225,13 +226,15 @@ public sealed class GatewayRuntimeEventAdapter : IQueryRuntimeEventSink
                 (object)new { type = "thinking_end", thinking_content = e.FullThinking }),
 
             // 工具调用事件
-            ToolCallRequestedEvent e => (
-                GatewaySseEventType.ToolCall,
-                (object)new { type = "tool_call", name = e.ToolName, callId = e.CallId }),
+            ToolCallRequestedEvent e => BuildToolCallEvent(e),
+
+            ToolExecutionStartedEvent e => (
+                GatewaySseEventType.ToolStarted,
+                (object)new { type = "tool_started", name = e.ToolName, callId = e.CallId }),
 
             ToolExecutionCompletedEvent e => (
                 GatewaySseEventType.TaskStatus,
-                (object)new { type = "tool_result", name = e.ToolName, success = e.Success, result = e.Result }),
+                (object)new { type = "tool_result", name = e.ToolName, callId = e.CallId, success = e.Success, result = e.Result }),
 
             // Conversation ID
             ConversationIdSetEvent e => (
@@ -254,7 +257,7 @@ public sealed class GatewayRuntimeEventAdapter : IQueryRuntimeEventSink
 
             // 以下事件不直接映射到 SSE
             // RoundStartedEvent, RoundCompletedEvent, TerminatedEvent
-            // RecoveryTriggeredEvent, ToolExecutionStartedEvent
+            // RecoveryTriggeredEvent
             _ => (null, null)
         };
 
@@ -266,6 +269,21 @@ public sealed class GatewayRuntimeEventAdapter : IQueryRuntimeEventSink
             Type = type,
             Payload = payload!
         };
+    }
+
+    private static (string Type, object Payload) BuildToolCallEvent(ToolCallRequestedEvent e)
+    {
+        var (arguments, truncated) = ToolEventSanitizer.SanitizeArguments(e.Arguments);
+        return (
+            GatewaySseEventType.ToolCall,
+            new
+            {
+                type = "tool_call",
+                name = e.ToolName,
+                callId = e.CallId,
+                arguments,
+                argumentsTruncated = truncated
+            });
     }
 
     private static bool TryMapWorkerNoticeEvent(SystemNoticeEvent evt, out string type, out object payload)

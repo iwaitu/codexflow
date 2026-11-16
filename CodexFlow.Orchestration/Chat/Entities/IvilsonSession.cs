@@ -22,6 +22,8 @@ namespace CodexFlow.Domain.Chat
         public DateTime Created { get; set; } = DateTime.UtcNow;
         public string? HistorySummary { get; set; }
         public DateTime? LastCompressedAt { get; set; }
+        public bool IsArchived { get; set; } = false;
+        public bool IsExternalWorkspace { get; set; } = false;
 
         // Navigation property
         public virtual ICollection<IvilsonConversation> Conversations { get; set; } = new List<IvilsonConversation>();

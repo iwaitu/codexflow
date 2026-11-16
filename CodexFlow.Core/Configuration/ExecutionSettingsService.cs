@@ -38,7 +38,6 @@ public sealed class ExecutionSettingsService : IExecutionSettingsService
     public const string SectionName = ExecutionOptions.SectionName;
 
     private readonly string _path;
-    private readonly object _gate = new();
     private ExecutionPermissionMode _activePermissionMode;
 
     public ExecutionSettingsService(string globalSettingsPath)
@@ -51,7 +50,7 @@ public sealed class ExecutionSettingsService : IExecutionSettingsService
     {
         get
         {
-            lock (_gate)
+            lock (GlobalSettingsFileStore.GetLock(_path))
             {
                 return _activePermissionMode;
             }
@@ -59,24 +58,20 @@ public sealed class ExecutionSettingsService : IExecutionSettingsService
     }
 
     public ExecutionSettingsView Read()
-    {
-        lock (_gate)
+        => GlobalSettingsFileStore.ReadLocked(_path, root =>
         {
-            var root = GlobalSettingsFileStore.LoadRoot(_path);
             var section = root[SectionName] as JObject;
             var backend = ParseEnum(section?["Backend"]?.ToString(), ExecutionBackend.Docker);
             var permission = ParseEnum(section?["PermissionMode"]?.ToString(), ExecutionPermissionMode.Ask);
             return new ExecutionSettingsView(backend, permission);
-        }
-    }
+        });
 
     public ExecutionSettingsView Update(ExecutionSettingsUpdate update)
     {
         ArgumentNullException.ThrowIfNull(update);
 
-        lock (_gate)
+        return GlobalSettingsFileStore.UpdateAtomically(_path, root =>
         {
-            var root = GlobalSettingsFileStore.LoadRoot(_path);
             var section = root[SectionName] as JObject ?? new JObject();
 
             if (update.Backend is { } backend)
@@ -91,11 +86,11 @@ public sealed class ExecutionSettingsService : IExecutionSettingsService
             }
 
             root[SectionName] = section;
-            GlobalSettingsFileStore.WriteAtomically(_path, root.ToString(Newtonsoft.Json.Formatting.Indented));
-            return new ExecutionSettingsView(
+            var view = new ExecutionSettingsView(
                 ParseEnum(section["Backend"]?.ToString(), ExecutionBackend.Docker),
                 ParseEnum(section["PermissionMode"]?.ToString(), ExecutionPermissionMode.Ask));
-        }
+            return (true, view);
+        });
     }
 
     /// <summary>
@@ -104,7 +99,7 @@ public sealed class ExecutionSettingsService : IExecutionSettingsService
     /// </summary>
     public ExecutionPermissionMode ApplyFileReloadedPermissionMode(ExecutionPermissionMode reloaded)
     {
-        lock (_gate)
+        lock (GlobalSettingsFileStore.GetLock(_path))
         {
             if (ExecutionOptions.IsStricterOrEqual(reloaded, _activePermissionMode))
             {
@@ -116,36 +111,32 @@ public sealed class ExecutionSettingsService : IExecutionSettingsService
     }
 
     public bool MigrateLegacyIsolationIfNeeded(ILogger? logger = null)
-    {
-        lock (_gate)
+        => GlobalSettingsFileStore.UpdateAtomically(_path, root =>
         {
             if (!File.Exists(_path))
             {
-                return false;
+                return (false, false);
             }
 
-            var root = GlobalSettingsFileStore.LoadRoot(_path);
             if (root[SectionName] is not null)
             {
-                return false;
+                return (false, false);
             }
 
             if (root[IsolationOptions.SectionName] is not JObject isolation || !isolation.HasValues)
             {
-                return false;
+                return (false, false);
             }
 
             root[SectionName] = new JObject
             {
                 ["Backend"] = ExecutionBackend.Docker.ToString()
             };
-            GlobalSettingsFileStore.WriteAtomically(_path, root.ToString(Newtonsoft.Json.Formatting.Indented));
             logger?.LogInformation(
                 "Migrated legacy Isolation configuration in {SettingsPath} to explicit Execution:Backend=Docker.",
                 _path);
-            return true;
-        }
-    }
+            return (true, true);
+        });
 
     private static TEnum ParseEnum<TEnum>(string? value, TEnum fallback) where TEnum : struct, Enum
         => !string.IsNullOrWhiteSpace(value) && Enum.TryParse<TEnum>(value, ignoreCase: true, out var parsed)

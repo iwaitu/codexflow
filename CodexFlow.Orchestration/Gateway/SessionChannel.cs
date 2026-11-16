@@ -2,9 +2,13 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+using System.Text;
+using System.Text.Json;
 using System.Threading.Channels;
 using CodexFlow.Core.Gateway;
 using CodexFlow.Logging;
+using CodexFlow.Orchestration.Jobs;
+using Microsoft.EntityFrameworkCore;
 
 namespace CodexFlow.Gateway;
 
@@ -31,8 +35,33 @@ public sealed class SessionChannel : IAsyncDisposable
     private long _evictedThroughSeq;
 
     private long _eventSeq;
+    private long _committedEventSeq;
     private int _pendingMessageCount;
     private int _pendingUserChatCount;
+
+    private const int MaxActiveContentChars = 128 * 1024;
+    private const int MaxActiveThinkingChars = 64 * 1024;
+    private const int MaxActiveToolResults = 100;
+    private const int MaxActiveToolOutputs = 200;
+
+    private readonly Lock _turnLock = new();
+    private CancellationTokenSource? _activeTurnCts;
+    private string? _activeMessageId;
+    private string? _activeConversationId;
+    private readonly StringBuilder _activeContent = new();
+    private readonly StringBuilder _activeThinking = new();
+    private bool _activeContentTruncated;
+    private readonly List<GatewayChannelToolResultSnapshot> _activeToolResults = new();
+    private bool _toolResultsTruncated;
+    private readonly List<GatewayChannelToolOutputSnapshot> _activeToolOutputs = new();
+    private bool _toolOutputsTruncated;
+    private readonly List<GatewayChannelToolResultSnapshot> _lastCompletedToolResults = new();
+    private bool _lastCompletedToolResultsTruncated;
+    private readonly List<GatewayChannelToolOutputSnapshot> _lastCompletedToolOutputs = new();
+    private bool _lastCompletedToolOutputsTruncated;
+    private string? _lastCompletedConversationId;
+    private bool _hasTurnTelemetry;
+    private readonly SemaphoreSlim _lateOutputPersistGate = new(1, 1);
 
     /// <summary>Session identifier owned by this channel.</summary>
     public string SessionId { get; }
@@ -104,8 +133,156 @@ public sealed class SessionChannel : IAsyncDisposable
     public async ValueTask PublishExternalEventAsync(GatewaySseEvent sseEvent, CancellationToken ct)
     {
         LastActivityUtc = DateTime.UtcNow;
-        var sequencedEvent = sseEvent with { Seq = Interlocked.Increment(ref _eventSeq) };
-        await BroadcastAsync(sequencedEvent);
+        var captureTelemetry = string.Equals(sseEvent.Type, GatewaySseEventType.ToolOutput, StringComparison.Ordinal);
+        PublishAndCommit(sseEvent, captureTelemetry: captureTelemetry, completeTurn: false);
+        if (captureTelemetry && sseEvent.Payload is not null)
+        {
+            var chunk = ExtractToolOutputSnapshot(sseEvent.Payload, out var contentTruncated);
+            await PersistLateToolOutputToDatabaseAsync(chunk, contentTruncated, ct).ConfigureAwait(false);
+        }
+    }
+
+    private async Task PersistLateToolOutputToDatabaseAsync(
+        GatewayChannelToolOutputSnapshot chunk,
+        bool chunkContentTruncated,
+        CancellationToken ct)
+    {
+        await _lateOutputPersistGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await using var scope = _serviceProvider.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetService<IJobDbContext>();
+            if (db is null)
+            {
+                return;
+            }
+
+            string? preferredConvId;
+            bool isActive;
+            lock (_turnLock)
+            {
+                isActive = _activeTurnCts is not null;
+                preferredConvId = isActive ? _activeConversationId : _lastCompletedConversationId;
+            }
+
+            // While a turn is actively running, _activeToolOutputs holds its chunks and GatewayMessageProcessor persists
+            // the complete turn envelope (outputs + outputsTruncated) into the new message row when the turn finishes.
+            // Late outputs arriving after turn completion must merge strictly into the latest non-notification chat row.
+            if (isActive)
+            {
+                return;
+            }
+
+            var targetConvId = !string.IsNullOrWhiteSpace(preferredConvId)
+                ? preferredConvId
+                : await db.Conversations
+                    .Where(c => c.SessionId == SessionId && !c.IsArchived)
+                    .OrderByDescending(c => c.UpdateAt)
+                    .Select(c => c.Id)
+                    .FirstOrDefaultAsync(ct)
+                    .ConfigureAwait(false);
+
+            if (string.IsNullOrWhiteSpace(targetConvId))
+            {
+                return;
+            }
+
+            var latestMsg = await db.ChatMessages
+                .Where(m => m.ConversationId == targetConvId && (m.MessageType == null || m.MessageType == ""))
+                .OrderByDescending(m => m.Created)
+                .FirstOrDefaultAsync(ct)
+                .ConfigureAwait(false);
+
+            if (latestMsg is null)
+            {
+                latestMsg = new CodexFlow.Domain.Chat.IvilsonChatMessage
+                {
+                    Id = Guid.NewGuid().ToString("N"),
+                    ConversationId = targetConvId,
+                    UserContent = string.Empty,
+                    AiContent = string.Empty,
+                    ToolCallResult = MergeToolOutputIntoEnvelopeJson(null, chunk, chunkContentTruncated),
+                    TokenUsed = 0,
+                    SystemPrompt = string.Empty,
+                    ReplyId = string.Empty,
+                    Created = DateTime.UtcNow
+                };
+                db.ChatMessages.Add(latestMsg);
+            }
+            else
+            {
+                latestMsg.ToolCallResult = MergeToolOutputIntoEnvelopeJson(latestMsg.ToolCallResult, chunk, chunkContentTruncated);
+            }
+
+            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _lateOutputPersistGate.Release();
+        }
+    }
+
+    private static string MergeToolOutputIntoEnvelopeJson(
+        string? existingJson,
+        GatewayChannelToolOutputSnapshot chunk,
+        bool chunkContentTruncated)
+    {
+        var results = new List<GatewayChannelToolResultSnapshot>();
+        var resultsTruncated = false;
+        var outputs = new List<GatewayChannelToolOutputSnapshot>();
+        var outputsTruncated = chunkContentTruncated;
+
+        if (!string.IsNullOrWhiteSpace(existingJson))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(existingJson);
+                if (doc.RootElement.ValueKind == JsonValueKind.Object)
+                {
+                    var opts = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                    if (doc.RootElement.TryGetProperty("results", out var resEl))
+                    {
+                        var parsed = JsonSerializer.Deserialize<GatewayChannelToolResultSnapshot[]>(resEl.GetRawText(), opts);
+                        if (parsed is not null) results.AddRange(parsed);
+                    }
+
+                    resultsTruncated = doc.RootElement.TryGetProperty("resultsTruncated", out var rtEl) && rtEl.ValueKind == JsonValueKind.True;
+                    if (doc.RootElement.TryGetProperty("outputs", out var outEl))
+                    {
+                        var parsedOut = JsonSerializer.Deserialize<GatewayChannelToolOutputSnapshot[]>(outEl.GetRawText(), opts);
+                        if (parsedOut is not null) outputs.AddRange(parsedOut);
+                    }
+
+                    outputsTruncated = outputsTruncated
+                        || (doc.RootElement.TryGetProperty("outputsTruncated", out var otEl) && otEl.ValueKind == JsonValueKind.True);
+                }
+            }
+            catch (JsonException)
+            {
+                // Preserve truncation signal when prior row holds legacy plain text.
+                outputsTruncated = true;
+            }
+        }
+
+        if (outputs.Count < 50)
+        {
+            if (!outputs.Contains(chunk))
+            {
+                outputs.Add(chunk);
+            }
+        }
+        else
+        {
+            outputsTruncated = true;
+        }
+
+        return JsonSerializer.Serialize(new
+        {
+            results,
+            resultsTruncated,
+            outputs,
+            outputsTruncated
+        });
     }
 
     /// <summary>
@@ -184,6 +361,56 @@ public sealed class SessionChannel : IAsyncDisposable
         get { lock (_subscriberLock) { return _subscribers.Count; } }
     }
 
+    public bool CancelActiveTurn()
+    {
+        CancellationTokenSource? activeCts;
+        lock (_turnLock)
+        {
+            activeCts = _activeTurnCts;
+        }
+
+        if (activeCts is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            activeCts.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            return false;
+        }
+
+        // Only turnCts is cancelled here; ExecutionApprovalBroker links caller tokens per turn so
+        // cancelling this turn denies its pending approvals without touching background job approvals.
+        return true;
+    }
+
+    public GatewayChannelSnapshotState GetSnapshotState()
+    {
+        lock (_turnLock)
+        {
+            var isActive = _activeTurnCts is not null;
+            return new GatewayChannelSnapshotState(
+                SessionId,
+                Epoch,
+                _committedEventSeq,
+                isActive,
+                _activeMessageId,
+                _activeConversationId,
+                isActive ? _activeToolResults.ToArray() : _lastCompletedToolResults.ToArray(),
+                _activeContent.Length > 0 ? _activeContent.ToString() : null,
+                _activeThinking.Length > 0 ? _activeThinking.ToString() : null,
+                _activeContentTruncated,
+                isActive ? _toolResultsTruncated : _lastCompletedToolResultsTruncated,
+                isActive ? _activeToolOutputs.ToArray() : _lastCompletedToolOutputs.ToArray(),
+                isActive ? _toolOutputsTruncated : _lastCompletedToolOutputsTruncated,
+                _hasTurnTelemetry);
+        }
+    }
+
     /// <summary>核心处理循环 — 逐条从 inbox 取消息，调用 Processor，广播 SSE 事件</summary>
     private async Task ProcessLoopAsync(CancellationToken ct)
     {
@@ -221,17 +448,35 @@ public sealed class SessionChannel : IAsyncDisposable
                     ReleaseExclusiveUserChatSlot(message);
                 }
 
+                using var turnCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                lock (_turnLock)
+                {
+                    _hasTurnTelemetry = true;
+                    _activeTurnCts = turnCts;
+                    _activeMessageId = message.MessageId;
+                    _activeConversationId = message.ConversationId;
+                    _activeContent.Clear();
+                    _activeThinking.Clear();
+                    _activeContentTruncated = false;
+                    _activeToolResults.Clear();
+                    _toolResultsTruncated = false;
+                    _activeToolOutputs.Clear();
+                    _toolOutputsTruncated = false;
+                    _lastCompletedToolResults.Clear();
+                    _lastCompletedToolResultsTruncated = false;
+                    _lastCompletedToolOutputs.Clear();
+                    _lastCompletedToolOutputsTruncated = false;
+                    _lastCompletedConversationId = message.ConversationId;
+                }
+
                 try
                 {
                     // 每条消息使用独立的 DI scope（确保 DbContext 等 scoped 服务隔离）
                     await using var scope = _serviceProvider.CreateAsyncScope();
                     var processor = scope.ServiceProvider.GetRequiredService<IGatewayMessageProcessor>();
 
-                    await processor.ProcessAsync(message, async sseEvent =>
+                    await processor.ProcessAsync(message, sseEvent =>
                     {
-                        // 分配全局递增序号
-                        sseEvent = sseEvent with { Seq = Interlocked.Increment(ref _eventSeq) };
-
                         // The processor emits its own "done" when the model's answer is finished and goes on persisting the turn. A client
                         // takes the first done for the end of the turn, so the slot goes back no later than that event, whoever emits it.
                         if (sseEvent.Type == GatewaySseEventType.Done)
@@ -239,19 +484,18 @@ public sealed class SessionChannel : IAsyncDisposable
                             ReleaseSlotOnce();
                         }
 
-                        // 广播给所有订阅者
-                        await BroadcastAsync(sseEvent);
-                    }, ct);
+                        // 单锁序原子分配递增序号、捕获快照遥测、更新 _committedEventSeq、入环缓并同步推送订阅者
+                        PublishAndCommit(sseEvent, captureTelemetry: true, completeTurn: false);
+                        return ValueTask.CompletedTask;
+                    }, turnCts.Token);
 
-                    // 消息处理完毕后发送 done 事件
+                    // 消息处理完毕后发送 done 事件，并在发布完成事件时原子切换活跃态与 committed seq
                     ReleaseSlotOnce();
-                    var doneEvent = new GatewaySseEvent
+                    var doneEvent = PublishAndCommit(new GatewaySseEvent
                     {
-                        Seq = Interlocked.Increment(ref _eventSeq),
                         Type = GatewaySseEventType.Done,
                         Payload = new { messageId = message.MessageId, source = message.Source.ToString() }
-                    };
-                    await BroadcastAsync(doneEvent);
+                    }, captureTelemetry: false, completeTurn: true);
                     FullTextAuditLogger.Log(
                         _logger,
                         "gateway_message_completed",
@@ -268,6 +512,29 @@ public sealed class SessionChannel : IAsyncDisposable
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
                     break;
+                }
+                catch (OperationCanceledException) when (turnCts.IsCancellationRequested)
+                {
+                    _logger.LogInformation("[Gateway] Session {SessionId} 回合 {MessageId} 已被取消",
+                        SessionId, message.MessageId);
+                    ReleaseSlotOnce();
+                    var cancelledDone = PublishAndCommit(new GatewaySseEvent
+                    {
+                        Type = GatewaySseEventType.Done,
+                        Payload = new { messageId = message.MessageId, source = "cancelled" }
+                    }, captureTelemetry: false, completeTurn: true);
+                    FullTextAuditLogger.Log(
+                        _logger,
+                        "gateway_message_cancelled",
+                        SessionId,
+                        0,
+                        0,
+                        new
+                        {
+                            messageId = message.MessageId,
+                            source = message.Source.ToString(),
+                            doneEventSeq = cancelledDone.Seq
+                        });
                 }
                 catch (Exception ex)
                 {
@@ -288,16 +555,22 @@ public sealed class SessionChannel : IAsyncDisposable
 
                     // 向订阅者推送错误事件
                     ReleaseSlotOnce();
-                    var errorEvent = new GatewaySseEvent
+                    PublishAndCommit(new GatewaySseEvent
                     {
-                        Seq = Interlocked.Increment(ref _eventSeq),
                         Type = GatewaySseEventType.Error,
                         Payload = new { messageId = message.MessageId, error = ex.Message }
-                    };
-                    await BroadcastAsync(errorEvent);
+                    }, captureTelemetry: false, completeTurn: true);
                 }
                 finally
                 {
+                    lock (_turnLock)
+                    {
+                        if (_activeTurnCts is not null)
+                        {
+                            CompleteActiveTurnLocked();
+                        }
+                    }
+
                     ReleaseSlotOnce();
                     Interlocked.Decrement(ref _pendingMessageCount);
                     LastActivityUtc = DateTime.UtcNow;
@@ -314,6 +587,228 @@ public sealed class SessionChannel : IAsyncDisposable
         }
 
         _logger.LogInformation("[Gateway] Session {SessionId} 处理循环已停止", SessionId);
+    }
+
+    private GatewaySseEvent PublishAndCommit(GatewaySseEvent sseEvent, bool captureTelemetry, bool completeTurn)
+    {
+        lock (_turnLock)
+        {
+            var seq = Interlocked.Increment(ref _eventSeq);
+            sseEvent = sseEvent with { Seq = seq };
+            if (captureTelemetry)
+            {
+                CaptureSnapshotTelemetryLocked(sseEvent);
+            }
+
+            if (completeTurn)
+            {
+                CompleteActiveTurnLocked();
+            }
+
+            _committedEventSeq = seq;
+
+            lock (_bufferLock)
+            {
+                _eventBuffer.Enqueue(sseEvent);
+                if (_eventBuffer.Count > MaxBufferedEvents)
+                {
+                    _evictedThroughSeq = Math.Max(_evictedThroughSeq, _eventBuffer.Dequeue().Seq);
+                }
+
+                lock (_subscriberLock)
+                {
+                    if (_subscribers.Count > 0)
+                    {
+                        var snapshot = _subscribers.ToArray();
+                        foreach (var subscriber in snapshot)
+                        {
+                            if (!subscriber.TryWriteLive(sseEvent))
+                            {
+                                _subscribers.Remove(subscriber);
+                                subscriber.Complete();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return sseEvent;
+    }
+
+    private void CompleteActiveTurnLocked()
+    {
+        _hasTurnTelemetry = true;
+        if (!string.IsNullOrWhiteSpace(_activeConversationId))
+        {
+            _lastCompletedConversationId = _activeConversationId;
+        }
+
+        _lastCompletedToolResults.Clear();
+        _lastCompletedToolResults.AddRange(_activeToolResults);
+        _lastCompletedToolResultsTruncated = _toolResultsTruncated;
+
+        _lastCompletedToolOutputs.Clear();
+        _lastCompletedToolOutputs.AddRange(_activeToolOutputs);
+        _lastCompletedToolOutputsTruncated = _toolOutputsTruncated;
+
+        _activeTurnCts = null;
+        _activeMessageId = null;
+        _activeConversationId = null;
+        _activeContent.Clear();
+        _activeThinking.Clear();
+        _activeContentTruncated = false;
+        _activeToolResults.Clear();
+        _toolResultsTruncated = false;
+        _activeToolOutputs.Clear();
+        _toolOutputsTruncated = false;
+    }
+
+    private static GatewayChannelToolOutputSnapshot ExtractToolOutputSnapshot(object payload, out bool contentTruncated)
+    {
+        var tool = ReadPayloadString(payload, "tool") ?? "unknown";
+        var taskId = ReadPayloadString(payload, "commandTaskId") ?? string.Empty;
+        var rawStdout = ReadPayloadString(payload, "stdout");
+        var rawStderr = ReadPayloadString(payload, "stderr");
+        var throttled = ReadPayloadBool(payload, "throttled");
+        var suppressedLines = ReadPayloadInt(payload, "suppressedLines");
+        var (boundedOut, outTruncated) = ToolEventSanitizer.TruncateText(rawStdout, 4096);
+        var (boundedErr, errTruncated) = ToolEventSanitizer.TruncateText(rawStderr, 4096);
+        contentTruncated = outTruncated || errTruncated;
+        return new GatewayChannelToolOutputSnapshot(
+            tool,
+            taskId,
+            string.IsNullOrEmpty(rawStdout) ? null : boundedOut,
+            string.IsNullOrEmpty(rawStderr) ? null : boundedErr,
+            throttled,
+            suppressedLines);
+    }
+
+    private void CaptureSnapshotTelemetryLocked(GatewaySseEvent sseEvent)
+    {
+        if (sseEvent.Payload is null)
+        {
+            return;
+        }
+
+        if (string.Equals(sseEvent.Type, GatewaySseEventType.SetConversationId, StringComparison.Ordinal))
+        {
+            var convId = ReadPayloadString(sseEvent.Payload, "conversationId");
+            if (!string.IsNullOrWhiteSpace(convId))
+            {
+                _activeConversationId = convId;
+                _lastCompletedConversationId = convId;
+            }
+        }
+        else if (string.Equals(sseEvent.Type, GatewaySseEventType.Content, StringComparison.Ordinal))
+        {
+            _hasTurnTelemetry = true;
+            var delta = ReadPayloadString(sseEvent.Payload, "content")
+                        ?? ReadPayloadString(sseEvent.Payload, "text");
+            AppendBounded(_activeContent, delta, MaxActiveContentChars, ref _activeContentTruncated);
+        }
+        else if (string.Equals(sseEvent.Type, GatewaySseEventType.ThinkingContent, StringComparison.Ordinal))
+        {
+            _hasTurnTelemetry = true;
+            var delta = ReadPayloadString(sseEvent.Payload, "content")
+                        ?? ReadPayloadString(sseEvent.Payload, "text");
+            AppendBounded(_activeThinking, delta, MaxActiveThinkingChars, ref _activeContentTruncated);
+        }
+        else if (string.Equals(sseEvent.Type, GatewaySseEventType.ToolOutput, StringComparison.Ordinal))
+        {
+            _hasTurnTelemetry = true;
+            var targetList = _activeTurnCts is not null ? _activeToolOutputs : _lastCompletedToolOutputs;
+            if (targetList.Count < MaxActiveToolOutputs)
+            {
+                var snapshot = ExtractToolOutputSnapshot(sseEvent.Payload, out var contentTruncated);
+                if (contentTruncated)
+                {
+                    if (_activeTurnCts is not null) _toolOutputsTruncated = true;
+                    else _lastCompletedToolOutputsTruncated = true;
+                }
+
+                targetList.Add(snapshot);
+            }
+            else
+            {
+                if (_activeTurnCts is not null) _toolOutputsTruncated = true;
+                else _lastCompletedToolOutputsTruncated = true;
+            }
+        }
+        else if (string.Equals(sseEvent.Type, GatewaySseEventType.TaskStatus, StringComparison.Ordinal))
+        {
+            var subType = ReadPayloadString(sseEvent.Payload, "type");
+            if (string.Equals(subType, "tool_result", StringComparison.Ordinal))
+            {
+                _hasTurnTelemetry = true;
+                if (_activeToolResults.Count < MaxActiveToolResults)
+                {
+                    var toolName = ReadPayloadString(sseEvent.Payload, "name") ?? "unknown";
+                    var callId = ReadPayloadString(sseEvent.Payload, "callId");
+                    var success = ReadPayloadBool(sseEvent.Payload, "success");
+                    var rawResult = ReadPayloadString(sseEvent.Payload, "result");
+                    var (boundedResult, truncated) = ToolEventSanitizer.TruncateText(rawResult, 4096);
+                    if (truncated)
+                    {
+                        _toolResultsTruncated = true;
+                    }
+
+                    _activeToolResults.Add(new GatewayChannelToolResultSnapshot(
+                        toolName,
+                        callId,
+                        success,
+                        boundedResult,
+                        truncated));
+                }
+                else
+                {
+                    _toolResultsTruncated = true;
+                }
+            }
+        }
+    }
+
+    private static void AppendBounded(StringBuilder target, string? delta, int maxChars, ref bool truncatedFlag)
+    {
+        if (string.IsNullOrEmpty(delta))
+        {
+            return;
+        }
+
+        var remaining = maxChars - target.Length;
+        if (remaining <= 0)
+        {
+            truncatedFlag = true;
+            return;
+        }
+
+        if (delta.Length <= remaining)
+        {
+            target.Append(delta);
+        }
+        else
+        {
+            target.Append(delta, 0, remaining);
+            truncatedFlag = true;
+        }
+    }
+
+    private static string? ReadPayloadString(object payload, string propertyName)
+    {
+        var prop = payload.GetType().GetProperty(propertyName);
+        return prop?.GetValue(payload)?.ToString();
+    }
+
+    private static bool ReadPayloadBool(object payload, string propertyName)
+    {
+        var prop = payload.GetType().GetProperty(propertyName);
+        return prop?.GetValue(payload) is bool b && b;
+    }
+
+    private static int? ReadPayloadInt(object payload, string propertyName)
+    {
+        var prop = payload.GetType().GetProperty(propertyName);
+        return prop?.GetValue(payload) is int value ? value : null;
     }
 
     private bool TryReserveExclusiveUserChatSlot(GatewayMessage message)
@@ -342,42 +837,6 @@ public sealed class SessionChannel : IAsyncDisposable
         Interlocked.Decrement(ref _pendingUserChatCount);
     }
 
-    /// <summary>广播 SSE 事件给所有活跃订阅者，并存入环形缓冲区以支持断线重连回放</summary>
-    private async ValueTask BroadcastAsync(GatewaySseEvent sseEvent)
-    {
-        // 先存入缓冲区，确保后续订阅者可回放（包括当前无订阅者的情况）
-        lock (_bufferLock)
-        {
-            _eventBuffer.Enqueue(sseEvent);
-            if (_eventBuffer.Count > MaxBufferedEvents)
-                _evictedThroughSeq = Math.Max(_evictedThroughSeq, _eventBuffer.Dequeue().Seq);
-        }
-
-        SseSubscriber[] snapshot;
-        lock (_subscriberLock)
-        {
-            snapshot = _subscribers.ToArray();
-        }
-
-        foreach (var subscriber in snapshot)
-        {
-            try
-            {
-                await subscriber.WriteAsync(sseEvent);
-            }
-            catch (ChannelClosedException)
-            {
-                // 订阅者已断开，清理
-                Unsubscribe(subscriber);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "[Gateway] Session {SessionId} 向订阅者推送失败", SessionId);
-                Unsubscribe(subscriber);
-            }
-        }
-    }
-
     /// <summary>
     /// Disposes the channel, stops processing, and completes all subscribers.
     /// </summary>
@@ -391,6 +850,12 @@ public sealed class SessionChannel : IAsyncDisposable
             await Task.WhenAny(_processorTask, Task.Delay(5000));
         }
 
+        // Wait briefly for any in-flight late tool output persistence to flush to SQLite.
+        if (await _lateOutputPersistGate.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false))
+        {
+            _lateOutputPersistGate.Release();
+        }
+
         // 关闭所有订阅者
         lock (_subscriberLock)
         {
@@ -400,6 +865,7 @@ public sealed class SessionChannel : IAsyncDisposable
         }
 
         _cts.Dispose();
+        _lateOutputPersistGate.Dispose();
     }
 }
 
@@ -510,6 +976,19 @@ public sealed class SseSubscriber
 
         marker = null!;
         return false;
+    }
+
+    /// <summary>正常广播路径写入（Ordered under _bufferLock/_subscriberLock for BoundedChannelFullMode.DropOldest）</summary>
+    public bool TryWriteLive(GatewaySseEvent evt)
+    {
+        long current;
+        do
+        {
+            current = Interlocked.Read(ref _lastWrittenSeq);
+            if (evt.Seq <= current) return true;
+        } while (Interlocked.CompareExchange(ref _lastWrittenSeq, evt.Seq, current) != current);
+
+        return _channel.Writer.TryWrite(evt);
     }
 
     /// <summary>正常广播路径写入（异步，有背压）</summary>

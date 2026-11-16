@@ -38,6 +38,7 @@ public sealed class GatewayGuardedPlanTool : ICodexTool
     private readonly GatewayApprovalGate _gate;
     private readonly GatewayGuardedPlanToolRole _role;
     private readonly IDependencyUpgradeApprover? _upgradeApprover;
+    private readonly Func<CodexToolResult, CancellationToken, ValueTask>? _onApprovalRequested;
 
     public GatewayGuardedPlanTool(
         ICodexTool inner,
@@ -45,9 +46,11 @@ public sealed class GatewayGuardedPlanTool : ICodexTool
         GatewayMessage message,
         CodexSession? session,
         GatewayApprovalGate gate,
-        IDependencyUpgradeApprover? upgradeApprover = null)
+        IDependencyUpgradeApprover? upgradeApprover = null,
+        Func<CodexToolResult, CancellationToken, ValueTask>? onApprovalRequested = null)
     {
         _upgradeApprover = upgradeApprover;
+        _onApprovalRequested = onApprovalRequested;
         _inner = inner;
         _role = role;
         _message = message;
@@ -99,6 +102,10 @@ public sealed class GatewayGuardedPlanTool : ICodexTool
                 {
                     // Re-opening approval means any earlier approval no longer describes the plan state.
                     _gate.Ledger.Invalidate(_message.SessionId);
+                    if (_onApprovalRequested is not null)
+                    {
+                        await _onApprovalRequested(result, ct).ConfigureAwait(false);
+                    }
                 }
 
                 return result;

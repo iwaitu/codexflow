@@ -1584,6 +1584,8 @@ public sealed class ExecutionApprovalAndPermissionTests : IDisposable
         public bool IsSessionActive(string sessionId) => false;
         public bool HasActiveSubscribers(string sessionId) => HasSubscribers;
         public ValueTask CloseSessionAsync(string sessionId) => ValueTask.CompletedTask;
+        public Task<bool> CancelTurnAsync(string sessionId, CancellationToken ct = default) => Task.FromResult(false);
+        public GatewayChannelSnapshotState? GetChannelSnapshotState(string sessionId) => null;
     }
 
     internal sealed class MutableOptionsMonitor<T>(T initial) : IOptionsMonitor<T>

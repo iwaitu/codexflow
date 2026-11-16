@@ -2,12 +2,78 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+using System.Collections.Concurrent;
 using Newtonsoft.Json.Linq;
 
 namespace CodexFlow.Core.Configuration;
 
 internal static class GlobalSettingsFileStore
 {
+    private static readonly StringComparer PathComparer =
+        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+
+    private static readonly ConcurrentDictionary<string, Lock> FileLocks = new(PathComparer);
+
+    public static Lock GetLock(string path)
+    {
+        var fullPath = Path.GetFullPath(path);
+        return FileLocks.GetOrAdd(fullPath, static _ => new Lock());
+    }
+
+    public static T ReadLocked<T>(string path, Func<JObject, T> reader)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ArgumentNullException.ThrowIfNull(reader);
+
+        lock (GetLock(path))
+        {
+            using var _ = AcquireCrossProcessLock(path);
+            return reader(LoadRoot(path));
+        }
+    }
+
+    public static T UpdateAtomically<T>(string path, Func<JObject, (bool Modified, T Result)> mutator)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ArgumentNullException.ThrowIfNull(mutator);
+
+        lock (GetLock(path))
+        {
+            using var _ = AcquireCrossProcessLock(path);
+            var root = LoadRoot(path);
+            var (modified, result) = mutator(root);
+            if (modified)
+            {
+                WriteAtomically(path, root.ToString(Newtonsoft.Json.Formatting.Indented));
+            }
+
+            return result;
+        }
+    }
+
+    private static FileStream AcquireCrossProcessLock(string path)
+    {
+        var fullPath = Path.GetFullPath(path);
+        var directory = Path.GetDirectoryName(fullPath)!;
+        Directory.CreateDirectory(directory);
+        var lockPath = Path.Combine(directory, $".{Path.GetFileName(fullPath)}.lock");
+
+        var deadline = Environment.TickCount64 + 15_000;
+        var attempt = 0;
+        while (true)
+        {
+            try
+            {
+                return new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            }
+            catch (IOException) when (Environment.TickCount64 < deadline)
+            {
+                attempt++;
+                Thread.Sleep(Math.Min(50, 5 + (attempt * 3)));
+            }
+        }
+    }
+
     public static JObject LoadRoot(string path)
     {
         if (!File.Exists(path))

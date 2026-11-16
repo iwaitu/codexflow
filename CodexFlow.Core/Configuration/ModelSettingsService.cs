@@ -49,7 +49,6 @@ public sealed class ModelSettingsService : IModelSettingsService
 
     private static readonly string[] KnownApiModes = ["ChatCompletions", "Responses"];
     private readonly string _path;
-    private readonly object _gate = new();
 
     public ModelSettingsService(string globalSettingsPath)
     {
@@ -57,21 +56,15 @@ public sealed class ModelSettingsService : IModelSettingsService
     }
 
     public ModelSettingsView Read()
-    {
-        lock (_gate)
-        {
-            return ToView(LoadSection(LoadRoot()));
-        }
-    }
+        => GlobalSettingsFileStore.ReadLocked(_path, root => ToView(LoadSection(root)));
 
     public ModelSettingsView Update(ModelSettingsUpdate update)
     {
         ArgumentNullException.ThrowIfNull(update);
         Validate(update);
 
-        lock (_gate)
+        return GlobalSettingsFileStore.UpdateAtomically(_path, root =>
         {
-            var root = LoadRoot();
             var section = LoadSection(root);
 
             Set(section, "ApiUrl", update.ApiUrl);
@@ -83,9 +76,8 @@ public sealed class ModelSettingsService : IModelSettingsService
             Set(section, "ApiKey", update.ApiKey);
 
             root[SectionName] = section;
-            WriteAtomically(root.ToString(Newtonsoft.Json.Formatting.Indented));
-            return ToView(section);
-        }
+            return (true, ToView(section));
+        });
     }
 
     private static void Validate(ModelSettingsUpdate update)
@@ -131,8 +123,6 @@ public sealed class ModelSettingsService : IModelSettingsService
         }
     }
 
-    private JObject LoadRoot() => GlobalSettingsFileStore.LoadRoot(_path);
-
     private static JObject LoadSection(JObject root)
         => root[SectionName] as JObject ?? new JObject();
 
@@ -157,6 +147,4 @@ public sealed class ModelSettingsService : IModelSettingsService
             ApiKeySet: !string.IsNullOrEmpty(key),
             ApiKeyLast4: string.IsNullOrEmpty(key) ? null : (key.Length <= 4 ? new string('*', key.Length) : key[^4..]));
     }
-
-    private void WriteAtomically(string json) => GlobalSettingsFileStore.WriteAtomically(_path, json);
 }

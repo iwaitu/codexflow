@@ -227,6 +227,24 @@ public sealed class CodexGateway : ICodexGateway, IAsyncDisposable
         }
     }
 
+    public Task<bool> CancelTurnAsync(string sessionId, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ct.ThrowIfCancellationRequested();
+
+        if (!_channels.TryGetValue(sessionId, out var channel))
+        {
+            return Task.FromResult(false);
+        }
+
+        return Task.FromResult(channel.CancelActiveTurn());
+    }
+
+    public GatewayChannelSnapshotState? GetChannelSnapshotState(string sessionId)
+        => !string.IsNullOrWhiteSpace(sessionId) && _channels.TryGetValue(sessionId, out var channel)
+            ? channel.GetSnapshotState()
+            : null;
+
     private SessionChannel GetOrCreateChannel(string sessionId)
     {
         return _channels.GetOrAdd(sessionId, sid =>

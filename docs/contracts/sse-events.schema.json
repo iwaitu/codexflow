@@ -1,0 +1,1293 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codexflow.local/schemas/sse-events.schema.json",
+  "title": "CodexFlow Gateway SSE Event Schema",
+  "schemaVersion": "1.0.0",
+  "type": "object",
+  "required": [
+    "event",
+    "data"
+  ],
+  "properties": {
+    "id": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "event": {
+      "type": "string",
+      "enum": [
+        "heartbeat",
+        "content",
+        "thinking_start",
+        "thinking_content",
+        "thinking_end",
+        "tool_call",
+        "tool_started",
+        "tool_output",
+        "tool_approval_request",
+        "tool_approval_resolved",
+        "task_status",
+        "setconversationid",
+        "updateconversationtitle",
+        "system_message",
+        "next_task_started",
+        "retry_notice",
+        "plan_change_request",
+        "plan_approval_requested",
+        "planning_summary",
+        "worker_started",
+        "worker_waiting_user",
+        "worker_completed",
+        "worker_failed",
+        "file_tree_updated",
+        "error",
+        "done",
+        "replay_gap"
+      ]
+    },
+    "data": {
+      "type": "object"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "event": {
+          "const": "heartbeat"
+        },
+        "data": {
+          "$ref": "#/$defs/heartbeat"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "content"
+        },
+        "data": {
+          "$ref": "#/$defs/content"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "thinking_start"
+        },
+        "data": {
+          "$ref": "#/$defs/thinking_start"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "thinking_content"
+        },
+        "data": {
+          "$ref": "#/$defs/thinking_content"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "thinking_end"
+        },
+        "data": {
+          "$ref": "#/$defs/thinking_end"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "tool_call"
+        },
+        "data": {
+          "$ref": "#/$defs/tool_call"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "tool_started"
+        },
+        "data": {
+          "$ref": "#/$defs/tool_started"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "tool_output"
+        },
+        "data": {
+          "$ref": "#/$defs/tool_output"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "tool_approval_request"
+        },
+        "data": {
+          "$ref": "#/$defs/tool_approval_request"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "tool_approval_resolved"
+        },
+        "data": {
+          "$ref": "#/$defs/tool_approval_resolved"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "task_status"
+        },
+        "data": {
+          "$ref": "#/$defs/task_status"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "setconversationid"
+        },
+        "data": {
+          "$ref": "#/$defs/setconversationid"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "updateconversationtitle"
+        },
+        "data": {
+          "$ref": "#/$defs/updateconversationtitle"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "system_message"
+        },
+        "data": {
+          "$ref": "#/$defs/system_message"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "next_task_started"
+        },
+        "data": {
+          "$ref": "#/$defs/next_task_started"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "retry_notice"
+        },
+        "data": {
+          "$ref": "#/$defs/retry_notice"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "plan_change_request"
+        },
+        "data": {
+          "$ref": "#/$defs/plan_change_request"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "plan_approval_requested"
+        },
+        "data": {
+          "$ref": "#/$defs/plan_approval_requested"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "planning_summary"
+        },
+        "data": {
+          "$ref": "#/$defs/planning_summary"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "worker_started"
+        },
+        "data": {
+          "$ref": "#/$defs/worker_started"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "worker_waiting_user"
+        },
+        "data": {
+          "$ref": "#/$defs/worker_waiting_user"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "worker_completed"
+        },
+        "data": {
+          "$ref": "#/$defs/worker_completed"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "worker_failed"
+        },
+        "data": {
+          "$ref": "#/$defs/worker_failed"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "file_tree_updated"
+        },
+        "data": {
+          "$ref": "#/$defs/file_tree_updated"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "error"
+        },
+        "data": {
+          "$ref": "#/$defs/error"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "done"
+        },
+        "data": {
+          "$ref": "#/$defs/done"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "replay_gap"
+        },
+        "data": {
+          "$ref": "#/$defs/replay_gap"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    }
+  ],
+  "$defs": {
+    "heartbeat": {
+      "type": "object",
+      "description": "Periodic heartbeat and connection handshake.",
+      "additionalProperties": true,
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "connected",
+            "alive"
+          ]
+        },
+        "subscriberCount": {
+          "type": "integer"
+        },
+        "epoch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "intervalSeconds": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "pendingApprovals": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sessionId",
+        "status",
+        "subscriberCount",
+        "pendingApprovals"
+      ]
+    },
+    "content": {
+      "type": "object",
+      "description": "Assistant visible response text delta.",
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "content"
+        },
+        "content": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "content",
+        "text"
+      ]
+    },
+    "thinking_start": {
+      "type": "object",
+      "description": "Marks start of assistant reasoning block.",
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "thinking_start"
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
+    "thinking_content": {
+      "type": "object",
+      "description": "Assistant reasoning text delta.",
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "thinking_content"
+        },
+        "content": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "content",
+        "text"
+      ]
+    },
+    "thinking_end": {
+      "type": "object",
+      "description": "Marks end of assistant reasoning block.",
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "thinking_end"
+        },
+        "thinking_content": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "thinking_content"
+      ]
+    },
+    "tool_call": {
+      "type": "object",
+      "description": "Model requested a tool invocation (arguments sanitized and bounded).",
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "tool_call"
+        },
+        "name": {
+          "type": "string"
+        },
+        "callId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "arguments": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true
+        },
+        "argumentsTruncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "type",
+        "name"
+      ]
+    },
+    "tool_started": {
+      "type": "object",
+      "description": "Tool execution started on the host.",
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "tool_started"
+        },
+        "name": {
+          "type": "string"
+        },
+        "callId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "name"
+      ]
+    },
+    "tool_output": {
+      "type": "object",
+      "description": "Throttled stdout/stderr stream chunk from an executing command tool.",
+      "additionalProperties": true,
+      "properties": {
+        "tool": {
+          "type": "string"
+        },
+        "commandTaskId": {
+          "type": "string"
+        },
+        "stdout": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stderr": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "throttled": {
+          "type": "boolean"
+        },
+        "suppressedLines": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "tool",
+        "commandTaskId",
+        "throttled"
+      ]
+    },
+    "tool_approval_request": {
+      "type": "object",
+      "description": "Interactive approval request before starting untrusted code execution.",
+      "additionalProperties": true,
+      "properties": {
+        "approvalId": {
+          "type": "string"
+        },
+        "requestDigest": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "executable": {
+          "type": "string"
+        },
+        "interpreterChain": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "stdinSha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "codeSha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scriptSha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "backend": {
+          "type": "string"
+        },
+        "network": {
+          "type": "string"
+        },
+        "filesystem": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "expiresAt": {
+          "type": "string"
+        },
+        "allowedDecisions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "executesWorkspaceCode": {
+          "type": "boolean"
+        },
+        "trustedOriginVerified": {
+          "type": "boolean"
+        },
+        "selfApprovalProtection": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "approvalId",
+        "requestDigest",
+        "sessionId",
+        "tool",
+        "executable",
+        "interpreterChain",
+        "argv",
+        "cwd",
+        "backend",
+        "network",
+        "filesystem",
+        "reason",
+        "expiresAt",
+        "allowedDecisions",
+        "executesWorkspaceCode",
+        "trustedOriginVerified",
+        "selfApprovalProtection"
+      ]
+    },
+    "tool_approval_resolved": {
+      "type": "object",
+      "description": "Resolution outcome for a pending tool approval request.",
+      "additionalProperties": true,
+      "properties": {
+        "approvalId": {
+          "type": "string"
+        },
+        "requestDigest": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "decision": {
+          "type": "string"
+        },
+        "decidedBy": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resolvedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "approvalId",
+        "requestDigest",
+        "sessionId",
+        "decision",
+        "resolvedAt"
+      ]
+    },
+    "task_status": {
+      "type": "object",
+      "description": "Tool completion or task-status progress update.",
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "callId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "success": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "result": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
+    "setconversationid": {
+      "type": "object",
+      "description": "Binds the active conversation identifier for this turn.",
+      "additionalProperties": true,
+      "properties": {
+        "conversationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "conversationId"
+      ]
+    },
+    "updateconversationtitle": {
+      "type": "object",
+      "description": "Updates the conversation display title.",
+      "additionalProperties": true,
+      "properties": {
+        "conversationId": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "conversationId",
+        "title"
+      ]
+    },
+    "system_message": {
+      "type": "object",
+      "description": "Host system notification message.",
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "noticeType": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "content": {
+          "type": "string"
+        },
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "content"
+      ]
+    },
+    "next_task_started": {
+      "type": "object",
+      "description": "Background plan task dispatch notification.",
+      "additionalProperties": true,
+      "properties": {
+        "taskId": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "jobId": {
+          "type": "string"
+        },
+        "jobType": {
+          "type": "string"
+        },
+        "workerType": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "taskId",
+        "title",
+        "jobId",
+        "jobType"
+      ]
+    },
+    "retry_notice": {
+      "type": "object",
+      "description": "Task failure automatic retry scheduled.",
+      "additionalProperties": true,
+      "properties": {
+        "taskId": {
+          "type": "string"
+        },
+        "retryCount": {
+          "type": "integer"
+        },
+        "maxRetries": {
+          "type": "integer"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "taskId",
+        "retryCount",
+        "maxRetries"
+      ]
+    },
+    "plan_change_request": {
+      "type": "object",
+      "description": "Plan requires adjustment after exhausted retries or failure.",
+      "additionalProperties": true,
+      "properties": {
+        "taskId": {
+          "type": "string"
+        },
+        "failureCount": {
+          "type": "integer"
+        },
+        "maxRetries": {
+          "type": "integer"
+        },
+        "canRetry": {
+          "type": "boolean"
+        },
+        "lastError": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "taskId",
+        "failureCount",
+        "maxRetries",
+        "canRetry"
+      ]
+    },
+    "plan_approval_requested": {
+      "type": "object",
+      "description": "Plan artifact transitioned to ReadyForApproval and awaits user confirmation.",
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "plan_approval_requested"
+        },
+        "planArtifactId": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "markdownHash": {
+          "type": "string"
+        },
+        "goal": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "string"
+        },
+        "taskCount": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "type",
+        "planArtifactId",
+        "version",
+        "markdownHash",
+        "status",
+        "taskCount"
+      ]
+    },
+    "planning_summary": {
+      "type": "object",
+      "description": "Planning summary notification.",
+      "additionalProperties": true,
+      "properties": {
+        "summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "content": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [],
+      "anyOf": [
+        {
+          "required": [
+            "summary"
+          ]
+        },
+        {
+          "required": [
+            "content"
+          ]
+        }
+      ]
+    },
+    "worker_started": {
+      "type": "object",
+      "description": "Background worker started.",
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "worker_started"
+        },
+        "content": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
+    "worker_waiting_user": {
+      "type": "object",
+      "description": "Background worker waiting for user input or approval.",
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "worker_waiting_user"
+        },
+        "content": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
+    "worker_completed": {
+      "type": "object",
+      "description": "Background worker completed.",
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "worker_completed"
+        },
+        "content": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
+    "worker_failed": {
+      "type": "object",
+      "description": "Background worker failed.",
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "worker_failed"
+        },
+        "content": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
+    "file_tree_updated": {
+      "type": "object",
+      "description": "Workspace file tree changed by a tool.",
+      "additionalProperties": true,
+      "properties": {
+        "tool": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool"
+      ]
+    },
+    "error": {
+      "type": "object",
+      "description": "Turn or runtime error event.",
+      "additionalProperties": true,
+      "properties": {
+        "messageId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "error": {
+          "type": "string"
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "error"
+      ]
+    },
+    "done": {
+      "type": "object",
+      "description": "Turn terminal completion marker (source may be UserChat, cancelled, etc.).",
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "messageId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [],
+      "anyOf": [
+        {
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "required": [
+            "messageId",
+            "source"
+          ]
+        }
+      ]
+    },
+    "replay_gap": {
+      "type": "object",
+      "description": "Indicates missed events on reconnect or slow-subscriber overflow; client must reconcile via snapshot.",
+      "additionalProperties": true,
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": [
+            "buffer_evicted",
+            "subscriber_overflow",
+            "sequence_reset"
+          ]
+        },
+        "epoch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fromSeq": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "toSeq": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "previousLastEventId": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "oldestAvailableSeq": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "reason"
+      ]
+    }
+  }
+}

@@ -112,12 +112,19 @@ public class RunTestsTool : ICodexTool
                 frozenArgv[i + 1] = authorization.EffectiveArgv[i];
             }
 
+            await using var outputThrottler = new CodexFlow.Core.Execution.Approval.ToolOutputEventThrottler(
+                _gate.Gateway,
+                context.SessionId,
+                Name,
+                $"test-{Guid.NewGuid():N}"[..12]);
             var run = await session.RunAsync(
                 new IsolatedCommandRequest(
                     frozenArgv,
                     Timeout: TimeSpan.FromSeconds(timeoutSeconds),
+                    OnOutput: line => outputThrottler.Append(line.Stream, line.Text),
                     PreResolvedExecutable: session.Layout.Backend == ExecutionBackend.Local),
                 ct).ConfigureAwait(false);
+            await outputThrottler.FlushAsync(ct).ConfigureAwait(false);
             ct.ThrowIfCancellationRequested();
 
             if (run.Status == IsolatedCommandStatus.TimedOut)

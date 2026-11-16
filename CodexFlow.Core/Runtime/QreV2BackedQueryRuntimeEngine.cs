@@ -110,7 +110,10 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
                         {
                             LogToolOutcome(_logger, request, result);
                             evidence.Record(result);
-                        })), allowMixedCaseNames: true),
+                        },
+                        eventSink,
+                        request,
+                        queryId)), allowMixedCaseNames: true),
                 new CodexFlowV2ToolPolicy(request, _logger));
             var modelClient = new CodexFlowRuntimeModelClient(
                 _llmExecutor,
@@ -1061,7 +1064,10 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
         AIFunction tool,
         IQueryRuntimeInterventionHook? intervention,
         CodexSession? session,
-        Action<ToolExecutionResult>? record = null) : QreV2.IRuntimeTool
+        Action<ToolExecutionResult>? record = null,
+        IQueryRuntimeEventSink? eventSink = null,
+        QueryRuntimeRequest? request = null,
+        Guid queryId = default) : QreV2.IRuntimeTool
     {
         private readonly bool _isWrite = ToolClassification.IsWriteTool(tool.Name);
 
@@ -1076,6 +1082,20 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
             if (!string.Equals(tool.Name, invocation.Plan.ToolCanonicalName, StringComparison.Ordinal))
             {
                 return Failure(call, "codexflow_tool_identity_mismatch", "The requested tool is not the frozen C4 registry entry.");
+            }
+
+            if (eventSink is not null &&
+                request is not null &&
+                eventSink.IsEnabled(QueryRuntimeEventType.ToolExecutionStarted))
+            {
+                await eventSink.OnEventAsync(new ToolExecutionStartedEvent(
+                    0,
+                    queryId,
+                    request.SessionId,
+                    request.EntryPoint,
+                    0,
+                    tool.Name,
+                    call.InvocationId.Value)).ConfigureAwait(false);
             }
 
             try

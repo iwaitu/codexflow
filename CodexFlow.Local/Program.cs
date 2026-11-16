@@ -4,6 +4,7 @@
 
 using CodexFlow.Core.Execution;
 using CodexFlow.Core.Execution.Approval;
+using CodexFlow.Gateway.Contracts;
 using CodexFlow.Local;
 using CodexFlow.Orchestration.Hosting;
 using CodexFlow.Orchestration.Jobs;
@@ -13,17 +14,37 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
+var exportIdx = Array.FindIndex(args, a => string.Equals(a, "--export-contracts", StringComparison.OrdinalIgnoreCase));
+if (exportIdx >= 0)
+{
+    var outputDir = exportIdx + 1 < args.Length
+        ? Path.GetFullPath(args[exportIdx + 1])
+        : Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "docs", "contracts"));
+    Directory.CreateDirectory(outputDir);
+    var (openApiJson, sseSchemaJson) = await GatewayOpenApiExtensions.GenerateContractsAsync().ConfigureAwait(false);
+    await File.WriteAllTextAsync(Path.Combine(outputDir, "openapi.json"), openApiJson + "\n").ConfigureAwait(false);
+    await File.WriteAllTextAsync(Path.Combine(outputDir, "sse-events.schema.json"), sseSchemaJson + "\n").ConfigureAwait(false);
+    return 0;
+}
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Layered configuration: global ~/.codexflow/appsettings.json, then the project's codexflow.yml and
 // .codexflow/codexflow.local.yml (only when the project is trusted, and only its "Project" section), then environment variables
-// and the command line again on top. Off unless CodexFlow:LayeredConfiguration is true.
+// and the command line again on top. Enabled when CodexFlow:LayeredConfiguration is true, or in managed Pipe delivery mode.
 var globalSettingsDirectory = CodexFlow.Core.Configuration.CodexFlowPaths.GlobalDirectory();
 var globalSettingsPath = CodexFlow.Core.Configuration.CodexFlowPaths.GlobalSettingsPath(globalSettingsDirectory);
 var executionSettingsService = new CodexFlow.Core.Configuration.ExecutionSettingsService(globalSettingsPath);
 executionSettingsService.MigrateLegacyIsolationIfNeeded();
 
-if (builder.Configuration.GetValue<bool>("CodexFlow:LayeredConfiguration"))
+var deliveryModeEarly = Enum.TryParse<LocalTokenDeliveryMode>(
+    builder.Configuration["Local:TokenDelivery"],
+    ignoreCase: true,
+    out var parsedEarlyDelivery)
+    ? parsedEarlyDelivery
+    : LocalTokenDeliveryMode.File;
+
+if (builder.Configuration.GetValue<bool>("CodexFlow:LayeredConfiguration") || deliveryModeEarly == LocalTokenDeliveryMode.Pipe)
 {
     var projectDirectory = builder.Configuration["CodexFlow:ProjectDirectory"] is { Length: > 0 } configuredProject
         ? Path.GetFullPath(configuredProject)
@@ -36,34 +57,65 @@ if (builder.Configuration.GetValue<bool>("CodexFlow:LayeredConfiguration"))
     builder.Configuration.AddEnvironmentVariables();
     builder.Configuration.AddCommandLine(args);
 }
+else
+{
+    // Even in standalone File delivery mode, watch ~/.codexflow/appsettings.json so control-plane updates
+    // to model/execution/workspace settings take effect immediately without requiring a host restart.
+    builder.Configuration.AddJsonFile(globalSettingsPath, optional: true, reloadOnChange: true);
+    builder.Configuration.AddEnvironmentVariables();
+    builder.Configuration.AddCommandLine(args);
+}
 
-// Loopback only, whatever ASPNETCORE_URLS says: the local interface is for this machine.
-var port = builder.Configuration.GetValue<int?>("Local:Port") ?? 5206;
-builder.WebHost.UseUrls($"http://127.0.0.1:{port}");
+var layout = LocalHostRuntime.ResolveLayout(builder.Configuration, globalSettingsDirectory);
+var isolatedOverrides = new Dictionary<string, string?>();
+if (layout.StagingRoot is not null && string.IsNullOrWhiteSpace(builder.Configuration["Isolation:StagingRoot"]))
+{
+    isolatedOverrides["Isolation:StagingRoot"] = layout.StagingRoot;
+}
+
+if (layout.DataDirectory is not null)
+{
+    var currentCacheDir = builder.Configuration["ArtifactAudit:Advisory:CacheDirectory"];
+    if (string.IsNullOrWhiteSpace(currentCacheDir)
+        || string.Equals(currentCacheDir, ".codexflow-data/nuget-advisories", StringComparison.OrdinalIgnoreCase))
+    {
+        isolatedOverrides["ArtifactAudit:Advisory:CacheDirectory"] = Path.Combine(layout.DataDirectory, "nuget-advisories");
+    }
+}
+
+if (isolatedOverrides.Count > 0)
+{
+    builder.Configuration.AddInMemoryCollection(isolatedOverrides);
+}
+
+// Acquire single-instance exclusive lock on the data directory BEFORE touching state.db or credential files.
+LocalInstanceGuard instanceGuard;
+try
+{
+    instanceGuard = LocalInstanceGuard.Acquire(layout.InstanceLockDirectory);
+}
+catch (LocalInstanceAlreadyRunningException ex)
+{
+    await Console.Error.WriteLineAsync($"CodexFlow.Local failed to start: {ex.Message}").ConfigureAwait(false);
+    if (!string.IsNullOrWhiteSpace(ex.ExistingInstanceJson))
+    {
+        await Console.Error.WriteLineAsync($"Active instance info: {ex.ExistingInstanceJson}").ConfigureAwait(false);
+    }
+
+    return 2;
+}
+
+using var instanceGuardLifetime = instanceGuard;
+
+// Loopback only, whatever ASPNETCORE_URLS says: the local interface is for this machine. Supports Local:Port=0.
+var configuredPort = builder.Configuration.GetValue<int?>("Local:Port") ?? 5206;
+builder.WebHost.UseUrls($"http://127.0.0.1:{configuredPort}");
 
 builder.Host.UseDefaultServiceProvider((context, options) =>
 {
     options.ValidateScopes = true;
     options.ValidateOnBuild = true;
 });
-
-var sqlitePath = builder.Configuration["Storage:SqlitePath"] is { Length: > 0 } configuredSqlitePath
-    ? configuredSqlitePath
-    : Path.Combine(".codexflow", "state.db");
-var stateDirectory = Path.GetDirectoryName(Path.GetFullPath(sqlitePath))!;
-
-// Keep credential token files outside executable project workspaces by default so neither container snapshots
-// nor workspace tools ever share a directory with host/control tokens (B2).
-string credentialDirectory;
-if (builder.Configuration["Local:DataDirectory"] is { Length: > 0 } configuredDataDir)
-{
-    credentialDirectory = Path.GetFullPath(configuredDataDir);
-}
-else
-{
-    var stateHash = ExecutionRequest.Sha256Text(stateDirectory.ToLowerInvariant())[..16];
-    credentialDirectory = Path.Combine(globalSettingsDirectory, "credentials", stateHash);
-}
 
 var deliveryMode = Enum.TryParse<LocalTokenDeliveryMode>(
     builder.Configuration["Local:TokenDelivery"],
@@ -82,7 +134,7 @@ var unsafeFileControlToken = LocalHostCredentials.ResolveUserLevelUnsafeFileCont
 using var startupLoggerFactory = LoggerFactory.Create(lb => lb.AddConsole());
 var startupLogger = startupLoggerFactory.CreateLogger("CodexFlow.Local.Startup");
 var credentials = LocalHostCredentials.Initialize(
-    credentialDirectory,
+    layout.CredentialDirectory,
     deliveryMode,
     initialBackend,
     unsafeFileControlToken,
@@ -91,14 +143,33 @@ var credentials = LocalHostCredentials.Initialize(
 var accessToken = new LocalAccessToken(credentials.AccessToken, credentials.AccessTokenPath ?? string.Empty);
 
 builder.Services.AddControllers();
+builder.Services.AddCodexFlowGatewayOpenApi();
 builder.Services.AddHttpClient();
 builder.Services.AddHealthChecks();
+
+if (layout.AllowedOrigins.Length > 0)
+{
+    builder.Services.AddCors(options =>
+    {
+        options.AddPolicy(LocalHostRuntime.CorsPolicyName, policy =>
+        {
+            policy.WithOrigins(layout.AllowedOrigins)
+                  .AllowAnyHeader()
+                  .AllowAnyMethod();
+        });
+    });
+}
+
 builder.Services.AddSingleton(credentials);
 builder.Services.AddSingleton<IControlPlaneStateProvider>(credentials);
 builder.Services.AddSingleton(accessToken);
+builder.Services.AddSingleton<IWorkspaceRootProvider>(_ =>
+    new WorkspaceRootProvider(layout.WorkspacesRoot, layout.DataDirectory));
 builder.Services.AddSingleton<CodexFlow.Core.Configuration.IModelSettingsService>(_ =>
     new CodexFlow.Core.Configuration.ModelSettingsService(globalSettingsPath));
 builder.Services.AddSingleton<CodexFlow.Core.Configuration.IExecutionSettingsService>(executionSettingsService);
+builder.Services.AddSingleton<CodexFlow.Core.Configuration.IWorkspaceSettingsService>(_ =>
+    new CodexFlow.Core.Configuration.WorkspaceSettingsService(globalSettingsPath));
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddScheme<AuthenticationSchemeOptions, LocalTokenAuthenticationHandler>(JwtBearerDefaults.AuthenticationScheme, null);
@@ -114,7 +185,7 @@ builder.Services.AddAuthorization(options =>
 
 builder.Services.AddCodexFlowModelClient(builder.Configuration);
 builder.Services.AddCodexFlowRuntime(builder.Configuration);
-builder.Services.AddCodexFlowSqliteStorage(sqlitePath);
+builder.Services.AddCodexFlowSqliteStorage(layout.SqlitePath);
 builder.Services.AddCodexFlowLocalDefaults();
 
 var app = builder.Build();
@@ -147,18 +218,42 @@ if (preflightMode != LocalPreflightMode.Off)
     }
 }
 
+if (layout.AllowedOrigins.Length > 0)
+{
+    app.UseCors(LocalHostRuntime.CorsPolicyName);
+}
+
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+if (app.Environment.IsDevelopment() || app.Configuration.GetValue<bool>("Local:ExposeOpenApi"))
+{
+    app.MapCodexFlowGatewayOpenApi().RequireAuthorization("ActiveUser");
+}
 app.MapHealthChecks("/health");
 
+using var parentWatcher = layout.ParentPid is > 0
+    ? new ParentProcessWatcher(layout.ParentPid.Value, () => app.Lifetime.StopApplication(), app.Logger)
+    : null;
+
+await app.StartAsync();
+
+var boundPort = LocalHostRuntime.ResolveBoundPort(app.Services, configuredPort);
+instanceGuard.WriteDiscovery(boundPort);
+
+var readyLine = LocalHostRuntime.FormatReadyLine(boundPort, Environment.ProcessId, instanceGuard.InstanceId);
+Console.Out.WriteLine(readyLine);
+await Console.Out.FlushAsync();
+
 app.Logger.LogInformation(
-    "CodexFlow local host on http://127.0.0.1:{Port}. State: {StateDirectory}. Credentials: {CredentialDirectory}. TokenDelivery: {Delivery}. ControlPlaneAvailable: {ControlAvailable}. SelfApprovalProtection: {SelfProtection}.",
-    port,
-    stateDirectory,
-    credentialDirectory,
+    "CodexFlow local host on http://127.0.0.1:{Port}. DataDirectory: {DataDirectory}. State: {StateDirectory}. Credentials: {CredentialDirectory}. TokenDelivery: {Delivery}. ControlPlaneAvailable: {ControlAvailable}. SelfApprovalProtection: {SelfProtection}.",
+    boundPort,
+    layout.DataDirectory ?? "(default)",
+    layout.StateDirectory,
+    layout.CredentialDirectory,
     credentials.TokenDeliveryMode,
     credentials.IsControlPlaneAvailable,
     credentials.SelfApprovalProtection);
-await app.RunAsync();
+
+await app.WaitForShutdownAsync();
 return 0;

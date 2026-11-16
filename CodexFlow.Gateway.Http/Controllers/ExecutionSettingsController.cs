@@ -6,6 +6,7 @@ using System.Reflection;
 using CodexFlow.Core.Configuration;
 using CodexFlow.Core.Execution;
 using CodexFlow.Core.Execution.Approval;
+using CodexFlow.Orchestration.Hosting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -24,6 +25,25 @@ public sealed record UpdateExecutionSettingsRequest(
     string? Backend = null,
     string? PermissionMode = null);
 
+public sealed record ModelSettingsDto(
+    string? ApiUrl,
+    string? ApiMode,
+    string? Model,
+    int? MaxTokensLength,
+    float? Temperature,
+    float? TopP,
+    bool ApiKeySet,
+    string? ApiKeyLast4);
+
+public sealed record UpdateModelSettingsRequest(
+    string? ApiUrl = null,
+    string? ApiMode = null,
+    string? Model = null,
+    int? MaxTokensLength = null,
+    float? Temperature = null,
+    float? TopP = null,
+    string? ApiKey = null);
+
 public sealed record PermissionRuleListResponse(
     int Count,
     IReadOnlyList<PersistedPermissionRule> Rules);
@@ -32,21 +52,34 @@ public sealed record DeletePermissionRuleResponse(
     bool Removed,
     string RuleId);
 
+public sealed record PreflightIssueDto(
+    string Component,
+    string Message);
+
 public sealed record SystemStatusSummaryDto(
     string Version,
     string ExecutionBackend,
     string PermissionMode,
     bool ControlPlaneAvailable,
     bool SelfApprovalProtection,
-    string TokenDeliveryMode);
+    string TokenDeliveryMode,
+    bool BackendAvailable = true,
+    string? BackendAvailabilityReason = null,
+    bool DockerAvailable = false,
+    string? DockerAvailabilityReason = null,
+    bool ModelConfigured = false,
+    bool? ModelReachable = false,
+    string ModelProbeStatus = "Unknown",
+    string PreflightMode = "Fail",
+    IReadOnlyList<PreflightIssueDto>? PreflightIssues = null);
 
 public sealed record SettingsErrorDto(
     string Code,
     string Message);
 
 /// <summary>
-/// Execution backend, permission mode, persistent <c>allow_always</c> rules, and system security posture endpoints.
-/// Relaxing <see cref="ExecutionPermissionMode"/> or managing persistent rules requires the control plane.
+/// Execution backend, permission mode, model settings, persistent <c>allow_always</c> rules, and system status endpoints.
+/// Relaxing <see cref="ExecutionPermissionMode"/>, modifying model endpoint/keys, or managing persistent rules requires the control plane.
 /// </summary>
 [ApiController]
 [Authorize(AuthenticationSchemes = JwtBearerDefaults.AuthenticationScheme)]
@@ -55,7 +88,10 @@ public sealed class ExecutionSettingsController(
     ExecutionPermissionClamp permissionClamp,
     IExecutionPermissionStore permissionStore,
     IExecutionSettingsService? settingsService = null,
-    IControlPlaneStateProvider? controlPlane = null) : ControllerBase
+    IControlPlaneStateProvider? controlPlane = null,
+    IModelSettingsService? modelSettingsService = null,
+    IHostPreflightService? preflightService = null,
+    IConfiguration? configuration = null) : ControllerBase
 {
     [HttpGet("api/settings/execution")]
     [Authorize(Policy = "ActiveUser")]
@@ -163,18 +199,128 @@ public sealed class ExecutionSettingsController(
         return Ok(new DeletePermissionRuleResponse(true, ruleId));
     }
 
+    [HttpGet("api/settings/model")]
+    [Authorize(Policy = "ActiveUser")]
+    [ProducesResponseType(typeof(ModelSettingsDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(SettingsErrorDto), StatusCodes.Status503ServiceUnavailable)]
+    public ActionResult<ModelSettingsDto> GetModelSettings()
+    {
+        if (modelSettingsService is null)
+        {
+            return StatusCode(503, new SettingsErrorDto("settings_unavailable", "Model settings persistence is not configured on this host."));
+        }
+
+        return Ok(ToModelDto(modelSettingsService.Read()));
+    }
+
+    [HttpPut("api/settings/model")]
+    [Authorize(Policy = ControlPlaneAuthConstants.ControlPlanePolicy)]
+    [ProducesResponseType(typeof(ModelSettingsDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(SettingsErrorDto), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(SettingsErrorDto), StatusCodes.Status503ServiceUnavailable)]
+    public ActionResult<ModelSettingsDto> UpdateModelSettings([FromBody] UpdateModelSettingsRequest request)
+    {
+        if (!ControlPlaneAuthConstants.IsControlPlanePrincipal(User, controlPlane))
+        {
+            return Forbid();
+        }
+
+        if (request is null)
+        {
+            return BadRequest(new SettingsErrorDto("invalid_request", "Request body is required."));
+        }
+
+        if (modelSettingsService is null)
+        {
+            return StatusCode(503, new SettingsErrorDto("settings_unavailable", "Model settings persistence is not configured on this host."));
+        }
+
+        try
+        {
+            var updated = modelSettingsService.Update(new ModelSettingsUpdate(
+                ApiUrl: request.ApiUrl,
+                ApiMode: request.ApiMode,
+                Model: request.Model,
+                MaxTokensLength: request.MaxTokensLength,
+                Temperature: request.Temperature,
+                TopP: request.TopP,
+                ApiKey: request.ApiKey));
+            return Ok(ToModelDto(updated));
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new SettingsErrorDto("invalid_model_settings", ex.Message));
+        }
+    }
+
     [HttpGet("api/system/status")]
     [Authorize(Policy = "ActiveUser")]
-    public ActionResult<SystemStatusSummaryDto> GetSystemStatus()
+    [ProducesResponseType(typeof(SystemStatusSummaryDto), StatusCodes.Status200OK)]
+    public async Task<ActionResult<SystemStatusSummaryDto>> GetSystemStatus(
+        [FromQuery] bool refresh = false,
+        CancellationToken ct = default)
     {
-        var current = executionOptions.CurrentValue;
+        var (backend, mode) = permissionClamp.ResolveEffective(executionOptions);
         var version = Assembly.GetEntryAssembly()?.GetName().Version?.ToString() ?? "0.0.0";
+
+        if (preflightService is not null)
+        {
+            var preflight = await preflightService.GetStatusAsync(backend, refresh, ct).ConfigureAwait(false);
+            return Ok(new SystemStatusSummaryDto(
+                Version: version,
+                ExecutionBackend: backend.ToString(),
+                PermissionMode: mode.ToString(),
+                ControlPlaneAvailable: controlPlane?.IsControlPlaneAvailable ?? true,
+                SelfApprovalProtection: controlPlane?.SelfApprovalProtection ?? true,
+                TokenDeliveryMode: controlPlane?.TokenDeliveryMode ?? "Unknown",
+                BackendAvailable: preflight.ActiveBackendAvailable,
+                BackendAvailabilityReason: preflight.ActiveBackendReason,
+                DockerAvailable: preflight.DockerAvailable,
+                DockerAvailabilityReason: preflight.DockerReason,
+                ModelConfigured: preflight.ModelConfigured,
+                ModelReachable: preflight.ModelReachable,
+                ModelProbeStatus: preflight.ModelProbeStatus,
+                PreflightMode: preflight.PreflightMode.ToString(),
+                PreflightIssues: preflight.Issues.Select(i => new PreflightIssueDto(i.Component, i.Message)).ToArray()));
+        }
+
+        var modelSection = configuration?.GetSection("VllmAgent");
+        var modelConfigured = modelSettingsService?.Read() is { ApiUrl.Length: > 0, Model.Length: > 0, ApiKeySet: true }
+            || (modelSection is not null &&
+                !string.IsNullOrWhiteSpace(modelSection["ApiUrl"]) &&
+                !string.IsNullOrWhiteSpace(modelSection["ApiKey"]) &&
+                !string.IsNullOrWhiteSpace(modelSection["Model"]));
+        var preflightMode = configuration is not null
+            ? HostPreflight.ResolvePreflightMode(configuration).ToString()
+            : LocalPreflightMode.Fail.ToString();
+
         return Ok(new SystemStatusSummaryDto(
-            version,
-            current.Backend.ToString(),
-            current.PermissionMode.ToString(),
-            controlPlane?.IsControlPlaneAvailable ?? true,
-            controlPlane?.SelfApprovalProtection ?? true,
-            controlPlane?.TokenDeliveryMode ?? "Unknown"));
+            Version: version,
+            ExecutionBackend: backend.ToString(),
+            PermissionMode: mode.ToString(),
+            ControlPlaneAvailable: controlPlane?.IsControlPlaneAvailable ?? true,
+            SelfApprovalProtection: controlPlane?.SelfApprovalProtection ?? true,
+            TokenDeliveryMode: controlPlane?.TokenDeliveryMode ?? "Unknown",
+            BackendAvailable: backend == CodexFlow.Core.Execution.ExecutionBackend.Local,
+            BackendAvailabilityReason: null,
+            DockerAvailable: false,
+            DockerAvailabilityReason: null,
+            ModelConfigured: modelConfigured,
+            ModelReachable: modelConfigured ? null : false,
+            ModelProbeStatus: modelConfigured ? "NotProbed" : "NotConfigured",
+            PreflightMode: preflightMode,
+            PreflightIssues: []));
     }
+
+    private static ModelSettingsDto ToModelDto(ModelSettingsView view)
+        => new(
+            view.ApiUrl,
+            view.ApiMode,
+            view.Model,
+            view.MaxTokensLength,
+            view.Temperature,
+            view.TopP,
+            view.ApiKeySet,
+            view.ApiKeyLast4);
 }

@@ -247,6 +247,10 @@ public static class OrchestrationServiceCollectionExtensions
         services.AddScoped<CodexFlow.Core.Gateway.IGatewayMessageProcessor, CodexFlow.Gateway.GatewayMessageProcessor>();
         services.Configure<CodexFlow.Models.ContextCompressionOptions>(
             configuration.GetSection(CodexFlow.Models.ContextCompressionOptions.SectionName));
+        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<IHostPreflightService, HostPreflightService>(services);
+        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<IWorkspaceRootProvider>(
+            services,
+            _ => new WorkspaceRootProvider(Path.Combine(Directory.GetCurrentDirectory(), "workspaces")));
 
         return services;
     }

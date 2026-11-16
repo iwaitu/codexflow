@@ -4,6 +4,7 @@
 
 using CodexFlow.Contracts;
 using CodexFlow.Domain.Chat;
+using CodexFlow.Orchestration.Hosting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
@@ -13,12 +14,21 @@ namespace CodexFlow.Application
     {
         private readonly CodexFlow.Orchestration.Jobs.IJobDbContext _db;
         private readonly ILogger<ChatService> _logger;
+        private readonly IWorkspaceRootProvider? _workspaceRootProvider;
 
-        public ChatService(CodexFlow.Orchestration.Jobs.IJobDbContext db, ILogger<ChatService> logger)
+        public ChatService(
+            CodexFlow.Orchestration.Jobs.IJobDbContext db,
+            ILogger<ChatService> logger,
+            IWorkspaceRootProvider? workspaceRootProvider = null)
         {
             _db = db;
             _logger = logger;
+            _workspaceRootProvider = workspaceRootProvider;
         }
+
+        private string ResolveManagedWorkspacesRoot()
+            => _workspaceRootProvider?.WorkspacesRoot
+               ?? Path.Combine(Directory.GetCurrentDirectory(), "workspaces");
 
         /// <summary>
         /// The id of the user whose name contains <paramref name="username"/>. A host without a user table has no such user;
@@ -347,7 +357,7 @@ namespace CodexFlow.Application
 
         public async Task<string> CreateSession(string userId, string name)
         {
-            var baseDir = Path.Combine(Directory.GetCurrentDirectory(), "workspaces");
+            var baseDir = ResolveManagedWorkspacesRoot();
             if (!Directory.Exists(baseDir)) Directory.CreateDirectory(baseDir);
             var workspacePath = Path.Combine(baseDir, userId, Guid.NewGuid().ToString("N"));
             EnsureWorkspaceDirectoryExists(workspacePath);
@@ -363,20 +373,174 @@ namespace CodexFlow.Application
             return session.Id;
         }
 
+        public async Task<(string SessionId, string WorkspaceName, bool Created)> CreateOrOpenExternalWorkspaceSession(
+            string userId,
+            string canonicalWorkspacePath,
+            string? name = null)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(userId);
+            ArgumentException.ThrowIfNullOrWhiteSpace(canonicalWorkspacePath);
+
+            var normalized = Path.TrimEndingDirectorySeparator(Path.GetFullPath(canonicalWorkspacePath));
+            var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+            if (!string.IsNullOrWhiteSpace(name)
+                && string.Equals(name.Trim(), "默认工作区", StringComparison.Ordinal))
+            {
+                throw new ArgumentException("The default workspace name is reserved.", nameof(name));
+            }
+
+            var existingCandidates = await _db.Sessions
+                .Where(s => s.UserId == userId && !s.IsArchived)
+                .OrderByDescending(s => s.Created)
+                .ToListAsync();
+
+            var existing = existingCandidates.FirstOrDefault(s =>
+                !string.IsNullOrWhiteSpace(s.WorkspacePath) &&
+                string.Equals(
+                    Path.TrimEndingDirectorySeparator(Path.GetFullPath(s.WorkspacePath)),
+                    normalized,
+                    comparison));
+
+            if (existing is not null)
+            {
+                var isDefaultWorkspace = string.Equals(existing.Name, "默认工作区", StringComparison.Ordinal) && !existing.IsExternalWorkspace;
+                if (!isDefaultWorkspace && !string.IsNullOrWhiteSpace(name) && !string.Equals(existing.Name, name.Trim(), StringComparison.Ordinal))
+                {
+                    existing.Name = name.Trim();
+                    await _db.SaveChangesAsync();
+                }
+
+                return (existing.Id, existing.Name, false);
+            }
+
+            var folderFallback = Path.GetFileName(normalized);
+            if (string.IsNullOrWhiteSpace(folderFallback) || string.Equals(folderFallback, "默认工作区", StringComparison.Ordinal))
+            {
+                folderFallback = $"工作区-{normalized.GetHashCode(StringComparison.OrdinalIgnoreCase):x8}";
+            }
+
+            var displayName = !string.IsNullOrWhiteSpace(name)
+                ? name.Trim()
+                : folderFallback;
+
+            var session = new IvilsonSession
+            {
+                UserId = userId,
+                Name = displayName,
+                WorkspacePath = normalized,
+                IsExternalWorkspace = true
+            };
+            _db.Sessions.Add(session);
+            await _db.SaveChangesAsync();
+            return (session.Id, session.Name, true);
+        }
+
         public async Task<IvilsonSession?> GetSession(string sessionId)
         {
             return await _db.Sessions.Include(s => s.Conversations).FirstOrDefaultAsync(s => s.Id == sessionId);
         }
 
         public async Task<PageOf<IvilsonSession>> GetSessions(string userId, int page, int pageSize)
+            => await GetSessionsPaged(userId, page, pageSize, includeArchived: true);
+
+        public async Task<PageOf<IvilsonSession>> GetSessionsPaged(string userId, int page, int pageSize, bool includeArchived = false)
         {
-            var query = _db.Sessions.Where(s => s.UserId == userId);
+            var safePage = Math.Max(1, page);
+            var safePageSize = Math.Clamp(pageSize, 1, 100);
+
+            var query = _db.Sessions.AsNoTracking().Where(s => s.UserId == userId);
+            if (!includeArchived)
+            {
+                query = query.Where(s => !s.IsArchived);
+            }
+
             var total = await query.CountAsync();
             var list = await query.OrderByDescending(s => s.Created)
-                                  .Skip((page - 1) * pageSize)
-                                  .Take(pageSize)
+                                  .Skip((safePage - 1) * safePageSize)
+                                  .Take(safePageSize)
                                   .ToListAsync();
-            return new PageOf<IvilsonSession> { List = list, Total = total, Page = page, PageSize = pageSize };
+            return new PageOf<IvilsonSession> { List = list, Total = total, Page = safePage, PageSize = safePageSize };
+        }
+
+        public async Task<IvilsonSession?> RenameSession(string sessionId, string userId, string name)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(name);
+            var session = await _db.Sessions.FirstOrDefaultAsync(s => s.Id == sessionId && s.UserId == userId);
+            if (session is null)
+            {
+                return null;
+            }
+
+            session.Name = name.Trim();
+            await _db.SaveChangesAsync();
+            return session;
+        }
+
+        public async Task<IvilsonSession?> SetSessionArchived(string sessionId, string userId, bool isArchived)
+        {
+            var session = await _db.Sessions.FirstOrDefaultAsync(s => s.Id == sessionId && s.UserId == userId);
+            if (session is null)
+            {
+                return null;
+            }
+
+            session.IsArchived = isArchived;
+            await _db.SaveChangesAsync();
+            return session;
+        }
+
+        public async Task<PageOf<IvilsonConversation>> GetSessionConversations(
+            string sessionId,
+            string userId,
+            int page,
+            int pageSize,
+            bool includeArchived = false)
+        {
+            var safePage = Math.Max(1, page);
+            var safePageSize = Math.Clamp(pageSize, 1, 100);
+
+            var query = _db.Conversations.AsNoTracking()
+                .Where(c => c.SessionId == sessionId && c.UserId == userId);
+            if (!includeArchived)
+            {
+                query = query.Where(c => !c.IsArchived);
+            }
+
+            var total = await query.CountAsync();
+            var list = await query.OrderByDescending(c => c.UpdateAt)
+                                  .Skip((safePage - 1) * safePageSize)
+                                  .Take(safePageSize)
+                                  .ToListAsync();
+            return new PageOf<IvilsonConversation> { List = list, Total = total, Page = safePage, PageSize = safePageSize };
+        }
+
+        public async Task<IvilsonConversation?> RenameConversation(string conversationId, string userId, string name)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(name);
+            var conversation = await _db.Conversations.FirstOrDefaultAsync(c => c.Id == conversationId && c.UserId == userId);
+            if (conversation is null)
+            {
+                return null;
+            }
+
+            conversation.Name = name.Trim();
+            conversation.UpdateAt = DateTime.UtcNow;
+            await _db.SaveChangesAsync();
+            return conversation;
+        }
+
+        public async Task<IvilsonConversation?> SetConversationArchived(string conversationId, string userId, bool isArchived)
+        {
+            var conversation = await _db.Conversations.FirstOrDefaultAsync(c => c.Id == conversationId && c.UserId == userId);
+            if (conversation is null)
+            {
+                return null;
+            }
+
+            conversation.IsArchived = isArchived;
+            conversation.UpdateAt = DateTime.UtcNow;
+            await _db.SaveChangesAsync();
+            return conversation;
         }
 
         public async Task UpdateSessionStage(string sessionId, int stage)
@@ -519,11 +683,15 @@ namespace CodexFlow.Application
                 // 保护默认工作区，不允许删除
                 if (session.Name == "默认工作区") return;
 
+                _db.ChatMessages.RemoveRange(session.Conversations.SelectMany(c => c.ChatMessages));
+                _db.Conversations.RemoveRange(session.Conversations);
                 _db.Sessions.Remove(session);
                 await _db.SaveChangesAsync();
 
-                // 2. 物理清理工作区目录 (如果存在)
-                if (!string.IsNullOrEmpty(session.WorkspacePath) && Directory.Exists(session.WorkspacePath))
+                // 2. 物理清理工作区目录 (仅限 CodexFlow 托管创建的内部沙箱工作区；严禁删除用户通过 P3-3 打开的外部本地文件夹)
+                if (!session.IsExternalWorkspace &&
+                    !string.IsNullOrEmpty(session.WorkspacePath) &&
+                    Directory.Exists(session.WorkspacePath))
                 {
                     ForceDeleteDirectory(session.WorkspacePath);
                 }
@@ -561,7 +729,7 @@ namespace CodexFlow.Application
                 .Include(s => s.Conversations)
                 .ThenInclude(c => c.ChatMessages)
                 .AsSplitQuery()
-                .Where(s => s.UserId == userId)
+                .Where(s => s.UserId == userId && !s.IsArchived)
                 .OrderByDescending(s => s.Created)
                 .ToListAsync();
 
@@ -615,7 +783,9 @@ namespace CodexFlow.Application
                     SessionId = s.Id,
                     ProjectName = string.IsNullOrWhiteSpace(s.Name) ? "New Project" : s.Name,
                     CurrentStage = s.CurrentStage,
-                    WorkspacePath = Path.GetRelativePath(Directory.GetCurrentDirectory(), s.WorkspacePath),
+                    WorkspacePath = s.IsExternalWorkspace
+                        ? s.WorkspacePath
+                        : Path.GetRelativePath(Directory.GetCurrentDirectory(), s.WorkspacePath),
                     LastActive = s.Created.ToString("yyyy-MM-dd HH:mm"),
                 };
 
@@ -679,7 +849,7 @@ namespace CodexFlow.Application
             }
 
             // 创建新的默认工作区
-            var baseDir = Path.Combine(Directory.GetCurrentDirectory(), "workspaces");
+            var baseDir = ResolveManagedWorkspacesRoot();
             if (!Directory.Exists(baseDir)) Directory.CreateDirectory(baseDir);
             var workspacePath = Path.Combine(baseDir, userId, Guid.NewGuid().ToString("N"));
             EnsureWorkspaceDirectoryExists(workspacePath);

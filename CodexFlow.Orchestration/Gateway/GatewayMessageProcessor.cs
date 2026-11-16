@@ -747,6 +747,111 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
 
         string answer;
         bool usedRuntime;
+        var streamedAnswer = new System.Text.StringBuilder();
+        var streamedThinking = new System.Text.StringBuilder();
+        var streamedToolResults = new List<GatewayChannelToolResultSnapshot>();
+        var streamedToolResultsTruncated = false;
+        var streamedToolOutputs = new List<GatewayChannelToolOutputSnapshot>();
+        var streamedToolOutputsTruncated = false;
+        async ValueTask TrackedEmitAsync(GatewaySseEvent sseEvent)
+        {
+            if (sseEvent.Payload is not null)
+            {
+                if (string.Equals(sseEvent.Type, GatewaySseEventType.Content, StringComparison.Ordinal))
+                {
+                    var delta = sseEvent.Payload.GetType().GetProperty("content")?.GetValue(sseEvent.Payload)?.ToString();
+                    if (!string.IsNullOrEmpty(delta) && streamedAnswer.Length < 128 * 1024)
+                    {
+                        streamedAnswer.Append(delta);
+                    }
+                }
+                else if (string.Equals(sseEvent.Type, GatewaySseEventType.ThinkingContent, StringComparison.Ordinal))
+                {
+                    var delta = sseEvent.Payload.GetType().GetProperty("content")?.GetValue(sseEvent.Payload)?.ToString();
+                    if (!string.IsNullOrEmpty(delta) && streamedThinking.Length < 64 * 1024)
+                    {
+                        streamedThinking.Append(delta);
+                    }
+                }
+                else if (string.Equals(sseEvent.Type, GatewaySseEventType.ToolOutput, StringComparison.Ordinal))
+                {
+                    if (streamedToolOutputs.Count < 50)
+                    {
+                        var tool = sseEvent.Payload.GetType().GetProperty("tool")?.GetValue(sseEvent.Payload)?.ToString() ?? "unknown";
+                        var taskId = sseEvent.Payload.GetType().GetProperty("commandTaskId")?.GetValue(sseEvent.Payload)?.ToString() ?? string.Empty;
+                        var rawOut = sseEvent.Payload.GetType().GetProperty("stdout")?.GetValue(sseEvent.Payload)?.ToString();
+                        var rawErr = sseEvent.Payload.GetType().GetProperty("stderr")?.GetValue(sseEvent.Payload)?.ToString();
+                        var throttled = sseEvent.Payload.GetType().GetProperty("throttled")?.GetValue(sseEvent.Payload) is bool b && b;
+                        var suppressed = sseEvent.Payload.GetType().GetProperty("suppressedLines")?.GetValue(sseEvent.Payload) as int?;
+                        var (bOut, outTrunc) = ToolEventSanitizer.TruncateText(rawOut, 4096);
+                        var (bErr, errTrunc) = ToolEventSanitizer.TruncateText(rawErr, 4096);
+                        if (outTrunc || errTrunc) streamedToolOutputsTruncated = true;
+                        streamedToolOutputs.Add(new GatewayChannelToolOutputSnapshot(
+                            tool, taskId, string.IsNullOrEmpty(rawOut) ? null : bOut, string.IsNullOrEmpty(rawErr) ? null : bErr, throttled, suppressed));
+                    }
+                    else
+                    {
+                        streamedToolOutputsTruncated = true;
+                    }
+                }
+                else if (string.Equals(sseEvent.Type, GatewaySseEventType.TaskStatus, StringComparison.Ordinal))
+                {
+                    var subType = sseEvent.Payload.GetType().GetProperty("type")?.GetValue(sseEvent.Payload)?.ToString();
+                    if (string.Equals(subType, "tool_result", StringComparison.Ordinal))
+                    {
+                        if (streamedToolResults.Count < 100)
+                        {
+                            var toolName = sseEvent.Payload.GetType().GetProperty("name")?.GetValue(sseEvent.Payload)?.ToString() ?? "unknown";
+                            var callId = sseEvent.Payload.GetType().GetProperty("callId")?.GetValue(sseEvent.Payload)?.ToString();
+                            var success = sseEvent.Payload.GetType().GetProperty("success")?.GetValue(sseEvent.Payload) is bool b && b;
+                            var rawResult = sseEvent.Payload.GetType().GetProperty("result")?.GetValue(sseEvent.Payload)?.ToString();
+                            var (bounded, truncated) = ToolEventSanitizer.TruncateText(rawResult, 4096);
+                            if (truncated) streamedToolResultsTruncated = true;
+                            streamedToolResults.Add(new GatewayChannelToolResultSnapshot(toolName, callId, success, bounded, truncated));
+                        }
+                        else
+                        {
+                            streamedToolResultsTruncated = true;
+                        }
+                    }
+                }
+            }
+
+            await emit(sseEvent).ConfigureAwait(false);
+        }
+
+        string? BuildPersistedToolEnvelope()
+        {
+            using var gwScope = _scopeFactory.CreateScope();
+            var channelState = gwScope.ServiceProvider.GetService<ICodexGateway>()?.GetChannelSnapshotState(message.SessionId);
+            var results = channelState?.ActiveToolResults is { Count: > 0 } liveRes
+                ? liveRes
+                : streamedToolResults;
+            var resultsTruncated = (channelState?.ToolResultsTruncated ?? false) || streamedToolResultsTruncated;
+            var rawOutputs = channelState?.ActiveToolOutputs is { Count: > 0 } liveOut
+                ? liveOut
+                : streamedToolOutputs;
+            var outputsTruncated = (channelState?.ToolOutputsTruncated ?? false) || streamedToolOutputsTruncated;
+            if (rawOutputs.Count > 50)
+            {
+                rawOutputs = rawOutputs.Take(50).ToArray();
+                outputsTruncated = true;
+            }
+
+            if (results.Count == 0 && rawOutputs.Count == 0 && !resultsTruncated && !outputsTruncated)
+            {
+                return null;
+            }
+
+            return System.Text.Json.JsonSerializer.Serialize(new
+            {
+                results,
+                resultsTruncated,
+                outputs = rawOutputs,
+                outputsTruncated
+            });
+        }
+
         if (!string.IsNullOrWhiteSpace(directApprovalAnswer))
         {
             answer = directApprovalAnswer;
@@ -761,13 +866,63 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             var chatOptions = CreateGatewayChatOptions(gatewayTools);
 
             // 5. 工具调用循环流式对话
-            (answer, usedRuntime) = await StreamWithToolLoopAsync(chatMessages, chatOptions, message, session, emit, ct);
+            try
+            {
+                (answer, usedRuntime) = await StreamWithToolLoopAsync(chatMessages, chatOptions, message, session, TrackedEmitAsync, ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                var partial = streamedAnswer.ToString();
+                var finalCancelledAnswer = string.IsNullOrWhiteSpace(partial) ? "[已取消]" : partial + "\n\n[已取消]";
+                var persistedThinking = streamedThinking.Length > 0 ? streamedThinking.ToString() : null;
+                var toolEnvelope = BuildPersistedToolEnvelope();
+                if (toolEnvelope is not null)
+                {
+                    await _chatService.AddMessageWithToolcall(
+                        message.UserId,
+                        conversationId!,
+                        userContent,
+                        finalCancelledAnswer,
+                        0,
+                        toolEnvelope,
+                        "codex-v2",
+                        message.Meta.ReplyId ?? "",
+                        "",
+                        persistedThinking);
+                }
+                else
+                {
+                    await _chatService.AddMessage(
+                        message.UserId,
+                        conversationId!,
+                        userContent,
+                        finalCancelledAnswer,
+                        0,
+                        "codex-v2",
+                        message.Meta.ReplyId ?? "",
+                        "",
+                        persistedThinking);
+                }
+                throw;
+            }
         }
 
         // 6. 持久化
-        await _chatService.AddMessage(
-            message.UserId, conversationId!, userContent, answer,
-            0, "codex-v2", message.Meta.ReplyId ?? "", "", null);
+        var thinkingForDb = streamedThinking.Length > 0 ? streamedThinking.ToString() : null;
+        var persistedEnvelope = BuildPersistedToolEnvelope();
+        if (persistedEnvelope is not null)
+        {
+            await _chatService.AddMessageWithToolcall(
+                message.UserId, conversationId!, userContent, answer,
+                0, persistedEnvelope, "codex-v2",
+                message.Meta.ReplyId ?? "", "", thinkingForDb);
+        }
+        else
+        {
+            await _chatService.AddMessage(
+                message.UserId, conversationId!, userContent, answer,
+                0, "codex-v2", message.Meta.ReplyId ?? "", "", thinkingForDb);
+        }
 
         if (!usedRuntime)
         {
@@ -1760,7 +1915,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             : projectRoot;
         var repoUrl = ResolveAuthorizedRepositoryUrl(message);
         var localRepoDirectMode = IsDirectLocalRepositoryMode(repoUrl, projectRoot);
-        var stageOneTools = BuildGatewayToolLookup(message, session, includeDeferred);
+        var stageOneTools = BuildGatewayToolLookup(message, session, includeDeferred, emit);
 
         if (!localRepoDirectMode && stageOneTools.TryGetValue("git_clone", out var gitCloneTool))
         {
@@ -2652,7 +2807,8 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
     private Dictionary<string, ICodexTool> BuildGatewayToolLookup(
         GatewayMessage message,
         CodexSession? session,
-        bool includeDeferred = false)
+        bool includeDeferred = false,
+        Func<GatewaySseEvent, ValueTask>? emit = null)
     {
         var merged = new Dictionary<string, ICodexTool>(StringComparer.OrdinalIgnoreCase);
         var currentStage = ResolveGatewayToolStage(session, message);
@@ -2678,7 +2834,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             }
         }
 
-        GuardPlanStateTools(merged, message, session);
+        GuardPlanStateTools(merged, message, session, emit);
         return merged;
     }
 
@@ -2686,7 +2842,11 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
     /// Wraps approve_plan / reject_plan / request_plan_approval so that no path can reach them without passing the
     /// shared intent decision and plan-identity gate (the decorator is the tool boundary).
     /// </summary>
-    private void GuardPlanStateTools(Dictionary<string, ICodexTool> tools, GatewayMessage message, CodexSession? session)
+    private void GuardPlanStateTools(
+        Dictionary<string, ICodexTool> tools,
+        GatewayMessage message,
+        CodexSession? session,
+        Func<GatewaySseEvent, ValueTask>? emit = null)
     {
         (string Name, GatewayGuardedPlanToolRole Role)[] guarded =
         [
@@ -2699,7 +2859,43 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         {
             if (tools.TryGetValue(name, out var tool) && tool is not GatewayGuardedPlanTool)
             {
-                tools[name] = new GatewayGuardedPlanTool(tool, role, message, session, _approvalGate, ResolveDependencyUpgradeApprover());
+                Func<CodexToolResult, CancellationToken, ValueTask>? onApprovalRequested =
+                    role == GatewayGuardedPlanToolRole.Request && emit is not null
+                        ? async (result, ct) =>
+                        {
+                            var meta = result.Metadata;
+                            var planArtifactId = meta?.GetType().GetProperty("plan_artifact_id")?.GetValue(meta)?.ToString();
+                            var planVersion = meta?.GetType().GetProperty("plan_version")?.GetValue(meta)?.ToString();
+                            var markdownHash = meta?.GetType().GetProperty("markdown_hash")?.GetValue(meta)?.ToString();
+                            var goal = meta?.GetType().GetProperty("goal")?.GetValue(meta)?.ToString();
+                            var status = meta?.GetType().GetProperty("status")?.GetValue(meta)?.ToString() ?? "ReadyForApproval";
+                            var taskCount = meta?.GetType().GetProperty("task_count")?.GetValue(meta) as int? ?? 0;
+
+                            await emit(new GatewaySseEvent
+                            {
+                                Type = GatewaySseEventType.PlanApprovalRequested,
+                                Payload = new
+                                {
+                                    type = "plan_approval_requested",
+                                    planArtifactId,
+                                    version = planVersion,
+                                    markdownHash,
+                                    goal,
+                                    status,
+                                    taskCount
+                                }
+                            }).ConfigureAwait(false);
+                        }
+                        : null;
+
+                tools[name] = new GatewayGuardedPlanTool(
+                    tool,
+                    role,
+                    message,
+                    session,
+                    _approvalGate,
+                    ResolveDependencyUpgradeApprover(),
+                    onApprovalRequested);
             }
         }
     }
@@ -2747,9 +2943,10 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
 
     private IReadOnlyList<ICodexTool> BuildGatewayRuntimeCodexTools(
         GatewayMessage message,
-        CodexSession? session)
+        CodexSession? session,
+        Func<GatewaySseEvent, ValueTask>? emit = null)
     {
-        var toolLookup = BuildGatewayToolLookup(message, session);
+        var toolLookup = BuildGatewayToolLookup(message, session, includeDeferred: false, emit);
         var runtimeToolNames = GatewayDeferredToolNames.Concat(new[]
         {
             "write_plan_file",
@@ -3331,6 +3528,25 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         var decision = CodexFlow.Core.Services.LocalRepositoryAuthorization.Evaluate(path, trustedSessionRoot, configuration);
         if (!decision.Allowed)
         {
+            var workspaceSettings = scope.ServiceProvider.GetService<CodexFlow.Core.Configuration.IWorkspaceSettingsService>();
+            if (workspaceSettings is not null)
+            {
+                var persistedRoots = workspaceSettings.ReadAllowedLocalRepositoryRoots();
+                if (persistedRoots.Count > 0)
+                {
+                    var persistedDecision = CodexFlow.Core.Services.LocalRepositoryAuthorization.Evaluate(
+                        path,
+                        trustedSessionRoot,
+                        persistedRoots);
+                    if (persistedDecision.Allowed)
+                    {
+                        return persistedDecision;
+                    }
+                }
+            }
+        }
+        if (!decision.Allowed)
+        {
             _logger.LogWarning(
                 "[Gateway] Local repository not authorized. Reason={Reason}, Path={Path}",
                 decision.Reason,
@@ -3528,6 +3744,10 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                 var result = await StreamWithRuntimeAsync(chatMessages, chatOptions, gatewayMessage, session, emit, ct, toolsEnabled);
                 return (result, UsedRuntime: true);
             }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Gateway runtime execution failed; legacy manual loop fallback is disabled.");
@@ -3676,10 +3896,20 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                                     callId = fc.CallId,
                                     arguments = fc.Arguments
                                 });
+                            var (sanitizedArgs, argsTruncated) = ToolEventSanitizer.SanitizeArguments(
+                                fc.Arguments as IReadOnlyDictionary<string, object?> ??
+                                fc.Arguments?.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal));
                             await emit(new GatewaySseEvent
                             {
                                 Type = GatewaySseEventType.ToolCall,
-                                Payload = new { type = "tool_call", name = fc.Name, callId = fc.CallId }
+                                Payload = new
+                                {
+                                    type = "tool_call",
+                                    name = fc.Name,
+                                    callId = fc.CallId,
+                                    arguments = sanitizedArgs,
+                                    argumentsTruncated = argsTruncated
+                                }
                             });
                             continue;
                         }
@@ -3747,6 +3977,10 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
 
                 if (printingThinkTag)
                     await emit(new GatewaySseEvent { Type = GatewaySseEventType.ThinkingEnd, Payload = new { type = "thinking_end", thinking_content = thinkingText.ToString() } });
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -3945,6 +4179,11 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                         var funcArgs = normalizedArgs.Count > 0
                             ? new AIFunctionArguments(normalizedArgs)
                             : null;
+                        await emit(new GatewaySseEvent
+                        {
+                            Type = GatewaySseEventType.ToolStarted,
+                            Payload = new { type = "tool_started", name = fc.Name, callId = fc.CallId }
+                        });
                         var result = await fn.InvokeAsync(funcArgs, ct);
                         toolResult = result?.ToString() ?? "(no result)";
                     }
@@ -3952,6 +4191,10 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                     {
                         toolResult = $"未知工具: {fc.Name}";
                     }
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {
@@ -4914,7 +5157,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         llmSession = CreateRuntimeSessionSnapshot(llmSession, gatewayMessage.UserId);
         var runtimeToolSession = llmSession;
         IReadOnlyList<AIFunction> ResolveRuntimeTools() => BuildGatewayTools(gatewayMessage, runtimeToolSession, emit);
-        IReadOnlyList<ICodexTool> ResolveRuntimeCodexTools() => BuildGatewayRuntimeCodexTools(gatewayMessage, runtimeToolSession);
+        IReadOnlyList<ICodexTool> ResolveRuntimeCodexTools() => BuildGatewayRuntimeCodexTools(gatewayMessage, runtimeToolSession, emit);
         async ValueTask<QueryRuntimeDynamicContextResult?> ResolveDynamicGatewayContextAsync(
             QueryRuntimeDynamicContextRequest context,
             CancellationToken dynamicCt)
@@ -5074,6 +5317,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
 
         // 执行 runtime
         var result = await _queryRuntimeEngine.ExecuteAsync(runtimeRequest, runtimeAdapter, ct);
+        ct.ThrowIfCancellationRequested();
         await RecordUserTokenUsageAsync(gatewayMessage.UserId, result.TotalPromptTokens, result.TotalCompletionTokens, result.TotalCachedPromptTokens);
         if (GatewayRuntimeFailureException.IsFailure(result.TerminationReason))
         {

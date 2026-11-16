@@ -34,6 +34,8 @@ namespace CodexFlow.Orchestration.Hosting
     public interface IGatewayChatStore
     {
         Task AddMessage(string userId, string conversationId, string userContent, string aiContent, int tokenUsed, string model, string replyId = "", string systemPrompt = "", string? thinkingContent = null);
+        Task AddMessageWithToolcall(string userId, string conversationId, string userContent, string aiContent, int tokenUsed, string toolCall, string model, string replayId = "", string systemPrompt = "", string? thinkingContent = null)
+            => AddMessage(userId, conversationId, userContent, aiContent, tokenUsed, model, replayId, systemPrompt, thinkingContent);
         Task SetName(string id, string name);
         Task<IvilsonConversation?> Get(string id);
         Task<List<IvilsonChatMessage>> GetConversationMessagesAfterAsync(string conversationId, DateTime? createdAfterUtc, int? hardLimit = null);

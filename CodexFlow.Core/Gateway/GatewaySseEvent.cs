@@ -15,6 +15,7 @@ public static class GatewaySseEventType
     public const string ThinkingContent = "thinking_content";
     public const string ThinkingEnd = "thinking_end";
     public const string ToolCall = "tool_call";
+    public const string ToolStarted = "tool_started";
 
     // --- Gateway 特有事件 ---
     public const string SetConversationId = "setconversationid";
@@ -24,6 +25,7 @@ public static class GatewaySseEventType
     public const string NextTaskStarted = "next_task_started";
     public const string RetryNotice = "retry_notice";
     public const string PlanChangeRequest = "plan_change_request";
+    public const string PlanApprovalRequested = "plan_approval_requested";
     public const string PlanningSummary = "planning_summary";
     public const string WorkerStarted = "worker_started";
     public const string WorkerWaitingUser = "worker_waiting_user";
