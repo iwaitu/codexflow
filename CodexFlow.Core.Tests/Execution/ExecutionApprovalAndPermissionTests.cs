@@ -728,9 +728,13 @@ public sealed class ExecutionApprovalAndPermissionTests : IDisposable
 
         var fakeBin = Path.Combine(_root, "b5-bin");
         Directory.CreateDirectory(fakeBin);
-        var pyName = OperatingSystem.IsWindows() ? "python.exe" : "python";
+        var pyName = OperatingSystem.IsWindows() ? "python.exe" : "python3";
         var pyFull = Path.Combine(fakeBin, pyName);
-        File.WriteAllText(pyFull, "stub");
+        File.WriteAllText(pyFull, OperatingSystem.IsWindows() ? "stub" : "#!/bin/sh\nexit 0\n");
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(pyFull, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
         var origPath = Environment.GetEnvironmentVariable("PATH");
         Environment.SetEnvironmentVariable("PATH", fakeBin + Path.PathSeparator + origPath);
 

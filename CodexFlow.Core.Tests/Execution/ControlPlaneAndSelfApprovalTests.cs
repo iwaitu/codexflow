@@ -2399,14 +2399,24 @@ public sealed class ControlPlaneAndSelfApprovalTests : IDisposable
         var pendingB81 = Assert.Single(broker.GetPendingApprovals("sess-r8-lock"));
 
         FileStream? blockingHandle = null;
+        string? lockedPermsDir = null;
+        UnixFileMode? origPermsDirMode = null;
         try
         {
             flakyResumer.Interceptor = (_, _, _, _, _) =>
             {
                 // StageAllowAlways has already written `stagedRules` to permsPath.
-                // Hold permsPath open with FileShare.Read (NO FileShare.Delete!) AND place a directory blocker on Unix if needed
-                // so SaveSnapshotUnsafe inside AbortStagedAllowAlways deterministically throws an IOException!
+                // On Windows, holding permsPath open with FileShare.Read blocks File.Move replacement.
+                // On POSIX (Linux/macOS), rename(2) unlinks open files, so we also remove write permission on the parent directory
+                // so SaveSnapshotUnsafe inside AbortStagedAllowAlways deterministically throws while keeping permsPath readable.
                 blockingHandle = new FileStream(permsPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                if (!OperatingSystem.IsWindows())
+                {
+                    lockedPermsDir = Path.GetDirectoryName(permsPath)!;
+                    origPermsDirMode = File.GetUnixFileMode(lockedPermsDir);
+                    File.SetUnixFileMode(lockedPermsDir, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+                }
+
                 return Task.FromResult(SuspendedJobResolutionStatus.RetryableFailure);
             };
 
@@ -2470,6 +2480,13 @@ public sealed class ControlPlaneAndSelfApprovalTests : IDisposable
         }
         finally
         {
+            if (!OperatingSystem.IsWindows() && lockedPermsDir is not null)
+            {
+                File.SetUnixFileMode(
+                    lockedPermsDir,
+                    origPermsDirMode ?? (UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute));
+            }
+
             blockingHandle?.Dispose();
         }
 
