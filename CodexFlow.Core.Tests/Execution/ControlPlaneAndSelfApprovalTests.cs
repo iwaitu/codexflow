@@ -2586,6 +2586,8 @@ public sealed class ControlPlaneAndSelfApprovalTests : IDisposable
         var pDegrade = Assert.Single(broker.GetPendingApprovals("sess-r8-degrade"));
 
         FileStream? commitBlocker = null;
+        string? commitLockedDir = null;
+        UnixFileMode? commitOrigDirMode = null;
         try
         {
             var runsBeforeDegrade = Volatile.Read(ref cmdRuns);
@@ -2595,6 +2597,15 @@ public sealed class ControlPlaneAndSelfApprovalTests : IDisposable
                 Assert.Equal(SuspendedJobResolutionStatus.Applied, applied);
                 // Lock permsPath AFTER DB transitioned to Queued so CommitStagedAllowAlways throws!
                 commitBlocker = new FileStream(permsPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                if (!OperatingSystem.IsWindows())
+                {
+                    // On POSIX, rename(2) / File.Move succeeds even with an open read handle;
+                    // removing write permission on the parent directory makes atomic commit fail.
+                    var dir = Path.GetDirectoryName(permsPath)!;
+                    commitOrigDirMode = File.GetUnixFileMode(dir);
+                    commitLockedDir = dir;
+                    File.SetUnixFileMode(dir, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+                }
                 return applied;
             };
 
@@ -2645,6 +2656,10 @@ public sealed class ControlPlaneAndSelfApprovalTests : IDisposable
         }
         finally
         {
+            if (!OperatingSystem.IsWindows() && commitLockedDir is not null && commitOrigDirMode.HasValue)
+            {
+                File.SetUnixFileMode(commitLockedDir, commitOrigDirMode.Value);
+            }
             commitBlocker?.Dispose();
         }
     }
