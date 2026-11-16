@@ -26,7 +26,7 @@ public class SearchFileIndexTool(
 
     private static readonly HashSet<string> ExcludedDirs = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".git", ".vs", ".idea", "bin", "obj", "node_modules", ".next",
+        ".git", ".codexflow", ".vs", ".idea", "bin", "obj", "node_modules", ".next",
         "dist", "build", "__pycache__", ".venv", "venv", ".mypy_cache",
         "target", ".gradle", ".cargo", "packages", "TestResults", "logs",
         "artifacts", ".tmp-build", "workspaces"
@@ -41,6 +41,7 @@ public class SearchFileIndexTool(
 
         if (string.IsNullOrEmpty(query)) return CodexToolResult.Error("Missing query.");
 
+        var baseRoot = ToolPathResolver.ResolveBaseRoot(workspacePath, projectRoot);
         var triedIndex = false;
         try
         {
@@ -48,14 +49,32 @@ public class SearchFileIndexTool(
             {
                 triedIndex = true;
                 var session = await sessionManager.GetOrCreateSessionAsync(sessionId, string.Empty, string.Empty, (Uri?)null).ConfigureAwait(false);
+                var indexRoot = !string.IsNullOrWhiteSpace(baseRoot)
+                    ? baseRoot
+                    : (!ToolPathResolver.HasAmbientTrustedContext &&
+                       string.IsNullOrWhiteSpace(workspacePath) &&
+                       string.IsNullOrWhiteSpace(projectRoot) &&
+                       !string.IsNullOrWhiteSpace(session.WorkspacePath) &&
+                       Directory.Exists(session.WorkspacePath) &&
+                       ToolPathResolver.IsSafeReadTarget(session.WorkspacePath, session.WorkspacePath, out _)
+                        ? Path.GetFullPath(session.WorkspacePath)
+                        : string.Empty);
+
                 var indexFact = session.ActiveFacts.FirstOrDefault(f => f.Key == "ProjectFileIndex");
-                if (indexFact != null && !string.IsNullOrEmpty(indexFact.Value))
+                // B2 (Round 4): NEVER consult cached ProjectFileIndex without a verified physical indexRoot;
+                // every cached entry MUST pass TryCombineWithinRoot + IsSafeReadTarget with zero exceptions!
+                if (!string.IsNullOrWhiteSpace(indexRoot) &&
+                    indexFact != null &&
+                    !string.IsNullOrEmpty(indexFact.Value))
                 {
                     var index = JsonConvert.DeserializeObject<List<FileIndexEntry>>(indexFact.Value);
                     if (index is { Count: > 0 })
                     {
                         var indexedMatches = index
-                            .Where(e => e.Path.Contains(query, StringComparison.OrdinalIgnoreCase))
+                            .Where(e => !string.IsNullOrWhiteSpace(e.Path) &&
+                                        e.Path.Contains(query, StringComparison.OrdinalIgnoreCase) &&
+                                        ToolPathResolver.TryCombineWithinRoot(indexRoot, e.Path, out var fullEntry) &&
+                                        ToolPathResolver.IsSafeReadTarget(fullEntry, indexRoot, out _))
                             .OrderBy(e => e.Path.Length)
                             .Take(20)
                             .ToList();
@@ -81,7 +100,6 @@ public class SearchFileIndexTool(
             StructuredLog.Error(logger, ex, "SearchFileIndex session lookup failed, falling back to workspace scan");
         }
 
-        var baseRoot = ToolPathResolver.ResolveBaseRoot(workspacePath, projectRoot);
         if (!string.IsNullOrWhiteSpace(baseRoot) && Directory.Exists(baseRoot))
         {
             var filesystemMatches = await SearchWorkspaceAsync(baseRoot, query, ct).ConfigureAwait(false);
@@ -190,7 +208,9 @@ public class SearchFileIndexTool(
             foreach (var directory in directories)
             {
                 var name = Path.GetFileName(directory);
-                if (ExcludedDirs.Contains(name) || (name.Length > 0 && name[0] == '.'))
+                if (ExcludedDirs.Contains(name) ||
+                    (name.Length > 0 && name[0] == '.') ||
+                    !ToolPathResolver.IsSafeReadTarget(directory, baseRoot, out _))
                 {
                     continue;
                 }
@@ -215,6 +235,11 @@ public class SearchFileIndexTool(
             foreach (var file in files)
             {
                 ct.ThrowIfCancellationRequested();
+                if (!ToolPathResolver.IsSafeReadTarget(file, baseRoot, out _))
+                {
+                    continue;
+                }
+
                 var relativePath = Path.GetRelativePath(baseRoot, file);
                 if (!relativePath.Contains(query, StringComparison.OrdinalIgnoreCase))
                 {

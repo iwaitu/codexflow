@@ -383,5 +383,120 @@ class SeedPasswordTests(unittest.TestCase):
             self.assertIsNone(c.read_seed_password(Path(directory) / "missing.cs"))
 
 
+class ApprovalAndProfileTests(unittest.TestCase):
+    def test_auto_approve_submits_control_plane_decision_and_records_digest_and_unsafe_warning(self):
+        with tempfile.TemporaryDirectory() as directory:
+            host_tok = Path(directory) / "host.token"
+            ctrl_tok = Path(directory) / "control.token"
+            host_tok.write_text("normal-token-12345678", encoding="utf-8")
+            ctrl_tok.write_text("control-token-87654321", encoding="utf-8")
+
+            calls = []
+            gateway = c.GatewayClient(
+                "http://127.0.0.1:1",
+                token_file=str(host_tok),
+                auto_approve=True,
+            )
+
+            def fake_request(method, path, body=None, timeout=60, *, use_control=False):
+                calls.append((method, path, body, use_control))
+                if method == "GET" and path == "/api/settings/execution":
+                    return 200, '{"backend":"Local","permissionMode":"Ask","controlPlaneAvailable":true,"selfApprovalProtection":false}'
+                if method == "GET" and path.endswith("/approvals"):
+                    return 200, '{"sessionId":"s1","count":1,"controlPlaneAvailable":true,"selfApprovalProtection":false,"items":[{"approvalId":"appr-1","requestDigest":"sha256-abc"}]}'
+                if method == "POST" and path == "/api/gateway/approvals/appr-1":
+                    return 200, '{"success":true}'
+                raise AssertionError(f"unexpected {method} {path}")
+
+            gateway.request = fake_request
+            gateway.login()
+            gateway.session_id = "s1"
+            approved = gateway.drain_pending_approvals()
+            self.assertEqual(["sha256-abc"], approved)
+            self.assertEqual(["sha256-abc"], gateway.approved_digests)
+            self.assertFalse(gateway.self_approval_protection)
+            self.assertTrue(any(m == "POST" and p == "/api/gateway/approvals/appr-1" and ctrl for (m, p, _, ctrl) in calls))
+
+            scenario = {"name": "demo", "steps": [{"wait_jobs": {}, "expect": {}}]}
+            fake = FakeClient(jobs=[])
+            fake.approved_digests = gateway.approved_digests
+            fake.self_approval_protection = gateway.self_approval_protection
+            out = s.run_scenario(scenario, fake, log=lambda _: None)
+            self.assertEqual(["sha256-abc"], out["approved_request_digests"])
+            self.assertIs(False, out["self_approval_protection"])
+            self.assertIn("防自批保证不成立", out["security_warning"])
+
+    def test_auto_approve_recovers_missed_approval_via_heartbeat_pending_count_and_replay_gap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            host_tok = Path(directory) / "host.token"
+            ctrl_tok = Path(directory) / "control.token"
+            host_tok.write_text("normal-token-12345678", encoding="utf-8")
+            ctrl_tok.write_text("control-token-87654321", encoding="utf-8")
+
+            gateway = c.GatewayClient(
+                "http://127.0.0.1:1",
+                token_file=str(host_tok),
+                auto_approve=True,
+            )
+            pending_queue = [
+                {"approvalId": "appr-missed-1", "requestDigest": "digest-from-heartbeat"},
+                {"approvalId": "appr-missed-2", "requestDigest": "digest-from-replay-gap"},
+            ]
+
+            def fake_request(method, path, body=None, timeout=60, *, use_control=False):
+                if method == "GET" and path == "/api/settings/execution":
+                    return 200, '{"backend":"Local","permissionMode":"Ask","controlPlaneAvailable":true,"selfApprovalProtection":false}'
+                if method == "POST" and path == "/api/gateway/chat":
+                    return 202, '{"messageId":"msg-1"}'
+                if method == "GET" and path == "/api/gateway/session/s-rec/approvals":
+                    if pending_queue:
+                        nxt = pending_queue[0]
+                        return 200, (
+                            '{"sessionId":"s-rec","count":1,"controlPlaneAvailable":true,"selfApprovalProtection":false,'
+                            f'"items":[{{"approvalId":"{nxt["approvalId"]}","requestDigest":"{nxt["requestDigest"]}"}}]}}'
+                        )
+                    return 200, '{"sessionId":"s-rec","count":0,"controlPlaneAvailable":true,"selfApprovalProtection":false,"items":[]}'
+                if method == "POST" and path.startswith("/api/gateway/approvals/"):
+                    assert use_control is True
+                    aid = path.rsplit("/", 1)[-1]
+                    pending_queue[:] = [p for p in pending_queue if p["approvalId"] != aid]
+                    return 200, '{"success":true}'
+                raise AssertionError(f"unexpected {method} {path}")
+
+            # Notice: ZERO `tool_approval_request` SSE events are emitted! Recovery happens strictly via
+            # heartbeat.pendingApprovals > 0 and replay_gap reconciliation.
+            sse_batches = [
+                [
+                    "id: 1",
+                    "event: heartbeat",
+                    'data: {"pendingApprovals": 1}',
+                    "",
+                    "id: 2",
+                    "event: replay_gap",
+                    'data: {"dropped": 5}',
+                    "",
+                    "id: 3",
+                    "event: done",
+                    'data: {"messageId":"msg-1"}',
+                    "",
+                ]
+            ]
+
+            gateway.request = fake_request
+            gateway.login()
+            gateway.session_id = "s-rec"
+            # Clear initial drain on entry so only heartbeat + replay_gap inside stream trigger the two approvals
+            initial_pop = pending_queue[:]
+            pending_queue.clear()
+
+            def stream_lines(_sid, _last_id):
+                pending_queue.extend(initial_pop)
+                return sse_batches.pop(0)
+
+            res = gateway.say("run task", line_source=stream_lines)
+            self.assertTrue(res.done)
+            self.assertEqual(["digest-from-heartbeat", "digest-from-replay-gap"], gateway.approved_digests)
+
+
 if __name__ == "__main__":
     unittest.main()

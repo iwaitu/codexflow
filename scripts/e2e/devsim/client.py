@@ -35,6 +35,8 @@ class ChatResult:
     """What one chat message produced, as far as a user could see it."""
     reply: str = ""
     tools: list[str] = field(default_factory=list)
+    approval_requests: list[dict[str, Any]] = field(default_factory=list)
+    needs_approval_reconcile: bool = False
     done: bool = False
     error: str | None = None
     conversation_id: str | None = None
@@ -80,6 +82,15 @@ class SseAccumulator:
 
         if self._event == "tool_call":
             self.result.tools.append(str(data.get("name") or data.get("toolName") or payload[:80]))
+        elif self._event == "tool_approval_request":
+            if data.get("approvalId") and data.get("requestDigest"):
+                self.result.approval_requests.append(data)
+            self.result.needs_approval_reconcile = True
+        elif self._event == "replay_gap":
+            self.result.needs_approval_reconcile = True
+        elif self._event == "heartbeat":
+            if int(data.get("pendingApprovals") or 0) > 0:
+                self.result.needs_approval_reconcile = True
         elif self._event in ("done", "error"):
             if self.message_id and data.get("messageId") not in (None, self.message_id):
                 return False
@@ -108,7 +119,8 @@ def read_seed_password(seed_file: Path = SEED_DATA) -> str | None:
 
 class GatewayClient:
     def __init__(self, base_url: str = "http://127.0.0.1:5205", email: str | None = None, password: str | None = None,
-                 token_file: str | None = None):
+                 token_file: str | None = None, control_token_file: str | None = None,
+                 execution_profile: str | None = None, auto_approve: bool = False):
         parsed = urlparse(base_url)
         self.host = parsed.hostname or "127.0.0.1"
         self.port = parsed.port or (443 if parsed.scheme == "https" else 80)
@@ -117,7 +129,14 @@ class GatewayClient:
         self.password = password or os.environ.get("CODEX_TEST_PASSWORD") or read_seed_password()
         # A local host has no accounts: it writes an access token next to its database, and that file is the login.
         self.token_file = token_file or os.environ.get("CODEX_TEST_TOKEN_FILE")
+        self.control_token_file = control_token_file or os.environ.get("CODEX_TEST_CONTROL_TOKEN_FILE")
+        self.execution_profile = execution_profile
+        self.auto_approve = bool(auto_approve)
         self.token: str | None = None
+        self.control_token: str | None = None
+        self.self_approval_protection: bool = True
+        self.approved_digests: list[str] = []
+        self._seen_approval_ids: set[str] = set()
         self.session_id: str | None = None
         self.conversation_id: str | None = None
         self.last_event_id = 0
@@ -127,17 +146,19 @@ class GatewayClient:
         factory = http.client.HTTPSConnection if self.https else http.client.HTTPConnection
         return factory(self.host, self.port, timeout=timeout)
 
-    def _headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
+    def _headers(self, extra: dict[str, str] | None = None, *, use_control: bool = False) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
-        if self.token:
-            headers["Authorization"] = "Bearer " + self.token
+        bearer = (self.control_token or self.token) if use_control else self.token
+        if bearer:
+            headers["Authorization"] = "Bearer " + bearer
         headers.update(extra or {})
         return headers
 
-    def request(self, method: str, path: str, body: Any = None, timeout: float = 60) -> tuple[int, str]:
+    def request(self, method: str, path: str, body: Any = None, timeout: float = 60, *, use_control: bool = False) -> tuple[int, str]:
         connection = self._connection(timeout)
         try:
-            connection.request(method, path, json.dumps(body) if body is not None else None, self._headers())
+            connection.request(method, path, json.dumps(body) if body is not None else None,
+                               self._headers(use_control=use_control))
             response = connection.getresponse()
             return response.status, response.read().decode("utf-8", "replace")
         finally:
@@ -152,9 +173,16 @@ class GatewayClient:
     # -- session --------------------------------------------------------------------------------------------------
     def login(self) -> None:
         if self.token_file:
-            self.token = Path(self.token_file).read_text(encoding="utf-8").strip()
+            token_path = Path(self.token_file)
+            self.token = token_path.read_text(encoding="utf-8").strip()
             if not self.token:
                 raise GatewayError(f"The token file {self.token_file} is empty.")
+            ctrl_candidate = Path(self.control_token_file) if self.control_token_file else (token_path.parent / "control.token")
+            if ctrl_candidate.is_file():
+                self.control_token = ctrl_candidate.read_text(encoding="utf-8").strip() or None
+            elif self.control_token_file:
+                raise GatewayError(f"The control token file {self.control_token_file} does not exist.")
+            self._configure_execution_if_needed()
             return
         if not self.password:
             raise GatewayError("No test password: set CODEX_TEST_PASSWORD (or run from a checkout that has SeedData.cs).")
@@ -162,6 +190,71 @@ class GatewayClient:
         if status != 200:
             raise GatewayError(f"Login failed: {status} {text[:200]}")
         self.token = json.loads(text)["token"]
+        self.control_token = self.token
+        self._configure_execution_if_needed()
+
+    def _configure_execution_if_needed(self) -> None:
+        if not self.execution_profile and not self.auto_approve:
+            return
+        status, text = self.request("GET", "/api/settings/execution")
+        current = json.loads(text) if status == 200 else {}
+        self.self_approval_protection = bool(current.get("selfApprovalProtection", True))
+
+        if self.execution_profile == "docker-auto":
+            backend = str(current.get("backend") or "")
+            mode = str(current.get("permissionMode") or "")
+            if backend.lower() != "docker" or mode.lower() != "fullauto":
+                if not self.control_token:
+                    raise GatewayError(
+                        "--execution-profile docker-auto requires host configured with Execution:Backend=Docker and "
+                        "PermissionMode=FullAuto (or pass --control-token-file to switch it via control plane)."
+                    )
+                put_status, put_text = self.request(
+                    "PUT",
+                    "/api/settings/execution",
+                    {"backend": "Docker", "permissionMode": "FullAuto"},
+                    use_control=True,
+                )
+                if put_status != 200:
+                    raise GatewayError(f"Applying execution profile docker-auto failed: {put_status} {put_text[:300]}")
+                current = json.loads(put_text)
+                self.self_approval_protection = bool(current.get("selfApprovalProtection", True))
+
+        if self.auto_approve:
+            if not current.get("controlPlaneAvailable", True) or not self.control_token:
+                raise GatewayError(
+                    "--auto-approve requires an active control plane and control token. When running standalone against "
+                    "Execution:Backend=Local, enable Local:UnsafeFileControlToken=true in user settings and pass --token-file."
+                )
+
+    def drain_pending_approvals(self) -> list[str]:
+        """Approves any pending execution requests for the current session via the control plane and records their digests."""
+        if not self.auto_approve or not self.session_id or not self.control_token:
+            return []
+        status, text = self.request("GET", f"/api/gateway/session/{self.session_id}/approvals")
+        if status != 200:
+            return []
+        payload = json.loads(text)
+        self.self_approval_protection = bool(payload.get("selfApprovalProtection", self.self_approval_protection))
+        newly_approved: list[str] = []
+        for item in payload.get("items") or []:
+            approval_id = item.get("approvalId")
+            digest = item.get("requestDigest")
+            if not approval_id or not digest or approval_id in self._seen_approval_ids:
+                continue
+            post_status, post_text = self.request(
+                "POST",
+                f"/api/gateway/approvals/{approval_id}",
+                {"requestDigest": digest, "decision": "allow_once", "note": "devsim --auto-approve"},
+                use_control=True,
+            )
+            if post_status == 200:
+                self._seen_approval_ids.add(approval_id)
+                self.approved_digests.append(str(digest))
+                newly_approved.append(str(digest))
+            elif post_status not in (404, 409):
+                raise GatewayError(f"Auto-approving {approval_id} failed: {post_status} {post_text[:300]}")
+        return newly_approved
 
     def open_session(self, name: str) -> str:
         status, text = self.request("POST", "/api/gateway/session?name=" + quote(name))
@@ -190,13 +283,15 @@ class GatewayClient:
         if repo:
             body["gitRepoUrl"] = repo
         upgrades = list(approve_upgrades or [])
+        needs_control = False
         if accept_debt or upgrades:
             action: dict[str, Any] = {"action": "approve", "acceptExistingDependencyDebt": bool(accept_debt)}
             if upgrades:
                 action["approveDependencyUpgrades"] = upgrades
             body["structuredAction"] = action
+            needs_control = True
 
-        status, text = self.request("POST", "/api/gateway/chat", body)
+        status, text = self.request("POST", "/api/gateway/chat", body, use_control=needs_control)
         if status != 202:
             raise GatewayError(f"Sending the message failed: {status} {text[:400]}")
         try:
@@ -208,13 +303,26 @@ class GatewayClient:
         accumulator.result.last_event_id = self.last_event_id
         deadline = time.time() + timeout_minutes * 60
         source = line_source or self._sse_lines
+        processed_approvals = 0
         while not accumulator.result.done and time.time() < deadline:
+            if self.auto_approve:
+                self.drain_pending_approvals()
             try:
                 for line in source(self.session_id, accumulator.result.last_event_id):
-                    if accumulator.feed(line):
+                    done_now = accumulator.feed(line)
+                    if self.auto_approve and (
+                        len(accumulator.result.approval_requests) > processed_approvals
+                        or accumulator.result.needs_approval_reconcile
+                    ):
+                        processed_approvals = len(accumulator.result.approval_requests)
+                        accumulator.result.needs_approval_reconcile = False
+                        self.drain_pending_approvals()
+                    if done_now:
                         break
             except (OSError, http.client.HTTPException):
                 time.sleep(2)  # the stream dropped; reconnect from the last event id
+                if self.auto_approve:
+                    self.drain_pending_approvals()
         self.last_event_id = accumulator.result.last_event_id
         if accumulator.result.conversation_id:
             self.conversation_id = accumulator.result.conversation_id
@@ -280,6 +388,8 @@ class GatewayClient:
         quiet = 0
         jobs: list[dict[str, Any]] = []
         while clock() < deadline:
+            if self.auto_approve:
+                self.drain_pending_approvals()
             jobs = self.jobs()
             quiet = 0 if any(job.get("status") in ACTIVE_JOB_STATES for job in jobs) else quiet + 1
             if quiet >= quiet_polls or (quiet and jobs and self._plan_succeeded()):

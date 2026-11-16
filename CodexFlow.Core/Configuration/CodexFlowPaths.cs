@@ -25,6 +25,9 @@ public static class CodexFlowPaths
     /// <summary>User-level settings: model key, endpoint, model name, context length. Holds secrets.</summary>
     public static string GlobalSettingsPath(string globalDirectory) => Path.Combine(globalDirectory, "appsettings.json");
 
+    /// <summary>User-level persistent <c>allow_always</c> command authorization rules.</summary>
+    public static string GlobalPermissionsPath(string globalDirectory) => Path.Combine(globalDirectory, "permissions.json");
+
     /// <summary>Project configuration in the project root; committed, shared by a team, never holds model settings.</summary>
     public static string ProjectConfigPath(string projectDirectory) => Path.Combine(projectDirectory, "codexflow.yml");
 

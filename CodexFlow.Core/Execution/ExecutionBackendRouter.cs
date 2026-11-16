@@ -27,6 +27,8 @@ public sealed class ExecutionBackendRouter : IIsolatedExecutionService
         _local = local;
     }
 
+    public ExecutionBackend ActiveBackend => _options.CurrentValue.Backend;
+
     public bool SupportsNetworkMode(ExecutionNetworkMode mode)
     {
         var backend = _options.CurrentValue.Backend;
@@ -42,9 +44,24 @@ public sealed class ExecutionBackendRouter : IIsolatedExecutionService
         TrustedExecutionContext context,
         IsolatedSessionOptions options,
         CancellationToken ct)
+        => OpenPinnedBackendSessionAsync(_options.CurrentValue.Backend, context, options, ct);
+
+    public Task<IsolatedSessionOpenResult> OpenPinnedBackendSessionAsync(
+        ExecutionBackend pinnedBackend,
+        TrustedExecutionContext context,
+        IsolatedSessionOptions options,
+        CancellationToken ct)
     {
-        var backend = _options.CurrentValue.Backend;
-        return backend switch
+        if (_options.CurrentValue.Backend != pinnedBackend)
+        {
+            return Task.FromResult(new IsolatedSessionOpenResult(
+                ExecutionDecision.Deny(
+                    ExecutionReasonCodes.ApprovalInvalidated,
+                    $"Execution backend changed from approved '{pinnedBackend}' to '{_options.CurrentValue.Backend}' before session start."),
+                null));
+        }
+
+        return pinnedBackend switch
         {
             ExecutionBackend.Docker => _docker.OpenSessionAsync(context, options, ct),
             ExecutionBackend.Local when _local is not null => _local.OpenSessionAsync(context, options, ct),
@@ -56,7 +73,7 @@ public sealed class ExecutionBackendRouter : IIsolatedExecutionService
             _ => Task.FromResult(new IsolatedSessionOpenResult(
                 ExecutionDecision.Unavailable(
                     ExecutionReasonCodes.UnsupportedIsolation,
-                    $"Unknown execution backend '{backend}'."),
+                    $"Unknown execution backend '{pinnedBackend}'."),
                 null))
         };
     }

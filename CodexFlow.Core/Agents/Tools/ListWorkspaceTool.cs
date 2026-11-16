@@ -75,9 +75,19 @@ public class ListWorkspaceTool(ILogger<ListWorkspaceTool> logger) : ICodexTool
 
         if (!Directory.Exists(targetDir))
         {
+            if (!ToolPathResolver.IsWithinRoot(targetDir, baseRoot))
+            {
+                return CodexToolResult.Error("Path traversal not allowed.");
+            }
+
             StructuredLog.Warning(logger, "Directory not found: {SubPath}. Falling back to root {BaseRoot}.", subPath, baseRoot);
             targetDir = Path.GetFullPath(baseRoot);
             subPath = ".";
+        }
+
+        if (!ToolPathResolver.IsSafeReadTarget(targetDir, baseRoot, out var unsafeReason))
+        {
+            return CodexToolResult.Error(unsafeReason);
         }
 
         try
@@ -89,6 +99,11 @@ public class ListWorkspaceTool(ILogger<ListWorkspaceTool> logger) : ICodexTool
 
             foreach (var entry in entries)
             {
+                if (!ToolPathResolver.IsSafeReadTarget(entry, baseRoot, out _))
+                {
+                    continue;
+                }
+
                 var relativePath = Path.GetRelativePath(targetDir, entry);
                 var isDir = Directory.Exists(entry);
                 var info = new FileInfo(entry);

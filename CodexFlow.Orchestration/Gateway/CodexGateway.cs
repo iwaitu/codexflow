@@ -117,12 +117,21 @@ public sealed class CodexGateway : ICodexGateway, IAsyncDisposable
 
         try
         {
+            var approvalBroker = _serviceProvider.GetService<CodexFlow.Core.Execution.Approval.IExecutionApprovalBroker>();
+
             // 发送初始连接确认事件
             yield return new GatewaySseEvent
             {
                 Seq = 0,
                 Type = GatewaySseEventType.Heartbeat,
-                Payload = new { sessionId, status = "connected", subscriberCount = channel.SubscriberCount, epoch = channel.Epoch }
+                Payload = new
+                {
+                    sessionId,
+                    status = "connected",
+                    subscriberCount = channel.SubscriberCount,
+                    epoch = channel.Epoch,
+                    pendingApprovals = approvalBroker?.GetPendingApprovalCount(sessionId) ?? 0
+                }
             };
 
             Task<GatewaySseEvent>? subscriberReadTask = null;
@@ -148,7 +157,8 @@ public sealed class CodexGateway : ICodexGateway, IAsyncDisposable
                         sessionId,
                         status = "alive",
                         subscriberCount = channel.SubscriberCount,
-                        intervalSeconds = (int)_sseHeartbeatInterval.TotalSeconds
+                        intervalSeconds = (int)_sseHeartbeatInterval.TotalSeconds,
+                        pendingApprovals = approvalBroker?.GetPendingApprovalCount(sessionId) ?? 0
                     }
                 };
             }
@@ -207,6 +217,9 @@ public sealed class CodexGateway : ICodexGateway, IAsyncDisposable
     /// <param name="sessionId">Session identifier.</param>
     public async ValueTask CloseSessionAsync(string sessionId)
     {
+        _serviceProvider.GetService<CodexFlow.Core.Execution.Approval.IExecutionApprovalBroker>()
+            ?.ClearSessionAuthorizations(sessionId);
+
         if (_channels.TryRemove(sessionId, out var channel))
         {
             await channel.DisposeAsync();

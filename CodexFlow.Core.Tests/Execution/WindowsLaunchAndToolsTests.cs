@@ -181,6 +181,7 @@ public sealed class WindowsLaunchAndToolsTests : IDisposable
 
     private sealed class LocalLayoutRecordingService : IIsolatedExecutionService
     {
+        public ExecutionBackend ActiveBackend => ExecutionBackend.Local;
         public ExecutionLayout Layout { get; }
         public List<IsolatedCommandRequest> RecordedRequests { get; } = [];
 

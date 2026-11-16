@@ -31,7 +31,7 @@ public sealed class GlobTool(ILogger<GlobTool> logger) : ICodexTool
 
     private static readonly HashSet<string> ExcludedDirs = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".git", "node_modules", "bin", "obj", ".vs", "__pycache__", ".venv", "dist", "build", ".idea",
+        ".git", ".codexflow", "node_modules", "bin", "obj", ".vs", "__pycache__", ".venv", "dist", "build", ".idea",
         "logs", "artifacts", ".tmp-build", "TestResults", "workspaces"
     };
 
@@ -66,7 +66,12 @@ public sealed class GlobTool(ILogger<GlobTool> logger) : ICodexTool
 
         var normalizedSubPath = ToolPathResolver.NormalizeDuplicateRepoPrefix(subPath, baseRoot);
         var targetDir = Path.GetFullPath(Path.Combine(baseRoot, normalizedSubPath));
-        if (!Directory.Exists(targetDir) || !ToolPathResolver.IsWithinRoot(targetDir, baseRoot))
+        if (!ToolPathResolver.IsSafeReadTarget(targetDir, baseRoot, out var unsafeDirReason))
+        {
+            return Task.FromResult(CodexToolResult.Error(unsafeDirReason));
+        }
+
+        if (!Directory.Exists(targetDir))
         {
             return Task.FromResult(CodexToolResult.Error(
                 $"Directory not found: {subPath}",
@@ -79,7 +84,7 @@ public sealed class GlobTool(ILogger<GlobTool> logger) : ICodexTool
 
         try
         {
-            foreach (var entry in EnumerateEntries(targetDir, includeDirectories, ct))
+            foreach (var entry in EnumerateEntries(targetDir, baseRoot, includeDirectories, ct))
             {
                 if (ct.IsCancellationRequested)
                 {
@@ -157,7 +162,7 @@ public sealed class GlobTool(ILogger<GlobTool> logger) : ICodexTool
         }
     }
 
-    private static IEnumerable<string> EnumerateEntries(string dir, bool includeDirectories, CancellationToken ct)
+    private static IEnumerable<string> EnumerateEntries(string dir, string baseRoot, bool includeDirectories, CancellationToken ct)
     {
         IEnumerable<string> files;
         try
@@ -182,6 +187,11 @@ public sealed class GlobTool(ILogger<GlobTool> logger) : ICodexTool
             if (ct.IsCancellationRequested)
             {
                 yield break;
+            }
+
+            if (!ToolPathResolver.IsSafeReadTarget(file, baseRoot, out _))
+            {
+                continue;
             }
 
             yield return file;
@@ -212,7 +222,8 @@ public sealed class GlobTool(ILogger<GlobTool> logger) : ICodexTool
                 yield break;
             }
 
-            if (ExcludedDirs.Contains(Path.GetFileName(child)))
+            if (ExcludedDirs.Contains(Path.GetFileName(child)) ||
+                !ToolPathResolver.IsSafeReadTarget(child, baseRoot, out _))
             {
                 continue;
             }
@@ -222,7 +233,7 @@ public sealed class GlobTool(ILogger<GlobTool> logger) : ICodexTool
                 yield return child;
             }
 
-            foreach (var nested in EnumerateEntries(child, includeDirectories, ct))
+            foreach (var nested in EnumerateEntries(child, baseRoot, includeDirectories, ct))
             {
                 yield return nested;
             }

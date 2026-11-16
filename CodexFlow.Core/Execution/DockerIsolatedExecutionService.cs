@@ -250,20 +250,59 @@ public sealed class DockerIsolatedExecutionService : IIsolatedExecutionService, 
                 }
 
                 var inputTar = Path.Combine(stagingDir, $"input{index}.tar");
-                try
+                ExecutionDecision? inputFailure = null;
+                DockerRunResult? loadInput = null;
+                // Hold a single uninterrupted FileShare.None handle across tar creation, baseline/entry hash verification, and docker exec streaming!
+                await using (var inputStream = new FileStream(inputTar, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
                 {
-                    WorkspaceSnapshotBuilder.Build(input.HostPath, inputTar, context.Limits, "tmp/" + guestSub);
+                    try
+                    {
+                        var inputSnapshot = WorkspaceSnapshotBuilder.Build(input.HostPath, inputStream, inputTar, context.Limits, "tmp/" + guestSub);
+                        if (!string.IsNullOrEmpty(input.ExpectedManifestSha256))
+                        {
+                            var packagedManifest = WorkspaceSnapshotBuilder.ComputeBaselineManifestSha256(inputSnapshot.Baseline);
+                            if (!string.Equals(packagedManifest, input.ExpectedManifestSha256, StringComparison.Ordinal))
+                            {
+                                inputFailure = ExecutionDecision.Deny(
+                                    ExecutionReasonCodes.ApprovalInvalidated,
+                                    $"Packaged Docker input archive manifest for '{guestSub}' differed from approved digest.");
+                            }
+                        }
+
+                        if (inputFailure is null && !string.IsNullOrEmpty(input.ExpectedEntryRelativePath) && !string.IsNullOrEmpty(input.ExpectedEntrySha256))
+                        {
+                            if (!WorkspacePath.TryNormalizeStrict(input.ExpectedEntryRelativePath, out var entryNorm, out _) ||
+                                !inputSnapshot.Baseline.TryGetValue(entryNorm, out var entryBaseline) ||
+                                !string.Equals(entryBaseline.Sha256, input.ExpectedEntrySha256, StringComparison.OrdinalIgnoreCase))
+                            {
+                                inputFailure = ExecutionDecision.Deny(
+                                    ExecutionReasonCodes.ApprovalInvalidated,
+                                    $"Packaged Docker input entry '{input.ExpectedEntryRelativePath}' differed from approved digest.");
+                            }
+                        }
+
+                        if (inputFailure is null)
+                        {
+                            inputStream.Position = 0;
+                            loadInput = await _docker.RunAsync(
+                                new DockerInvocation(["exec", "-i", containerId, "tar", "-x", "-C", "/", "-f", "-"]) { StdIn = inputStream, Timeout = TimeSpan.FromMinutes(2) },
+                                ct).ConfigureAwait(false);
+                        }
+                    }
+                    catch (WorkspaceSnapshotException ex)
+                    {
+                        inputFailure = ExecutionDecision.Deny(ex.ReasonCode, "input directory refused: " + ex.Message);
+                    }
                 }
-                catch (WorkspaceSnapshotException ex)
+
+                if (inputFailure is not null)
                 {
                     await RemoveContainerAsync(containerId).ConfigureAwait(false);
                     DeleteDir(stagingDir);
-                    return Refuse(ExecutionDecision.Deny(ex.ReasonCode, "input directory refused: " + ex.Message));
+                    return Refuse(inputFailure);
                 }
 
-                await using var inputStream = new FileStream(inputTar, FileMode.Open, FileAccess.Read, FileShare.Read);
-                var loadInput = await _docker.RunAsync(new DockerInvocation(["exec", "-i", containerId, "tar", "-x", "-C", "/", "-f", "-"]) { StdIn = inputStream, Timeout = TimeSpan.FromMinutes(2) }, ct).ConfigureAwait(false);
-                if (loadInput.ExitCode != 0)
+                if (loadInput!.ExitCode != 0)
                 {
                     await RemoveContainerAsync(containerId).ConfigureAwait(false);
                     DeleteDir(stagingDir);
@@ -695,6 +734,17 @@ internal sealed class DockerSession : IIsolatedExecutionSession
                 }
 
                 execArgs.AddRange(["-e", k + "=" + v]);
+            }
+        }
+
+        if (request.TrustedMinimalEnv is not null)
+        {
+            foreach (var (k, v) in request.TrustedMinimalEnv)
+            {
+                if (v is not null && EnvKey.IsMatch(k) && !v.Contains('\0', StringComparison.Ordinal))
+                {
+                    execArgs.AddRange(["-e", k + "=" + v]);
+                }
             }
         }
 

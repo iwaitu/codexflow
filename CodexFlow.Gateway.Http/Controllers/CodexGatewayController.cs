@@ -388,7 +388,16 @@ public class CodexGatewayController : ControllerBase
                 return BadRequest(structuredError);
             }
 
-            GatewayStructuredActions.Attach(message, structuredAction!);
+            if (structuredAction!.Kind is GatewayStructuredActionKind.Approve or GatewayStructuredActionKind.Execute)
+            {
+                var controlPlaneState = HttpContext?.RequestServices.GetService<CodexFlow.Core.Execution.Approval.IControlPlaneStateProvider>();
+                if (!CodexFlow.Core.Execution.Approval.ControlPlaneAuthConstants.IsControlPlanePrincipal(User, controlPlaneState))
+                {
+                    return Forbid();
+                }
+            }
+
+            GatewayStructuredActions.Attach(message, structuredAction);
         }
 
         string messageId;

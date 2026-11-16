@@ -17,6 +17,20 @@ python scripts/e2e/devsim run --all --api http://127.0.0.1:5205
 - 宿主必须已在运行，并配置好模型。登录用 `CODEX_TEST_EMAIL` / `CODEX_TEST_PASSWORD`；没设置时本地开发环境会从 `CodexFlow.Infrastructure/SeedData.cs` 读种子管理员密码。密码不会被打印或写入结果。
 - 场景会真的调用模型、真的拉仓库、真的在隔离环境里改代码并验收，耗时从几分钟到约 20 分钟不等，也会产生模型费用。
 
+### 非交互执行与审批配置（P2）
+
+本地宿主（`CodexFlow.Local`）拆分了普通面（`host.token`）与控制面（`control.token`），且 `Ask` 模式下未批准的命令不会启动。无人值守跑 `devsim` 有两种方式：
+
+1. **推荐：`--execution-profile docker-auto`**（Docker 后端 + `AutoInWorkspace` / `FullAuto`）
+   - 宿主启动时配置 `Execution__Backend=Docker` 与 `Execution__PermissionMode=FullAuto`（或传入 `--token-file .codexflow/host.token`，同目录 `control.token` 会自动用于切换配置与计划审批按钮）。
+   - 命令示例：
+     ```bash
+     python scripts/e2e/devsim run --all --api http://127.0.0.1:5206 --token-file .codexflow/host.token --execution-profile docker-auto
+     ```
+2. **控制面自动审批：`--auto-approve`**
+   - 运行器通过控制面 API（`GET /api/gateway/session/{id}/approvals` + `POST /api/gateway/approvals/{approvalId}`）自动批准挂起的执行请求，并在场景结果 JSON（`approved_request_digests`）与 `summary.md` 中记录所有被批准的 `requestDigest`。
+   - **用于 `Backend=Local` 时**：独立运行的本地后端默认不生成 `control.token`。必须在用户级配置（`~/.codexflow/appsettings.json`）或宿主环境变量中显式开启 `Local:UnsafeFileControlToken=true`（项目 `codexflow.yml` 不能开启）。开启后，宿主、审计记录与 `devsim` 报告都会醒目标注 **`防自批保证不成立 (selfApprovalProtection: false)`**。
+
 ## 场景
 
 场景是 `scenarios/*.json`，文件名就是场景名。每个场景是一串步骤，步骤失败即停止，后面的步骤标为跳过。

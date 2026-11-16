@@ -77,9 +77,9 @@ public class StructuralReadTool : ICodexTool
             }
         }
 
-        if (!Tools.ToolPathResolver.IsWithinRoot(fullPath, baseRoot))
+        if (!Tools.ToolPathResolver.IsSafeReadTarget(fullPath, baseRoot, out var unsafeReason))
         {
-            return CodexToolResult.Error("Path traversal not allowed.");
+            return CodexToolResult.Error(unsafeReason);
         }
 
         if (!File.Exists(fullPath))

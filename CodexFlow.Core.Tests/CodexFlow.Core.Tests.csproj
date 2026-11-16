@@ -26,6 +26,7 @@
   <ItemGroup>
     <ProjectReference Include="..\CodexFlow.Core\CodexFlow.Core.csproj" />
     <ProjectReference Include="..\CodexFlow.Contracts\CodexFlow.Contracts.csproj" />
+    <ProjectReference Include="..\CodexFlow.Local\CodexFlow.Local.csproj" />
   </ItemGroup>
 
 </Project>

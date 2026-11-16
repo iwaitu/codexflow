@@ -4,15 +4,15 @@
 
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Execution;
+using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Core.Models;
 using Microsoft.Extensions.Logging;
 
 namespace CodexFlow.Core.Agents.Tools;
 
 /// <summary>
-/// Multi-language snippet runner (Python / Node.js / Java). The code runs only inside the isolation backend
-/// (no network, private workspace copy, bounded resources). Snippets never export file changes. Without a
-/// host-bound trusted context or backend the call is refused; there is no host interpreter fallback.
+/// Multi-language snippet runner (Python / Node.js / Java). The code runs only inside the configured execution backend.
+/// Snippets never export file changes. Without a host-bound trusted context or backend the call is refused.
 /// </summary>
 public class ExecCodeTool(ILogger<ExecCodeTool> logger, ToolIsolationGate? isolationGate = null) : ICodexTool
 {
@@ -39,62 +39,152 @@ public class ExecCodeTool(ILogger<ExecCodeTool> logger, ToolIsolationGate? isola
         if (refusal is not null)
             return refusal;
 
-        var (languageKey, argv) = ResolveRuntime(language);
+        var (languageKey, dockerArgv) = ResolveRuntime(language);
         if (!_gate.Options.LanguageImages.TryGetValue(languageKey, out var image))
             return ToolIsolationGate.Refuse(Name, ExecutionDecision.Unavailable(ExecutionReasonCodes.UnsupportedIsolation, $"No isolation image is configured for language '{languageKey}'."));
 
-        var open = await backend.OpenSessionAsync(context, new IsolatedSessionOptions(image), ct).ConfigureAwait(false);
-        if (!open.Decision.IsAllowed || open.Session is null)
-            return ToolIsolationGate.Refuse(Name, open.Decision);
+        var codeSha256 = ExecutionRequest.Sha256Text(code);
+        string? prestageDir = null;
+        string? prestageMainJava = null;
 
-        await using var session = open.Session;
-        var timeout = TimeSpan.FromSeconds(DefaultTimeoutSeconds);
-        string? stdIn = code;
-        if (session.Layout.Backend == ExecutionBackend.Local)
+        try
         {
             if (languageKey == "java")
             {
+                prestageDir = Path.Combine(_gate.StagingRoot, "prestage", $"exec-code-{Guid.NewGuid():N}");
+                Directory.CreateDirectory(prestageDir);
+                prestageMainJava = Path.Combine(prestageDir, "Main.java");
+                await File.WriteAllTextAsync(prestageMainJava, code, ct).ConfigureAwait(false);
+            }
+
+            (IReadOnlyList<string> FullArgv, string? StdIn, IReadOnlyDictionary<string, string>? EnvOverrides)? PrepareForBackend(ExecutionBackend targetBackend)
+            {
+                if (targetBackend == ExecutionBackend.Local)
+                {
+                    if (languageKey == "java")
+                    {
+                        return (new[] { "java", "--source", "21", "Main.java" }, null, null);
+                    }
+
+                    if (languageKey == "python")
+                    {
+                        var pyExe = (OperatingSystem.IsWindows()
+                            ? FindFirstHostExecutable("python", "python3")
+                            : FindFirstHostExecutable("python3", "python")) ?? "python";
+                        return (new[] { pyExe, "-" }, code, null);
+                    }
+
+                    return (dockerArgv, code, null);
+                }
+
+                return (dockerArgv, code, null);
+            }
+
+            var initialPrepared = PrepareForBackend(backend.ActiveBackend)!.Value;
+
+            Func<bool>? verifyCopy = prestageMainJava is null
+                ? null
+                : () => File.Exists(prestageMainJava) &&
+                        string.Equals(ExecutionRequest.Sha256File(prestageMainJava), codeSha256, StringComparison.Ordinal);
+
+            var (authRefusal, authorization) = await _gate.AuthorizeBeforeExecutionAsync(
+                Name,
+                context,
+                backend,
+                initialPrepared.FullArgv,
+                stdIn: initialPrepared.StdIn,
+                codeSha256: codeSha256,
+                verifyStagedArtifactsUnchanged: verifyCopy,
+                resolveArgvForBackend: PrepareForBackend,
+                ct: ct).ConfigureAwait(false);
+            if (authRefusal is not null)
+                return authRefusal;
+
+            var open = await backend.OpenPinnedBackendSessionAsync(authorization.ApprovedBackend, context, new IsolatedSessionOptions(image), ct).ConfigureAwait(false);
+            if (!open.Decision.IsAllowed || open.Session is null)
+                return ToolIsolationGate.Refuse(Name, open.Decision);
+
+            await using var session = open.Session;
+            if (session.Layout.Backend != authorization.ApprovedBackend)
+            {
+                return ToolIsolationGate.Refuse(Name, ExecutionDecision.Deny(
+                    ExecutionReasonCodes.ApprovalInvalidated,
+                    "Opened session backend did not match approved backend."));
+            }
+
+            // Consume frozen EffectiveExecutable + EffectiveArgv from authorization (B6)
+            var launchArgs = authorization.EffectiveArgv.ToArray();
+            string? stdIn = code;
+            if (session.Layout.Backend == ExecutionBackend.Local && languageKey == "java")
+            {
                 Directory.CreateDirectory(session.Layout.TempDir);
                 var mainJava = Path.Combine(session.Layout.TempDir, "Main.java");
-                await File.WriteAllTextAsync(mainJava, code, ct).ConfigureAwait(false);
-                argv = ["java", "--source", "21", mainJava];
+                File.Copy(prestageMainJava!, mainJava, overwrite: true);
+                if (!string.Equals(ExecutionRequest.Sha256File(mainJava), codeSha256, StringComparison.Ordinal))
+                {
+                    return ToolIsolationGate.Refuse(Name, ExecutionDecision.Deny(
+                        ExecutionReasonCodes.ApprovalInvalidated,
+                        "Staged Main.java hash differed from approved codeSha256."));
+                }
+
+                for (var i = 0; i < launchArgs.Length; i++)
+                {
+                    if (string.Equals(launchArgs[i], "Main.java", StringComparison.Ordinal))
+                    {
+                        launchArgs[i] = mainJava;
+                    }
+                }
+
                 stdIn = null;
             }
-            else if (languageKey == "python")
+
+            var frozenArgv = new string[1 + launchArgs.Length];
+            frozenArgv[0] = authorization.EffectiveExecutable;
+            Array.Copy(launchArgs, 0, frozenArgv, 1, launchArgs.Length);
+
+            var timeout = TimeSpan.FromSeconds(DefaultTimeoutSeconds);
+            var run = await session.RunAsync(
+                new IsolatedCommandRequest(
+                    frozenArgv,
+                    StdIn: stdIn,
+                    Timeout: timeout,
+                    PreResolvedExecutable: authorization.IsPreResolvedExecutable),
+                ct).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+
+            switch (run.Status)
             {
-                var pyExe = FindFirstHostExecutable("python3", "python") ?? "python";
-                argv = [pyExe, "-"];
+                case IsolatedCommandStatus.TimedOut:
+                    return CodexToolResult.Error($"代码执行超时（{DefaultTimeoutSeconds}s）。");
+                case IsolatedCommandStatus.Canceled:
+                    throw new OperationCanceledException(ct);
+                case IsolatedCommandStatus.Completed:
+                case IsolatedCommandStatus.Failed:
+                    break;
+                default:
+                    StructuredLog.Warning(logger, "exec_code refused/failed: {Reason}", run.Decision.ReasonCode);
+                    return ToolIsolationGate.Refuse(Name, run.Decision);
             }
-        }
 
-        var run = await session.RunAsync(new IsolatedCommandRequest(argv, StdIn: stdIn, Timeout: timeout), ct).ConfigureAwait(false);
-        ct.ThrowIfCancellationRequested();
+            var result = new { Stdout = run.Stdout, Stderr = run.Stderr, ExitCode = run.ExitCode };
+            if (run.ExitCode != 0)
+            {
+                return CodexToolResult.Error(
+                    $"⚠️ 代码执行失败（exit code {run.ExitCode}）\n[stdout]\n{result.Stdout}\n[stderr]\n{result.Stderr}",
+                    result);
+            }
 
-        switch (run.Status)
-        {
-            case IsolatedCommandStatus.TimedOut:
-                return CodexToolResult.Error($"代码执行超时（{DefaultTimeoutSeconds}s）。");
-            case IsolatedCommandStatus.Canceled:
-                throw new OperationCanceledException(ct);
-            case IsolatedCommandStatus.Completed:
-            case IsolatedCommandStatus.Failed:
-                break;
-            default:
-                StructuredLog.Warning(logger, "exec_code refused/failed: {Reason}", run.Decision.ReasonCode);
-                return ToolIsolationGate.Refuse(Name, run.Decision);
-        }
-
-        var result = new { Stdout = run.Stdout, Stderr = run.Stderr, ExitCode = run.ExitCode };
-        if (run.ExitCode != 0)
-        {
-            return CodexToolResult.Error(
-                $"⚠️ 代码执行失败（exit code {run.ExitCode}）\n[stdout]\n{result.Stdout}\n[stderr]\n{result.Stderr}",
+            return CodexToolResult.Succeeded(
+                string.IsNullOrWhiteSpace(result.Stdout) ? "✅ 代码执行成功（无输出）" : $"✅ 执行结果:\n{result.Stdout}",
                 result);
         }
-
-        return CodexToolResult.Succeeded(
-            string.IsNullOrWhiteSpace(result.Stdout) ? "✅ 代码执行成功（无输出）" : $"✅ 执行结果:\n{result.Stdout}",
-            result);
+        finally
+        {
+            if (prestageDir is not null)
+            {
+                LocalExecutionService.TryDeleteDirectory(prestageDir);
+            }
+        }
     }
 
     private static (string Language, string[] Argv) ResolveRuntime(string language)
@@ -123,16 +213,9 @@ public class ExecCodeTool(ILogger<ExecCodeTool> logger, ToolIsolationGate? isola
                     return found;
                 }
             }
-            else
+            else if (WindowsCommandResolver.FindUnixExecutableOnPath(candidate, env) is { } unixFound)
             {
-                foreach (var dir in pathEnv.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
-                {
-                    var full = Path.Combine(dir, candidate);
-                    if (File.Exists(full))
-                    {
-                        return full;
-                    }
-                }
+                return unixFound;
             }
         }
 

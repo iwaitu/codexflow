@@ -54,12 +54,159 @@ public static class ToolPathResolver
         }
 
         var combined = Path.IsPathRooted(candidate) ? Path.GetFullPath(candidate) : Path.GetFullPath(Path.Combine(root, candidate));
-        if (!IsWithinRoot(combined, root))
+        if (!IsSafeReadTarget(combined, root, out _))
         {
             return false;
         }
 
         fullPath = combined;
+        return true;
+    }
+
+    public static bool IsCredentialOrProtectedStatePath(string fullPath, string? baseRoot = null)
+    {
+        if (string.IsNullOrWhiteSpace(fullPath))
+        {
+            return false;
+        }
+
+        if (CodexFlow.Core.Execution.WorkspacePath.IsProtectedHostPath(fullPath))
+        {
+            return true;
+        }
+
+        var fileName = Path.GetFileName(fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        if (fileName.Equals("host.token", StringComparison.OrdinalIgnoreCase) ||
+            fileName.Equals("control.token", StringComparison.OrdinalIgnoreCase) ||
+            fileName.Equals(".codexflow", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var normalized = fullPath.Replace('\\', '/');
+        if (normalized.Split('/', StringSplitOptions.RemoveEmptyEntries)
+            .Any(static seg => seg.Equals(".codexflow", StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(baseRoot) && IsWithinRoot(fullPath, baseRoot))
+        {
+            var rel = Path.GetRelativePath(baseRoot, fullPath).Replace('\\', '/');
+            if (rel.Split('/', StringSplitOptions.RemoveEmptyEntries)
+                .Any(static seg => seg.Equals(".codexflow", StringComparison.OrdinalIgnoreCase)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Authoritative read/list/search guard used by every managed workspace reading and indexing tool:
+    /// enforces containment within <paramref name="baseRoot"/>, blocks all <c>.codexflow</c> and host/control token paths,
+    /// and resolves any intermediate or leaf symlink/junction/reparse point so aliases cannot escape the workspace or
+    /// point into protected credential directories.
+    /// </summary>
+    public static bool IsSafeReadTarget(string fullPath, string baseRoot, out string reason)
+    {
+        reason = string.Empty;
+        if (!IsWithinRoot(fullPath, baseRoot))
+        {
+            reason = "Path traversal not allowed.";
+            return false;
+        }
+
+        // B1 (Round 3): Anchor link and protected-path checks to the ambient TrustedWorkspaceRoot whenever present
+        // so narrowing `project_root` to a workspace junction/symlink alias can NEVER bypass ancestor/root link inspection!
+        string boundaryRoot;
+        if (HasAmbientTrustedContext)
+        {
+            if (TrustedWorkspaceRoot is not { } trusted || !IsWithinRoot(baseRoot, trusted))
+            {
+                reason = "Workspace root is outside the ambient trusted execution boundary.";
+                return false;
+            }
+
+            boundaryRoot = Path.GetFullPath(trusted).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+        else
+        {
+            boundaryRoot = Path.GetFullPath(baseRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+
+        if (IsCredentialOrProtectedStatePath(fullPath, boundaryRoot) ||
+            IsCredentialOrProtectedStatePath(baseRoot, boundaryRoot))
+        {
+            reason = "Access to protected host credential or state path is denied.";
+            return false;
+        }
+
+        var resolvedBoundaryRoot = CodexFlow.Core.Execution.Approval.AutoInWorkspaceEvaluator.ResolveFinalTargetPath(boundaryRoot) ?? boundaryRoot;
+        if (IsCredentialOrProtectedStatePath(resolvedBoundaryRoot))
+        {
+            reason = "Workspace boundary root resolves to a protected host credential or state path.";
+            return false;
+        }
+
+        // Check EVERY existing component from fullPath up to AND INCLUDING boundaryRoot (`>=`), plus the deepest existing ancestor's final target!
+        var current = Path.GetFullPath(fullPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var checkedDeepestExisting = false;
+        while (current.Length >= boundaryRoot.Length)
+        {
+            if (File.Exists(current) || Directory.Exists(current))
+            {
+                try
+                {
+                    if (!checkedDeepestExisting)
+                    {
+                        checkedDeepestExisting = true;
+                        var deepestResolved = CodexFlow.Core.Execution.Approval.AutoInWorkspaceEvaluator.ResolveFinalTargetPath(current);
+                        if (deepestResolved is null ||
+                            !IsWithinRoot(deepestResolved, resolvedBoundaryRoot) ||
+                            IsCredentialOrProtectedStatePath(deepestResolved, resolvedBoundaryRoot))
+                        {
+                            reason = "Target path resolves via link or alias outside workspace or into protected credentials.";
+                            return false;
+                        }
+                    }
+
+                    var attributes = File.GetAttributes(current);
+                    FileSystemInfo info = Directory.Exists(current) ? new DirectoryInfo(current) : new FileInfo(current);
+                    if (attributes.HasFlag(FileAttributes.ReparsePoint) || info.LinkTarget is not null)
+                    {
+                        var resolved = CodexFlow.Core.Execution.Approval.AutoInWorkspaceEvaluator.ResolveFinalTargetPath(current);
+                        if (resolved is null ||
+                            !IsWithinRoot(resolved, resolvedBoundaryRoot) ||
+                            IsCredentialOrProtectedStatePath(resolved, resolvedBoundaryRoot))
+                        {
+                            reason = "Link, junction, or reparse point escaping workspace or targeting protected credentials is denied.";
+                            return false;
+                        }
+                    }
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+                {
+                    reason = "Unable to verify target path safety.";
+                    return false;
+                }
+            }
+
+            if (current.Length == boundaryRoot.Length)
+            {
+                break;
+            }
+
+            var parent = Path.GetDirectoryName(current);
+            if (string.IsNullOrEmpty(parent) || string.Equals(parent, current, StringComparison.Ordinal))
+            {
+                break;
+            }
+
+            current = parent;
+        }
+
         return true;
     }
 
@@ -73,17 +220,35 @@ public static class ToolPathResolver
                 return string.Empty;
             }
 
-            // A project_root narrower than the trusted root (a nested repo) is fine; anything else is ignored.
-            return !string.IsNullOrWhiteSpace(projectRoot) && Directory.Exists(projectRoot) && IsWithinRoot(projectRoot, trusted)
+            // A project_root narrower than the trusted root is accepted ONLY if it passes full link & credential safety against `trusted`.
+            return !string.IsNullOrWhiteSpace(projectRoot) &&
+                   Directory.Exists(projectRoot) &&
+                   IsWithinRoot(projectRoot, trusted) &&
+                   IsSafeReadTarget(projectRoot, trusted, out _)
                 ? Path.GetFullPath(projectRoot)
                 : trusted;
         }
 
         if (!string.IsNullOrWhiteSpace(projectRoot) && Directory.Exists(projectRoot))
-            return Path.GetFullPath(projectRoot);
+        {
+            var fullProj = Path.GetFullPath(projectRoot);
+            if (!string.IsNullOrWhiteSpace(workspacePath) && Directory.Exists(workspacePath))
+            {
+                var fullWs = Path.GetFullPath(workspacePath);
+                if (IsWithinRoot(fullProj, fullWs) && !IsSafeReadTarget(fullProj, fullWs, out _))
+                {
+                    return string.Empty;
+                }
+            }
+
+            return IsSafeReadTarget(fullProj, fullProj, out _) ? fullProj : string.Empty;
+        }
 
         if (!string.IsNullOrWhiteSpace(workspacePath) && Directory.Exists(workspacePath))
-            return Path.GetFullPath(workspacePath);
+        {
+            var fullWs = Path.GetFullPath(workspacePath);
+            return IsSafeReadTarget(fullWs, fullWs, out _) ? fullWs : string.Empty;
+        }
 
         return string.Empty;
     }
@@ -295,11 +460,21 @@ public static class ToolPathResolver
         var relative = full[(root.Length + 1)..];
         foreach (var segment in relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
         {
-            if (segment.Equals(".git", StringComparison.OrdinalIgnoreCase) || segment.Equals(".gitmodules", StringComparison.OrdinalIgnoreCase))
+            if (segment.Equals(".git", StringComparison.OrdinalIgnoreCase) ||
+                segment.Equals(".gitmodules", StringComparison.OrdinalIgnoreCase) ||
+                segment.Equals(".codexflow", StringComparison.OrdinalIgnoreCase) ||
+                segment.Equals("host.token", StringComparison.OrdinalIgnoreCase) ||
+                segment.Equals("control.token", StringComparison.OrdinalIgnoreCase))
             {
-                reason = "git metadata is protected";
+                reason = "protected metadata or credential path is not writable";
                 return false;
             }
+        }
+
+        if (CodexFlow.Core.Execution.WorkspacePath.IsProtectedHostPath(full))
+        {
+            reason = "protected host credential path is not writable";
+            return false;
         }
 
         var current = full;
@@ -325,6 +500,11 @@ public static class ToolPathResolver
     /// <summary>Reads a text file once and returns its text together with the SHA-256 of the exact bytes (the version read).</summary>
     public static (string Text, string Sha256) ReadTextWithVersion(string fullPath)
     {
+        if (IsCredentialOrProtectedStatePath(fullPath, TrustedWorkspaceRoot))
+        {
+            throw new UnauthorizedAccessException($"Refusing to read protected host credential or state file: {Path.GetFileName(fullPath)}");
+        }
+
         var bytes = File.ReadAllBytes(fullPath);
         using var reader = new StreamReader(new MemoryStream(bytes), System.Text.Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
         return (reader.ReadToEnd(), CodexFlow.Core.Execution.WorkspaceFileWriter.Sha256Hex(bytes));

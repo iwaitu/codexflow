@@ -82,18 +82,42 @@ public class RunTestsTool : ICodexTool
         var (command, args) = BuildCommand(language, adapter, baseRoot, testPath, resolvedTestPath);
         StructuredLog.Information(_logger, "Resolved test command: {Command} {Args}", command, args);
 
-        // 3. 在隔离容器中执行（不导出任何源码变更）
+        // 3. 在隔离环境中执行（审批在打开会话和启动任何进程之前进行；消费冻结的可执行文件与后端；不导出任何源码变更）
         try
         {
             var argv = SplitCommandLine(command, args);
+            var (authRefusal, authorization) = await _gate.AuthorizeBeforeExecutionAsync(
+                Name,
+                context,
+                backend,
+                argv,
+                resolveArgvForBackend: _ => (argv, null, null),
+                ct: ct).ConfigureAwait(false);
+            if (authRefusal is not null)
+                return authRefusal;
+
             var image = _gate.Options.ExecutableImages.TryGetValue(argv[0], out var mapped) ? mapped : _gate.Options.CommandImage;
-            var open = await backend.OpenSessionAsync(context, new IsolatedSessionOptions(image), ct).ConfigureAwait(false);
+            var open = await backend.OpenPinnedBackendSessionAsync(authorization.ApprovedBackend, context, new IsolatedSessionOptions(image), ct).ConfigureAwait(false);
             if (!open.Decision.IsAllowed || open.Session is null)
                 return ToolIsolationGate.Refuse(Name, open.Decision);
 
             await using var session = open.Session;
+            if (session.Layout.Backend != authorization.ApprovedBackend)
+                return ToolIsolationGate.Refuse(Name, ExecutionDecision.Deny(ExecutionReasonCodes.ApprovalInvalidated, "Opened session backend did not match approved backend."));
+
+            var frozenArgv = new string[1 + authorization.EffectiveArgv.Count];
+            frozenArgv[0] = authorization.EffectiveExecutable;
+            for (var i = 0; i < authorization.EffectiveArgv.Count; i++)
+            {
+                frozenArgv[i + 1] = authorization.EffectiveArgv[i];
+            }
+
             var run = await session.RunAsync(
-                new IsolatedCommandRequest(argv, Timeout: TimeSpan.FromSeconds(timeoutSeconds)), ct).ConfigureAwait(false);
+                new IsolatedCommandRequest(
+                    frozenArgv,
+                    Timeout: TimeSpan.FromSeconds(timeoutSeconds),
+                    PreResolvedExecutable: session.Layout.Backend == ExecutionBackend.Local),
+                ct).ConfigureAwait(false);
             ct.ThrowIfCancellationRequested();
 
             if (run.Status == IsolatedCommandStatus.TimedOut)

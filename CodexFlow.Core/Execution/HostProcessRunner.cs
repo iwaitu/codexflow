@@ -52,7 +52,9 @@ public static class HostProcessRunner
             CreateNoWindow = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
-            RedirectStandardInput = invocation.StdIn is not null || invocation.StdInText is not null
+            // Always redirect stdin so child processes never inherit the parent host's Console.In pipe handle
+            // (e.g. Local:TokenDelivery=Pipe). When no input is supplied, StandardInput is closed immediately after start.
+            RedirectStandardInput = true
         };
 
         if (!string.IsNullOrWhiteSpace(invocation.WorkingDirectory))

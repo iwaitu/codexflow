@@ -35,7 +35,7 @@ public class SearchInFilesTool(ILogger<SearchInFilesTool> logger) : ICodexTool
 
     private static readonly HashSet<string> ExcludedDirs = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".git", "node_modules", "bin", "obj", ".vs", "__pycache__", ".venv", "dist", "build", ".idea",
+        ".git", ".codexflow", "node_modules", "bin", "obj", ".vs", "__pycache__", ".venv", "dist", "build", ".idea",
         "logs", "artifacts", ".tmp-build", "TestResults", "workspaces"
     };
 
@@ -93,6 +93,11 @@ public class SearchInFilesTool(ILogger<SearchInFilesTool> logger) : ICodexTool
             }
         }
 
+        if (!ToolPathResolver.IsSafeReadTarget(targetDir, baseRoot, out var unsafeDirReason))
+        {
+            return CodexToolResult.Error(unsafeDirReason);
+        }
+
         var fallbackHeader = fellBackToRoot
             ? $"Requested directory `{requestedSubPath}` not found. Searched from `.` instead.{Environment.NewLine}"
             : string.Empty;
@@ -117,7 +122,7 @@ public class SearchInFilesTool(ILogger<SearchInFilesTool> logger) : ICodexTool
             var matchedFiles = new List<string>();
             var matchedFileSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            foreach (var file in EnumerateFiles(targetDir, extensions, includeGeneratedArtifacts))
+            foreach (var file in EnumerateFiles(targetDir, baseRoot, extensions, includeGeneratedArtifacts))
             {
                 if (ct.IsCancellationRequested) break;
                 if (matchCount >= maxResults) break;
@@ -217,6 +222,7 @@ public class SearchInFilesTool(ILogger<SearchInFilesTool> logger) : ICodexTool
 
     private static IEnumerable<string> EnumerateFiles(
         string dir,
+        string baseRoot,
         HashSet<string>? extensions,
         bool includeGeneratedArtifacts)
     {
@@ -240,8 +246,15 @@ public class SearchInFilesTool(ILogger<SearchInFilesTool> logger) : ICodexTool
 
         foreach (var d in dirs)
         {
-            if (!includeGeneratedArtifacts && ExcludedDirs.Contains(Path.GetFileName(d))) continue;
-            foreach (var f in EnumerateFiles(d, extensions, includeGeneratedArtifacts))
+            var dirName = Path.GetFileName(d);
+            if (dirName.Equals(".codexflow", StringComparison.OrdinalIgnoreCase) ||
+                !ToolPathResolver.IsSafeReadTarget(d, baseRoot, out _))
+            {
+                continue;
+            }
+
+            if (!includeGeneratedArtifacts && ExcludedDirs.Contains(dirName)) continue;
+            foreach (var f in EnumerateFiles(d, baseRoot, extensions, includeGeneratedArtifacts))
                 yield return f;
         }
 
@@ -265,6 +278,11 @@ public class SearchInFilesTool(ILogger<SearchInFilesTool> logger) : ICodexTool
 
         foreach (var f in files)
         {
+            if (!ToolPathResolver.IsSafeReadTarget(f, baseRoot, out _))
+            {
+                continue;
+            }
+
             if (!includeGeneratedArtifacts && ShouldSkipArtifactFile(f))
             {
                 continue;

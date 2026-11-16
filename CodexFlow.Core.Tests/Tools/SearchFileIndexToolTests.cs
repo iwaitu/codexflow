@@ -36,46 +36,55 @@ public class SearchFileIndexToolTests
     public async Task ExecuteAsync_WithIndex_ReturnsMatches()
     {
         // Arrange
-        var sessionId = "test-session";
-        var index = new List<FileIndexEntry> {
-            new FileIndexEntry { Path = "src/Core/Services/ProjectScanner.cs", Type = "C# Source", Size = 100 },
-            new FileIndexEntry { Path = "src/Web/Controllers/CodexController.cs", Type = "C# Source", Size = 200 },
-            new FileIndexEntry { Path = "README.md", Type = "Markdown", Size = 50 }
-        };
-        var indexJson = JsonConvert.SerializeObject(index);
-        
-        var session = new CodexSession { 
-            Id = sessionId, 
-            ActiveFacts = {
-                new MemoryEntry("ProjectFileIndex", indexJson, "fact", DateTime.UtcNow) 
-            }
-        };
+        var workspaceDir = Path.Combine(Path.GetTempPath(), "codex-sfi-idx-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(workspaceDir);
+        try
+        {
+            var sessionId = "test-session";
+            var index = new List<FileIndexEntry> {
+                new FileIndexEntry { Path = "src/Core/Services/ProjectScanner.cs", Type = "C# Source", Size = 100 },
+                new FileIndexEntry { Path = "src/Web/Controllers/CodexController.cs", Type = "C# Source", Size = 200 },
+                new FileIndexEntry { Path = "README.md", Type = "Markdown", Size = 50 }
+            };
+            var indexJson = JsonConvert.SerializeObject(index);
 
-        var mockStore = new Mock<ISessionStore>();
-        mockStore.Setup(s => s.GetSessionAsync(sessionId)).ReturnsAsync(session);
-        // GetOrCreateSessionAsync calls GetSessionAsync internally.
+            var session = new CodexSession {
+                Id = sessionId,
+                WorkspacePath = workspaceDir,
+                ActiveFacts = {
+                    new MemoryEntry("ProjectFileIndex", indexJson, "fact", DateTime.UtcNow)
+                }
+            };
 
-        var mockMemory = new Mock<IMemoryService>();
-        mockMemory.Setup(m => m.RecallFactsAsync(sessionId, It.IsAny<string>(), It.IsAny<CancellationToken>()))
-                  .ReturnsAsync(new List<MemoryEntry> { 
-                      new MemoryEntry("ProjectFileIndex", indexJson, "fact", DateTime.UtcNow) 
-                  });
+            var mockStore = new Mock<ISessionStore>();
+            mockStore.Setup(s => s.GetSessionAsync(sessionId, It.IsAny<CancellationToken>())).ReturnsAsync(session);
 
-        var logger = Mock.Of<ILogger<CodexSessionManager>>();
-        var manager = new CodexSessionManager(mockStore.Object, mockMemory.Object, logger);
-        
-        var toolLogger = Mock.Of<ILogger<SearchFileIndexTool>>();
-        var tool = new SearchFileIndexTool(manager, toolLogger);
+            var mockMemory = new Mock<IMemoryService>();
+            mockMemory.Setup(m => m.RecallFactsAsync(sessionId, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                      .ReturnsAsync(new List<MemoryEntry> {
+                          new MemoryEntry("ProjectFileIndex", indexJson, "fact", DateTime.UtcNow)
+                      });
 
-        // Act
-        var result = await tool.ExecuteAsync(new Dictionary<string, object?> { ["session_id"] = sessionId, ["query"] = "ProjectScanner" });
+            var logger = Mock.Of<ILogger<CodexSessionManager>>();
+            var manager = new CodexSessionManager(mockStore.Object, mockMemory.Object, logger);
 
-        // Assert
-        Assert.Equal(ToolResultStatus.Success, result.Status);
-        Assert.Contains("src/Core/Services/ProjectScanner.cs", result.Output);
-        Assert.DoesNotContain("CodexController.cs", result.Output);
-        Assert.NotNull(result.Summary);
-        Assert.Contains("src/Core/Services/ProjectScanner.cs", result.Summary!, StringComparison.Ordinal);
+            var toolLogger = Mock.Of<ILogger<SearchFileIndexTool>>();
+            var tool = new SearchFileIndexTool(manager, toolLogger);
+
+            // Act
+            var result = await tool.ExecuteAsync(new Dictionary<string, object?> { ["session_id"] = sessionId, ["query"] = "ProjectScanner" });
+
+            // Assert
+            Assert.Equal(ToolResultStatus.Success, result.Status);
+            Assert.Contains("src/Core/Services/ProjectScanner.cs", result.Output);
+            Assert.DoesNotContain("CodexController.cs", result.Output);
+            Assert.NotNull(result.Summary);
+            Assert.Contains("src/Core/Services/ProjectScanner.cs", result.Summary!, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(workspaceDir, recursive: true);
+        }
     }
 
     [Fact]

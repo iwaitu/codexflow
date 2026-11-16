@@ -33,6 +33,7 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
     private readonly QreV2.RuntimeContextOptions _runtimeContextOptions;
     private readonly QreV2.IRuntimeAuditSink? _auditSink;
     private readonly string? _auditDirectory;
+    private readonly CodexFlow.Core.Execution.Approval.IExecutionApprovalBroker? _approvalBroker;
 
     public QreV2BackedQueryRuntimeEngine(
         ILLMExecutor llmExecutor,
@@ -42,7 +43,8 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
         IRuntimeHookDispatcher? runtimeHookDispatcher = null,
         IOptions<QueryRuntimeBackendOptions>? backendOptions = null,
         ContextCompressionTriggerOptions? contextOptions = null,
-        QreV2.IRuntimeAuditSink? auditSink = null)
+        QreV2.IRuntimeAuditSink? auditSink = null,
+        CodexFlow.Core.Execution.Approval.IExecutionApprovalBroker? approvalBroker = null)
     {
         _llmExecutor = llmExecutor ?? throw new ArgumentNullException(nameof(llmExecutor));
         _contextWindowManager = contextWindowManager;
@@ -54,6 +56,7 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
         _runtimeContextOptions = CreateContextOptions(contextOptions ?? new ContextCompressionTriggerOptions());
         _auditSink = auditSink;
         _auditDirectory = string.IsNullOrWhiteSpace(backendOptions?.Value.AuditDirectory) ? null : backendOptions!.Value.AuditDirectory;
+        _approvalBroker = approvalBroker;
     }
 
     public async Task<QueryRuntimeResult> ExecuteAsync(
@@ -74,6 +77,10 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
             startedAt,
             Math.Max(1, request.MaxRounds),
             EstimateContextChars(request.InitialMessages)));
+
+        using var turnTimeoutScope = CodexFlow.Core.Execution.Approval.AmbientTurnTimeoutController.Current is null
+            ? CodexFlow.Core.Execution.Approval.AmbientTurnTimeoutController.BeginScope(out _)
+            : null;
 
         try
         {
@@ -224,6 +231,12 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             stopwatch.Stop();
+            if (CodexFlow.Core.Execution.Approval.AmbientBackgroundJobApprovalContext.Current?.SuspendedApproval is not null)
+            {
+                throw;
+            }
+
+            _approvalBroker?.CancelSessionApprovals(request.SessionId, "Turn cancelled.");
             return BuildFailureResult(
                 request,
                 queryId,

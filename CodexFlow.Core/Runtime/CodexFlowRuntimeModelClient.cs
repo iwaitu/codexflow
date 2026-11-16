@@ -127,20 +127,30 @@ internal sealed class CodexFlowRuntimeModelClient(
     {
         ValidateExposedTools(request);
 
-        using var timeoutCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        if (_timeout > TimeSpan.Zero)
+        var ambientTimeout = CodexFlow.Core.Execution.Approval.AmbientTurnTimeoutController.Current;
+        using var pausableDeadline = ambientTimeout is not null && _timeout > TimeSpan.Zero
+            ? ambientTimeout.CreateDeadline(_timeout, ct)
+            : null;
+        using var fallbackCts = pausableDeadline is null
+            ? CancellationTokenSource.CreateLinkedTokenSource(ct)
+            : null;
+        if (fallbackCts is not null && _timeout > TimeSpan.Zero)
         {
-            timeoutCancellation.CancelAfter(_timeout);
+            fallbackCts.CancelAfter(_timeout);
         }
+
+        var attemptToken = pausableDeadline?.Token ?? fallbackCts!.Token;
+        bool IsAttemptTimedOut() => pausableDeadline is not null
+            ? pausableDeadline.IsTimedOut && !ct.IsCancellationRequested
+            : fallbackCts!.IsCancellationRequested && !ct.IsCancellationRequested;
 
         QreProtocol.RuntimeModelRequest effectiveRequest;
         try
         {
-            effectiveRequest = await PrepareEffectiveRequestAsync(request, timeoutCancellation.Token)
+            effectiveRequest = await PrepareEffectiveRequestAsync(request, attemptToken)
                 .ConfigureAwait(false);
         }
-        catch (OperationCanceledException ex) when (
-            timeoutCancellation.IsCancellationRequested && !ct.IsCancellationRequested)
+        catch (OperationCanceledException ex) when (IsAttemptTimedOut())
         {
             throw new QreProtocol.RuntimeModelClientException(
                 new QreProtocol.RuntimeError(
@@ -178,10 +188,10 @@ internal sealed class CodexFlowRuntimeModelClient(
             });
 
         var stream = attemptContext is null
-            ? meaiClient.StreamAsync(effectiveRequest, timeoutCancellation.Token)
-            : meaiClient.StreamAsync(effectiveRequest, attemptContext, timeoutCancellation.Token);
+            ? meaiClient.StreamAsync(effectiveRequest, attemptToken)
+            : meaiClient.StreamAsync(effectiveRequest, attemptContext, attemptToken);
 
-        await using var enumerator = stream.GetAsyncEnumerator(timeoutCancellation.Token);
+        await using var enumerator = stream.GetAsyncEnumerator(attemptToken);
         while (true)
         {
             QreProtocol.RuntimeModelStreamEvent current;
@@ -194,8 +204,7 @@ internal sealed class CodexFlowRuntimeModelClient(
 
                 current = enumerator.Current;
             }
-            catch (OperationCanceledException ex) when (
-                timeoutCancellation.IsCancellationRequested && !ct.IsCancellationRequested)
+            catch (OperationCanceledException ex) when (IsAttemptTimedOut())
             {
                 throw new QreProtocol.RuntimeModelClientException(
                     new QreProtocol.RuntimeError(

@@ -32,7 +32,10 @@ SCENARIO_DIR = Path(__file__).resolve().parent / "scenarios"
 
 
 def render_summary(results: list[dict]) -> str:
-    lines = ["# Developer simulation", "", "| Scenario | Result | Duration | First failure |", "|---|---|---|---|"]
+    lines = ["# Developer simulation", ""]
+    if any(r.get("self_approval_protection") is False for r in results):
+        lines += ["> **WARNING: 防自批保证不成立 (`selfApprovalProtection: false` / `Local:UnsafeFileControlToken=true`)**", ""]
+    lines += ["| Scenario | Result | Duration | First failure |", "|---|---|---|---|"]
     for result in results:
         failure = ""
         for step in result["steps"]:
@@ -43,6 +46,9 @@ def render_summary(results: list[dict]) -> str:
         lines.append(f"| {result['scenario']} | {'PASS' if result['passed'] else 'FAIL'} | {result['duration_s']}s | {failure[:300]} |")
     passed = sum(1 for result in results if result["passed"])
     lines += ["", f"{passed}/{len(results)} scenarios passed."]
+    digests = [d for r in results for d in (r.get("approved_request_digests") or [])]
+    if digests:
+        lines += ["", f"Auto-approved `requestDigest` count: {len(digests)} (`{', '.join(digests[:10])}`)."]
     return "\n".join(lines) + "\n"
 
 
@@ -82,7 +88,13 @@ def execute(selected: list[dict], args: argparse.Namespace, out_dir: Path | None
     if out_dir:
         out_dir.mkdir(parents=True, exist_ok=True)
     for scenario in selected:
-        client = GatewayClient(args.api, token_file=getattr(args, "token_file", None))
+        client = GatewayClient(
+            args.api,
+            token_file=getattr(args, "token_file", None),
+            control_token_file=getattr(args, "control_token_file", None),
+            execution_profile=getattr(args, "execution_profile", None),
+            auto_approve=getattr(args, "auto_approve", False),
+        )
         try:
             result = run_scenario(scenario, client, repo=args.repo, log=lambda text: print(text, flush=True), fixture_resolver=resolve_fixture)
         except (GatewayError, ScenarioError) as error:
@@ -130,6 +142,13 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--api", default="http://127.0.0.1:5205", help="host base URL")
         p.add_argument("--token-file", default=None,
                        help="access token file of a local host (.codexflow/host.token); replaces the account login")
+        p.add_argument("--control-token-file", default=None,
+                       help="control-plane token file (.codexflow/control.token); defaults to sibling control.token next to --token-file")
+        p.add_argument("--execution-profile", choices=["docker-auto"], default=None,
+                       help="preferred headless execution profile: verifies/configures Docker backend with AutoInWorkspace/FullAuto")
+        p.add_argument("--auto-approve", action="store_true",
+                       help="automatically approve interactive execution requests via control-plane API and record requestDigests "
+                            "(on Local backend requires Local:UnsafeFileControlToken=true and marks selfApprovalProtection=false)")
         p.add_argument("--repo", default=None, help="repository URL overriding the scenario's own")
         p.add_argument("--label", default=None, help="name of the host build under test (recorded in the results and shown in the trend)")
         p.add_argument("--fixtures-dir", default=".tmp/devsim-fixtures",

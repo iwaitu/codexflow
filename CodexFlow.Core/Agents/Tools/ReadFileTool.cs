@@ -116,8 +116,8 @@ public class ReadFileTool : ICodexTool
             }
         }
 
-        if (!ToolPathResolver.IsWithinRoot(fullPath, baseRoot))
-            return CodexToolResult.Error("Path traversal not allowed.");
+        if (!ToolPathResolver.IsSafeReadTarget(fullPath, baseRoot, out var unsafeReason))
+            return CodexToolResult.Error(unsafeReason);
 
         if (!File.Exists(fullPath))
             return CodexToolResult.Error(

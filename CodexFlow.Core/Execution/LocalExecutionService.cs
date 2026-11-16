@@ -23,6 +23,8 @@ public sealed class LocalExecutionService : IIsolatedExecutionService, IDisposab
     private readonly IsolationOptions _options;
     private readonly ILogger<LocalExecutionService> _logger;
     private readonly IWorkspaceExportObserver? _observer;
+    private readonly IOptionsMonitor<ExecutionOptions>? _executionOptions;
+    private readonly Func<HostProcessInvocation, CancellationToken, Task<HostProcessResult>> _processRunner;
     private readonly ConcurrentDictionary<string, byte> _activeSessions = new(StringComparer.Ordinal);
     private readonly object _leaseGate = new();
     private IsolationOwnerLease? _lease;
@@ -30,18 +32,26 @@ public sealed class LocalExecutionService : IIsolatedExecutionService, IDisposab
     public string InstanceId { get; } = Guid.NewGuid().ToString("N");
     internal string StagingRoot { get; }
     internal string LocalRoot => Path.Combine(StagingRoot, "local");
+    public ExecutionBackend ActiveBackend => ExecutionBackend.Local;
 
     public LocalExecutionService(
         IOptions<IsolationOptions> options,
         ILogger<LocalExecutionService> logger,
-        IWorkspaceExportObserver? observer = null)
+        IWorkspaceExportObserver? observer = null,
+        Func<HostProcessInvocation, CancellationToken, Task<HostProcessResult>>? processRunner = null,
+        IOptionsMonitor<ExecutionOptions>? executionOptions = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         _options = options.Value;
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _observer = observer;
+        _processRunner = processRunner ?? HostProcessRunner.RunAsync;
+        _executionOptions = executionOptions;
         StagingRoot = _options.StagingRoot ?? Path.Combine(Path.GetTempPath(), "codexflow-isolation");
     }
+
+    internal Task<HostProcessResult> RunProcessAsync(HostProcessInvocation invocation, CancellationToken ct)
+        => _processRunner(invocation, ct);
 
     public bool SupportsNetworkMode(ExecutionNetworkMode mode)
         => mode is ExecutionNetworkMode.None or ExecutionNetworkMode.Host;
@@ -304,7 +314,7 @@ public sealed class LocalExecutionService : IIsolatedExecutionService, IDisposab
         }
     }
 
-    private static void CopyInputDirectories(
+    internal static void CopyInputDirectories(
         IReadOnlyList<IsolatedInputDirectory> inputs,
         string inputsRoot,
         ExecutionResourceLimits limits)
@@ -324,14 +334,30 @@ public sealed class LocalExecutionService : IIsolatedExecutionService, IDisposab
                 throw new WorkspaceSnapshotException(ExecutionReasonCodes.WorkspaceNotFound, $"Input directory not found: {srcRoot}");
             }
 
+            // Reject input roots that are links/junctions or resolve into protected host credential/state directories!
+            var srcDirInfo = new DirectoryInfo(srcRoot);
+            var resolvedSrcRoot = Approval.AutoInWorkspaceEvaluator.ResolveFinalTargetPath(srcRoot);
+            if (srcDirInfo.LinkTarget is not null ||
+                srcDirInfo.Attributes.HasFlag(FileAttributes.ReparsePoint) ||
+                resolvedSrcRoot is null ||
+                WorkspacePath.IsProtectedHostPath(srcRoot) ||
+                WorkspacePath.IsProtectedHostPath(resolvedSrcRoot) ||
+                resolvedSrcRoot.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries)
+                    .Any(static s => s.Equals(".codexflow", StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new WorkspaceSnapshotException(
+                    ExecutionReasonCodes.InvalidRequest,
+                    $"Input directory root '{srcRoot}' is a link/reparse point or targets a protected host directory.");
+            }
+
             var dstRoot = Path.Combine(inputsRoot, subNorm.Replace('/', Path.DirectorySeparatorChar));
             Directory.CreateDirectory(dstRoot);
 
-            var stack = new Stack<(string Src, string Dst)>();
-            stack.Push((srcRoot, dstRoot));
+            var stack = new Stack<(string Src, string Dst, string Rel)>();
+            stack.Push((srcRoot, dstRoot, string.Empty));
             while (stack.Count > 0)
             {
-                var (src, dst) = stack.Pop();
+                var (src, dst, rel) = stack.Pop();
                 foreach (var child in new DirectoryInfo(src).EnumerateFileSystemInfos())
                 {
                     if (child.LinkTarget is not null || child.Attributes.HasFlag(FileAttributes.ReparsePoint))
@@ -339,7 +365,10 @@ public sealed class LocalExecutionService : IIsolatedExecutionService, IDisposab
                         continue;
                     }
 
-                    if (string.Equals(child.Name, ".git", StringComparison.OrdinalIgnoreCase))
+                    var childRel = rel.Length == 0 ? child.Name : rel + "/" + child.Name;
+                    if (!WorkspacePath.TryNormalizeStrict(childRel, out var normRel, out _) ||
+                        WorkspacePath.IsProtected(normRel) ||
+                        WorkspacePath.IsProtectedHostPath(child.FullName))
                     {
                         continue;
                     }
@@ -347,11 +376,21 @@ public sealed class LocalExecutionService : IIsolatedExecutionService, IDisposab
                     var target = Path.Combine(dst, child.Name);
                     if (child is DirectoryInfo)
                     {
+                        if (WorkspaceSnapshotBuilder.IsExcludedDirectoryName(child.Name))
+                        {
+                            continue;
+                        }
+
                         Directory.CreateDirectory(target);
-                        stack.Push((child.FullName, target));
+                        stack.Push((child.FullName, target, normRel));
                     }
                     else if (child is FileInfo file)
                     {
+                        if (WorkspaceSnapshotBuilder.IsExcludedFileName(child.Name))
+                        {
+                            continue;
+                        }
+
                         files++;
                         bytes += file.Length;
                         if (files > limits.MaxFiles || bytes > limits.MaxWorkspaceBytes)
@@ -363,10 +402,33 @@ public sealed class LocalExecutionService : IIsolatedExecutionService, IDisposab
                     }
                 }
             }
+
+            if (!string.IsNullOrEmpty(input.ExpectedManifestSha256))
+            {
+                var actualManifest = Approval.ExecutionRequest.ComputeDirectoryManifestSha256(dstRoot);
+                if (!string.Equals(actualManifest, input.ExpectedManifestSha256, StringComparison.Ordinal))
+                {
+                    throw new WorkspaceSnapshotException(
+                        ExecutionReasonCodes.ApprovalInvalidated,
+                        $"Staged input directory manifest for '{subNorm}' differed from approved digest.");
+                }
+            }
+
+            if (!string.IsNullOrEmpty(input.ExpectedEntryRelativePath) && !string.IsNullOrEmpty(input.ExpectedEntrySha256))
+            {
+                var entryPath = Path.Combine(dstRoot, input.ExpectedEntryRelativePath.Replace('/', Path.DirectorySeparatorChar));
+                if (!File.Exists(entryPath) ||
+                    !string.Equals(Approval.ExecutionRequest.Sha256File(entryPath), input.ExpectedEntrySha256, StringComparison.Ordinal))
+                {
+                    throw new WorkspaceSnapshotException(
+                        ExecutionReasonCodes.ApprovalInvalidated,
+                        $"Staged input entry file '{input.ExpectedEntryRelativePath}' differed from approved digest.");
+                }
+            }
         }
     }
 
-    private static async Task<(GuestGitInfo? Info, string? Error)> InitializeGuestGitAsync(
+    private async Task<(GuestGitInfo? Info, string? Error)> InitializeGuestGitAsync(
         string workspaceDir,
         string gitDir,
         string homeDir,
@@ -392,7 +454,7 @@ public sealed class LocalExecutionService : IIsolatedExecutionService, IDisposab
             ["GIT_COMMITTER_NAME"] = "CodexFlow",
             ["GIT_COMMITTER_EMAIL"] = "codexflow@local"
         };
-        foreach (var varName in new[] { "PATH", "Path", "SystemRoot", "WINDIR", "windir" })
+        foreach (var varName in new[] { "SystemRoot", "WINDIR", "windir", "OS" })
         {
             var val = Environment.GetEnvironmentVariable(varName);
             if (!string.IsNullOrEmpty(val))
@@ -401,9 +463,20 @@ public sealed class LocalExecutionService : IIsolatedExecutionService, IDisposab
             }
         }
 
+        var configuredTrusted = _executionOptions?.CurrentValue.TrustedExecutablePaths?.ToArray() ?? [];
+        if (!Approval.AutoInWorkspaceEvaluator.IsTrustedExecutableOrigin(
+                "git",
+                workspaceDir,
+                StagingRoot,
+                configuredTrusted,
+                out var trustedGit))
+        {
+            return (null, "Trusted git executable was not found in verified installation locations; refusing untrusted PATH fallback for GuestGit.");
+        }
+
         async Task<HostProcessResult> Git(params string[] args)
-            => await HostProcessRunner.RunAsync(
-                new HostProcessInvocation("git", args)
+            => await _processRunner(
+                new HostProcessInvocation(trustedGit, args)
                 {
                     WorkingDirectory = workspaceDir,
                     Environment = env,
@@ -603,20 +676,44 @@ internal sealed class LocalExecutionSession : IIsolatedExecutionSession
                 "Initial working directory must resolve inside the session staging directory."));
         }
 
-        var env = BuildEnvironment(request.Env);
-        var resolved = WindowsCommandResolver.Resolve(request.Argv[0], request.Argv.Skip(1).ToArray(), env);
-        if (!resolved.Allowed)
+        var env = BuildEnvironment(request.Env, request.TrustedMinimalEnv);
+        ResolvedHostCommand resolved;
+        if (request.PreResolvedExecutable)
         {
-            return IsolatedCommandResult.Refused(ExecutionDecision.Deny(
-                ExecutionReasonCodes.InvalidRequest,
-                resolved.RejectionReason ?? "Command rejected by Windows launch policy."));
+            var exe = request.Argv[0];
+            var args = request.Argv.Skip(1).ToArray();
+            if (!Path.IsPathRooted(exe) || !File.Exists(exe))
+            {
+                return IsolatedCommandResult.Refused(ExecutionDecision.Deny(
+                    ExecutionReasonCodes.ApprovalInvalidated,
+                    $"Pre-resolved approved executable '{exe}' is missing or not a canonical rooted path."));
+            }
+
+            if (OperatingSystem.IsWindows() && !exe.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+            {
+                return IsolatedCommandResult.Refused(ExecutionDecision.Deny(
+                    ExecutionReasonCodes.InvalidRequest,
+                    $"Pre-resolved Windows executable '{exe}' must be a native .exe binary."));
+            }
+
+            resolved = new ResolvedHostCommand(true, exe, args, [exe]);
+        }
+        else
+        {
+            resolved = WindowsCommandResolver.Resolve(request.Argv[0], request.Argv.Skip(1).ToArray(), env);
+            if (!resolved.Allowed)
+            {
+                return IsolatedCommandResult.Refused(ExecutionDecision.Deny(
+                    ExecutionReasonCodes.InvalidRequest,
+                    resolved.RejectionReason ?? "Command rejected by Windows launch policy."));
+            }
         }
 
         var timeout = request.Timeout ?? _context.Limits.CommandTimeout;
 
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _sessionCts.Token);
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        var result = await HostProcessRunner.RunAsync(
+        var result = await _service.RunProcessAsync(
             new HostProcessInvocation(resolved.Executable, resolved.Args)
             {
                 WorkingDirectory = workingDir,
@@ -808,9 +905,48 @@ internal sealed class LocalExecutionSession : IIsolatedExecutionSession
         return Directory.Exists(candidate) ? candidate : null;
     }
 
-    private Dictionary<string, string?> BuildEnvironment(IReadOnlyDictionary<string, string>? overrides)
+    private Dictionary<string, string?> BuildEnvironment(
+        IReadOnlyDictionary<string, string>? overrides,
+        IReadOnlyDictionary<string, string?>? trustedMinimalEnv)
     {
         var env = new Dictionary<string, string?>(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+        if (trustedMinimalEnv is not null)
+        {
+            foreach (var sysName in new[] { "SystemRoot", "WINDIR", "windir", "OS" })
+            {
+                var val = Environment.GetEnvironmentVariable(sysName);
+                if (!string.IsNullOrEmpty(val))
+                {
+                    env[sysName] = val;
+                }
+            }
+
+            env["HOME"] = _homeDir;
+            env["USERPROFILE"] = _homeDir;
+            env["TEMP"] = _tempDir;
+            env["TMP"] = _tempDir;
+
+            if (GuestGit is not null)
+            {
+                env["GIT_DIR"] = _gitDir;
+                env["GIT_WORK_TREE"] = _workspaceDir;
+            }
+
+            foreach (var (k, v) in trustedMinimalEnv)
+            {
+                if (v is null)
+                {
+                    env.Remove(k);
+                }
+                else
+                {
+                    env[k] = v;
+                }
+            }
+
+            return env;
+        }
+
         foreach (var name in InheritedHostEnvVars)
         {
             var val = Environment.GetEnvironmentVariable(name);

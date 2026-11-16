@@ -226,6 +226,7 @@ public static class OrchestrationServiceCollectionExtensions
         services.AddScoped<CodexFlow.Services.Verification.IProjectVerifier, CodexFlow.Services.Verification.PythonProjectVerifier>();
         services.AddScoped<IForgeArtifactVerificationService, ForgeArtifactVerificationService>();
         services.AddScoped<IBackgroundJobService, BackgroundJobService>();
+        services.AddSingleton<CodexFlow.Core.Execution.Approval.IBackgroundJobApprovalResumer, BackgroundJobApprovalResumer>();
         services.AddScoped<IPlanTaskDispatchService, PlanTaskDispatchService>();
         services.AddScoped<IBackgroundJobLeaseService, BackgroundJobLeaseService>();
         services.AddScoped<IBackgroundJobRunner, BackgroundJobRunner>();

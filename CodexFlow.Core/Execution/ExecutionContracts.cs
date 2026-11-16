@@ -50,6 +50,10 @@ public static class ExecutionReasonCodes
     public const string ExportFailed = "ExportFailed";
     public const string InvalidOperation = "InvalidOperation";
     public const string MissingExpectedHash = "MissingExpectedHash";
+    public const string PermissionDenied = "PermissionDenied";
+    public const string ApprovalUnavailable = "approval_unavailable";
+    public const string ApprovalExpired = "ApprovalExpired";
+    public const string ApprovalInvalidated = "ApprovalInvalidated";
 }
 
 public sealed record ExecutionDecision(ExecutionDecisionKind Kind, string ReasonCode, string Message)
@@ -311,7 +315,12 @@ public sealed record GuestGitInfo(
 /// Host directory copied READ-ONLY-by-convention into the guest at /tmp/<see cref="GuestSubPath"/> (e.g. a skill folder).
 /// It is copied like the workspace (no links, no .git, quotas), is never exported, and never mounted.
 /// </summary>
-public sealed record IsolatedInputDirectory(string HostPath, string GuestSubPath);
+public sealed record IsolatedInputDirectory(
+    string HostPath,
+    string GuestSubPath,
+    string? ExpectedManifestSha256 = null,
+    string? ExpectedEntryRelativePath = null,
+    string? ExpectedEntrySha256 = null);
 
 public sealed record IsolatedCommandRequest(
     IReadOnlyList<string> Argv,
@@ -319,7 +328,9 @@ public sealed record IsolatedCommandRequest(
     string? StdIn = null,
     TimeSpan? Timeout = null,
     IReadOnlyDictionary<string, string>? Env = null,
-    Action<CommandOutputLine>? OnOutput = null);
+    Action<CommandOutputLine>? OnOutput = null,
+    IReadOnlyDictionary<string, string?>? TrustedMinimalEnv = null,
+    bool PreResolvedExecutable = false);
 
 public sealed record IsolatedCommandResult(
     ExecutionDecision Decision,
@@ -397,9 +408,29 @@ public sealed record IsolatedSessionOpenResult(ExecutionDecision Decision, IIsol
 
 public interface IIsolatedExecutionService
 {
+    ExecutionBackend ActiveBackend => ExecutionBackend.Docker;
+
     bool SupportsNetworkMode(ExecutionNetworkMode mode) => mode == ExecutionNetworkMode.None;
 
     Task<IsolatedSessionOpenResult> OpenSessionAsync(TrustedExecutionContext context, IsolatedSessionOptions options, CancellationToken ct);
+
+    Task<IsolatedSessionOpenResult> OpenPinnedBackendSessionAsync(
+        ExecutionBackend pinnedBackend,
+        TrustedExecutionContext context,
+        IsolatedSessionOptions options,
+        CancellationToken ct)
+    {
+        if (ActiveBackend != pinnedBackend)
+        {
+            return Task.FromResult(new IsolatedSessionOpenResult(
+                ExecutionDecision.Deny(
+                    ExecutionReasonCodes.ApprovalInvalidated,
+                    $"Execution backend changed from approved '{pinnedBackend}' to '{ActiveBackend}' before session start."),
+                null));
+        }
+
+        return OpenSessionAsync(context, options, ct);
+    }
 }
 
 /// <summary>Backend used when no isolation is configured: always refuses, never falls back to the host.</summary>

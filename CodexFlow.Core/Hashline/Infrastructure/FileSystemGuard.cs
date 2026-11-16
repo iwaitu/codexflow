@@ -59,15 +59,16 @@ public sealed class FileSystemGuard : IFileSystemGuard
                 // 检查路径是否完全匹配根目录，或者在根目录下（以 root + separator 开头）
                 if (string.Equals(normalizedFullPath, normalizedRoot, StringComparison.OrdinalIgnoreCase))
                 {
-                    return true;
+                    return !CodexFlow.Core.Agents.Tools.ToolPathResolver.IsCredentialOrProtectedStatePath(normalizedFullPath, normalizedRoot);
                 }
 
                 var rootWithSeparator = normalizedRoot + Path.DirectorySeparatorChar;
                 if (normalizedFullPath.StartsWith(rootWithSeparator, StringComparison.OrdinalIgnoreCase))
                 {
-                    // Inside the root by name is not enough: a link/junction on the way, or git metadata, makes the
-                    // file system target something else (hs_read snapshots gate every later hs_write).
-                    return CodexFlow.Core.Agents.Tools.ToolPathResolver.IsSafeWriteTarget(normalizedFullPath, normalizedRoot, out _);
+                    // Inside the root by name is not enough: a link/junction on the way, git metadata, or credential paths
+                    // make the file system target unsafe (hs_read snapshots also gate later hs_write).
+                    return CodexFlow.Core.Agents.Tools.ToolPathResolver.IsSafeWriteTarget(normalizedFullPath, normalizedRoot, out _) &&
+                           CodexFlow.Core.Agents.Tools.ToolPathResolver.IsSafeReadTarget(normalizedFullPath, normalizedRoot, out _);
                 }
             }
 

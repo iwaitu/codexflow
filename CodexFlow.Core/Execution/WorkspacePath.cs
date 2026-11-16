@@ -139,6 +139,56 @@ public static class WorkspacePath
 
     public static bool IsGeneratedSegment(string segment) => GeneratedSegments.Contains(segment);
 
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> ProtectedHostRoots =
+        new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+
+    public static void RegisterProtectedHostPath(string? fullPath)
+    {
+        if (string.IsNullOrWhiteSpace(fullPath))
+        {
+            return;
+        }
+
+        try
+        {
+            var normalized = Path.GetFullPath(fullPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            ProtectedHostRoots[normalized] = 0;
+        }
+        catch (ArgumentException)
+        {
+        }
+    }
+
+    public static bool IsProtectedHostPath(string? candidateFullPath)
+    {
+        if (string.IsNullOrWhiteSpace(candidateFullPath))
+        {
+            return false;
+        }
+
+        string full;
+        try
+        {
+            full = Path.GetFullPath(candidateFullPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+        catch (ArgumentException)
+        {
+            return true;
+        }
+
+        var cmp = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        foreach (var protectedRoot in ProtectedHostRoots.Keys)
+        {
+            if (string.Equals(full, protectedRoot, cmp) ||
+                full.StartsWith(protectedRoot + Path.DirectorySeparatorChar, cmp))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     public static bool IsProtected(string normalized)
     {
         ArgumentNullException.ThrowIfNull(normalized);
@@ -148,7 +198,10 @@ public static class WorkspacePath
     private static bool IsProtectedCore(string normalized)
         => normalized.Split('/').Any(s =>
             s.Equals(".git", StringComparison.OrdinalIgnoreCase) ||
-            s.Equals(".gitmodules", StringComparison.OrdinalIgnoreCase));
+            s.Equals(".gitmodules", StringComparison.OrdinalIgnoreCase) ||
+            s.Equals(".codexflow", StringComparison.OrdinalIgnoreCase) ||
+            s.Equals("host.token", StringComparison.OrdinalIgnoreCase) ||
+            s.Equals("control.token", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>Glob supporting "**", "*" and "?" over normalized '/' paths. Case-insensitive.</summary>
     public static Regex GlobToRegex(string glob)

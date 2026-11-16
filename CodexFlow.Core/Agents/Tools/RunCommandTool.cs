@@ -154,14 +154,55 @@ public class RunCommandTool(
         var options = _gate.Options;
         var image = options.ExecutableImages.TryGetValue(executable, out var mapped) ? mapped : options.CommandImage;
         var argv = commandParts.ToArray();
+
+        var (authRefusal, authorization) = await _gate.AuthorizeBeforeExecutionAsync(
+            Name,
+            context,
+            backend,
+            argv,
+            cwd: guestCwd,
+            environmentOverrides: backend.ActiveBackend == ExecutionBackend.Docker ? OfflineToolchainPreparation.EnvFor(executable) : null,
+            resolveArgvForBackend: targetBackend => (
+                argv,
+                null,
+                targetBackend == ExecutionBackend.Docker ? OfflineToolchainPreparation.EnvFor(executable) : null),
+            ct: ct).ConfigureAwait(false);
+        if (authRefusal is not null)
+            return authRefusal;
+
+        var effectiveArgv = new string[1 + authorization.EffectiveArgv.Count];
+        effectiveArgv[0] = authorization.EffectiveExecutable;
+        for (var i = 0; i < authorization.EffectiveArgv.Count; i++)
+        {
+            effectiveArgv[i + 1] = authorization.EffectiveArgv[i];
+        }
+
         var displayCommand = string.Join(' ', argv.Select(QuoteIfNeeded));
         var timeout = TimeSpan.FromSeconds(timeoutSeconds);
+        var gateway = _gate.Gateway;
 
-        var commandTaskId = CommandTaskRegistry.StartIsolated(
+        string commandTaskId = string.Empty;
+        commandTaskId = CommandTaskRegistry.StartIsolated(
             displayCommand,
             guestCwd ?? ".",
             timeout,
-            (sink, token) => RunInIsolationAsync(backend, context, image, argv, guestCwd, timeout, sink, token));
+            (sink, token) => RunInIsolationAsync(
+                backend,
+                authorization.ApprovedBackend,
+                authorization.IsPreResolvedExecutable,
+                context,
+                image,
+                executable,
+                effectiveArgv,
+                guestCwd,
+                timeout,
+                authorization.ForcedEnvironment,
+                authorization.RequiresGuestGit,
+                gateway,
+                Name,
+                commandTaskId,
+                sink,
+                token));
 
         if (background)
         {
@@ -265,15 +306,24 @@ public class RunCommandTool(
 
     private static async Task<CommandTaskOutcome> RunInIsolationAsync(
         IIsolatedExecutionService backend,
+        ExecutionBackend approvedBackend,
+        bool isPreResolvedExecutable,
         TrustedExecutionContext context,
         string image,
+        string originalCommand,
         string[] argv,
         string? cwd,
         TimeSpan timeout,
+        IReadOnlyDictionary<string, string?>? forcedMinimalEnv,
+        bool requiresGuestGit,
+        CodexFlow.Core.Gateway.ICodexGateway? gateway,
+        string toolName,
+        string commandTaskId,
         CommandTaskSink sink,
         CancellationToken token)
     {
-        var open = await backend.OpenSessionAsync(context, new IsolatedSessionOptions(image, GuestGit: GuestGitMode.IfAvailable), token).ConfigureAwait(false);
+        var guestGitMode = requiresGuestGit ? GuestGitMode.Required : GuestGitMode.IfAvailable;
+        var open = await backend.OpenPinnedBackendSessionAsync(approvedBackend, context, new IsolatedSessionOptions(image, GuestGit: guestGitMode), token).ConfigureAwait(false);
         if (!open.Decision.IsAllowed || open.Session is null)
         {
             // Nothing ran: the "refusal" event lets the tool report a FAILED result with the reason code instead of a
@@ -283,28 +333,52 @@ public class RunCommandTool(
         }
 
         await using var session = open.Session;
+        if (session.Layout.Backend != approvedBackend)
+        {
+            sink.Add("refusal", $"[{ExecutionReasonCodes.ApprovalInvalidated}] Opened session backend '{session.Layout.Backend}' did not match approved backend '{approvedBackend}'.");
+            return new CommandTaskOutcome(CommandTaskStatus.Failed, null);
+        }
 
         IReadOnlyDictionary<string, string>? prepEnv = null;
         if (session.Layout.Backend == ExecutionBackend.Docker)
         {
-            // Every command gets a fresh container without network: a Node or Python project's dependencies are installed from the host's
-            // offline caches first, or `npm test` / `python -m pytest` could never run here.
-            if (await OfflineToolchainPreparation.PrepareAsync(session, argv[0], token).ConfigureAwait(false) is { } prepared)
+            if (forcedMinimalEnv is null)
             {
-                sink.Add(EnvironmentStream, prepared);
-            }
+                if (await OfflineToolchainPreparation.PrepareAsync(session, originalCommand, token).ConfigureAwait(false) is { } prepared)
+                {
+                    sink.Add(EnvironmentStream, prepared);
+                }
 
-            prepEnv = OfflineToolchainPreparation.EnvFor(argv[0]);
+                prepEnv = OfflineToolchainPreparation.EnvFor(originalCommand);
+            }
         }
         else
         {
             sink.Add(EnvironmentStream, "local host execution (network=Host, filesystem=unrestricted)");
         }
 
+        await using var outputThrottler = new CodexFlow.Core.Execution.Approval.ToolOutputEventThrottler(
+            gateway,
+            context.SessionId,
+            toolName,
+            commandTaskId);
+
         var run = await session.RunAsync(
-            new IsolatedCommandRequest(argv, cwd, Timeout: timeout, Env: prepEnv,
-                OnOutput: line => sink.Add(line.Stream, line.Text)),
+            new IsolatedCommandRequest(
+                argv,
+                cwd,
+                Timeout: timeout,
+                Env: prepEnv,
+                OnOutput: line =>
+                {
+                    sink.Add(line.Stream, line.Text);
+                    outputThrottler.Append(line.Stream, line.Text);
+                },
+                TrustedMinimalEnv: forcedMinimalEnv,
+                PreResolvedExecutable: isPreResolvedExecutable),
             token).ConfigureAwait(false);
+
+        await outputThrottler.FlushAsync(token).ConfigureAwait(false);
 
         switch (run.Status)
         {

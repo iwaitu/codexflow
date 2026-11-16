@@ -140,6 +140,12 @@ namespace CodexFlow.Services.Background
                 enableHeartbeat: false,
                 suppressNotifications: true);
 
+        protected virtual Task<string> ExecuteUnhandledJobTypeAsync(
+            IServiceProvider scopedServices,
+            BackgroundJob job,
+            CancellationToken ct)
+            => SimulateJobAsync(ct);
+
         private async Task ExecuteCoreAsync(
             string jobId,
             string? claimToken,
@@ -275,16 +281,56 @@ namespace CodexFlow.Services.Background
                     return;
                 }
 
-                // Real handler dispatch by JobType
-                var resultPayload = preflightDeniedPayload ?? job.JobType switch
+                // Real handler dispatch by JobType (with interactive execution approval suspension support)
+                using var approvalSuspensionScope = CodexFlow.Core.Execution.Approval.AmbientBackgroundJobApprovalContext.BeginScope(
+                    job.JobId,
+                    Guid.NewGuid().ToString("N"),
+                    ct,
+                    out var approvalSuspension);
+                var workerToken = approvalSuspension.EffectiveToken;
+
+                string resultPayload;
+                try
                 {
-                    "ExploreWorker" => await ExecuteReadOnlyWorkerAsync(execScope.ServiceProvider, job, WorkerType.Explore, ct),
-                    "ForgeWorker" => await ExecuteForgeWorkerAsync(execScope.ServiceProvider, job, ct),
-                    "PlanWorker" => await ExecuteReadOnlyWorkerAsync(execScope.ServiceProvider, job, WorkerType.Plan, ct),
-                    "VerifyWorker" => await ExecuteVerifyWorkerAsync(execScope.ServiceProvider, job, ct),
-                    "MockSimpleTask" => await RunMockSimpleTaskAsync(job, ct),
-                    _ => await SimulateJobAsync(ct)
-                };
+                    resultPayload = preflightDeniedPayload ?? job.JobType switch
+                    {
+                        "ExploreWorker" => await ExecuteReadOnlyWorkerAsync(execScope.ServiceProvider, job, WorkerType.Explore, workerToken),
+                        "ForgeWorker" => await ExecuteForgeWorkerAsync(execScope.ServiceProvider, job, workerToken),
+                        "PlanWorker" => await ExecuteReadOnlyWorkerAsync(execScope.ServiceProvider, job, WorkerType.Plan, workerToken),
+                        "VerifyWorker" => await ExecuteVerifyWorkerAsync(execScope.ServiceProvider, job, workerToken),
+                        "MockSimpleTask" => await RunMockSimpleTaskAsync(job, workerToken),
+                        _ => await ExecuteUnhandledJobTypeAsync(execScope.ServiceProvider, job, workerToken)
+                    };
+                }
+                catch (OperationCanceledException) when (approvalSuspension.SuspendedApproval is not null && !ct.IsCancellationRequested)
+                {
+                    latestCheckpoint = await GetLatestCheckpointAsync(dbContext, jobId, ct);
+                    await EnterWaitingUserForApprovalAsync(
+                        dbContext,
+                        job,
+                        latestCheckpoint,
+                        approvalSuspension.SuspendedApproval,
+                        approvalSuspension.ResumeToken,
+                        approvalSuspension,
+                        suppressNotifications,
+                        ct).ConfigureAwait(false);
+                    return;
+                }
+
+                if (approvalSuspension.SuspendedApproval is { } suspendedItem && !ct.IsCancellationRequested)
+                {
+                    latestCheckpoint = await GetLatestCheckpointAsync(dbContext, jobId, ct);
+                    await EnterWaitingUserForApprovalAsync(
+                        dbContext,
+                        job,
+                        latestCheckpoint,
+                        suspendedItem,
+                        approvalSuspension.ResumeToken,
+                        approvalSuspension,
+                        suppressNotifications,
+                        ct).ConfigureAwait(false);
+                    return;
+                }
 
                 // Determine final status from result payload
                 var resultObj = TryParsePayload(resultPayload);
@@ -1472,6 +1518,59 @@ namespace CodexFlow.Services.Background
             });
 
             await dbContext.SaveChangesAsync(ct);
+            _outboxSignal.Pulse();
+            if (!suppressNotifications)
+            {
+                await DispatchNotificationImmediatelyAsync(job.JobId, CancellationToken.None);
+            }
+        }
+
+        private async Task EnterWaitingUserForApprovalAsync(
+            IJobDbContext dbContext,
+            BackgroundJob job,
+            JobCheckpoint? latestCheckpoint,
+            CodexFlow.Core.Execution.Approval.PendingApprovalItem approval,
+            string resumeToken,
+            CodexFlow.Core.Execution.Approval.AmbientBackgroundJobApprovalContext approvalSuspension,
+            bool suppressNotifications,
+            CancellationToken ct)
+        {
+            var waitingReason = $"Execution approval required for {approval.Tool} ({approval.Executable}) [{approval.ApprovalId}]";
+            var payload = TryParsePayload(job.PayloadJson);
+            var waitingContext = ResolveWaitingUserContext(payload);
+
+            dbContext.JobCheckpoints.Add(CreateCheckpoint(
+                job,
+                latestCheckpoint,
+                "AwaitingUserConfirmation",
+                pendingActionType: "UserConfirmation",
+                pendingPayloadJson: job.PayloadJson,
+                resumeToken: resumeToken,
+                checkpointData: JsonConvert.SerializeObject(new
+                {
+                    waitingReason,
+                    resumeToken,
+                    approvalId = approval.ApprovalId,
+                    requestDigest = approval.RequestDigest
+                })));
+
+            job.Status = BackgroundJobStatus.WaitingUser;
+            job.WaitingReason = waitingReason;
+            job.UpdatedAtUtc = DateTime.UtcNow;
+            var waitingPayload = await AttachWaitingUserNotificationXmlAsync(job, waitingReason, resumeToken, waitingContext, ct);
+
+            dbContext.OutboxEvents.Add(new OutboxEvent
+            {
+                EventType = "JobWaitingUser",
+                JobId = job.JobId,
+                SessionId = job.SessionId,
+                TaskId = job.TaskId,
+                Payload = waitingPayload
+            });
+
+            await dbContext.SaveChangesAsync(ct);
+            // Release persistence barrier IMMEDIATELY after durable SaveChangesAsync (before best-effort external notification dispatch)!
+            approvalSuspension.NotifyPersistenceCommitted();
             _outboxSignal.Pulse();
             if (!suppressNotifications)
             {

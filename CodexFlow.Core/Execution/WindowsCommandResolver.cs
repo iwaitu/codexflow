@@ -49,7 +49,18 @@ public static class WindowsCommandResolver
 
         if (!OperatingSystem.IsWindows())
         {
-            return new ResolvedHostCommand(true, command, args, [command]);
+            var unixResolved = FindUnixExecutableOnPath(command, env);
+            if (unixResolved is null)
+            {
+                return new ResolvedHostCommand(
+                    false,
+                    command,
+                    args,
+                    [],
+                    $"Executable '{command}' was not found on PATH.");
+            }
+
+            return new ResolvedHostCommand(true, unixResolved, args, [unixResolved]);
         }
 
         var resolved = FindExecutableOnPath(command, env);
@@ -177,6 +188,38 @@ public static class WindowsCommandResolver
                 {
                     return Path.GetFullPath(candidate);
                 }
+            }
+        }
+
+        return null;
+    }
+
+    internal static string? FindUnixExecutableOnPath(string command, IReadOnlyDictionary<string, string?> env)
+    {
+        if (Path.IsPathRooted(command) || command.Contains('/', StringComparison.Ordinal))
+        {
+            var full = Path.GetFullPath(command);
+            return File.Exists(full) ? full : null;
+        }
+
+        var pathValue = env.TryGetValue("PATH", out var p1) ? p1 : Environment.GetEnvironmentVariable("PATH");
+        if (string.IsNullOrWhiteSpace(pathValue))
+        {
+            return null;
+        }
+
+        foreach (var dir in pathValue.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var cleanDir = dir.Trim('"');
+            if (string.IsNullOrWhiteSpace(cleanDir))
+            {
+                continue;
+            }
+
+            var candidate = Path.Combine(cleanDir, command);
+            if (File.Exists(candidate))
+            {
+                return Path.GetFullPath(candidate);
             }
         }
 

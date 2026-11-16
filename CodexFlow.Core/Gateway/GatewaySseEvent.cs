@@ -30,6 +30,9 @@ public static class GatewaySseEventType
     public const string WorkerCompleted = "worker_completed";
     public const string WorkerFailed = "worker_failed";
     public const string FileTreeUpdated = "file_tree_updated";
+    public const string ToolApprovalRequest = "tool_approval_request";
+    public const string ToolApprovalResolved = "tool_approval_resolved";
+    public const string ToolOutput = "tool_output";
     public const string Error = "error";
     public const string Heartbeat = "heartbeat";
     public const string Done = "done";

@@ -295,7 +295,16 @@ def run_scenario(scenario: dict[str, Any], client: Any, *, repo: str | None = No
         results.append(record)
         failed = not record["passed"]
 
-    return {"scenario": scenario["name"], "description": scenario.get("description", ""), "repo": repo,
-            "session_id": getattr(client, "session_id", None),
-            "passed": all(step["passed"] for step in results if not step["skipped"]) and not any(step["skipped"] for step in results),
-            "duration_s": round(clock() - started, 1), "steps": results}
+    out: dict[str, Any] = {
+        "scenario": scenario["name"], "description": scenario.get("description", ""), "repo": repo,
+        "session_id": getattr(client, "session_id", None),
+        "passed": all(step["passed"] for step in results if not step["skipped"]) and not any(step["skipped"] for step in results),
+        "duration_s": round(clock() - started, 1), "steps": results,
+    }
+    approved_digests = list(getattr(client, "approved_digests", None) or [])
+    if approved_digests:
+        out["approved_request_digests"] = approved_digests
+    if getattr(client, "self_approval_protection", True) is False:
+        out["self_approval_protection"] = False
+        out["security_warning"] = "防自批保证不成立 (Local:UnsafeFileControlToken=true)"
+    return out

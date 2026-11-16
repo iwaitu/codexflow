@@ -58,16 +58,42 @@ public static class WorkspaceSnapshotBuilder
 
     private static readonly HashSet<string> ExcludedDirectories = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".git", ".vs", ".idea", "bin", "obj"
+        ".git", ".codexflow", ".vs", ".idea", "bin", "obj"
     };
 
     private static readonly HashSet<string> ExcludedFiles = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".git", ".env", ".env.local", ".env.production", ".npmrc", ".pypirc", "nuget.config.user"
+        ".git", ".env", ".env.local", ".env.production", ".npmrc", ".pypirc", "nuget.config.user",
+        "host.token", "control.token"
     };
+
+    internal static bool IsExcludedDirectoryName(string name) => ExcludedDirectories.Contains(name);
+
+    internal static bool IsExcludedFileName(string name) => ExcludedFiles.Contains(name);
+
+    public static string ComputeBaselineManifestSha256(IReadOnlyDictionary<string, BaselineEntry> baseline)
+    {
+        ArgumentNullException.ThrowIfNull(baseline);
+        var entries = baseline
+            .OrderBy(static kv => kv.Key, StringComparer.Ordinal)
+            .Select(static kv => $"{kv.Key}:{kv.Value.Sha256.ToLowerInvariant()}");
+        return Approval.ExecutionRequest.Sha256Text(string.Join('\n', entries));
+    }
 
     public static WorkspaceSnapshot Build(string workspaceRoot, string tarPath, ExecutionResourceLimits limits, string guestRoot = "workspace")
     {
+        using var fs = new FileStream(tarPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+        return Build(workspaceRoot, fs, tarPath, limits, guestRoot);
+    }
+
+    public static WorkspaceSnapshot Build(
+        string workspaceRoot,
+        Stream destinationStream,
+        string tarPath,
+        ExecutionResourceLimits limits,
+        string guestRoot = "workspace")
+    {
+        ArgumentNullException.ThrowIfNull(destinationStream);
         ArgumentNullException.ThrowIfNull(limits);
         ArgumentNullException.ThrowIfNull(guestRoot);
         var root = Path.GetFullPath(workspaceRoot);
@@ -82,8 +108,7 @@ public static class WorkspaceSnapshotBuilder
         var links = 0;
         var excluded = 0;
 
-        using var fs = new FileStream(tarPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-        using (var writer = new TarWriter(fs, TarEntryFormat.Gnu, leaveOpen: true))
+        using (var writer = new TarWriter(destinationStream, TarEntryFormat.Gnu, leaveOpen: true))
         {
             var prefix = string.Empty;
             foreach (var part in guestRoot.Split('/'))
@@ -115,7 +140,9 @@ public static class WorkspaceSnapshotBuilder
                         continue;
                     }
 
-                    if (!WorkspacePath.TryNormalizeStrict(childRel, out var norm, out _))
+                    if (!WorkspacePath.TryNormalizeStrict(childRel, out var norm, out _) ||
+                        WorkspacePath.IsProtected(norm) ||
+                        WorkspacePath.IsProtectedHostPath(child.FullName))
                     {
                         excluded++;
                         continue;

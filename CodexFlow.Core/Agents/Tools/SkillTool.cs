@@ -21,6 +21,12 @@ public sealed class SkillTool(
     private readonly bool _hostRunnerPresent = scriptRunner is not null;
     private readonly ToolIsolationGate _gate = isolationGate ?? ToolIsolationGate.Unconfigured;
 
+    /// <summary>Test hook invoked right after pre-staging the skill directory and before waiting for interactive approval.</summary>
+    internal Action<string>? OnPreStagedBeforeApproval { get; set; }
+
+    /// <summary>Path to the most recently pre-staged script copy (for security test inspection).</summary>
+    internal string? LastPreStagedScriptPath { get; private set; }
+
     public ToolCapability Capability => ToolCapability.ExecuteUntrustedCode;
 
     public string Name => "skill";
@@ -157,62 +163,216 @@ public sealed class SkillTool(
 
         var args = ParseArgs(arguments.GetValueOrDefault("args"));
         var guestSubPath = "skill-inputs/" + guestSkillName;
-        var open = await backend.OpenSessionAsync(
-            context,
-            new IsolatedSessionOptions(image, Inputs: [new IsolatedInputDirectory(skillDirectory, guestSubPath)]),
-            ct).ConfigureAwait(false);
-        if (!open.Decision.IsAllowed || open.Session is null)
+        var canonicalScriptRef = $"{guestSubPath}/{guestScript}";
+
+        if (!TryBuildSkillArgvForBackend(backend.ActiveBackend, interpreter.Item2, canonicalScriptRef, args, out var initialSkillArgv))
         {
-            return ToolIsolationGate.Refuse(Name, open.Decision);
+            return CodexToolResult.Error("Cannot run .sh skill script on Windows: 'bash' (Git Bash or WSL) was not found.");
         }
 
-        StructuredLog.Information(logger, "skill run_script runs isolated: {Skill}/{Script} (host runner present={Present}, never used)", name, normalizedScriptPath, _hostRunnerPresent);
-        await using var session = open.Session;
-        var resolvedScriptPath = session.Layout.Backend == ExecutionBackend.Docker
-            ? $"{session.Layout.InputsRoot.TrimEnd('/')}/{guestSubPath}/{guestScript}"
-            : Path.Combine(
-                session.Layout.InputsRoot,
-                guestSubPath.Replace('/', Path.DirectorySeparatorChar),
-                guestScript.Replace('/', Path.DirectorySeparatorChar));
-
-        var resolvedInterpreter = interpreter.Item2;
-        if (session.Layout.Backend == ExecutionBackend.Local && OperatingSystem.IsWindows())
+        // Pre-stage the skill directory into a private staging copy BEFORE requesting approval so that:
+        // 1) No container or host process starts before approval;
+        // 2) Modifying the source skill script while waiting for approval never executes unapproved code;
+        // 3) Re-hashing both the entry script AND full Inputs manifest before and after session staging prevents TOCTOU tampering.
+        var prestageRoot = Path.Combine(_gate.StagingRoot, "prestage", $"skill-{Guid.NewGuid():N}");
+        try
         {
-            if (resolvedInterpreter == "sh")
+            LocalExecutionService.CopyInputDirectories(
+                [new IsolatedInputDirectory(skillDirectory, guestSubPath)],
+                prestageRoot,
+                context.Limits);
+
+            var prestageSkillDir = Path.Combine(prestageRoot, guestSubPath.Replace('/', Path.DirectorySeparatorChar));
+            var prestageScriptFile = Path.Combine(prestageSkillDir, guestScript.Replace('/', Path.DirectorySeparatorChar));
+            if (!File.Exists(prestageScriptFile))
+            {
+                return CodexToolResult.Error("script_path must point to an existing regular file under the skill directory.");
+            }
+
+            var expectedScriptSha256 = CodexFlow.Core.Execution.Approval.ExecutionRequest.Sha256File(prestageScriptFile);
+            var expectedInputsManifestSha256 = CodexFlow.Core.Execution.Approval.ExecutionRequest.ComputeDirectoryManifestSha256(prestageSkillDir);
+
+            LastPreStagedScriptPath = prestageScriptFile;
+            OnPreStagedBeforeApproval?.Invoke(prestageScriptFile);
+
+            bool VerifyPrestageCopy()
+                => File.Exists(prestageScriptFile) &&
+                   string.Equals(
+                       CodexFlow.Core.Execution.Approval.ExecutionRequest.Sha256File(prestageScriptFile),
+                       expectedScriptSha256,
+                       StringComparison.Ordinal) &&
+                   string.Equals(
+                       CodexFlow.Core.Execution.Approval.ExecutionRequest.ComputeDirectoryManifestSha256(prestageSkillDir),
+                       expectedInputsManifestSha256,
+                       StringComparison.Ordinal);
+
+            (string? ScriptSha256, string? InputsManifestSha256) RefreshPrestageHashes()
+            {
+                expectedScriptSha256 = CodexFlow.Core.Execution.Approval.ExecutionRequest.Sha256File(prestageScriptFile);
+                expectedInputsManifestSha256 = CodexFlow.Core.Execution.Approval.ExecutionRequest.ComputeDirectoryManifestSha256(prestageSkillDir);
+                return (expectedScriptSha256, expectedInputsManifestSha256);
+            }
+
+            var (authRefusal, authorization) = await _gate.AuthorizeBeforeExecutionAsync(
+                Name,
+                context,
+                backend,
+                initialSkillArgv,
+                scriptSha256: expectedScriptSha256,
+                inputsManifestSha256: expectedInputsManifestSha256,
+                verifyStagedArtifactsUnchanged: VerifyPrestageCopy,
+                refreshArtifactHashes: RefreshPrestageHashes,
+                resolveArgvForBackend: tb => TryBuildSkillArgvForBackend(tb, interpreter.Item2, canonicalScriptRef, args, out var rebuilt)
+                    ? (rebuilt, null, null)
+                    : null,
+                ct: ct).ConfigureAwait(false);
+            if (authRefusal is not null)
+            {
+                return authRefusal;
+            }
+
+            if (!VerifyPrestageCopy())
+            {
+                return ToolIsolationGate.Refuse(Name, ExecutionDecision.Deny(
+                    ExecutionReasonCodes.ApprovalInvalidated,
+                    "Pre-staged skill script or Inputs manifest changed prior to session open."));
+            }
+
+            var open = await backend.OpenPinnedBackendSessionAsync(
+                authorization.ApprovedBackend,
+                context,
+                new IsolatedSessionOptions(
+                    image,
+                    Inputs:
+                    [
+                        new IsolatedInputDirectory(
+                            prestageSkillDir,
+                            guestSubPath,
+                            ExpectedManifestSha256: expectedInputsManifestSha256,
+                            ExpectedEntryRelativePath: guestScript,
+                            ExpectedEntrySha256: expectedScriptSha256)
+                    ]),
+                ct).ConfigureAwait(false);
+            if (!open.Decision.IsAllowed || open.Session is null)
+            {
+                return ToolIsolationGate.Refuse(Name, open.Decision);
+            }
+
+            StructuredLog.Information(logger, "skill run_script runs isolated: {Skill}/{Script} (host runner present={Present}, never used)", name, normalizedScriptPath, _hostRunnerPresent);
+            await using var session = open.Session;
+            if (session.Layout.Backend != authorization.ApprovedBackend)
+            {
+                return ToolIsolationGate.Refuse(Name, ExecutionDecision.Deny(
+                    ExecutionReasonCodes.ApprovalInvalidated,
+                    "Opened session backend did not match approved backend."));
+            }
+
+            var resolvedScriptPath = session.Layout.Backend == ExecutionBackend.Docker
+                ? $"{session.Layout.InputsRoot.TrimEnd('/')}/{guestSubPath}/{guestScript}"
+                : Path.Combine(
+                    session.Layout.InputsRoot,
+                    guestSubPath.Replace('/', Path.DirectorySeparatorChar),
+                    guestScript.Replace('/', Path.DirectorySeparatorChar));
+
+            // B7: Verify BOTH final entry script hash AND complete final Inputs directory manifest hash!
+            if (session.Layout.Backend == ExecutionBackend.Local)
+            {
+                var sessionSkillDir = Path.Combine(session.Layout.InputsRoot, guestSubPath.Replace('/', Path.DirectorySeparatorChar));
+                if (!File.Exists(resolvedScriptPath) ||
+                    !string.Equals(
+                        CodexFlow.Core.Execution.Approval.ExecutionRequest.Sha256File(resolvedScriptPath),
+                        expectedScriptSha256,
+                        StringComparison.Ordinal) ||
+                    !string.Equals(
+                        CodexFlow.Core.Execution.Approval.ExecutionRequest.ComputeDirectoryManifestSha256(sessionSkillDir),
+                        expectedInputsManifestSha256,
+                        StringComparison.Ordinal))
+                {
+                    return ToolIsolationGate.Refuse(Name, ExecutionDecision.Deny(
+                        ExecutionReasonCodes.ApprovalInvalidated,
+                        "Final session staged script or Inputs manifest hash differed from approved digest."));
+                }
+            }
+            else if (!VerifyPrestageCopy())
+            {
+                return ToolIsolationGate.Refuse(Name, ExecutionDecision.Deny(
+                    ExecutionReasonCodes.ApprovalInvalidated,
+                    "Skill script or Inputs changed while copying into Docker container; refusing to execute."));
+            }
+
+            // B6: Consume frozen EffectiveExecutable + EffectiveArgv (replacing only canonicalScriptRef with resolvedScriptPath)
+            var frozenArgv = new string[1 + authorization.EffectiveArgv.Count];
+            frozenArgv[0] = authorization.EffectiveExecutable;
+            for (var i = 0; i < authorization.EffectiveArgv.Count; i++)
+            {
+                frozenArgv[i + 1] = string.Equals(authorization.EffectiveArgv[i], canonicalScriptRef, StringComparison.Ordinal)
+                    ? resolvedScriptPath
+                    : authorization.EffectiveArgv[i];
+            }
+
+            var run = await session.RunAsync(
+                new IsolatedCommandRequest(
+                    frozenArgv,
+                    Timeout: TimeSpan.FromMinutes(2),
+                    PreResolvedExecutable: authorization.IsPreResolvedExecutable),
+                ct).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+
+            if (run.Status is not (IsolatedCommandStatus.Completed or IsolatedCommandStatus.Failed))
+            {
+                return ToolIsolationGate.Refuse(Name, run.Decision);
+            }
+
+            if (run.ExitCode != 0)
+            {
+                return CodexToolResult.Error(string.Join((char)10, $"Skill script failed (exit {run.ExitCode}).", run.Stdout, run.Stderr).Trim());
+            }
+
+            return CodexToolResult.Succeeded(
+                run.Stdout,
+                new { Skill = name, ScriptPath = normalizedScriptPath, Args = args, Isolated = session.Layout.Backend == ExecutionBackend.Docker },
+                summary: $"skill script ran: {name}/{normalizedScriptPath}");
+        }
+        catch (WorkspaceSnapshotException ex)
+        {
+            return ToolIsolationGate.Refuse(Name, ExecutionDecision.Deny(ex.ReasonCode, ex.Message));
+        }
+        finally
+        {
+            LocalExecutionService.TryDeleteDirectory(prestageRoot);
+        }
+    }
+
+    private static bool TryBuildSkillArgvForBackend(
+        ExecutionBackend targetBackend,
+        string baseInterpreter,
+        string canonicalScriptRef,
+        IReadOnlyList<string> args,
+        out List<string> builtArgv)
+    {
+        var interp = baseInterpreter;
+        if (targetBackend == ExecutionBackend.Local && OperatingSystem.IsWindows())
+        {
+            if (interp == "sh")
             {
                 var bash = FindWindowsBash();
                 if (bash is null)
                 {
-                    return CodexToolResult.Error("Cannot run .sh skill script on Windows: 'bash' (Git Bash or WSL) was not found.");
+                    builtArgv = [];
+                    return false;
                 }
 
-                resolvedInterpreter = bash;
+                interp = bash;
             }
-            else if (resolvedInterpreter == "python3")
+            else if (interp == "python3")
             {
-                resolvedInterpreter = "python";
+                interp = "python";
             }
         }
 
-        var argv = new List<string> { resolvedInterpreter, resolvedScriptPath };
-        argv.AddRange(args);
-        var run = await session.RunAsync(new IsolatedCommandRequest(argv, Timeout: TimeSpan.FromMinutes(2)), ct).ConfigureAwait(false);
-        ct.ThrowIfCancellationRequested();
-
-        if (run.Status is not (IsolatedCommandStatus.Completed or IsolatedCommandStatus.Failed))
-        {
-            return ToolIsolationGate.Refuse(Name, run.Decision);
-        }
-
-        if (run.ExitCode != 0)
-        {
-            return CodexToolResult.Error(string.Join((char)10, $"Skill script failed (exit {run.ExitCode}).", run.Stdout, run.Stderr).Trim());
-        }
-
-        return CodexToolResult.Succeeded(
-            run.Stdout,
-            new { Skill = name, ScriptPath = normalizedScriptPath, Args = args, Isolated = session.Layout.Backend == ExecutionBackend.Docker },
-            summary: $"skill script ran: {name}/{normalizedScriptPath}");
+        builtArgv = new List<string>(2 + args.Count) { interp, canonicalScriptRef };
+        builtArgv.AddRange(args);
+        return true;
     }
 
     private static string? FindWindowsBash()

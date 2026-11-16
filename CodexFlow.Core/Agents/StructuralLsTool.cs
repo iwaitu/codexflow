@@ -34,7 +34,7 @@ public class StructuralLsTool : ICodexTool
     // Directories to skip in recursive mode to avoid noise
     private static readonly HashSet<string> SkipDirs = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".git", ".vs", ".idea", "bin", "obj", "node_modules", ".next",
+        ".git", ".codexflow", ".vs", ".idea", "bin", "obj", "node_modules", ".next",
         "dist", "build", "__pycache__", ".venv", "venv", ".mypy_cache",
         "target", ".gradle", ".cargo", "packages", "TestResults"
     };
@@ -108,9 +108,19 @@ public class StructuralLsTool : ICodexTool
 
         if (!Directory.Exists(targetDir))
         {
+            if (!Tools.ToolPathResolver.IsWithinRoot(targetDir, baseRoot))
+            {
+                return CodexToolResult.Error("Path traversal not allowed.");
+            }
+
             StructuredLog.Warning(_logger, "Directory not found: {SubDir}. Falling back to workspace root.", subDir);
             targetDir = Path.GetFullPath(baseRoot);
             subDir = ".";
+        }
+
+        if (!Tools.ToolPathResolver.IsSafeReadTarget(targetDir, baseRoot, out var unsafeReason))
+        {
+            return CodexToolResult.Error(unsafeReason);
         }
 
         try
@@ -118,11 +128,11 @@ public class StructuralLsTool : ICodexTool
             CodexToolResult result;
             if (recursive)
             {
-                result = BuildRecursiveTree(targetDir, subDir, maxDepth);
+                result = BuildRecursiveTree(targetDir, baseRoot, subDir, maxDepth);
             }
             else
             {
-                result = BuildFlatList(targetDir, subDir);
+                result = BuildFlatList(targetDir, baseRoot, subDir);
             }
 
             if (string.Equals(subDir, ".", StringComparison.Ordinal) && !string.Equals(requestedSubDir, ".", StringComparison.Ordinal))
@@ -157,7 +167,7 @@ public class StructuralLsTool : ICodexTool
     /// <summary>
     /// 原始模式：只列出当前级别
     /// </summary>
-    private static CodexToolResult BuildFlatList(string targetDir, string subDir)
+    private static CodexToolResult BuildFlatList(string targetDir, string baseRoot, string subDir)
     {
         var entries = Directory.GetFileSystemEntries(targetDir);
         var resultList = new List<FileEntryMetadata>();
@@ -166,6 +176,11 @@ public class StructuralLsTool : ICodexTool
 
         foreach (var entry in entries)
         {
+            if (!Tools.ToolPathResolver.IsSafeReadTarget(entry, baseRoot, out _))
+            {
+                continue;
+            }
+
             var info = new FileInfo(entry);
             var isDir = (info.Attributes & FileAttributes.Directory) == FileAttributes.Directory;
 
@@ -191,7 +206,7 @@ public class StructuralLsTool : ICodexTool
     /// <summary>
     /// 递归模式：输出完整的目录树（tree 风格缩进）
     /// </summary>
-    private static CodexToolResult BuildRecursiveTree(string rootDir, string displayRoot, int maxDepth)
+    private static CodexToolResult BuildRecursiveTree(string rootDir, string baseRoot, string displayRoot, int maxDepth)
     {
         var sb = new StringBuilder();
         sb.AppendLine("📁 " + displayRoot + "/");
@@ -200,7 +215,7 @@ public class StructuralLsTool : ICodexTool
         int dirCount = 0;
         const int maxFiles = 500; // Safety limit to prevent context explosion
 
-        BuildTreeRecursive(sb, rootDir, "", 0, maxDepth, ref fileCount, ref dirCount, maxFiles);
+        BuildTreeRecursive(sb, rootDir, baseRoot, "", 0, maxDepth, ref fileCount, ref dirCount, maxFiles);
 
         sb.AppendLine();
         sb.AppendLine(FormattableString.Invariant($"--- Summary: {dirCount} directories, {fileCount} files ---"));
@@ -212,7 +227,7 @@ public class StructuralLsTool : ICodexTool
         return CodexToolResult.Succeeded(sb.ToString(), null);
     }
 
-    private static void BuildTreeRecursive(StringBuilder sb, string currentDir, string indent, int depth, int maxDepth, ref int fileCount, ref int dirCount, int maxFiles)
+    private static void BuildTreeRecursive(StringBuilder sb, string currentDir, string baseRoot, string indent, int depth, int maxDepth, ref int fileCount, ref int dirCount, int maxFiles)
     {
         if (depth >= maxDepth || fileCount >= maxFiles) return;
 
@@ -228,10 +243,11 @@ public class StructuralLsTool : ICodexTool
         try
         {
             subDirs = dirInfo.GetDirectories()
-                .Where(d => !SkipDirs.Contains(d.Name) && !d.Name.StartsWith('.'))
+                .Where(d => !SkipDirs.Contains(d.Name) && !d.Name.StartsWith('.') && Tools.ToolPathResolver.IsSafeReadTarget(d.FullName, baseRoot, out _))
                 .OrderBy(d => d.Name)
                 .ToArray();
             files = dirInfo.GetFiles()
+                .Where(f => Tools.ToolPathResolver.IsSafeReadTarget(f.FullName, baseRoot, out _))
                 .OrderBy(f => f.Name)
                 .ToArray();
         }
@@ -252,7 +268,7 @@ public class StructuralLsTool : ICodexTool
 
             sb.AppendLine(FormattableString.Invariant($"{indent}{connector}📁 {dir.Name}/"));
             dirCount++;
-            BuildTreeRecursive(sb, dir.FullName, childIndent, depth + 1, maxDepth, ref fileCount, ref dirCount, maxFiles);
+            BuildTreeRecursive(sb, dir.FullName, baseRoot, childIndent, depth + 1, maxDepth, ref fileCount, ref dirCount, maxFiles);
         }
 
         // Then files
