@@ -1,0 +1,83 @@
+name: client
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'clients/desktop/**'
+      - 'docs/contracts/**'
+      - '.github/workflows/client.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'clients/desktop/**'
+      - 'docs/contracts/**'
+      - '.github/workflows/client.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    name: Desktop client lint, typecheck, test, build & contract drift
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/desktop
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: clients/desktop/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify OpenAPI and SSE generated contracts have no drift
+        run: |
+          npm run generate:types
+          git diff --exit-code -- src/shared/contracts/
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests (Vitest)
+        run: npm test
+
+      - name: Build Electron app
+        run: npm run build
+
+      - name: Dependency audit (production)
+        run: npm audit --omit=dev
+
+  e2e-windows:
+    name: Desktop Electron E2E (Windows)
+    runs-on: windows-latest
+    needs: desktop
+    defaults:
+      run:
+        working-directory: clients/desktop
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: clients/desktop/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Electron app
+        run: npm run build
+
+      - name: Run Playwright for Electron E2E
+        run: npm run test:e2e
