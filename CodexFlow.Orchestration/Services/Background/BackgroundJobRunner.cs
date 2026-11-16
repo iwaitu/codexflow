@@ -2429,8 +2429,13 @@ namespace CodexFlow.Services.Background
                         .Select(CodexToolFunctionAdapterFactory.CreateAIFunction)
                         .Cast<AIFunction>()
                         .ToList();
-                    var systemPrompt = ToolCatalogPromptComposer.AppendRuntimeToolGuidance(
+                    var executionBackend = sp.GetService<Microsoft.Extensions.Options.IOptionsMonitor<CodexFlow.Core.Execution.ExecutionOptions>>()?.CurrentValue.Backend
+                        ?? CodexFlow.Core.Execution.ExecutionBackend.Docker;
+                    var rawSystemPrompt = CodexFlow.Core.Constants.CodexPrompts.ApplyExecutionBackendEnvironment(
                         workerDefinition.BuildSystemPrompt(workerSession),
+                        executionBackend);
+                    var systemPrompt = ToolCatalogPromptComposer.AppendRuntimeToolGuidance(
+                        rawSystemPrompt,
                         availableCodexTools,
                         runtimeContext);
                     serviceDiagnostics["availableToolCount"] = availableTools.Count;
@@ -2461,7 +2466,8 @@ namespace CodexFlow.Services.Background
 
                     // What the host fetched for this session, and where it is mounted: facts the worker otherwise has to guess at.
                     effectivePrompt += ForgeOfflinePackagesBriefing.Build(
-                        sp.GetService<CodexFlow.Services.ArtifactAudit.IDependencyUpgradeTargets>()?.FetchedUpgrades(sessionId));
+                        sp.GetService<CodexFlow.Services.ArtifactAudit.IDependencyUpgradeTargets>()?.FetchedUpgrades(sessionId),
+                        executionBackend);
 
                     // Build scope intervention hook (pre-execution guard) for write/edit tools
                     IQueryRuntimeInterventionHook scopeHook = new CodexFlow.Core.Agents.Adapters.KernelRuntimeEventAdapter(

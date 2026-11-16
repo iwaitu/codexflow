@@ -5,9 +5,18 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
+using CodexFlow.Core.Execution;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 
 namespace CodexFlow.Orchestration.Hosting;
+
+public enum LocalPreflightMode
+{
+    Fail = 0,
+    Report = 1,
+    Off = 2
+}
 
 /// <summary>One thing that has to be fixed before a host can do its work.</summary>
 /// <param name="Component">What is wrong: <c>Model</c> or <c>Docker</c>.</param>
@@ -24,7 +33,29 @@ public static class HostPreflight
     private static readonly TimeSpan ModelTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan DockerTimeout = TimeSpan.FromSeconds(15);
 
-    /// <summary>Runs both checks.</summary>
+    /// <summary>
+    /// Resolves <c>Local:PreflightMode</c> (<c>Fail</c> | <c>Report</c> | <c>Off</c>), honoring the legacy
+    /// <c>Local:SkipPreflight=true</c> switch with a deprecation warning.
+    /// </summary>
+    public static LocalPreflightMode ResolvePreflightMode(IConfiguration configuration, ILogger? logger = null)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        var rawMode = configuration["Local:PreflightMode"];
+        if (!string.IsNullOrWhiteSpace(rawMode) && Enum.TryParse<LocalPreflightMode>(rawMode, ignoreCase: true, out var parsed))
+        {
+            return parsed;
+        }
+
+        if (configuration.GetValue<bool>("Local:SkipPreflight"))
+        {
+            logger?.LogWarning("Local:SkipPreflight is deprecated; use Local:PreflightMode=Off instead.");
+            return LocalPreflightMode.Off;
+        }
+
+        return LocalPreflightMode.Fail;
+    }
+
+    /// <summary>Runs the start-up checks required by the configured execution backend.</summary>
     /// <param name="configuration">Host configuration; the model settings are in the <c>VllmAgent</c> section.</param>
     /// <param name="handler">Replaces the HTTP stack for the model call; tests only.</param>
     /// <param name="dockerProbe">Replaces the real Docker call; returns <c>null</c> when the daemon answers, else the reason. Tests only.</param>
@@ -38,10 +69,18 @@ public static class HostPreflight
         var issues = new List<PreflightIssue>();
         await CheckModelAsync(configuration.GetSection("VllmAgent"), handler, issues, cancellationToken).ConfigureAwait(false);
 
-        var dockerFailure = await (dockerProbe ?? ProbeDockerAsync)(cancellationToken).ConfigureAwait(false);
-        if (dockerFailure is not null)
+        var backendRaw = configuration[$"{ExecutionOptions.SectionName}:Backend"];
+        var backend = !string.IsNullOrWhiteSpace(backendRaw) && Enum.TryParse<ExecutionBackend>(backendRaw, ignoreCase: true, out var parsedBackend)
+            ? parsedBackend
+            : ExecutionBackend.Docker;
+
+        if (backend == ExecutionBackend.Docker)
         {
-            issues.Add(new PreflightIssue("Docker", $"Docker is not available: {dockerFailure} Start Docker Desktop (or the Docker daemon) and try again."));
+            var dockerFailure = await (dockerProbe ?? ProbeDockerAsync)(cancellationToken).ConfigureAwait(false);
+            if (dockerFailure is not null)
+            {
+                issues.Add(new PreflightIssue("Docker", $"Docker is not available: {dockerFailure} Start Docker Desktop (or the Docker daemon) and try again."));
+            }
         }
 
         return issues;

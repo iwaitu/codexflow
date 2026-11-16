@@ -58,6 +58,10 @@
   - 事件和 DTO 没有类型化契约。
   - 首次运行没配模型时，preflight 会直接退出。
 
+### 模型客户端（QRE 接入）
+- `CodexFlow.Core/Runtime/QreV2BackedQueryRuntimeEngine.cs` 中的 `CodexFlowV2ModelClient` 手工实现了 MEAI ↔ QRE Protocol 转换及 finish reason 校验（与 QRE 的 `MeaiRuntimeModelClient` 重复），但同时承载了记忆注入（经 `DefaultLLMExecutor`）、`DynamicContextProvider`、`ForgeProgressGuard`、`UnexposedToolCallGuard`、必需工具关思考、单次尝试超时及空响应流式重试。
+- `CodexFlow.Core.csproj` 当前仅引用了 `CodexFlow.QueryRuntime.Engine`（`0.26.2`），未引用包含 `MeaiRuntimeModelClient` 的 `CodexFlow.QueryRuntime.Models` 包；`OrchestrationServiceCollectionExtensions` 的 `HttpClient` 管道也未挂载 `QreModelHttpErrorCaptureHandler`。
+
 ### CI 约束
 - `check_packages.py` 要求打出的包**恰好**是那五个库。新项目必须设置 `IsPackable=false`。
 - CI 全部跑在 ubuntu 上，并对整个 slnx 做漏洞审计。
@@ -69,7 +73,8 @@
 
 | 阶段 | 内容 | 依赖 | 可并行 |
 |---|---|---|---|
-| P1 | 执行后端可选化 + 本地执行后端 + 本地模式下的验证降级（P1-4 第一期） | — | 与 P2 的契约设计并行 |
+| PM | 模型客户端收敛（外层装饰器 + 内层 `MeaiRuntimeModelClient`） | 核对 `CodexFlow.QueryRuntime.Models` 包版本 | 可与 P1 并行；建议在 P2 超时暂停与 P3 取消回合联调前合入 |
+| P1 | 执行后端可选化 + 本地执行后端 + 本地模式下的验证降级（P1-4 第一期） | — | 与 PM、P2 的契约设计并行 |
 | P2 | 权限模式、交互式审批、控制面凭据 | P1-1 | — |
 | P3 | 面向客户端的后端 API 补齐 | P2 的审批事件契约 | 与 P1-3、P1-4 并行 |
 | P4 | Electron 客户端 MVP | P3 的契约（可先用 mock） | 脚手架可与 P1 同时开始 |
@@ -93,6 +98,40 @@
 | 未经批准不启动（`Ask` 模式） | ✔ | ✔ |
 | 模型不能自批，也不能放宽权限模式 | ✔ | 托管模式下 ✔。独立运行模式默认不提供控制面，此时 Local 下无法审批；只有用户显式启用不安全兼容模式时才提供，此时 ✘（见 P2 控制面凭据） |
 | 后端不可用时不回退到另一个后端 | ✔ | ✔ |
+
+---
+
+## PM. 模型客户端收敛（外层装饰器 + 内层 `MeaiRuntimeModelClient`）（M）
+
+> 状态：**方向待定（三方架构评审已有共识，待用户最终拍板；记忆注入位置未定）**。
+> 结论：不能用 `MeaiRuntimeModelClient` 直接替换 `CodexFlowV2ModelClient`，应采用**外层 CodexFlow 装饰器 + 内层 `MeaiRuntimeModelClient`** 的组合方案；QRE 本身不需要先改。
+
+### 职责划分
+- **外层装饰器（`CodexFlowRuntimeModelClient : IRuntimeModelAttemptClient`）**：
+  - 保留 `DynamicContextProvider` 注入消息与恢复提示，以及对必需工具的动态改写。
+  - 保留 `ForgeProgressGuard`（基于 `TurnEvidence`）与 `UnexposedToolCallGuard` 两个护栏。
+  - 指定必需工具时强制 `ThinkingEnabled = false`（在 `optionsFactory` 中处理）。
+  - 保留单次尝试级超时（`CancelAfter`）与连接失败包装为可重试 `ProviderTransport` 错误。
+  - 保留空回答时的**流式**重试一次，并累计/保留首次 `RuntimeUsageEvent`。
+  - 向内层透传 `RuntimeModelAttemptContext`。
+- **内层 `MeaiRuntimeModelClient`**：
+  - 负责 MEAI ↔ QRE Protocol 协议转换、结束原因校验（`conflicting_provider_finish_reason`、`provider_content_after_finish`、`missing_provider_finish_reason`）、`DeclaredOnlyTools` 缓存前缀保持、`ToolStrict`、`Step ResponseFormat` 映射与细分错误分类（`ClassifyProviderErrors`）。
+- **待决分支：记忆注入位置**（二选一，待拍板）：
+  - **方案 A（推荐 / 多数意见）：`ExecutorChatClientBridge`** — 新建桥接器将流式/非流式请求转交 `ILLMExecutor.StreamAsync` / `ExecuteAsync`，继续走 `DefaultLLMExecutor` 注入记忆并复用 `ReloadableChatClient → ConfiguredSamplingChatClient → VllmChatClient` 管道（桥接器不拥有共享客户端）。
+  - **方案 B：装饰器内拼装** — 抽离 `DefaultLLMExecutor.EnrichMessagesAsync` 的记忆拼装逻辑至装饰器前置步骤，直接注入 DI 单例 `IChatClient`。
+
+### 动手前必须处理的 7 项关键风险
+1. **包版本缺口**：`CodexFlow.Core` 当前引用 `CodexFlow.QueryRuntime.Engine 0.26.2`，本机缓存中 `CodexFlow.QueryRuntime.Models` 最高仅 `0.25.7`（本地 QRE 源码为 `0.26.1`）。实施前必须先确认 NuGet 包源存在与 `Engine 0.26.2` 匹配的 `Models` 版本。
+2. **Dispose 所有权**：`MeaiRuntimeModelClient.Dispose()` 会释放其持有的 `IChatClient`（全局单例 `ReloadableChatClient` 管道）。严禁对每轮新建的 `MeaiRuntimeModelClient` 调用 `Dispose()` / `using`，必须明确底层 `IChatClient` 由 DI 容器拥有。
+3. **`ChatOptions` 每次重新克隆**：`ConfiguredSamplingChatClient` 读取 `ChatOptions.AdditionalProperties` 中的采样字段后会将其删除。`optionsFactory` 每次必须调用 `QreV2AdapterUtilities.CloneChatOptions` 生成新实例，保留 `VllmChatOptions` 类型与独立的 `AdditionalProperties`。
+4. **Usage 少算**：`MeaiRuntimeModelClient` 在 `StreamingWithNonStreamingFallbackOnEmpty` 模式下遇到空回答会改发非流式请求并丢弃首次缓冲的 Usage。第一阶段 `MeaiStreamingMode` 保持 `Streaming`，仍由外层装饰器做流式重试，避免双重重试与 Usage 丢失。
+5. **超时与主动取消区分**：外层 `CancelAfter` 超时必须与调用方主动取消（含 P3-5 取消回合）严格区分，否则"超时可重试（`ProviderTransport`）"语义会丢失；同时需兼容 P2 审批挂起期间暂停超时计时。
+6. **动态必需工具写回位置**：`DynamicContextProvider` 改写必需工具时，需先校验其属于当前 Step，再写入传给 Meai 的请求 `Parameters.RequiredToolName`（只改 `ChatOptions` 会被 Meai 覆盖），并同步在 `optionsFactory` 中关闭思考。
+7. **错误分类生效前提**：必须显式开启 `ClassifyProviderErrors`，并在 `OrchestrationServiceCollectionExtensions` 的 `HttpClient` 管道挂载 `QreModelHttpErrorCaptureHandler`，否则 429 `RetryAfter` 与认证错误分类不会生效。
+
+### 验收标准
+- **新旧差分测试**：`CodexFlowV2ModelClient` 与 `CodexFlowRuntimeModelClient` 跑同一组输入对比结果，覆盖：记忆与恢复提示注入顺序、动态必需工具与 `ThinkingEnabled=false` 联动、两个护栏、无工具/`DeclaredOnlyTools`、超时与主动取消区分、429/认证错误分类、空流重试与首次 `Usage` 保留、异常结束原因顺序、并发 `ChatOptions` 隔离、多轮调用后单例 `IChatClient` 存活。
+- **真实服务验证**：对照真实模型服务的实际出站载荷（工具声明元数据、strict schema）、模型配置热更新，以及工具只执行一次（不因声明对象重放）。
 
 ---
 
@@ -545,19 +584,21 @@ Windows Job Object、Linux cgroup v2。
 5. **大仓库复制开销**：第一期设上限并裁剪，必要时上 `git worktree` 加速。
 6. **Windows 工具链差异**：`.cmd` 入口只走适配表，`.sh` skill 依赖 bash，私有 HOME 下的工具链缓存需要显式映射。这些都要在 Windows CI 上覆盖。
 7. **事件契约演进**：引入 `schemaVersion` 后，客户端要容忍未知事件和字段。
+8. **模型客户端收敛未决项（PM）**：`ExecutorChatClientBridge` vs 装饰器内拼装记忆的最终选择，以及 `CodexFlow.QueryRuntime.Models` 与 `Engine 0.26.2` 匹配包版本的可用性确认。
 
 ## 7. 建议的交付顺序
-1. P1-1（含 `Validate()` 前置）→ P1-2（先把 tar 前缀改成参数，再做 Windows 规范化）→ P1-3（含 Windows 启动策略）。这一步完成后，Local 后端可以通过配置启用，**默认仍是 Docker**。同时先冻结 P3 和 P2 的契约（OpenAPI 加事件 Schema）。
-2. P4 的脚手架和 mock 后端，与第 1 步并行。
-3. P1-4 第一期，与 P2（含控制面凭据和非交互调用方适配）并行。
-4. **默认值切换**为 Local + `Ask`。硬前置有四项：
+1. **PM（与 P1 并行）**：先核对 `CodexFlow.QueryRuntime.Models` NuGet 包版本并拍板记忆注入方案，完成 `CodexFlowRuntimeModelClient` + 差分测试（建议在 P2 超时暂停与 P3-5 取消回合联调前合入）。
+2. P1-1（含 `Validate()` 前置）→ P1-2（先把 tar 前缀改成参数，再做 Windows 规范化）→ P1-3（含 Windows 启动策略）。这一步完成后，Local 后端可以通过配置启用，**默认仍是 Docker**。同时先冻结 P3 和 P2 的契约（OpenAPI 加事件 Schema）。
+3. P4 的脚手架和 mock 后端，与第 2 步并行。
+4. P1-4 第一期，与 P2（含控制面凭据和非交互调用方适配）并行。
+5. **默认值切换**为 Local + `Ask`。硬前置有四项：
    - P2 合入；
    - P1-4 第一期合入，且通过无 Docker 的完整作业验收；
    - 升级迁移规则就绪；
    - devsim 和 CI 的非交互配置已调整，并且通过。
-5. P3-1/2/3/5/6/7/10/11 → 客户端接入真实后端，交付 MVP（含"未经隔离验证"标识）。
-6. P3-8 + P5。
-7. 可选项：P1-5、P1-6。
+6. P3-1/2/3/5/6/7/10/11 → 客户端接入真实后端，交付 MVP（含"未经隔离验证"标识）。
+7. P3-8 + P5。
+8. 可选项：P1-5、P1-6。
 
 ---
 

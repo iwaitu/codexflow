@@ -62,6 +62,13 @@ public sealed class ToolIsolationGate(
                 "No isolated execution backend is configured; refusing to run on the host."));
         }
 
+        if (!service.SupportsNetworkMode(current.Network.Mode))
+        {
+            return Refuse(toolName, ExecutionDecision.Unavailable(
+                ExecutionReasonCodes.NetworkNotPermitted,
+                $"Execution backend '{service.GetType().Name}' does not support network mode '{current.Network.Mode}'."));
+        }
+
         context = current;
         backend = service;
         return null;

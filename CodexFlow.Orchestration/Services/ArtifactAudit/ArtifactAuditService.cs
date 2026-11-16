@@ -8,6 +8,7 @@ using CodexFlow.Contracts;
 using CodexFlow.Core.Execution;
 using CodexFlow.Core.Services;
 using CodexFlow.Services.ArtifactAudit.Ecosystems;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -55,6 +56,8 @@ public sealed class ArtifactAuditService : IArtifactAuditService
     private readonly TimeProvider _time;
     private readonly ILogger<ArtifactAuditService>? _logger;
     private readonly IReadOnlyList<LockfileDependencyScanner> _lockfileScanners;
+    private readonly IConfiguration? _configuration;
+    private readonly IOptionsMonitor<ExecutionOptions>? _executionOptions;
 
     public ArtifactAuditService(
         IOptions<ArtifactAuditOptions> options,
@@ -62,13 +65,17 @@ public sealed class ArtifactAuditService : IArtifactAuditService
         IArtifactModelAuditor model,
         TimeProvider? time = null,
         ILogger<ArtifactAuditService>? logger = null,
-        IOsvSnapshotProvider? osvAdvisories = null)
+        IOsvSnapshotProvider? osvAdvisories = null,
+        IConfiguration? configuration = null,
+        IOptionsMonitor<ExecutionOptions>? executionOptions = null)
     {
         _options = options.Value;
         _advisories = advisories;
         _model = model;
         _time = time ?? TimeProvider.System;
         _logger = logger;
+        _configuration = configuration;
+        _executionOptions = executionOptions;
         // Without OSV data the npm and Python manifests stay "unsupported", exactly as before.
         _lockfileScanners = osvAdvisories is null
             ? []
@@ -88,6 +95,42 @@ public sealed class ArtifactAuditService : IArtifactAuditService
             return Early(manifest, manifestHash, ArtifactAuditReasons.InvalidInput, "Manifest lacks an artifact id or a full head commit id.");
         if (!string.Equals(manifestHash, ArtifactQualityGate.ComputeManifestHash(manifest), StringComparison.Ordinal))
             return Early(manifest, manifestHash, ArtifactAuditReasons.ManifestHashMismatch, "The supplied manifest hash does not match the manifest.");
+
+        var localPolicy = _configuration is not null
+            ? LocalModeVerificationPolicy.Evaluate(_configuration, _executionOptions)
+            : new LocalVerificationPolicyEvaluation(freshSnapshot.Layout.Backend == ExecutionBackend.Local, LocalVerificationModePolicy.Skip);
+
+        if (localPolicy.IsLocalBackend || freshSnapshot.Layout.Backend == ExecutionBackend.Local)
+        {
+            var now = _time.GetUtcNow();
+            var blocked = localPolicy.Policy == LocalVerificationModePolicy.Block;
+            var state = blocked ? ArtifactAuditState.Fail : ArtifactAuditState.NotRun;
+            var reasonCode = blocked ? LocalModeVerificationPolicy.BlockedStatus : LocalModeVerificationPolicy.SkippedReasonCode;
+            var message = blocked
+                ? "本地执行模式下已配置阻止未隔离审计；请切换 Execution:Backend=Docker 后重试。"
+                : LocalModeVerificationPolicy.UnverifiedNotice;
+
+            return new ArtifactAuditResult
+            {
+                State = state,
+                ArtifactId = manifest.ArtifactId,
+                Commit = manifest.HeadCommit,
+                ManifestHash = manifestHash,
+                ReasonCode = reasonCode,
+                CompletedAtUtc = now,
+                Layers =
+                [
+                    new ArtifactAuditLayerResult
+                    {
+                        Name = "audit",
+                        State = state,
+                        ReasonCode = reasonCode,
+                        Message = message,
+                        CompletedAtUtc = now
+                    }
+                ]
+            };
+        }
 
         var outcomes = new List<AuditLayerOutcome>();
 

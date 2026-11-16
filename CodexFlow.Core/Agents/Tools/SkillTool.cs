@@ -168,7 +168,33 @@ public sealed class SkillTool(
 
         StructuredLog.Information(logger, "skill run_script runs isolated: {Skill}/{Script} (host runner present={Present}, never used)", name, normalizedScriptPath, _hostRunnerPresent);
         await using var session = open.Session;
-        var argv = new List<string> { interpreter.Item2, $"/tmp/{guestSubPath}/{guestScript}" };
+        var resolvedScriptPath = session.Layout.Backend == ExecutionBackend.Docker
+            ? $"{session.Layout.InputsRoot.TrimEnd('/')}/{guestSubPath}/{guestScript}"
+            : Path.Combine(
+                session.Layout.InputsRoot,
+                guestSubPath.Replace('/', Path.DirectorySeparatorChar),
+                guestScript.Replace('/', Path.DirectorySeparatorChar));
+
+        var resolvedInterpreter = interpreter.Item2;
+        if (session.Layout.Backend == ExecutionBackend.Local && OperatingSystem.IsWindows())
+        {
+            if (resolvedInterpreter == "sh")
+            {
+                var bash = FindWindowsBash();
+                if (bash is null)
+                {
+                    return CodexToolResult.Error("Cannot run .sh skill script on Windows: 'bash' (Git Bash or WSL) was not found.");
+                }
+
+                resolvedInterpreter = bash;
+            }
+            else if (resolvedInterpreter == "python3")
+            {
+                resolvedInterpreter = "python";
+            }
+        }
+
+        var argv = new List<string> { resolvedInterpreter, resolvedScriptPath };
         argv.AddRange(args);
         var run = await session.RunAsync(new IsolatedCommandRequest(argv, Timeout: TimeSpan.FromMinutes(2)), ct).ConfigureAwait(false);
         ct.ThrowIfCancellationRequested();
@@ -185,8 +211,24 @@ public sealed class SkillTool(
 
         return CodexToolResult.Succeeded(
             run.Stdout,
-            new { Skill = name, ScriptPath = normalizedScriptPath, Args = args, Isolated = true },
+            new { Skill = name, ScriptPath = normalizedScriptPath, Args = args, Isolated = session.Layout.Backend == ExecutionBackend.Docker },
             summary: $"skill script ran: {name}/{normalizedScriptPath}");
+    }
+
+    private static string? FindWindowsBash()
+    {
+        var pathEnv = Environment.GetEnvironmentVariable("PATH");
+        if (!string.IsNullOrWhiteSpace(pathEnv))
+        {
+            var env = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase) { ["PATH"] = pathEnv };
+            if (WindowsCommandResolver.FindExecutableOnPath("bash.exe", env) is { } onPath)
+            {
+                return onPath;
+            }
+        }
+
+        var gitBash = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Git", "bin", "bash.exe");
+        return File.Exists(gitBash) ? gitBash : null;
     }
 
     private static IReadOnlyList<string> ParseArgs(object? value)

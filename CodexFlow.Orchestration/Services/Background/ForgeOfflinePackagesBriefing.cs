@@ -3,6 +3,7 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 using System.Text;
+using CodexFlow.Core.Execution;
 using CodexFlow.Services.ArtifactAudit;
 
 namespace CodexFlow.Services.Background;
@@ -20,7 +21,7 @@ namespace CodexFlow.Services.Background;
 internal static class ForgeOfflinePackagesBriefing
 {
     /// <summary>The prompt section for a session with host-fetched upgrades; empty when the host fetched nothing.</summary>
-    public static string Build(IReadOnlyList<FetchedUpgrade>? fetched)
+    public static string Build(IReadOnlyList<FetchedUpgrade>? fetched, ExecutionBackend backend = ExecutionBackend.Docker)
     {
         if (fetched is not { Count: > 0 })
         {
@@ -29,12 +30,19 @@ internal static class ForgeOfflinePackagesBriefing
 
         var text = new StringBuilder();
         text.Append("\n\n# 宿主已取好的依赖包（事实，直接使用，不需要自己再确认）\n");
-        text.Append("目标版本由宿主选定并已经取好。命令容器没有网络，离线包在两个只读目录里：\n");
-        text.Append("- `/restore-cache`：项目现有依赖的基础缓存，里面只有升级前的版本；\n");
-        text.Append("- `/restore-cache-extra`：宿主为本次会话取好的目标版本（下表）。\n");
-        text.Append("两个目录都已配置为 NuGet 的备用包目录，`dotnet restore` / `build` / `test` 会自动使用它们，不需要加 `--source`。\n");
-        text.Append("所以引用了下表的目标版本之后还原成功是正常的：这些版本不在 `/restore-cache` 里，在 `/restore-cache-extra` 里。");
-        text.Append("命令容器里的源码就是你修改之后的工作区副本，还原、构建、测试的结果可以直接作为验证证据。\n\n");
+        if (backend == ExecutionBackend.Local)
+        {
+            text.Append("当前为本地执行模式，没有网络隔离也没有文件系统隔离，命令可直接使用主机工具链与网络/用户包缓存；同时可参考下表中的目标版本。\n\n");
+        }
+        else
+        {
+            text.Append("目标版本由宿主选定并已经取好。命令容器没有网络，离线包在两个只读目录里：\n");
+            text.Append("- `/restore-cache`：项目现有依赖的基础缓存，里面只有升级前的版本；\n");
+            text.Append("- `/restore-cache-extra`：宿主为本次会话取好的目标版本（下表）。\n");
+            text.Append("两个目录都已配置为 NuGet 的备用包目录，`dotnet restore` / `build` / `test` 会自动使用它们，不需要加 `--source`。\n");
+            text.Append("所以引用了下表的目标版本之后还原成功是正常的：这些版本不在 `/restore-cache` 里，在 `/restore-cache-extra` 里。");
+            text.Append("命令容器里的源码就是你修改之后的工作区副本，还原、构建、测试的结果可以直接作为验证证据。\n\n");
+        }
         text.Append("| 包 | 当前版本 | 目标版本 | 依赖方式 | 受影响项目 |\n|---|---|---|---|---|\n");
         foreach (var package in fetched.OrderBy(static f => f.Package, StringComparer.OrdinalIgnoreCase))
         {

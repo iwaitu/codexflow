@@ -76,30 +76,84 @@ public sealed class IsolationReaper(
     IOptions<IsolationOptions> options,
     ILogger<IsolationReaper> logger)
 {
+    public TimeSpan Interval => options.Value.ReapInterval;
+
+    public async Task RunOnceAsync(CancellationToken stoppingToken)
+    {
+        try
+        {
+            var removed = await service.ReapOrphansAsync(stoppingToken).ConfigureAwait(false);
+            if (removed > 0)
+            {
+                logger.LogWarning("Isolation reaper removed {Count} orphaned container(s) of dead instances.", removed);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException)
+        {
+            logger.LogDebug(ex, "Isolation reaper pass failed; will retry.");
+        }
+    }
+
     public async Task RunAsync(CancellationToken stoppingToken)
     {
-        var interval = options.Value.ReapInterval;
+        var interval = Interval;
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                var removed = await service.ReapOrphansAsync(stoppingToken).ConfigureAwait(false);
-                if (removed > 0)
-                {
-                    logger.LogWarning("Isolation reaper removed {Count} orphaned container(s) of dead instances.", removed);
-                }
+                await RunOnceAsync(stoppingToken).ConfigureAwait(false);
+                await Task.Delay(interval, stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
                 return;
             }
-            catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException)
-            {
-                logger.LogDebug(ex, "Isolation reaper pass failed; will retry.");
-            }
+        }
+    }
+}
 
+/// <summary>
+/// Startup + periodic cleanup of orphaned local staging directories left by dead instances or locked files on Windows.
+/// </summary>
+public sealed class LocalStagingReaper(
+    LocalExecutionService service,
+    IOptions<IsolationOptions> options,
+    ILogger<LocalStagingReaper> logger)
+{
+    public TimeSpan Interval => options.Value.ReapInterval;
+
+    public async Task RunOnceAsync(CancellationToken stoppingToken)
+    {
+        try
+        {
+            var removed = await service.ReapOrphansAsync(stoppingToken).ConfigureAwait(false);
+            if (removed > 0)
+            {
+                logger.LogInformation("Local staging reaper removed {Count} orphaned staging directory(ies).", removed);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException)
+        {
+            logger.LogDebug(ex, "Local staging reaper pass failed; will retry.");
+        }
+    }
+
+    public async Task RunAsync(CancellationToken stoppingToken)
+    {
+        var interval = Interval;
+        while (!stoppingToken.IsCancellationRequested)
+        {
             try
             {
+                await RunOnceAsync(stoppingToken).ConfigureAwait(false);
                 await Task.Delay(interval, stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException)

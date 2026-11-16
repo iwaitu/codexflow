@@ -49,7 +49,25 @@ public class ExecCodeTool(ILogger<ExecCodeTool> logger, ToolIsolationGate? isola
 
         await using var session = open.Session;
         var timeout = TimeSpan.FromSeconds(DefaultTimeoutSeconds);
-        var run = await session.RunAsync(new IsolatedCommandRequest(argv, StdIn: code, Timeout: timeout), ct).ConfigureAwait(false);
+        string? stdIn = code;
+        if (session.Layout.Backend == ExecutionBackend.Local)
+        {
+            if (languageKey == "java")
+            {
+                Directory.CreateDirectory(session.Layout.TempDir);
+                var mainJava = Path.Combine(session.Layout.TempDir, "Main.java");
+                await File.WriteAllTextAsync(mainJava, code, ct).ConfigureAwait(false);
+                argv = ["java", "--source", "21", mainJava];
+                stdIn = null;
+            }
+            else if (languageKey == "python")
+            {
+                var pyExe = FindFirstHostExecutable("python3", "python") ?? "python";
+                argv = [pyExe, "-"];
+            }
+        }
+
+        var run = await session.RunAsync(new IsolatedCommandRequest(argv, StdIn: stdIn, Timeout: timeout), ct).ConfigureAwait(false);
         ct.ThrowIfCancellationRequested();
 
         switch (run.Status)
@@ -86,4 +104,38 @@ public class ExecCodeTool(ILogger<ExecCodeTool> logger, ToolIsolationGate? isola
             "JAVA" => ("java", ["sh", "-c", "cat > /tmp/Main.java && java --source 21 /tmp/Main.java"]),
             _ => ("python", ["python3", "-"])
         };
+
+    private static string? FindFirstHostExecutable(params string[] candidates)
+    {
+        var pathEnv = Environment.GetEnvironmentVariable("PATH");
+        if (string.IsNullOrWhiteSpace(pathEnv))
+        {
+            return null;
+        }
+
+        var env = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase) { ["PATH"] = pathEnv };
+        foreach (var candidate in candidates)
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                if (WindowsCommandResolver.FindExecutableOnPath(candidate, env) is { } found)
+                {
+                    return found;
+                }
+            }
+            else
+            {
+                foreach (var dir in pathEnv.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var full = Path.Combine(dir, candidate);
+                    if (File.Exists(full))
+                    {
+                        return full;
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
 }

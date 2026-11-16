@@ -51,11 +51,22 @@ public sealed class DependencyRiskScanService(
     IConfiguration configuration,
     TimeProvider time,
     ILogger<DependencyRiskScanService>? logger = null,
-    Ecosystems.IOsvSnapshotProvider? osvAdvisories = null) : IDependencyRiskScanService
+    Ecosystems.IOsvSnapshotProvider? osvAdvisories = null,
+    IOptionsMonitor<ExecutionOptions>? executionOptions = null) : IDependencyRiskScanService
 {
     public async Task<DependencyScanReport> ScanCommitAsync(string repositoryRoot, string commit, string userId, string sessionId, string tag, CancellationToken ct)
     {
         if (!AuditText.IsFullCommitId(commit)) return DependencyScanReport.Unavailable(commit, "The scan needs a full commit id.");
+
+        var localPolicy = LocalModeVerificationPolicy.Evaluate(configuration, executionOptions);
+        if (localPolicy.IsLocalBackend)
+        {
+            var reason = localPolicy.Policy == LocalVerificationModePolicy.Block
+                ? $"{LocalModeVerificationPolicy.BlockedStatus}: 本地执行模式下已配置阻止未隔离依赖扫描；请切换 Execution:Backend=Docker。"
+                : $"{LocalModeVerificationPolicy.SkippedReasonCode}: {LocalModeVerificationPolicy.UnverifiedNotice}";
+            return DependencyScanReport.Unavailable(commit, reason);
+        }
+
         var image = configuration["ArtifactVerification:Image"];
         if (string.IsNullOrWhiteSpace(image)) return DependencyScanReport.Unavailable(commit, "ArtifactVerification:Image is not configured.");
 
@@ -74,6 +85,15 @@ public sealed class DependencyRiskScanService(
                 return DependencyScanReport.Unavailable(commit, $"Isolated snapshot unavailable: {AuditText.Sanitize(opened.Decision.Message, 200)}");
 
             await using var session = opened.Session;
+            if (session.Layout.Backend == ExecutionBackend.Local)
+            {
+                var reevaluated = LocalModeVerificationPolicy.Evaluate(configuration, executionOptions);
+                var reason = reevaluated.Policy == LocalVerificationModePolicy.Block
+                    ? $"{LocalModeVerificationPolicy.BlockedStatus}: 本地执行模式下已配置阻止未隔离依赖扫描；请切换 Execution:Backend=Docker。"
+                    : $"{LocalModeVerificationPolicy.SkippedReasonCode}: {LocalModeVerificationPolicy.UnverifiedNotice}";
+                return DependencyScanReport.Unavailable(commit, reason);
+            }
+
             var find = await session.RunAsync(new(SnapshotInventory.FindArgv(), Timeout: TimeSpan.FromMinutes(2)), ct).ConfigureAwait(false);
             if (!AuditText.CommandSucceeded(find))
                 return DependencyScanReport.Unavailable(commit, $"Could not inventory the snapshot ({find.Status}).");

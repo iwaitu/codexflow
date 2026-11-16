@@ -105,7 +105,7 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
                             evidence.Record(result);
                         })), allowMixedCaseNames: true),
                 new CodexFlowV2ToolPolicy(request, _logger));
-            var modelClient = new CodexFlowV2ModelClient(
+            var modelClient = new CodexFlowRuntimeModelClient(
                 _llmExecutor,
                 request,
                 tools,
@@ -468,7 +468,7 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
             _ => 0
         }));
 
-    private sealed class CodexFlowV2ModelClient(
+    internal sealed class CodexFlowV2ModelClient(
         ILLMExecutor executor,
         QueryRuntimeRequest coreRequest,
         IReadOnlyList<AIFunction> tools,
@@ -1426,13 +1426,13 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
         }
     }
 
-    private static QreProtocol.RuntimeMessage[] ToProtocolMessages(
+    internal static QreProtocol.RuntimeMessage[] ToProtocolMessages(
         IReadOnlyList<ChatMessage> messages)
         => messages.Select(static message => new QreProtocol.RuntimeMessage(
             ToProtocolRole(message.Role),
             message.Contents.Select(ToProtocolItem).ToArray())).ToArray();
 
-    private static ChatMessage[] ToMeaiMessages(
+    internal static ChatMessage[] ToMeaiMessages(
         IReadOnlyList<QreProtocol.RuntimeMessage> messages)
         => messages.Select(static message => new ChatMessage(
             ToMeaiRole(message.Role),

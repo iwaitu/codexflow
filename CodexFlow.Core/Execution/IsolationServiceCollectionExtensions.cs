@@ -26,6 +26,17 @@ public static class IsolationServiceCollectionExtensions
             services.Configure<IsolationOptions>(section);
         }
 
+        var executionSection = configuration?.GetSection(ExecutionOptions.SectionName);
+        services.AddOptions<ExecutionOptions>();
+        if (executionSection is not null)
+        {
+            services.Configure<ExecutionOptions>(executionSection);
+        }
+
+        services.TryAddSingleton<ExecutionPermissionClamp>();
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<Microsoft.Extensions.Options.IPostConfigureOptions<ExecutionOptions>, ExecutionPermissionClamp>(
+            sp => sp.GetRequiredService<ExecutionPermissionClamp>()));
+
         services.TryAddSingleton<ITrustedExecutionContextAccessor, TrustedExecutionContextAccessor>();
         services.TryAddSingleton<IDockerCli>(sp =>
         {
@@ -33,12 +44,18 @@ public static class IsolationServiceCollectionExtensions
             return new ProcessDockerCli(opts.DockerExecutable);
         });
         services.TryAddSingleton<DockerIsolatedExecutionService>();
-        services.TryAddSingleton<IIsolatedExecutionService>(sp => sp.GetRequiredService<DockerIsolatedExecutionService>());
+        services.TryAddSingleton<LocalExecutionService>();
+        services.TryAddSingleton<ExecutionBackendRouter>(sp => new ExecutionBackendRouter(
+            sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<ExecutionOptions>>(),
+            sp.GetRequiredService<DockerIsolatedExecutionService>(),
+            sp.GetRequiredService<LocalExecutionService>()));
+        services.TryAddSingleton<IIsolatedExecutionService>(sp => sp.GetRequiredService<ExecutionBackendRouter>());
         services.TryAddSingleton(sp => new ToolIsolationGate(
             sp.GetRequiredService<IIsolatedExecutionService>(),
             sp.GetRequiredService<ITrustedExecutionContextAccessor>(),
             sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<IsolationOptions>>().Value));
         services.TryAddSingleton<IsolationReaper>();
+        services.TryAddSingleton<LocalStagingReaper>();
         return services;
     }
 }

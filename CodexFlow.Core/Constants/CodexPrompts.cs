@@ -2,6 +2,7 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+using CodexFlow.Core.Execution;
 using CodexFlow.Core.Hashline.Models;
 using CodexFlow.Core.Models;
 using CodexFlow.Contracts;
@@ -68,7 +69,10 @@ public static class CodexPrompts
                 - 默认让实现与验证保持主体独立；涉及最终验收时，优先 `spawn_worker(worker_type="verify")` 派发独立验证
                 """));
 
-    private static string BuildForgePromptTemplate(HashlineOptions? hashlineOptions = null, CodexSession? session = null)
+    private static string BuildForgePromptTemplate(
+        HashlineOptions? hashlineOptions = null,
+        CodexSession? session = null,
+        ExecutionBackend executionBackend = ExecutionBackend.Docker)
         => CodexPromptSectionComposer.Compose(
             """
             你名为 Ivilson-Forge，是项目组的高级开发工程师。
@@ -113,15 +117,7 @@ public static class CodexPrompts
                 """),
             CodexPromptSectionComposer.BuildSection(
                 "命令执行环境",
-                """
-                - **每条 `exec_cmd` 都在一个全新的容器里运行**：容器内是工作区当前内容的副本（包含你用 `hs_write` 等写入的修改），命令结束后只有源码改动会带回，`obj/`、`bin/`、缓存都会随容器丢弃。
-                - 因此 `dotnet restore` 之后另起一条 `dotnet build --no-restore` 一定报 NETSDK1004（找不到 `project.assets.json`），这不是项目的问题。去掉 `--no-restore` 即可：`dotnet build` 和 `dotnet test` 会自己先还原。（`sh`、`bash` 不在命令白名单里，不能用它们把几条命令串成一条。）
-                - **容器没有网络，依赖从离线目录还原**：`/restore-cache`（项目现有依赖的缓存）和 `/restore-cache-extra`（宿主为本次会话取好的新版本，存在时）都已配置为 NuGet 的备用包目录，`dotnet restore` / `build` / `test` 会自动使用，不需要加 `--source`。一个版本在 `/restore-cache` 里看不到却能还原成功，说明它在 `/restore-cache-extra` 里，**不代表容器里没有你的修改**。
-                - **容器镜像由命令的第一个词决定**：`dotnet`、`git`、`ls` 等在带 .NET SDK 的镜像里运行；`python` / `python3`、`node` / `npm` / `npx` 在各自的镜像里运行，那里**没有 dotnet**。所以不要在 python 或 node 脚本里启动 dotnet——在那里找不到 dotnet 不代表环境缺少它；要还原、构建、测试，就把 `dotnet ...` 直接作为一条 `exec_cmd`。
-                - **Node、Python 项目：你的容器里没有已安装的依赖，也留不下来。** 每条命令都是全新的容器，没有 `node_modules`，也没有装好的 `pytest` / 项目依赖；`npm ci` 或 `pip install` 的结果不会保留到下一条命令，所以“先安装、再 `npm test` / `pytest`”在这里做不到，不要为此反复尝试。把任务要求的修改写进源码（以及任务明确要求改的 `package.json` / `requirements.txt` 版本号），测试由宿主验收来跑：它从离线缓存里还原依赖（Node 是 `npm ci --offline` 加 Jest，Python 是离线轮子目录加 pytest）并独立判定。
-                - **Node、Python 的依赖升级：只能升级到宿主离线缓存里已有的版本**（宿主不会像 NuGet 那样临时取包）。只改任务明确写出的包和版本号。Python：改 `requirements*.txt` 里的精确版本。Node：改 `package.json` 后，用一条 `exec_cmd` 运行 `npm install --package-lock-only --offline --ignore-scripts --no-audit --no-fund --cache /tmp/npm-cache` 重新生成 `package-lock.json`，不要手写或编造锁文件内容；这条命令失败说明离线缓存里没有该版本，用 `report_task_status` 如实报告 blocked，不要换别的版本硬凑。（改了 `package.json` 之后、锁文件重新生成之前，环境提示里的 `npm ci` 失败是正常的。）
-                - 容器里的 `git status` / `git diff` 以该副本为基线，所以**永远是干净的**；它不表示你的修改丢了。要确认修改是否写入，用 `hs_read` / `ivilson_read` 读文件。
-                """),
+                BuildCommandExecutionEnvironmentBody(executionBackend)),
             CodexPromptSectionComposer.BuildSection(
                 "文件与编辑契约",
                 $"""
@@ -335,9 +331,12 @@ public static class CodexPrompts
         return CodexPromptSectionComposer.AppendUntrustedData(prompt, envInfo, planInfo);
     }
 
-    public static string GetForgePrompt(CodexSession? session = null, HashlineOptions? hashlineOptions = null)
+    public static string GetForgePrompt(
+        CodexSession? session = null,
+        HashlineOptions? hashlineOptions = null,
+        ExecutionBackend executionBackend = ExecutionBackend.Docker)
     {
-        var prompt = BuildForgePromptTemplate(hashlineOptions, session);
+        var prompt = BuildForgePromptTemplate(hashlineOptions, session, executionBackend);
         if (session == null || string.IsNullOrEmpty(session.ActiveTaskId))
         {
             return prompt;
@@ -881,6 +880,40 @@ Target Path: {escapedTargetPath}
             """);
 
         return CodexPromptSectionComposer.AppendUntrustedData(prompt, workerContextBlock);
+    }
+
+    public static string ApplyExecutionBackendEnvironment(string prompt, ExecutionBackend backend)
+    {
+        if (backend == ExecutionBackend.Docker || string.IsNullOrEmpty(prompt))
+        {
+            return prompt;
+        }
+
+        var dockerBody = BuildCommandExecutionEnvironmentBody(ExecutionBackend.Docker);
+        var localBody = BuildCommandExecutionEnvironmentBody(ExecutionBackend.Local);
+        return prompt.Replace(dockerBody, localBody, StringComparison.Ordinal);
+    }
+
+    public static string BuildCommandExecutionEnvironmentBody(ExecutionBackend backend)
+    {
+        if (backend == ExecutionBackend.Local)
+        {
+            return """
+                - **当前为本地执行模式**：`exec_cmd` 在工作区副本中以当前用户身份运行，**没有网络隔离，也没有文件系统隔离**。只有通过工作区副本产生的、且在任务允许范围内的源码改动才会写回工作区。
+                - 命令直接使用主机工具链（`dotnet`、`git`、`node`、`npm`、`python` 等）与用户包缓存，不需要容器离线目录；Windows 下 `.cmd`/`.bat` 仅支持适配表中的入口（如 `npm`、`npx`）。
+                - 工作区副本里的 `git status` / `git diff` 以该副本为基线，所以**永远是干净的**；要确认修改是否写入，用 `hs_read` / `ivilson_read` 读文件。
+                """;
+        }
+
+        return """
+            - **每条 `exec_cmd` 都在一个全新的容器里运行**：容器内是工作区当前内容的副本（包含你用 `hs_write` 等写入的修改），命令结束后只有源码改动会带回，`obj/`、`bin/`、缓存都会随容器丢弃。
+            - 因此 `dotnet restore` 之后另起一条 `dotnet build --no-restore` 一定报 NETSDK1004（找不到 `project.assets.json`），这不是项目的问题。去掉 `--no-restore` 即可：`dotnet build` 和 `dotnet test` 会自己先还原。（`sh`、`bash` 不在命令白名单里，不能用它们把几条命令串成一条。）
+            - **容器没有网络，依赖从离线目录还原**：`/restore-cache`（项目现有依赖的缓存）和 `/restore-cache-extra`（宿主为本次会话取好的新版本，存在时）都已配置为 NuGet 的备用包目录，`dotnet restore` / `build` / `test` 会自动使用，不需要加 `--source`。一个版本在 `/restore-cache` 里看不到却能还原成功，说明它在 `/restore-cache-extra` 里，**不代表容器里没有你的修改**。
+            - **容器镜像由命令的第一个词决定**：`dotnet`、`git`、`ls` 等在带 .NET SDK 的镜像里运行；`python` / `python3`、`node` / `npm` / `npx` 在各自的镜像里运行，那里**没有 dotnet**。所以不要在 python 或 node 脚本里启动 dotnet——在那里找不到 dotnet 不代表环境缺少它；要还原、构建、测试，就把 `dotnet ...` 直接作为一条 `exec_cmd`。
+            - **Node、Python 项目：你的容器里没有已安装的依赖，也留不下来。** 每条命令都是全新的容器，没有 `node_modules`，也没有装好的 `pytest` / 项目依赖；`npm ci` 或 `pip install` 的结果不会保留到下一条命令，所以“先安装、再 `npm test` / `pytest`”在这里做不到，不要为此反复尝试。把任务要求的修改写进源码（以及任务明确要求改的 `package.json` / `requirements.txt` 版本号），测试由宿主验收来跑：它从离线缓存里还原依赖（Node 是 `npm ci --offline` 加 Jest，Python 是离线轮子目录加 pytest）并独立判定。
+            - **Node、Python 的依赖升级：只能升级到宿主离线缓存里已有的版本**（宿主不会像 NuGet 那样临时取包）。只改任务明确写出的包和版本号。Python：改 `requirements*.txt` 里的精确版本。Node：改 `package.json` 后，用一条 `exec_cmd` 运行 `npm install --package-lock-only --offline --ignore-scripts --no-audit --no-fund --cache /tmp/npm-cache` 重新生成 `package-lock.json`，不要手写或编造锁文件内容；这条命令失败说明离线缓存里没有该版本，用 `report_task_status` 如实报告 blocked，不要换别的版本硬凑。（改了 `package.json` 之后、锁文件重新生成之前，环境提示里的 `npm ci` 失败是正常的。）
+            - 容器里的 `git status` / `git diff` 以该副本为基线，所以**永远是干净的**；它不表示你的修改丢了。要确认修改是否写入，用 `hs_read` / `ivilson_read` 读文件。
+            """;
     }
 
     private static bool IsAnyHashlinePolicyEnabled(HashlineOptions options)

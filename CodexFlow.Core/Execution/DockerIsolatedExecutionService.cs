@@ -95,11 +95,20 @@ public sealed class DockerIsolatedExecutionService : IIsolatedExecutionService, 
         }
     }
 
+    public bool SupportsNetworkMode(ExecutionNetworkMode mode) => mode == ExecutionNetworkMode.None;
+
     public async Task<IsolatedSessionOpenResult> OpenSessionAsync(TrustedExecutionContext context, IsolatedSessionOptions options, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(options);
         ct.ThrowIfCancellationRequested();
+
+        if (!SupportsNetworkMode(context.Network.Mode))
+        {
+            return new IsolatedSessionOpenResult(
+                ExecutionDecision.Unavailable(ExecutionReasonCodes.NetworkNotPermitted, "Docker isolation only supports network mode None."),
+                null);
+        }
 
         var valid = context.Validate();
         if (!valid.IsAllowed)

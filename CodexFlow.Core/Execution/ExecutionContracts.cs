@@ -88,8 +88,10 @@ public sealed record ExecutionResourceLimits
 
 public enum ExecutionNetworkMode
 {
-    /// <summary>No network at all (the only supported mode).</summary>
+    /// <summary>No network at all (required by Docker isolation).</summary>
     None = 0,
+    /// <summary>Host network access (only supported by Local execution backend).</summary>
+    Host,
     /// <summary>Reserved. Always refused: unrestricted egress is never silently enabled.</summary>
     Unrestricted
 }
@@ -200,11 +202,6 @@ public sealed record TrustedExecutionContext
         if (string.IsNullOrWhiteSpace(WorkspaceRoot) || !Path.IsPathRooted(WorkspaceRoot))
         {
             return ExecutionDecision.Deny(ExecutionReasonCodes.InvalidTrustedContext, "WorkspaceRoot must be a trusted absolute path.");
-        }
-
-        if (Network.Mode != ExecutionNetworkMode.None)
-        {
-            return ExecutionDecision.Unavailable(ExecutionReasonCodes.NetworkNotPermitted, "Only network mode None is supported.");
         }
 
         if (Deadline is { } d && d <= DateTimeOffset.UtcNow)
@@ -361,9 +358,28 @@ public sealed record IsolatedExportResult(
         => new(decision, Array.Empty<ExportedChange>(), Array.Empty<ExportRejection>());
 }
 
+public sealed record ExecutionLayout(
+    ExecutionBackend Backend,
+    string WorkspaceRoot,
+    string HomeDir,
+    string TempDir,
+    string InputsRoot,
+    IReadOnlyDictionary<string, string> CacheMounts)
+{
+    public static ExecutionLayout DockerDefault { get; } = new(
+        ExecutionBackend.Docker,
+        "/workspace",
+        "/tmp/home",
+        "/tmp",
+        "/tmp",
+        new Dictionary<string, string>(StringComparer.Ordinal));
+}
+
 public interface IIsolatedExecutionSession : IAsyncDisposable
 {
     string SessionHandle { get; }
+
+    ExecutionLayout Layout => ExecutionLayout.DockerDefault;
 
     /// <summary>The independent guest repository, when one was requested and created.</summary>
     GuestGitInfo? GuestGit => null;
@@ -381,6 +397,8 @@ public sealed record IsolatedSessionOpenResult(ExecutionDecision Decision, IIsol
 
 public interface IIsolatedExecutionService
 {
+    bool SupportsNetworkMode(ExecutionNetworkMode mode) => mode == ExecutionNetworkMode.None;
+
     Task<IsolatedSessionOpenResult> OpenSessionAsync(TrustedExecutionContext context, IsolatedSessionOptions options, CancellationToken ct);
 }
 

@@ -53,6 +53,9 @@ builder.Services.AddSingleton(accessToken);
 builder.Services.AddSingleton<CodexFlow.Core.Configuration.IModelSettingsService>(_ =>
     new CodexFlow.Core.Configuration.ModelSettingsService(
         CodexFlow.Core.Configuration.CodexFlowPaths.GlobalSettingsPath(globalSettingsDirectory)));
+builder.Services.AddSingleton<CodexFlow.Core.Configuration.IExecutionSettingsService>(_ =>
+    new CodexFlow.Core.Configuration.ExecutionSettingsService(
+        CodexFlow.Core.Configuration.CodexFlowPaths.GlobalSettingsPath(globalSettingsDirectory)));
 
 // The caller is whoever holds this host's token, and that caller is the local user. There is nothing to deactivate, so the
 // "ActiveUser" policy the controllers ask for only requires that.
@@ -72,20 +75,25 @@ await using (var scope = app.Services.CreateAsyncScope())
     await scope.ServiceProvider.GetRequiredService<JobDbContext>().Database.MigrateAsync();
 }
 
-// The host works with Docker and a model interface and nothing else, so those two are all it checks: every problem at once, then a
-// non-zero exit, rather than a host that starts and fails on the first conversation. Local:SkipPreflight turns it off.
-if (!app.Configuration.GetValue<bool>("Local:SkipPreflight"))
+app.Services.GetRequiredService<CodexFlow.Core.Configuration.IExecutionSettingsService>()
+    .MigrateLegacyIsolationIfNeeded(app.Logger);
+
+var preflightMode = HostPreflight.ResolvePreflightMode(app.Configuration, app.Logger);
+if (preflightMode != LocalPreflightMode.Off)
 {
     var issues = await HostPreflight.RunAsync(app.Configuration);
     if (issues.Count > 0)
     {
         foreach (var issue in issues)
         {
-            app.Logger.LogError("Start-up check failed ({Component}): {Message}", issue.Component, issue.Message);
+            app.Logger.LogWarning("Start-up check issue ({Component}): {Message}", issue.Component, issue.Message);
         }
 
-        await Console.Error.WriteLineAsync("CodexFlow cannot start:" + string.Concat(issues.Select(issue => $"{Environment.NewLine}  - {issue.Message}")));
-        return 1;
+        if (preflightMode == LocalPreflightMode.Fail)
+        {
+            await Console.Error.WriteLineAsync("CodexFlow cannot start:" + string.Concat(issues.Select(issue => $"{Environment.NewLine}  - {issue.Message}")));
+            return 1;
+        }
     }
 }
 

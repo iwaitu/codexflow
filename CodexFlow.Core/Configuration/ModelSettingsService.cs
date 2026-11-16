@@ -131,16 +131,7 @@ public sealed class ModelSettingsService : IModelSettingsService
         }
     }
 
-    private JObject LoadRoot()
-    {
-        if (!File.Exists(_path))
-        {
-            return new JObject();
-        }
-
-        var text = File.ReadAllText(_path);
-        return string.IsNullOrWhiteSpace(text) ? new JObject() : JObject.Parse(text);
-    }
+    private JObject LoadRoot() => GlobalSettingsFileStore.LoadRoot(_path);
 
     private static JObject LoadSection(JObject root)
         => root[SectionName] as JObject ?? new JObject();
@@ -167,29 +158,5 @@ public sealed class ModelSettingsService : IModelSettingsService
             ApiKeyLast4: string.IsNullOrEmpty(key) ? null : (key.Length <= 4 ? new string('*', key.Length) : key[^4..]));
     }
 
-    private void WriteAtomically(string json)
-    {
-        var directory = Path.GetDirectoryName(Path.GetFullPath(_path))!;
-        Directory.CreateDirectory(directory);
-
-        var temp = Path.Combine(directory, $".{Path.GetFileName(_path)}.{Guid.NewGuid():N}.tmp");
-        try
-        {
-            File.WriteAllText(temp, json);
-            if (!OperatingSystem.IsWindows())
-            {
-                // Owner read/write only. On Windows the file inherits the user-profile ACL, which is already per user.
-                File.SetUnixFileMode(temp, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-            }
-
-            File.Move(temp, _path, overwrite: true);
-        }
-        finally
-        {
-            if (File.Exists(temp))
-            {
-                File.Delete(temp);
-            }
-        }
-    }
+    private void WriteAtomically(string json) => GlobalSettingsFileStore.WriteAtomically(_path, json);
 }

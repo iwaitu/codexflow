@@ -17,6 +17,7 @@ using CodexFlow.Services;
 using CodexFlow.Services.Background;
 using CodexFlow.Telemetry;
 using CodexFlow.Infrastructure.Jobs;
+using CodexFlow.QueryRuntime.Models;
 using Microsoft.Extensions.AI;
 
 namespace CodexFlow.Orchestration.Hosting;
@@ -50,10 +51,10 @@ public static class OrchestrationServiceCollectionExtensions
             sp.GetRequiredService<ILogger<VllmWireLoggingHandler>>(),
             vllmConfig.GetValue<bool>("WireLogToolPayloads"))
         {
-            InnerHandler = new SocketsHttpHandler
+            InnerHandler = new QreModelHttpErrorCaptureHandler(new SocketsHttpHandler
             {
                 PooledConnectionLifetime = TimeSpan.FromMinutes(10)
-            }
+            })
         });
 
         var rawClient = VllmChatClientFactory.Create(vllmConfig, vllmHttpClient);

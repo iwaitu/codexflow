@@ -40,12 +40,18 @@ public static class GuestTarAnalyzer
         IReadOnlyDictionary<string, BaselineEntry> baseline,
         ExportScope scope,
         ExecutionResourceLimits limits,
-        string stagingDirectory)
+        string stagingDirectory,
+        string guestRoot = "workspace")
     {
         ArgumentNullException.ThrowIfNull(tarStream);
         ArgumentNullException.ThrowIfNull(baseline);
         ArgumentNullException.ThrowIfNull(scope);
         ArgumentNullException.ThrowIfNull(limits);
+
+        var rootName = string.IsNullOrWhiteSpace(guestRoot)
+            ? string.Empty
+            : guestRoot.Trim().Trim('/');
+        var rootPrefix = rootName.Length == 0 ? string.Empty : rootName + "/";
 
         var changes = new List<GuestChange>();
         var rejections = new List<ExportRejection>();
@@ -72,18 +78,34 @@ public static class GuestTarAnalyzer
             }
 
             var raw = entry.Name;
-            if (raw is "workspace" or "workspace/" or "./workspace" || raw == "./")
+            if (rootName.Length > 0)
+            {
+                if (raw == rootName || raw == rootPrefix || raw == "./" + rootName || raw == "./" + rootPrefix || raw == "./" || raw == ".")
+                {
+                    continue;
+                }
+
+                if (raw.StartsWith("./", StringComparison.Ordinal))
+                {
+                    raw = raw[2..];
+                }
+
+                if (!raw.StartsWith(rootPrefix, StringComparison.Ordinal))
+                {
+                    rejections.Add(new ExportRejection(entry.Name, ExecutionReasonCodes.ExportRejectedUnsafePath, $"entry outside /{rootName}"));
+                    continue;
+                }
+            }
+            else if (raw is "./" or "." or "")
             {
                 continue;
             }
-
-            if (!raw.StartsWith("workspace/", StringComparison.Ordinal))
+            else if (raw.StartsWith("./", StringComparison.Ordinal))
             {
-                rejections.Add(new ExportRejection(raw, ExecutionReasonCodes.ExportRejectedUnsafePath, "entry outside /workspace"));
-                continue;
+                raw = raw[2..];
             }
 
-            var rel = raw["workspace/".Length..];
+            var rel = rootPrefix.Length == 0 ? raw : raw[rootPrefix.Length..];
             if (rel.Contains("..", StringComparison.Ordinal) && rel.Split('/').Contains(".."))
             {
                 rejections.Add(new ExportRejection(raw, ExecutionReasonCodes.ExportRejectedUnsafePath, "parent traversal"));

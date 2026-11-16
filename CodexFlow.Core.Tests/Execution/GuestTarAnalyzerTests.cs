@@ -234,4 +234,36 @@ public class GuestTarAnalyzerTests : IDisposable
         Assert.Equal("TestResults/a.trx", f.RelativePath);
         Assert.Equal(IsolationTestSupport.Sha("<trx/>"), f.Sha256);
     }
+
+    [Theory]
+    [InlineData("workspace", "workspace/src/a.cs")]
+    [InlineData("", "src/a.cs")]
+    [InlineData("custom", "custom/src/a.cs")]
+    public void Analyze_ParameterizedGuestRoot_ShouldAcceptAndEnforceChecks(string guestRoot, string entryPath)
+    {
+        using var tar = IsolationTestSupport.GuestTar(t => t.File(entryPath, "new-content"));
+        var stageDir = Path.Combine(Path.GetTempPath(), "codexflow-tar-test-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var result = GuestTarAnalyzer.Analyze(
+                tar,
+                new Dictionary<string, BaselineEntry>(StringComparer.Ordinal),
+                ExportScope.From(null, ["src"]),
+                new ExecutionResourceLimits(),
+                stageDir,
+                guestRoot);
+
+            Assert.Empty(result.Rejections);
+            var change = Assert.Single(result.Changes);
+            Assert.Equal("src/a.cs", change.Path);
+            Assert.Equal(GuestChangeKind.Add, change.Kind);
+        }
+        finally
+        {
+            if (Directory.Exists(stageDir))
+            {
+                Directory.Delete(stageDir, recursive: true);
+            }
+        }
+    }
 }

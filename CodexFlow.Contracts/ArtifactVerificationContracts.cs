@@ -131,5 +131,8 @@ public sealed record ForgeArtifactVerificationReceipt
     public ArtifactAuditResult Audit { get; init; } = new();
     public string? FailureCode { get; init; }
     public string? Message { get; init; }
+    public string VerificationStatus { get; init; } = string.Empty;
+    public bool VerifiedWithoutIsolation { get; init; }
+    public string? VerificationNotice { get; init; }
     public DateTimeOffset CompletedAtUtc { get; init; }
 }

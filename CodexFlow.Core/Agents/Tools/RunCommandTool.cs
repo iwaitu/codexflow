@@ -247,11 +247,21 @@ public class RunCommandTool(
     /// conclusion is drawn. Null for commands that ran in the default image.
     /// </summary>
     internal static string? BuildEnvironmentNote(string executable, string image, string commandImage)
-        => string.Equals(image, commandImage, StringComparison.OrdinalIgnoreCase)
+        => BuildEnvironmentNote(executable, image, commandImage, ExecutionBackend.Docker);
+
+    internal static string? BuildEnvironmentNote(string executable, string image, string commandImage, ExecutionBackend backend)
+    {
+        if (backend == ExecutionBackend.Local)
+        {
+            return "[environment] 本地执行模式：命令直接在本机运行（无网络隔离、无文件系统隔离），使用主机工具链与用户包缓存。";
+        }
+
+        return string.Equals(image, commandImage, StringComparison.OrdinalIgnoreCase)
             ? null
             : $"[environment] 这条命令在 `{executable}` 专用的容器（{image}）里运行，里面只有 `{executable}` 自己的工具链，没有 dotnet 等其他工具；" +
               "在这里找不到某个工具，不代表环境里没有它。要运行 dotnet，请把它直接作为一条命令执行，例如 exec_cmd({\"command\":[\"dotnet\",\"restore\"]})，" +
               $"不要从 `{executable}` 里启动它。";
+    }
 
     private static async Task<CommandTaskOutcome> RunInIsolationAsync(
         IIsolatedExecutionService backend,
@@ -274,15 +284,25 @@ public class RunCommandTool(
 
         await using var session = open.Session;
 
-        // Every command gets a fresh container without network: a Node or Python project's dependencies are installed from the host's
-        // offline caches first, or `npm test` / `python -m pytest` could never run here.
-        if (await OfflineToolchainPreparation.PrepareAsync(session, argv[0], token).ConfigureAwait(false) is { } prepared)
+        IReadOnlyDictionary<string, string>? prepEnv = null;
+        if (session.Layout.Backend == ExecutionBackend.Docker)
         {
-            sink.Add(EnvironmentStream, prepared);
+            // Every command gets a fresh container without network: a Node or Python project's dependencies are installed from the host's
+            // offline caches first, or `npm test` / `python -m pytest` could never run here.
+            if (await OfflineToolchainPreparation.PrepareAsync(session, argv[0], token).ConfigureAwait(false) is { } prepared)
+            {
+                sink.Add(EnvironmentStream, prepared);
+            }
+
+            prepEnv = OfflineToolchainPreparation.EnvFor(argv[0]);
+        }
+        else
+        {
+            sink.Add(EnvironmentStream, "local host execution (network=Host, filesystem=unrestricted)");
         }
 
         var run = await session.RunAsync(
-            new IsolatedCommandRequest(argv, cwd, Timeout: timeout, Env: OfflineToolchainPreparation.EnvFor(argv[0]),
+            new IsolatedCommandRequest(argv, cwd, Timeout: timeout, Env: prepEnv,
                 OnOutput: line => sink.Add(line.Stream, line.Text)),
             token).ConfigureAwait(false);
 

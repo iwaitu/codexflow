@@ -16,6 +16,7 @@ using CodexFlow.Services.Verification;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Planning.Artifacts;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace CodexFlow.Services.Background;
 
@@ -23,7 +24,8 @@ namespace CodexFlow.Services.Background;
 public sealed class ForgeArtifactVerificationService(
     IJobDbContext db, IGatewayChatStore chat, IIsolatedExecutionService execution, IConfiguration configuration, IArtifactAuditService auditService,
     IPlanArtifactStore planStore, ILogger<ForgeArtifactVerificationService>? logger = null, ISessionStore? runtimeSessions = null,
-    IDependencyRiskScanService? dependencyScan = null, IEnumerable<IProjectVerifier>? projectVerifiers = null)
+    IDependencyRiskScanService? dependencyScan = null, IEnumerable<IProjectVerifier>? projectVerifiers = null,
+    IOptionsMonitor<ExecutionOptions>? executionOptions = null)
     : IForgeArtifactVerificationService
 {
     private readonly IReadOnlyList<IProjectVerifier> _projectVerifiers =
@@ -94,6 +96,13 @@ public sealed class ForgeArtifactVerificationService(
         var error = await inspector.ValidateAsync(manifest, root, userId, request.SessionId, job.JobId, job.Attempt, parents, ct);
         if (error is not null) return Failed(error, receipt);
         receipt = receipt with { IdentityVerified = true };
+
+        var localPolicy = LocalModeVerificationPolicy.Evaluate(configuration, executionOptions);
+        if (localPolicy.IsLocalBackend)
+        {
+            return await HandleLocalBackendAsync(job, manifest, receipt, localPolicy.Policy, ct);
+        }
+
         var context = new TrustedExecutionContext
         {
             UserId = userId, SessionId = request.SessionId, JobId = job.JobId, TaskId = manifest.TaskId,
@@ -107,6 +116,10 @@ public sealed class ForgeArtifactVerificationService(
         var opened = await execution.OpenSessionAsync(context, new(image, PinToBaseCommit: true), ct);
         if (!opened.Decision.IsAllowed || opened.Session is null) return Failed(opened.Decision.ReasonCode, receipt);
         await using var defaultSession = opened.Session;
+        if (defaultSession.Layout.Backend == ExecutionBackend.Local)
+        {
+            return await HandleLocalBackendAsync(job, manifest, receipt, localPolicy.Policy, ct);
+        }
         // The language-specific part (find the project, restore, build, test, read the test evidence) lives in an IProjectVerifier.
         var verifier = await ProjectVerifierSelector.SelectAsync(_projectVerifiers, defaultSession, ct);
         if (verifier is null) return Failed("ArtifactProjectCoverageUnavailable", receipt);
@@ -123,6 +136,10 @@ public sealed class ForgeArtifactVerificationService(
         }
 
         await using var languageSession = languageOpened?.Session;
+        if (isolated.Layout.Backend == ExecutionBackend.Local)
+        {
+            return await HandleLocalBackendAsync(job, manifest, receipt, localPolicy.Policy, ct);
+        }
         var runner = new VerificationStageRunner(isolated, receipt, manifest.JobId, logger);
         var verificationFailure = await verifier.VerifyAsync(runner, ct);
         receipt = runner.Receipt;
@@ -131,6 +148,10 @@ public sealed class ForgeArtifactVerificationService(
         var auditOpen = await execution.OpenSessionAsync(context, new(image, PinToBaseCommit: true), ct);
         if (!auditOpen.Decision.IsAllowed || auditOpen.Session is null) return Failed(auditOpen.Decision.ReasonCode, receipt);
         await using var auditSession = auditOpen.Session;
+        if (auditSession.Layout.Backend == ExecutionBackend.Local)
+        {
+            return await HandleLocalBackendAsync(job, manifest, receipt, localPolicy.Policy, ct);
+        }
         ArtifactAuditResult audit;
         // The final task may touch only tests; include every verified ancestor task's changes.
         var reviewPaths = parents.Append(manifest).SelectMany(artifact => artifact.ChangedPaths)
@@ -258,6 +279,104 @@ public sealed class ForgeArtifactVerificationService(
             catch (JsonException) { return false; }
         }).GroupBy(x => x.TaskId, StringComparer.Ordinal)
             .Select(group => group.OrderByDescending(x => x.CreatedAtUtc).ThenByDescending(x => x.JobId, StringComparer.Ordinal).First()).ToArray();
+
+    private async Task<ForgeArtifactVerificationReceipt> HandleLocalBackendAsync(
+        BackgroundJob expectedJob,
+        ForgeArtifactManifest manifest,
+        ForgeArtifactVerificationReceipt receipt,
+        LocalVerificationModePolicy policy,
+        CancellationToken ct)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var persisted = await PersistLocalVerificationOutcomeAsync(expectedJob, policy, now, ct);
+        if (!persisted)
+        {
+            return Failed("ArtifactAttemptChanged", receipt with { IdentityVerified = false });
+        }
+
+        if (policy == LocalVerificationModePolicy.Block)
+        {
+            return Failed(
+                LocalModeVerificationPolicy.BlockedReasonCode,
+                receipt with
+                {
+                    VerificationStatus = LocalModeVerificationPolicy.BlockedStatus,
+                    VerificationNotice = "本地执行模式下已配置阻止未隔离验证；请切换 Execution:Backend=Docker 后重试。"
+                });
+        }
+
+        return receipt with
+        {
+            FailureCode = null,
+            Message = LocalModeVerificationPolicy.UnverifiedNotice,
+            VerificationStatus = LocalModeVerificationPolicy.SkippedReasonCode,
+            VerifiedWithoutIsolation = true,
+            VerificationNotice = LocalModeVerificationPolicy.UnverifiedNotice,
+            CompletedAtUtc = now,
+            Audit = new ArtifactAuditResult
+            {
+                State = ArtifactAuditState.NotRun,
+                ArtifactId = manifest.ArtifactId,
+                Commit = manifest.HeadCommit,
+                ManifestHash = receipt.ManifestHash,
+                ReasonCode = LocalModeVerificationPolicy.SkippedReasonCode,
+                CompletedAtUtc = now,
+                Layers =
+                [
+                    new ArtifactAuditLayerResult
+                    {
+                        Name = "verification",
+                        State = ArtifactAuditState.NotRun,
+                        ReasonCode = LocalModeVerificationPolicy.SkippedReasonCode,
+                        Message = LocalModeVerificationPolicy.UnverifiedNotice,
+                        CompletedAtUtc = now
+                    }
+                ]
+            }
+        };
+    }
+
+    private async Task<bool> PersistLocalVerificationOutcomeAsync(
+        BackgroundJob expectedJob,
+        LocalVerificationModePolicy policy,
+        DateTimeOffset now,
+        CancellationToken ct)
+    {
+        var payload = string.IsNullOrWhiteSpace(expectedJob.ResultPayloadJson)
+            ? new Newtonsoft.Json.Linq.JObject()
+            : Newtonsoft.Json.Linq.JObject.Parse(expectedJob.ResultPayloadJson);
+
+        string? errorMessage = expectedJob.ErrorMessage;
+        if (policy == LocalVerificationModePolicy.Block)
+        {
+            // Keep Status=Completed so switching Execution:Backend back to Docker allows direct re-verification.
+            errorMessage = "本地执行模式下已配置阻止未隔离验证；请切换 Execution:Backend=Docker 后重试。";
+            payload["verification"] = LocalModeVerificationPolicy.BlockedStatus;
+            payload["verificationNotice"] = errorMessage;
+        }
+        else
+        {
+            payload["verification"] = LocalModeVerificationPolicy.SkippedReasonCode;
+            payload["verifiedWithoutIsolation"] = true;
+            payload["verificationNotice"] = LocalModeVerificationPolicy.UnverifiedNotice;
+        }
+
+        var updatedPayload = payload.ToString(Newtonsoft.Json.Formatting.None);
+        var updatedAt = now.UtcDateTime;
+        var expectedPayload = expectedJob.ResultPayloadJson;
+
+        var affected = await db.BackgroundJobs
+            .Where(x => x.JobId == expectedJob.JobId
+                && x.Attempt == expectedJob.Attempt
+                && x.Status == BackgroundJobStatus.Completed
+                && x.ResultPayloadJson == expectedPayload)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(x => x.ResultPayloadJson, updatedPayload)
+                .SetProperty(x => x.ErrorMessage, errorMessage)
+                .SetProperty(x => x.UpdatedAtUtc, updatedAt), ct);
+
+        return affected == 1;
+    }
 
     private static ForgeArtifactVerificationReceipt Failed(string code, ForgeArtifactVerificationReceipt? receipt = null) =>
         (receipt ?? new()) with { FailureCode = code, Message = code, CompletedAtUtc = DateTimeOffset.UtcNow };
