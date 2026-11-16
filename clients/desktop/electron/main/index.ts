@@ -268,6 +268,7 @@ if (!singleInstanceLock) {
     backendManager = new BackendManager({
       userDataDir: app.getPath('userData'),
       resourcesPath: process.resourcesPath,
+      clientVersion: app.getVersion(),
       isPackaged: app.isPackaged,
       isDev,
       devRendererOrigin,

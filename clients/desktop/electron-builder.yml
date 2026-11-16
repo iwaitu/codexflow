@@ -1,0 +1,62 @@
+appId: com.codexflow.desktop
+productName: CodexFlow Desktop
+copyright: Copyright © 2026 iwaitu
+
+directories:
+  output: dist
+  buildResources: build
+
+files:
+  - out/**/*
+  - package.json
+  - '!node_modules/**/*'
+
+extraResources:
+  - from: resources/backend
+    to: backend
+    filter:
+      - '**/*'
+
+asar: true
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: zip
+      arch:
+        - x64
+  signExecutable: false
+  artifactName: CodexFlow-Desktop-${version}-win-${arch}-portable.${ext}
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  artifactName: CodexFlow-Desktop-${version}-win-${arch}-setup.${ext}
+
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+    - target: tar.gz
+      arch:
+        - x64
+  category: Development
+  artifactName: CodexFlow-Desktop-${version}-linux-${arch}.${ext}
+
+mac:
+  target:
+    - target: dmg
+      arch:
+        - arm64
+    - target: zip
+      arch:
+        - arm64
+  category: public.app-category.developer-tools
+  identity: null
+  artifactName: CodexFlow-Desktop-${version}-mac-${arch}.${ext}

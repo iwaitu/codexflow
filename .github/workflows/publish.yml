@@ -1,9 +1,8 @@
 name: publish
 
-# Pushing a tag vX.Y.Z publishes the five CodexFlow.* packages to nuget.org, at the version in Directory.Build.props (the tag must say the same).
-# What is pushed is the package set that ci.yml built and checked in this same run, not a second build. The push waits for approval of the
-# "nuget" environment, and signs in to nuget.org with a short-lived key from GitHub's OIDC token (a NuGet trusted-publishing policy), so no NuGet
-# key is stored in this repository. How to release, and the one-time setup: docs/releasing.md
+# Pushing a tag vX.Y.Z publishes NuGet packages (when NUGET_USER is configured) and builds cross-platform
+# Electron desktop installers (Windows, Linux, macOS) at the exact Directory.Build.props version, then attaches
+# all installers, checksums, and NuGet packages to the GitHub Release page for download.
 
 on:
   push:
@@ -20,12 +19,15 @@ jobs:
   guard:
     name: The tag is a release of main
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
 
       - name: The tag equals the declared version
+        id: ver
         env:
           TAG: ${{ github.ref_name }}
         run: |
@@ -34,6 +36,7 @@ jobs:
             echo "::error::the tag is $TAG but Directory.Build.props declares $version; change one so they agree, then tag again"
             exit 1
           fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "releasing $version"
 
       - name: The tagged commit is on main
@@ -45,17 +48,25 @@ jobs:
           fi
 
   ci:
-    name: Gates
+    name: Backend Gates
     needs: guard
     uses: ./.github/workflows/ci.yml
 
+  desktop:
+    name: Desktop Client Build & Package
+    needs: guard
+    uses: ./.github/workflows/client.yml
+    with:
+      version: ${{ needs.guard.outputs.version }}
+      artifact_prefix: 'desktop-release'
+
   publish:
     name: Publish to nuget.org
+    if: vars.NUGET_USER != ''
     needs: [guard, ci]
     runs-on: ubuntu-latest
     environment: nuget
     permissions:
-      contents: write   # the GitHub release
       id-token: write   # the OIDC token that nuget.org exchanges for a short-lived key
     env:
       NUGET_USER: ${{ vars.NUGET_USER }}
@@ -69,13 +80,6 @@ jobs:
 
       - name: The downloaded packages are the five, from this commit
         run: python3 -I scripts/ci/check_packages.py --packages packages --props Directory.Build.props --commit "$GITHUB_SHA"
-
-      - name: A nuget.org user is configured
-        run: |
-          if [ -z "$NUGET_USER" ]; then
-            echo "::error::set the repository variable NUGET_USER (the nuget.org profile name that owns the trusted-publishing policy); see docs/releasing.md"
-            exit 1
-          fi
 
       - name: Sign in to nuget.org
         id: login
@@ -111,8 +115,50 @@ jobs:
           echo "::error::not visible on nuget.org after 30 minutes:$missing (check the package validation status on nuget.org; the push itself succeeded)"
           exit 1
 
-      - name: GitHub release with the packages attached
+  release:
+    name: Publish GitHub Release with Client & Packages
+    if: >-
+      always() &&
+      needs.guard.result == 'success' &&
+      needs.ci.result == 'success' &&
+      needs.desktop.result == 'success' &&
+      (needs.publish.result == 'success' || needs.publish.result == 'skipped')
+    needs: [guard, ci, desktop, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: desktop-release-*
+          merge-multiple: true
+          path: release-assets
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: packages
+          path: release-assets
+
+      - name: Combine SHA256 checksums
+        run: |
+          cd release-assets
+          rm -f SHA256SUMS.txt
+          shopt -s nullglob
+          for f in *.exe *.zip *.AppImage *.tar.gz *.dmg *.nupkg; do
+            sha256sum "$f" >> SHA256SUMS.txt
+          done
+          rm -f SHA256SUMS-*.txt
+          ls -lh
+
+      - name: Create or update GitHub Release with all assets
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        run: gh release create "$TAG" packages/*.nupkg --verify-tag --generate-notes --title "$TAG"
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release-assets/* --clobber
+          else
+            gh release create "$TAG" release-assets/* --verify-tag --generate-notes --title "$TAG"
+          fi

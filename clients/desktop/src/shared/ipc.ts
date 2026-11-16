@@ -21,6 +21,7 @@ export type ApprovalDecisionWire = 'allow_once' | 'allow_session' | 'allow_alway
 export interface BackendConnectionPublicInfo {
   mode: BackendMode;
   status: BackendConnectionStatus;
+  clientVersion?: string | null;
   baseUrl: string | null;
   targetBaseUrl: string | null;
   accessToken: string | null;

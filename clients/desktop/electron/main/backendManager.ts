@@ -22,6 +22,7 @@ interface ReadyPayload {
 export interface BackendManagerOptions {
   userDataDir: string;
   resourcesPath: string;
+  clientVersion?: string;
   isPackaged: boolean;
   isDev: boolean;
   devRendererOrigin?: string | null;
@@ -145,6 +146,7 @@ export class BackendManager {
     return {
       mode: this.mode,
       status: this.status,
+      clientVersion: this.options.clientVersion ?? null,
       baseUrl: this.targetBaseUrl ? (proxyOrigin ?? this.targetBaseUrl) : null,
       targetBaseUrl: this.targetBaseUrl,
       accessToken: this.accessToken,

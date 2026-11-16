@@ -14,7 +14,7 @@
    git push origin v0.1.2
    ```
 
-4. 打开仓库的 Actions，`publish` 工作流会先跑完所有检查，然后停在 `nuget` 环境等你批准。批准后推送到 nuget.org，等五个包都能在 nuget.org 查到，再创建 GitHub Release。
+4. 打开仓库的 Actions，`publish` 工作流会先并行跑完后端检查（`ci.yml`）和跨平台桌面客户端测试/打包（`client.yml`，内置自包含 `CodexFlow.Local` 并统一注入 `Directory.Build.props` 版本号）。若配置了仓库变量 `NUGET_USER`，会在 `nuget` 环境批准后推送五个 NuGet 包；随后 `release` Job 自动将所有平台桌面客户端安装包（`.exe`/`.zip`/`.AppImage`/`.tar.gz`/`.dmg`）、`SHA256SUMS.txt` 与 `.nupkg` 一并创建到 GitHub Release 页面供用户下载（未配置 `NUGET_USER` 时仅跳过 NuGet 推送，仍正常发布 GitHub Release 客户端安装包）。
 
 推送的是 `ci` 工作流里**那一次**打出来、检查过的包文件，不是重新编译的。
 

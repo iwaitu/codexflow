@@ -6,17 +6,43 @@ on:
     paths:
       - 'clients/desktop/**'
       - 'docs/contracts/**'
+      - 'Directory.Build.props'
+      - 'CodexFlow.Local/**'
       - '.github/workflows/client.yml'
   pull_request:
     branches: [main]
     paths:
       - 'clients/desktop/**'
       - 'docs/contracts/**'
+      - 'Directory.Build.props'
+      - 'CodexFlow.Local/**'
       - '.github/workflows/client.yml'
+  workflow_call:
+    inputs:
+      version:
+        description: 'Explicit SemVer to stamp on client packages (defaults to Directory.Build.props)'
+        required: false
+        type: string
+        default: ''
+      artifact_prefix:
+        description: 'Prefix for uploaded client artifact names'
+        required: false
+        type: string
+        default: 'desktop-client'
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Optional SemVer override'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
+
+env:
+  DOTNET_NOLOGO: "true"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "true"
 
 jobs:
   desktop:
@@ -81,3 +107,119 @@ jobs:
 
       - name: Run Playwright for Electron E2E
         run: npm run test:e2e
+
+  package:
+    name: Package desktop client (${{ matrix.platform }}-${{ matrix.arch }})
+    if: github.event_name != 'pull_request'
+    needs: [desktop, e2e-windows]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+            platform: win
+            arch: x64
+          - os: ubuntu-latest
+            rid: linux-x64
+            platform: linux
+            arch: x64
+          - os: macos-latest
+            rid: osx-arm64
+            platform: mac
+            arch: arm64
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: clients/desktop/package-lock.json
+
+      - name: Resolve and stamp client version
+        id: ver
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          EVENT_NAME: ${{ github.event_name }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          base_version="$(node clients/desktop/scripts/set-version.mjs --print)"
+          if [ -n "$INPUT_VERSION" ]; then
+            target_version="${INPUT_VERSION#v}"
+          elif [ "$EVENT_NAME" = "workflow_call" ]; then
+            target_version="$base_version"
+          else
+            # Non-release branch builds get a SemVer pre-release CI suffix distinguishing them from tagged releases.
+            case "$base_version" in
+              *-*) target_version="${base_version}.ci.${RUN_NUMBER}" ;;
+              *) target_version="${base_version}-ci.${RUN_NUMBER}" ;;
+            esac
+          fi
+          node clients/desktop/scripts/set-version.mjs --version "$target_version"
+          echo "version=$target_version" >> "$GITHUB_OUTPUT"
+          echo "Packaging CodexFlow Desktop version: $target_version"
+
+      - name: Publish self-contained CodexFlow.Local backend (${{ matrix.rid }})
+        shell: bash
+        run: |
+          dotnet publish CodexFlow.Local/CodexFlow.Local.csproj \
+            -c Release \
+            -r "${{ matrix.rid }}" \
+            --self-contained true \
+            -p:PublishSingleFile=false \
+            -p:Version="${{ steps.ver.outputs.version }}" \
+            -o clients/desktop/resources/backend
+
+      - name: Install desktop dependencies
+        shell: bash
+        working-directory: clients/desktop
+        run: npm ci
+
+      - name: Build Electron bundles
+        shell: bash
+        working-directory: clients/desktop
+        run: npm run build
+
+      - name: Package installer with electron-builder
+        shell: bash
+        working-directory: clients/desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npx electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish never
+
+      - name: Collect distributable installers and checksums
+        shell: bash
+        working-directory: clients/desktop
+        run: |
+          mkdir -p release-assets
+          shopt -s nullglob
+          for f in dist/*.exe dist/*.zip dist/*.AppImage dist/*.tar.gz dist/*.dmg; do
+            cp "$f" release-assets/
+          done
+          ls -la release-assets/
+          if [ -z "$(ls -A release-assets)" ]; then
+            echo "::error::No installer artifacts produced in dist/"
+            exit 1
+          fi
+          (
+            cd release-assets
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum * > "SHA256SUMS-${{ matrix.platform }}-${{ matrix.arch }}.txt"
+            else
+              shasum -a 256 * > "SHA256SUMS-${{ matrix.platform }}-${{ matrix.arch }}.txt"
+            fi
+          )
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ inputs.artifact_prefix || 'desktop-client' }}-${{ matrix.platform }}-${{ matrix.arch }}
+          path: clients/desktop/release-assets/*
+          if-no-files-found: error
+          retention-days: 14

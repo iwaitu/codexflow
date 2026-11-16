@@ -79,6 +79,15 @@ export const StatusBar: React.FC<StatusBarProps> = ({
       </div>
 
       <div className="flex items-center gap-3">
+        {connection?.clientVersion && (
+          <span
+            data-testid="client-version-badge"
+            className="rounded border border-slate-800 bg-slate-900 px-2 py-0.5 font-mono text-slate-300"
+            title={systemStatus?.version ? `宿主版本: ${systemStatus.version}` : '客户端版本'}
+          >
+            v{connection.clientVersion}
+          </span>
+        )}
         {contextWindow && (
           <span title={`已用 ${contextWindow.estimatedTokens} / ${contextWindow.modelMaxTokens} tokens`}>
             上下文占用: {usagePct}% ({contextWindow.estimatedTokens.toLocaleString()} /{' '}
