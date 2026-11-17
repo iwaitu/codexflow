@@ -134,7 +134,7 @@ export const BusinessSkillsHub: React.FC<BusinessSkillsHubProps> = ({
               企业插件与业务 Skill 构建器功能开关未开启 (BusinessSkills:Enabled=false)
             </div>
             <p className="leading-relaxed text-slate-400">
-              出于默认最小权限原则，宿主机默认关闭该能力。如需启用，请在启动桌面端或服务端配置中将{' '}
+              当前宿主配置已关闭该能力。如需重新启用，请在启动桌面端或服务端配置中将{' '}
               <code className="rounded bg-slate-800 px-1.5 py-0.5 text-slate-200">
                 BusinessSkills:Enabled
               </code>{' '}

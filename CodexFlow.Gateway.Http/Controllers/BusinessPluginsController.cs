@@ -16,7 +16,7 @@ using Microsoft.Extensions.Options;
 namespace CodexFlow.Controllers;
 
 /// <summary>
-/// 业务 Skill 构建器功能开关门控（默认关闭 BusinessSkills:Enabled=false 时拦截并返回 503）。
+/// 业务 Skill 构建器功能开关门控（BusinessSkills:Enabled=false 时拦截并返回 503）。
 /// </summary>
 [AttributeUsage(AttributeTargets.Class | AttributeTargets.Method)]
 public sealed class BusinessSkillsFeatureGateAttribute : TypeFilterAttribute

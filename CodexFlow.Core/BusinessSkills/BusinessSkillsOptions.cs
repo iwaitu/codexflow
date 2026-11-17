@@ -6,7 +6,7 @@ namespace CodexFlow.Core.BusinessSkills;
 
 /// <summary>
 /// 内置企业插件与业务 Skill 构建器宿主选项。
-/// 按设计第 15 节约定，功能开关默认为 false（关闭），仅在开发和测试阶段显式启用。
+/// 未配置时功能开关为 false；本地宿主通过随应用发布的 appsettings.json 默认启用。
 /// </summary>
 public sealed class BusinessSkillsOptions
 {

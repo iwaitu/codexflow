@@ -6,7 +6,7 @@ English | [简体中文](README.zh-CN.md)
 
 CodexFlow brings conversations, planning, tool approvals, workspace files, changes, and jobs into one Electron application. A .NET host runs locally, persists state in SQLite, and connects to your configured model endpoint. You can work against a local folder, review a proposed plan, approve execution, and inspect the result without switching between separate API scripts.
 
-The first-generation desktop application is implemented. The source version is **0.1.3**; this repository contains the desktop client, local host, reusable .NET libraries, and test tooling.
+The first-generation desktop application is implemented. The source version is **0.1.4**; this repository contains the desktop client, local host, reusable .NET libraries, and test tooling.
 
 ![CodexFlow Desktop workspace](docs/images/desktop-workspace.jpg)
 
@@ -131,6 +131,8 @@ Implement this small feature and show the changes and test results.
 These are suggested prompts, not recorded results from the screenshot session. Available actions depend on the configured model, tools, backend, and permissions.
 
 ## Plugins and business Skills
+
+The bundled host enables this feature by default (`BusinessSkills:Enabled=true`). Set it to `false` in host configuration to disable it.
 
 The **Plugins & Skill** area provides three views: **My plugins**, **My Skills**, and the **five-step builder**.
 
