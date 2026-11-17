@@ -20,6 +20,7 @@ import {
 } from '../lib/sessionRecovery';
 
 export type ConversationMode = 'continue-current' | 'reuse-master' | 'new-thread';
+export type InspectorTab = 'files' | 'changes' | 'jobs';
 
 export interface ConversationTitleUpdate {
   conversationId: string;
@@ -87,6 +88,9 @@ export interface AppState {
   isSettingsOpen: boolean;
   isWizardOpen: boolean;
   wizardDismissed: boolean;
+  isInspectorOpen: boolean;
+  inspectorTab: InspectorTab;
+  workspaceRevision: number;
 
   setConnection: (connection: BackendConnectionPublicInfo) => void;
   setSseState: (state: 'connecting' | 'connected' | 'reconnecting' | 'closed') => void;
@@ -97,6 +101,10 @@ export interface AppState {
   setTurnNotice: (notice: string | null) => void;
   setSettingsOpen: (open: boolean) => void;
   setWizardOpen: (open: boolean, dismissed?: boolean) => void;
+  setInspectorOpen: (open: boolean) => void;
+  setInspectorTab: (tab: InspectorTab) => void;
+  openInspectorTab: (tab: InspectorTab) => void;
+  bumpWorkspaceRevision: () => void;
 
   appendOptimisticUserMessage: (content: string) => void;
   applySseEvent: (event: ParsedSseEvent, meta?: { streamEpoch?: string | null }) => void;
@@ -449,15 +457,26 @@ function reduceSseEvent(
 
     case 'worker_started':
       set({ workerBar: { status: 'started', message: String(evtData.content ?? evtData.text ?? '后台 Worker 正在执行...') } });
+      refreshTurnMetadataAfterFinish(get, set, true);
       return;
     case 'worker_waiting_user':
       set({ workerBar: { status: 'waiting_user', message: String(evtData.content ?? evtData.text ?? '后台 Worker 等待用户审批') } });
+      refreshTurnMetadataAfterFinish(get, set, true);
       return;
     case 'worker_completed':
-      set({ workerBar: { status: 'completed', message: String(evtData.content ?? evtData.text ?? '后台 Worker 已完成') } });
+      set((s) => ({
+        workerBar: { status: 'completed', message: String(evtData.content ?? evtData.text ?? '后台 Worker 已完成') },
+        workspaceRevision: s.workspaceRevision + 1,
+      }));
+      refreshTurnMetadataAfterFinish(get, set, true);
       return;
     case 'worker_failed':
       set({ workerBar: { status: 'failed', message: String(evtData.content ?? evtData.text ?? '后台 Worker 失败') } });
+      refreshTurnMetadataAfterFinish(get, set, true);
+      return;
+
+    case 'file_tree_updated':
+      set((s) => ({ workspaceRevision: s.workspaceRevision + 1 }));
       return;
 
     case 'system_message': {
@@ -525,6 +544,7 @@ function reduceSseEvent(
           streamingThinking: '',
           streamingTruncated: false,
           turnNotice: d.source === 'cancelled' ? '本回合已取消。' : null,
+          workspaceRevision: s.workspaceRevision + 1,
         };
       });
       refreshTurnMetadataAfterFinish(get, set, true);
@@ -575,6 +595,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   isSettingsOpen: false,
   isWizardOpen: false,
   wizardDismissed: false,
+  isInspectorOpen: false,
+  inspectorTab: 'files',
+  workspaceRevision: 0,
 
   setConnection: (connection) => {
     const prevConn = get().connection;
@@ -708,6 +731,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       isWizardOpen,
       wizardDismissed: dismissed !== undefined ? dismissed : state.wizardDismissed,
     })),
+  setInspectorOpen: (isInspectorOpen) => set({ isInspectorOpen }),
+  setInspectorTab: (inspectorTab) => set({ inspectorTab }),
+  openInspectorTab: (inspectorTab) => set({ isInspectorOpen: true, inspectorTab }),
+  bumpWorkspaceRevision: () => set((s) => ({ workspaceRevision: s.workspaceRevision + 1 })),
 
   appendOptimisticUserMessage: (content) =>
     set((state) => ({

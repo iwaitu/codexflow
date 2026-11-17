@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { FileText, Paperclip, Send, Square, Upload, X } from 'lucide-react';
 import {
   formatFileSize,
@@ -8,12 +8,20 @@ import {
 } from '../lib/attachments';
 import type { ConversationMode } from '../stores/useAppStore';
 
+export interface WorkspaceAttachmentRequest {
+  nonce: number;
+  name: string;
+  workspaceRelativePath: string;
+  sizeBytes: number;
+}
+
 interface ComposerProps {
   disabled: boolean;
   isTurnRunning: boolean;
   conversationMode: ConversationMode;
   turnNotice: string | null;
   workspacePath?: string | null;
+  externalAttachment?: WorkspaceAttachmentRequest | null;
   onChangeMode: (mode: ConversationMode) => void;
   onSend: (text: string, attachments?: PendingAttachment[]) => Promise<void>;
   onCancel: () => Promise<void>;
@@ -25,6 +33,7 @@ export const Composer: React.FC<ComposerProps> = ({
   conversationMode,
   turnNotice,
   workspacePath = null,
+  externalAttachment = null,
   onChangeMode,
   onSend,
   onCancel,
@@ -36,6 +45,35 @@ export const Composer: React.FC<ComposerProps> = ({
   const [sending, setSending] = useState(false);
   const dragCounterRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const lastExternalNonceRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (!externalAttachment || externalAttachment.nonce === lastExternalNonceRef.current) {
+      return;
+    }
+    lastExternalNonceRef.current = externalAttachment.nonce;
+    setAttachmentError(null);
+    setAttachments((prev) => {
+      if (prev.some((a) => a.workspaceRelativePath === externalAttachment.workspaceRelativePath)) {
+        return prev;
+      }
+      if (prev.length >= MAX_ATTACHMENTS_PER_MESSAGE) {
+        setAttachmentError(`单次最多添加 ${MAX_ATTACHMENTS_PER_MESSAGE} 个附件。`);
+        return prev;
+      }
+      return [
+        ...prev,
+        {
+          id: `ws-${externalAttachment.nonce}`,
+          name: externalAttachment.name,
+          sizeBytes: externalAttachment.sizeBytes,
+          contentType: 'application/octet-stream',
+          file: new File([], externalAttachment.name),
+          workspaceRelativePath: externalAttachment.workspaceRelativePath,
+        },
+      ];
+    });
+  }, [externalAttachment]);
 
   const addFiles = async (fileList: FileList | File[]) => {
     const incoming = Array.from(fileList);

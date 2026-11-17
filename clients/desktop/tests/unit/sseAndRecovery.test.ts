@@ -687,5 +687,17 @@ describe('SSE parser and recovery scenarios', () => {
     expect(afterNew.messages).toEqual([]);
     expect(afterNew.streamingContent).toBe('');
     expect(afterNew.toolCalls).toEqual([]);
+
+    const beforeRevision = afterNew.workspaceRevision;
+    useAppStore.getState().applySseEvent({
+      id: 12,
+      event: 'file_tree_updated',
+      data: { sessionId: 'sess-title' },
+    } as never);
+    expect(useAppStore.getState().workspaceRevision).toBe(beforeRevision + 1);
+
+    useAppStore.getState().openInspectorTab('changes');
+    expect(useAppStore.getState().isInspectorOpen).toBe(true);
+    expect(useAppStore.getState().inspectorTab).toBe('changes');
   });
 });

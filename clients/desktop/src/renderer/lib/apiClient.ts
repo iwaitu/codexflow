@@ -16,8 +16,10 @@ export type PendingApprovalsResponse = {
   selfApprovalProtection: boolean;
 };
 export type BackgroundJob = components['schemas']['BackgroundJobDto'];
+export type WorkspaceFileEntry = components['schemas']['WorkspaceFileEntryDto'];
 export type WorkspaceDirectoryListing = components['schemas']['WorkspaceDirectoryListingDto'];
 export type WorkspaceFileContent = components['schemas']['WorkspaceFileContentDto'];
+export type WorkspaceChangedFile = components['schemas']['WorkspaceChangedFileDto'];
 export type WorkspaceChanges = components['schemas']['WorkspaceChangesDto'];
 export type ChatAttachment = components['schemas']['ChatAttachmentDto'];
 export type UploadedAttachment = components['schemas']['UploadedAttachmentDto'];
@@ -309,7 +311,66 @@ export const apiClient = {
     );
   },
 
+  readWorkspaceFileContent(auth: ApiAuthContext, sessionId: string, path: string): Promise<WorkspaceFileContent> {
+    return requestJson<WorkspaceFileContent>(
+      auth,
+      'GET',
+      `/api/gateway/session/${encodeURIComponent(sessionId)}/files/content?path=${encodeURIComponent(path)}`,
+    );
+  },
+
   getChanges(auth: ApiAuthContext, sessionId: string): Promise<WorkspaceChanges> {
     return requestJson<WorkspaceChanges>(auth, 'GET', `/api/gateway/session/${encodeURIComponent(sessionId)}/changes`);
+  },
+
+  cancelJob(auth: ApiAuthContext, jobId: string): Promise<{ success: boolean; noOp?: boolean }> {
+    return requestJson<{ success: boolean; noOp?: boolean }>(
+      auth,
+      'POST',
+      `/api/jobs/${encodeURIComponent(jobId)}/cancel`,
+      {},
+    );
+  },
+
+  retryJob(
+    auth: ApiAuthContext,
+    jobId: string,
+  ): Promise<{ success: boolean; noOp?: boolean; failureSummary?: string | null }> {
+    return requestJson<{ success: boolean; noOp?: boolean; failureSummary?: string | null }>(
+      auth,
+      'POST',
+      `/api/jobs/${encodeURIComponent(jobId)}/retry`,
+      {},
+    );
+  },
+
+  resumeJob(
+    auth: ApiAuthContext,
+    jobId: string,
+    resumeToken?: string | null,
+  ): Promise<{ success: boolean; noOp?: boolean }> {
+    return requestJson<{ success: boolean; noOp?: boolean }>(
+      auth,
+      'POST',
+      `/api/jobs/${encodeURIComponent(jobId)}/resume`,
+      resumeToken ? { resumeToken } : {},
+    );
+  },
+
+  continueJob(
+    auth: ApiAuthContext,
+    jobId: string,
+    prompt?: string,
+    resumeToken?: string | null,
+  ): Promise<{ success: boolean; mode?: string; jobId?: string; newJobId?: string | null }> {
+    return requestJson<{ success: boolean; mode?: string; jobId?: string; newJobId?: string | null }>(
+      auth,
+      'POST',
+      `/api/jobs/${encodeURIComponent(jobId)}/continue`,
+      {
+        ...(prompt?.trim() ? { prompt: prompt.trim() } : {}),
+        ...(resumeToken ? { resumeToken } : {}),
+      },
+    );
   },
 };

@@ -167,6 +167,13 @@ test('Electron MVP cold start, security isolation, permission rule revoke, appro
     await expect(page.getByText('收到重启后请求: 验证重启后新端口通信').first()).toBeVisible({ timeout: 10_000 });
     await expect(page.getByText('会话标题已总结')).toBeVisible({ timeout: 10_000 });
 
+    // 7. P5 Workspace Inspector: toggle Files & Changes tabs
+    await page.getByRole('button', { name: '工作区文件' }).click();
+    await expect(page.getByTestId('workspace-inspector')).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByText('README.md').first()).toBeVisible({ timeout: 5_000 });
+    await page.getByRole('button', { name: '代码变更' }).click();
+    await expect(page.getByText('+# CodexFlow')).toBeVisible({ timeout: 5_000 });
+
     expect(cspErrors).toEqual([]);
     expect(pageErrors).toEqual([]);
   } finally {

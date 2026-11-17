@@ -288,6 +288,46 @@ process.stdin.on('end', () => {
         return sendJson(200, state.jobs);
       }
 
+      if (req.method === 'GET' && url.pathname === '/api/gateway/session/sess-mock-1/files') {
+        return sendJson(200, {
+          sessionId: 'sess-mock-1',
+          path: '',
+          entries: [
+            {
+              name: 'README.md',
+              path: 'README.md',
+              isDirectory: false,
+              sizeBytes: 32,
+              lastModifiedUtc: '2026-11-17T00:00:00Z',
+            },
+          ],
+          truncated: false,
+        });
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/gateway/session/sess-mock-1/files/content') {
+        return sendJson(200, {
+          sessionId: 'sess-mock-1',
+          path: 'README.md',
+          content: '# CodexFlow Mock Workspace',
+          sizeBytes: 26,
+          truncated: false,
+          isBinary: false,
+          encoding: 'utf-8',
+        });
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/gateway/session/sess-mock-1/changes') {
+        return sendJson(200, {
+          sessionId: 'sess-mock-1',
+          hasGitRepository: true,
+          baseRef: 'HEAD',
+          files: [{ filePath: 'README.md', status: 'Modified', additions: 1, deletions: 0 }],
+          unifiedDiff: 'diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1,2 @@\n # Docs\n+# CodexFlow',
+          truncated: false,
+        });
+      }
+
       if (req.method === 'GET' && url.pathname === '/api/gateway/session/sess-mock-1/approvals') {
         return sendJson(200, {
           sessionId: 'sess-mock-1',

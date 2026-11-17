@@ -1,17 +1,23 @@
 import React from 'react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { BackendConnectionPublicInfo, DesktopBridge } from '../../src/shared/ipc';
+import { apiClient } from '../../src/renderer/lib/apiClient';
+import { parseUnifiedDiff } from '../../src/renderer/lib/diffParser';
 import { PlanApprovalCard } from '../../src/renderer/components/PlanApprovalCard';
 import { CodexFlowBrand } from '../../src/renderer/components/CodexFlowBrand';
 import { Composer } from '../../src/renderer/components/Composer';
 import { ContextUsageRing } from '../../src/renderer/components/ContextUsageRing';
+import { JobsPanel } from '../../src/renderer/components/JobsPanel';
 import { MarkdownRenderer } from '../../src/renderer/components/MarkdownRenderer';
 import { MessageItem } from '../../src/renderer/components/MessageItem';
 import { SettingsModal } from '../../src/renderer/components/SettingsModal';
 import { Sidebar } from '../../src/renderer/components/Sidebar';
 import { ToolApprovalCard } from '../../src/renderer/components/ToolApprovalCard';
 import { WelcomeWizardModal } from '../../src/renderer/components/WelcomeWizardModal';
+import { WorkspaceChangesPanel } from '../../src/renderer/components/WorkspaceChangesPanel';
+import { WorkspaceFilesPanel } from '../../src/renderer/components/WorkspaceFilesPanel';
 import {
   formatOptimisticMessageWithAttachments,
   parseMessageWithAttachments,
@@ -867,5 +873,193 @@ describe('Security boundary & MVP interactive cards', () => {
 
     expect(screen.getByRole('button', { name: '新建会话' })).toBeDisabled();
     expect(screen.getByText('新会话')).toBeInTheDocument();
+  });
+
+  it('parses unified diff and filters WorkspaceChangesPanel by selected file', () => {
+    const sampleDiff = [
+      'diff --git a/src/a.ts b/src/a.ts',
+      'index 1111111..2222222 100644',
+      '--- a/src/a.ts',
+      '+++ b/src/a.ts',
+      '@@ -1,2 +1,2 @@',
+      '-const oldVal = 1;',
+      '+const newVal = 2;',
+      ' export { newVal };',
+      'diff --git a/README.md b/README.md',
+      '--- a/README.md',
+      '+++ b/README.md',
+      '@@ -1,1 +1,2 @@',
+      ' # Docs',
+      '+Added line',
+    ].join('\n');
+
+    const parsed = parseUnifiedDiff(sampleDiff);
+    expect(parsed).toHaveLength(2);
+    expect(parsed[0]?.filePath).toBe('src/a.ts');
+    expect(parsed[0]?.lines.find((l) => l.kind === 'add')?.newLineNumber).toBe(1);
+
+    render(
+      <WorkspaceChangesPanel
+        sessionId="sess-1"
+        changes={{
+          sessionId: 'sess-1',
+          hasGitRepository: true,
+          baseRef: 'HEAD',
+          files: [
+            { filePath: 'src/a.ts', status: 'Modified', additions: 1, deletions: 1 },
+            { filePath: 'README.md', status: 'Modified', additions: 1, deletions: 0 },
+          ],
+          unifiedDiff: sampleDiff,
+          truncated: false,
+        }}
+        isLoading={false}
+        isFetching={false}
+        error={null}
+        onRefresh={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('基线: HEAD')).toBeInTheDocument();
+    expect(screen.getByText('+const newVal = 2;')).toBeInTheDocument();
+    expect(screen.getByText('+Added line')).toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByText('README.md')[0]!);
+    expect(screen.queryByText('+const newVal = 2;')).not.toBeInTheDocument();
+    expect(screen.getByText('+Added line')).toBeInTheDocument();
+  });
+
+  it('browses directories, previews file content, and attaches workspace file in WorkspaceFilesPanel', async () => {
+    const listSpy = vi
+      .spyOn(apiClient, 'listFiles')
+      .mockResolvedValueOnce({
+        sessionId: 'sess-1',
+        path: '',
+        entries: [
+          { name: 'src', path: 'src', isDirectory: true, sizeBytes: 0, lastModifiedUtc: '2026-11-17T00:00:00Z' },
+        ],
+        truncated: false,
+      })
+      .mockResolvedValueOnce({
+        sessionId: 'sess-1',
+        path: 'src',
+        entries: [
+          { name: 'app.ts', path: 'src/app.ts', isDirectory: false, sizeBytes: 42, lastModifiedUtc: '2026-11-17T00:00:00Z' },
+        ],
+        truncated: false,
+      });
+    const contentSpy = vi.spyOn(apiClient, 'readWorkspaceFileContent').mockResolvedValueOnce({
+      sessionId: 'sess-1',
+      path: 'src/app.ts',
+      content: 'export const ok = true;',
+      sizeBytes: 42,
+      truncated: false,
+      isBinary: false,
+      encoding: 'utf-8',
+    });
+
+    const onAttach = vi.fn();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    try {
+      render(
+        <QueryClientProvider client={qc}>
+          <WorkspaceFilesPanel
+            auth={{ baseUrl: 'http://127.0.0.1:59999', accessToken: 'tok' }}
+            sessionId="sess-1"
+            workspaceRevision={0}
+            onAttachWorkspaceFile={onAttach}
+          />
+        </QueryClientProvider>,
+      );
+
+      await waitFor(() => expect(screen.getByText('src')).toBeInTheDocument());
+      fireEvent.click(screen.getByText('src'));
+
+      await waitFor(() => expect(screen.getByText('app.ts')).toBeInTheDocument());
+      fireEvent.click(screen.getByText('app.ts'));
+
+      await waitFor(() => expect(screen.getByTestId('workspace-file-preview')).toBeInTheDocument());
+      expect(screen.getByText('export const ok = true;')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByText('引用'));
+      expect(onAttach).toHaveBeenCalledWith({
+        name: 'app.ts',
+        path: 'src/app.ts',
+        sizeBytes: 42,
+      });
+    } finally {
+      listSpy.mockRestore();
+      contentSpy.mockRestore();
+    }
+  });
+
+  it('dispatches cancel, resume, retry, and continue actions in JobsPanel', async () => {
+    const cancelSpy = vi.spyOn(apiClient, 'cancelJob').mockResolvedValue({ success: true });
+    const resumeSpy = vi.spyOn(apiClient, 'resumeJob').mockResolvedValue({ success: true });
+    const retrySpy = vi.spyOn(apiClient, 'retryJob').mockResolvedValue({ success: true });
+    const continueSpy = vi.spyOn(apiClient, 'continueJob').mockResolvedValue({ success: true, newJobId: 'job-new' });
+    const onMutated = vi.fn().mockResolvedValue(undefined);
+    const auth = { baseUrl: 'http://127.0.0.1:59999', accessToken: 'tok' };
+
+    try {
+      render(
+        <JobsPanel
+          auth={auth}
+          sessionId="sess-1"
+          executionBackend="Local"
+          verificationReceipts={{}}
+          onVerifyJob={vi.fn().mockResolvedValue(undefined)}
+          onJobsMutated={onMutated}
+          jobs={[
+            {
+              jobId: 'job-wait',
+              taskId: 'T-wait',
+              jobType: 'ForgeWorker',
+              status: 'WaitingUser',
+              waitingUser: true,
+              resumeToken: 'rt-1',
+              waitingReason: '等待人工恢复',
+            },
+            {
+              jobId: 'job-fail',
+              taskId: 'T-fail',
+              jobType: 'ForgeWorker',
+              status: 'Failed',
+              resumeToken: 'rt-2',
+              failure: { message: '单测未通过', retryable: true },
+            },
+          ]}
+        />,
+      );
+
+      await act(async () => {
+        fireEvent.click(screen.getByText('取消作业'));
+      });
+      expect(cancelSpy).toHaveBeenCalledWith(auth, 'job-wait');
+
+      await act(async () => {
+        fireEvent.click(screen.getByText('恢复执行'));
+      });
+      expect(resumeSpy).toHaveBeenCalledWith(auth, 'job-wait', 'rt-1');
+
+      await act(async () => {
+        fireEvent.click(screen.getByText('重试'));
+      });
+      expect(retrySpy).toHaveBeenCalledWith(auth, 'job-fail');
+
+      fireEvent.click(screen.getByText('继续执行'));
+      const promptBox = screen.getByPlaceholderText(/可选：输入补充要求/);
+      fireEvent.change(promptBox, { target: { value: '请修复失败用例' } });
+      await act(async () => {
+        fireEvent.click(screen.getByText('确认继续'));
+      });
+      expect(continueSpy).toHaveBeenCalledWith(auth, 'job-fail', '请修复失败用例', 'rt-2');
+      expect(onMutated).toHaveBeenCalledTimes(4);
+    } finally {
+      cancelSpy.mockRestore();
+      resumeSpy.mockRestore();
+      retrySpy.mockRestore();
+      continueSpy.mockRestore();
+    }
   });
 });

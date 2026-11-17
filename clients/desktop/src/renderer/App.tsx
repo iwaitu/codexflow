@@ -1,11 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Cpu, FileDiff, FolderTree } from 'lucide-react';
 import { ChatView } from './components/ChatView';
-import { Composer } from './components/Composer';
+import { Composer, type WorkspaceAttachmentRequest } from './components/Composer';
 import { SettingsModal } from './components/SettingsModal';
 import { Sidebar } from './components/Sidebar';
 import { StatusBar } from './components/StatusBar';
 import { WelcomeWizardModal } from './components/WelcomeWizardModal';
+import { WorkspaceInspector } from './components/WorkspaceInspector';
 import { ApiError, apiClient, type ConversationSummary } from './lib/apiClient';
 import {
   formatOptimisticMessageWithAttachments,
@@ -13,12 +15,13 @@ import {
   type PendingAttachment,
 } from './lib/attachments';
 import { SessionSseClient } from './lib/sseClient';
-import { useAppStore } from './stores/useAppStore';
+import { useAppStore, type InspectorTab } from './stores/useAppStore';
 
 export const App: React.FC = () => {
   const queryClient = useQueryClient();
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [creatingConversation, setCreatingConversation] = useState(false);
+  const [externalAttachment, setExternalAttachment] = useState<WorkspaceAttachmentRequest | null>(null);
   const sseRef = useRef<SessionSseClient | null>(null);
   const prevRestartCount = useRef<number>(0);
   const wasTurnRunningRef = useRef(false);
@@ -48,6 +51,9 @@ export const App: React.FC = () => {
     isSettingsOpen,
     isWizardOpen,
     wizardDismissed,
+    isInspectorOpen,
+    inspectorTab,
+    workspaceRevision,
     setConnection,
     setSseState,
     setActiveSession,
@@ -57,6 +63,9 @@ export const App: React.FC = () => {
     setTurnNotice,
     setSettingsOpen,
     setWizardOpen,
+    setInspectorOpen,
+    setInspectorTab,
+    openInspectorTab,
     appendOptimisticUserMessage,
     applySseEvent,
     reconcileSession,
@@ -125,6 +134,12 @@ export const App: React.FC = () => {
   const conversationsQuery = useQuery({
     queryKey: ['conversations', instanceKey, auth?.baseUrl, activeSessionId],
     queryFn: () => apiClient.listConversations(auth!, activeSessionId!),
+    enabled: Boolean(auth && activeSessionId),
+  });
+
+  const changesQuery = useQuery({
+    queryKey: ['workspace-changes', instanceKey, auth?.baseUrl, activeSessionId, workspaceRevision],
+    queryFn: () => apiClient.getChanges(auth!, activeSessionId!),
     enabled: Boolean(auth && activeSessionId),
   });
 
@@ -254,10 +269,31 @@ export const App: React.FC = () => {
     }
   };
 
-  const activeWorkspacePath = useMemo(() => {
+  const activeWorkspaceSession = useMemo(() => {
     if (!activeSessionId || !sessionsQuery.data?.items) return null;
-    return sessionsQuery.data.items.find((s) => s.sessionId === activeSessionId)?.workspacePath ?? null;
+    return sessionsQuery.data.items.find((s) => s.sessionId === activeSessionId) ?? null;
   }, [activeSessionId, sessionsQuery.data]);
+
+  const activeWorkspacePath = activeWorkspaceSession?.workspacePath ?? null;
+
+  const toggleInspectorTab = (tab: InspectorTab) => {
+    if (isInspectorOpen && inspectorTab === tab) {
+      setInspectorOpen(false);
+    } else {
+      openInspectorTab(tab);
+    }
+  };
+
+  const refreshSessionJobs = async () => {
+    if (!auth || !activeSessionId) return;
+    const sid = activeSessionId;
+    const gen = useAppStore.getState().sessionGeneration;
+    const updatedJobs = await apiClient.listJobs(auth, sid);
+    const cur = useAppStore.getState();
+    if (cur.activeSessionId === sid && cur.sessionGeneration === gen) {
+      setJobs(updatedJobs);
+    }
+  };
 
   const handleSend = async (text: string, pendingAttachments: PendingAttachment[] = []) => {
     if (!auth || !activeSessionId) return;
@@ -450,6 +486,65 @@ export const App: React.FC = () => {
         />
 
         <main className="flex min-w-0 flex-1 flex-col bg-slate-900/40">
+          <div className="flex h-11 shrink-0 items-center justify-between border-b border-slate-800/80 bg-slate-950/60 px-4 text-xs">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="truncate font-medium text-slate-200">
+                {activeWorkspaceSession?.name || '未选择工作区'}
+              </span>
+              {activeWorkspacePath && (
+                <span className="hidden truncate font-mono text-[11px] text-slate-500 md:inline" title={activeWorkspacePath}>
+                  {activeWorkspacePath}
+                </span>
+              )}
+            </div>
+            <div className="flex shrink-0 items-center gap-1.5">
+              <button
+                type="button"
+                disabled={!activeSessionId}
+                onClick={() => toggleInspectorTab('files')}
+                aria-label="工作区文件"
+                className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium disabled:opacity-40 ${
+                  isInspectorOpen && inspectorTab === 'files'
+                    ? 'border-indigo-500/60 bg-indigo-500/20 text-indigo-200'
+                    : 'border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800'
+                }`}
+              >
+                <FolderTree className="h-3.5 w-3.5" />
+                <span>文件</span>
+              </button>
+              <button
+                type="button"
+                disabled={!activeSessionId}
+                onClick={() => toggleInspectorTab('changes')}
+                aria-label="代码变更"
+                className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium disabled:opacity-40 ${
+                  isInspectorOpen && inspectorTab === 'changes'
+                    ? 'border-indigo-500/60 bg-indigo-500/20 text-indigo-200'
+                    : 'border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800'
+                }`}
+              >
+                <FileDiff className="h-3.5 w-3.5" />
+                <span>
+                  变更{changesQuery.data?.files?.length ? ` (${changesQuery.data.files.length})` : ''}
+                </span>
+              </button>
+              <button
+                type="button"
+                disabled={!activeSessionId}
+                onClick={() => toggleInspectorTab('jobs')}
+                aria-label="后台作业"
+                className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium disabled:opacity-40 ${
+                  isInspectorOpen && inspectorTab === 'jobs'
+                    ? 'border-indigo-500/60 bg-indigo-500/20 text-indigo-200'
+                    : 'border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800'
+                }`}
+              >
+                <Cpu className="h-3.5 w-3.5" />
+                <span>作业{jobs.length > 0 ? ` (${jobs.length})` : ''}</span>
+              </button>
+            </div>
+          </div>
+
           <ChatView
             sessionId={activeSessionId}
             conversationId={activeConversationId}
@@ -483,11 +578,40 @@ export const App: React.FC = () => {
             conversationMode={conversationMode}
             turnNotice={turnNotice}
             workspacePath={activeWorkspacePath}
+            externalAttachment={externalAttachment}
             onChangeMode={setConversationMode}
             onSend={handleSend}
             onCancel={handleCancel}
           />
         </main>
+
+        <WorkspaceInspector
+          open={isInspectorOpen}
+          activeTab={inspectorTab}
+          auth={auth}
+          sessionId={activeSessionId}
+          workspaceRevision={workspaceRevision}
+          changes={changesQuery.data}
+          changesLoading={changesQuery.isLoading}
+          changesFetching={changesQuery.isFetching}
+          changesError={changesQuery.error instanceof Error ? changesQuery.error.message : changesQuery.error ? String(changesQuery.error) : null}
+          jobs={jobs}
+          verificationReceipts={verificationReceipts}
+          executionBackend={systemStatusQuery.data?.executionBackend ?? executionSettingsQuery.data?.backend ?? null}
+          onSelectTab={setInspectorTab}
+          onClose={() => setInspectorOpen(false)}
+          onRefreshChanges={() => void changesQuery.refetch()}
+          onAttachWorkspaceFile={(file) =>
+            setExternalAttachment({
+              nonce: Date.now() + Math.random(),
+              name: file.name,
+              workspaceRelativePath: file.path,
+              sizeBytes: file.sizeBytes,
+            })
+          }
+          onVerifyJob={handleVerifyJob}
+          onJobsMutated={refreshSessionJobs}
+        />
       </div>
 
       <StatusBar
