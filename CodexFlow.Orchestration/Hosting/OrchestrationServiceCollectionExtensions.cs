@@ -48,9 +48,10 @@ public static class OrchestrationServiceCollectionExtensions
 
     private static IChatClient BuildVllmChatClient(IServiceProvider sp, IConfigurationSection vllmConfig)
     {
+        var isDevelopment = sp.GetService<IHostEnvironment>()?.IsDevelopment() == true;
         var vllmHttpClient = new HttpClient(new VllmWireLoggingHandler(
             sp.GetRequiredService<ILogger<VllmWireLoggingHandler>>(),
-            vllmConfig.GetValue<bool>("WireLogToolPayloads"))
+            isDevelopment && vllmConfig.GetValue<bool>("WireLogToolPayloads"))
         {
             InnerHandler = new QreModelHttpErrorCaptureHandler(new SocketsHttpHandler
             {
@@ -173,6 +174,14 @@ public static class OrchestrationServiceCollectionExtensions
             configuration.GetSection(CodexFlow.Core.Runtime.RuntimeHookOptions.SectionName));
         services.AddOptions<CodexFlow.Core.Runtime.QueryRuntimeBackendOptions>()
             .Bind(configuration.GetSection(CodexFlow.Core.Runtime.QueryRuntimeBackendOptions.SectionName))
+            .PostConfigure<IServiceProvider>(static (options, sp) =>
+            {
+                // QRE private diagnostic recordings are for local development replay only; never write them in released builds.
+                if (sp.GetService<IHostEnvironment>()?.IsDevelopment() != true)
+                {
+                    options.AuditDirectory = null;
+                }
+            })
             .Validate(
                 static options => options.IsSupportedBackend,
                 "Runtime:QueryRuntime:Backend must be qre-v2. Legacy core/qre execution was removed by the v2-only cutover.")

@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { BackendManager } from '../../electron/main/backendManager';
+import { BackendManager, resolveManagedBackendEnvironment } from '../../electron/main/backendManager';
 import { LocalBackendProxy } from '../../electron/main/localBackendProxy';
 import {
   APP_ORIGIN,
@@ -274,5 +274,29 @@ describe('Main-process security boundaries & lifecycle (B1, B3, B4, R3)', () => 
       }
       await new Promise<void>((r) => upstream.close(() => r()));
     }
+  });
+
+  it('resolveManagedBackendEnvironment forces Production when packaged and defaults to Development in dev', () => {
+    const packagedEnv = resolveManagedBackendEnvironment(
+      { isPackaged: true, isDev: false },
+      { ASPNETCORE_ENVIRONMENT: 'Development', DOTNET_ENVIRONMENT: 'Development', CUSTOM_VAR: 'keep' },
+    );
+    expect(packagedEnv.ASPNETCORE_ENVIRONMENT).toBe('Production');
+    expect(packagedEnv.DOTNET_ENVIRONMENT).toBe('Production');
+    expect(packagedEnv.CUSTOM_VAR).toBe('keep');
+
+    const devEnvDefault = resolveManagedBackendEnvironment(
+      { isPackaged: false, isDev: true },
+      {},
+    );
+    expect(devEnvDefault.ASPNETCORE_ENVIRONMENT).toBe('Development');
+    expect(devEnvDefault.DOTNET_ENVIRONMENT).toBe('Development');
+
+    const devEnvOverride = resolveManagedBackendEnvironment(
+      { isPackaged: false, isDev: true },
+      { ASPNETCORE_ENVIRONMENT: 'Production', DOTNET_ENVIRONMENT: 'Production' },
+    );
+    expect(devEnvOverride.ASPNETCORE_ENVIRONMENT).toBe('Production');
+    expect(devEnvOverride.DOTNET_ENVIRONMENT).toBe('Production');
   });
 });

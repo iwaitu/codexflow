@@ -83,6 +83,12 @@ if (layout.DataDirectory is not null)
     }
 }
 
+if (builder.Environment.IsDevelopment()
+    && string.IsNullOrWhiteSpace(builder.Configuration["Runtime:QueryRuntime:AuditDirectory"]))
+{
+    isolatedOverrides["Runtime:QueryRuntime:AuditDirectory"] = layout.DataDirectory ?? layout.StateDirectory;
+}
+
 if (isolatedOverrides.Count > 0)
 {
     builder.Configuration.AddInMemoryCollection(isolatedOverrides);

@@ -56,6 +56,29 @@ const FAILURE_WINDOW_MS = 120_000;
 const STABILITY_RESET_MS = 30_000;
 const READY_TIMEOUT_MS = 20_000;
 
+export function resolveManagedBackendEnvironment(
+  options: Pick<BackendManagerOptions, 'isPackaged' | 'isDev'>,
+  baseEnv: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  if (options.isPackaged) {
+    return {
+      ...baseEnv,
+      ASPNETCORE_ENVIRONMENT: 'Production',
+      DOTNET_ENVIRONMENT: 'Production',
+    };
+  }
+
+  if (options.isDev) {
+    return {
+      ...baseEnv,
+      ASPNETCORE_ENVIRONMENT: baseEnv.ASPNETCORE_ENVIRONMENT ?? 'Development',
+      DOTNET_ENVIRONMENT: baseEnv.DOTNET_ENVIRONMENT ?? 'Development',
+    };
+  }
+
+  return { ...baseEnv };
+}
+
 function isPidAlive(pid: number): boolean {
   if (!Number.isFinite(pid) || pid <= 0) {
     return false;
@@ -485,7 +508,7 @@ export class BackendManager {
     this.ensureLogStream();
 
     const env: NodeJS.ProcessEnv = {
-      ...process.env,
+      ...resolveManagedBackendEnvironment(this.options, process.env),
       ...launch.extraEnv,
       Local__Port: '0',
       Local__DataDirectory: this.dataDirectory,

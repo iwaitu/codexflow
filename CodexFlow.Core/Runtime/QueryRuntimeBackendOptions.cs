@@ -17,7 +17,7 @@ public sealed record QueryRuntimeBackendOptions
     /// the model's output including its reasoning, tool calls and results. <c>qre replay latest --workspace &lt;dir&gt;</c> reads it back.
     /// Off by default: the recording holds everything the model saw and said, so it is for local diagnosis only.
     /// </summary>
-    public string? AuditDirectory { get; init; }
+    public string? AuditDirectory { get; set; }
 
     public const string QreV2Backend = "qre-v2";
 
