@@ -2,75 +2,285 @@
 
 # CodexFlow
 
-在本机运行的 AI 编码助手宿主：对话 → 出计划 → 你批准 → 默认在本地按权限分级审批执行（也可选切换到隔离的 Docker 容器）→ 验收（Docker 模式下执行构建、测试、密钥扫描、依赖漏洞扫描、模型审查；本地模式默认跳过容器验收并明确标注）。
-状态全部保存在一个 SQLite 文件里，只依赖 .NET 10 SDK 和一个模型接口（Docker 为可选项）。
+**在桌面上完成 AI 编码、计划审批、本地执行与业务 Skill 构建。**
 
-**状态：早期。** 还没有 `codexflow` 命令行；现在通过本地宿主的 HTTP 接口使用，并用 `scripts/e2e/devsim` 里的场景脚本驱动和检查。
+CodexFlow 将工作区对话、计划、工具审批、文件、变更和作业放进同一个 Electron 桌面应用。本机运行的 .NET 宿主负责执行与调度，SQLite 保存应用状态，模型能力来自你配置的接口。你可以打开一个本地项目，用自然语言提出任务，审核计划和执行请求，再查看代码变更与验证结果。
 
-## 需要什么
+初代桌面版本已实现，当前源码版本为 **0.1.3**。本仓库包含桌面客户端、本地宿主、可复用的 .NET 库以及开发测试工具。
 
-- .NET 10 SDK
-- 一个 OpenAI 兼容的聊天接口（`ChatCompletions` 模式）
-- Docker *（可选）*：仅当配置 `Execution:Backend=Docker` 启用容器隔离执行和完整容器验收门禁时需要
+![CodexFlow 桌面工作区](docs/images/desktop-workspace.jpg)
 
-## 运行
+## 目录
 
-模型接口通过 `VllmAgent` 配置节或环境变量提供。**密钥只放环境变量，不要写进文件。**
+- [主要功能](#主要功能)
+- [界面预览](#界面预览)
+- [从源码运行](#从源码运行)
+- [第一次使用](#第一次使用)
+- [企业插件与业务 Skill](#企业插件与业务-skill)
+- [配置与数据存储](#配置与数据存储)
+- [独立运行 HTTP 宿主](#独立运行-http-宿主)
+- [执行模式与结果验收](#执行模式与结果验收)
+- [项目架构](#项目架构)
+- [开发与测试](#开发与测试)
+- [常见问题](#常见问题)
+- [相关文档与许可](#相关文档与许可)
 
-```bash
-export VllmAgent__ApiUrl='https://your-model-host/v1/{1}'
-export VllmAgent__ApiMode='ChatCompletions'
-export VllmAgent__Model='your-model'
-export VllmAgent__ApiKey='...'
+## 主要功能
+
+| 功能 | 可以做什么 |
+| --- | --- |
+| 工作区与会话 | 新建工作区、打开本地文件夹，在每个工作区下组织多个对话。 |
+| 对话体验 | 流式显示回复，渲染 Markdown 和代码，添加文件，查看工具调用与上下文用量。 |
+| 计划与执行审批 | 阅读计划，通过审批卡片确认计划或相关工具执行请求。 |
+| 文件、变更与作业 | 在对话旁打开对应面板，检查工作区内容、代码改动和任务状态。 |
+| 本地与 Docker 执行 | 使用本机工具执行任务，也可配置 Docker 后端进行隔离执行和容器验收。 |
+| 模型设置 | 在界面中配置接口地址、API 模式、模型、上下文上限和采样参数。 |
+| 企业插件与 Skill | 管理 OpenAPI / MCP 业务插件，发现能力，通过五步向导生成可复用业务 Skill。 |
+| 后端生命周期 | 由桌面端启动和管理本地宿主，也可连接已经独立运行的宿主。 |
+| 持久化与连接恢复 | SQLite 保存状态，SSE 提供流式事件、断线重连与状态同步。 |
+
+本地执行使用这台电脑上的工具和环境。本地宿主不等于离线模型：对话与相关任务上下文会发送到你配置的模型接口。
+
+## 界面预览
+
+以下为 **2026-11-17** 从源码构建后，通过 computer use 在 Windows 上操作并截取的真实界面。客户端连接真实托管后端，使用独立的空白演示数据目录；未伪造对话、插件或成功作业。
+
+### 企业插件中心
+
+集中管理业务系统连接、能力目录以及插件配置。
+
+![企业插件中心](docs/images/desktop-plugins.jpg)
+
+### 五步 Skill 构建向导
+
+连接系统 → 选择能力 → 描述与生成 → 校验与试运行 → 发布版本。
+
+![五步 Skill 构建向导](docs/images/desktop-skill-builder.jpg)
+
+### 执行与权限设置
+
+截图中的实例使用 **Local（本地执行）** 和 **Ask（每次询问）**。
+
+![执行与权限设置](docs/images/desktop-settings.jpg)
+
+本次截图验证了应用启动、后端连接和上述页面访问；未执行模型任务、真实业务 Skill 发布或 Docker 验收。
+
+## 从源码运行
+
+### 环境要求
+
+| 依赖 | 用途 |
+| --- | --- |
+| .NET 10 SDK | 构建和运行后端。`global.json` 指定 `10.0.401`，允许使用同系列较新补丁版本。 |
+| Node.js 22 与 npm | 安装和运行桌面端；客户端 CI 同样使用 Node 22。 |
+| Git | 拉取源码及进行仓库相关操作。 |
+| 兼容的模型接口 | AI 对话和生成需要；模型设置接受 `ChatCompletions` 与 `Responses`。 |
+| Docker（可选） | Docker 执行与容器验收需要。 |
+
+先构建后端，再启动桌面端，避免正在运行的宿主锁定 DLL，也确保客户端加载本次源码构建的后端。
+
+```powershell
+git clone https://github.com/iwaitu/codexflow.git
+cd codexflow
+
+dotnet build CodexFlow.Local -c Release
+
+cd clients/desktop
+npm ci
+npm run dev
+```
+
+如果希望运行构建后的前端，而不是开发服务器：
+
+```powershell
+# 在 clients/desktop 中执行，先完成后端构建与 npm ci
+npm run build
+npm run preview
+```
+
+桌面端会自动启动并监控本地后端，托管模式不需要再手动运行第二个 `dotnet run`。非安装包模式下，客户端优先使用 Release 后端，其次使用 Debug；两者均不存在时才回退到 `dotnet run`。
+
+为演示或开发使用独立数据目录，可以在启动前设置：
+
+```powershell
+$env:CODEXFLOW_DATA_DIR = Join-Path $env:TEMP 'codexflow-demo'
+npm run dev
+```
+
+该变量隔离宿主数据，**不会隔离用户级模型设置**。返回常用数据目录时，关闭演示实例并从终端中移除这个环境变量覆盖。
+
+仓库定义了 Windows x64、Linux x64、macOS arm64 的打包配置。已发布产物请查看仓库的 [Releases 页面](https://github.com/iwaitu/codexflow/releases)，构建流程见[发布文档](docs/releasing.md)。本文的实际运行与截图验证范围为 Windows。
+
+## 第一次使用
+
+1. 启动应用，确认底部状态栏显示托管宿主已连接。
+2. 首次提示时完成欢迎配置，或点击齿轮 → 模型设置，填写服务商要求的接口地址、API 模式、模型与凭据。
+3. 点击“打开文件夹”使用已有本地项目，或新建工作区。点击工作区右侧的“+”建立新会话。
+4. 先提出明确的小任务，例如“解释这个项目的目录结构，并指出测试入口”。
+5. 需要修改代码时，先查看计划，再根据审批卡片确认相关操作。
+6. 打开“文件”“变更”“作业”面板检查结果，关注验证结论和跳过的检查，再决定是否接受。
+
+可以尝试的提问：
+
+```text
+解释这个仓库的程序入口和主要模块。
+分析这个测试失败的原因，提出修复计划，等待我批准。
+实现这个小功能，并展示代码变更和测试结果。
+```
+
+这些是使用示例，并非截图会话中已经完成的任务。实际能力取决于模型、已配置工具、执行后端与权限。
+
+## 企业插件与业务 Skill
+
+“插件与 Skill”入口包含“我的插件”“我的 Skill”和“五步构造向导”。
+
+1. **连接系统**：接入业务插件，配置 OpenAPI / MCP 连接和凭据。
+2. **选择能力**：发现能力目录，选择这项业务流程实际需要的操作。
+3. **描述与生成**：用自然语言说明业务任务，生成 Skill 草稿。
+4. **校验与试运行**：查看校验反馈，在目标业务系统上试运行，并处理必要的审批。
+5. **发布版本**：发布已检查的 Skill，在“我的 Skill”中使用和查看。
+
+实现中区分文档凭据与执行凭据，提供人工风险分级和写入操作审批。真实流程需要可用的业务系统、凭据、模型和能力目录；截图中的空目录代表尚未接入系统的初始状态。
+
+## 配置与数据存储
+
+通过界面保存的模型设置位于用户目录下的 `~/.codexflow/appsettings.json`，配置变化可被后续模型请求读取。设置接口返回密钥是否已配置及掩码尾号，不返回完整密钥。用户配置和运行凭据不应进入 Git 或公开截图。
+
+独立宿主的脚本启动可使用环境变量。.NET 嵌套配置使用双下划线：
+
+| 配置项 | 说明 |
+| --- | --- |
+| `VllmAgent__ApiUrl` | 模型接口地址，适配器支持 `/v1/{1}` 形式的接口名称占位符。 |
+| `VllmAgent__ApiMode` | `ChatCompletions` 或 `Responses`，需与服务商接口匹配。 |
+| `VllmAgent__Model` | 服务商提供的模型标识。 |
+| `VllmAgent__ApiKey` | 通过进程环境传入的模型凭据。 |
+| `Local__Port` | 独立宿主默认端口为 `5206`；桌面托管模式申请动态端口。 |
+| `Local__PreflightMode` | 启动预检；`Report` 报告问题但不按严格模式阻止启动，`Off` 关闭预检。 |
+| `CODEXFLOW_DATA_DIR` | 覆盖桌面托管后端的数据目录。 |
+| `CODEXFLOW_BACKEND_BIN` | 指定桌面端使用的后端可执行文件或 DLL。 |
+
+托管模式默认将宿主数据放在桌面应用用户数据目录的 `host-data` 下，后端日志位于 `logs/backend.log`。访问令牌和控制令牌通过管道交给托管后端。独立模式会写出用于客户端连接的发现文件和令牌文件。
+
+备份时先停止宿主，再备份数据目录；用户级配置需单独备份。
+
+## 独立运行 HTTP 宿主
+
+适合 HTTP 客户端、集成开发和开发者模拟脚本。在仓库根目录使用 PowerShell：
+
+```powershell
+$env:VllmAgent__ApiUrl = 'https://your-model-host/v1/{1}'
+$env:VllmAgent__ApiMode = 'ChatCompletions'
+$env:VllmAgent__Model = 'your-model'
+# 通过安全方式在进程环境中提供 VllmAgent__ApiKey。
 dotnet run --project CodexFlow.Local
 ```
 
-- 只监听 `127.0.0.1`，端口由 `Local:Port` 配置（默认 5206）。
-- 启动时生成访问令牌，写在数据库旁边的 `host.token`（默认 `.codexflow/host.token`）；请求不带令牌或令牌不对返回 401。
-- 启动检查：模型设置齐全且接口能答；仅当 `Execution:Backend=Docker` 时才要求 Docker 守护进程可用。有问题会一次全报，然后以退出码 1 退出。可用 `Local:PreflightMode=Off`（或 `Report`）调整启动检查行为。
-- 默认执行后端为 `Local`、默认权限模式为 `Ask`（每次调用代码执行工具都需审批；本地模式下默认跳过容器验证并在回执中标注“未在隔离环境中验证”）。已有自定义 `Isolation` 节的旧配置会在启动时自动迁移保留 `Execution:Backend=Docker`。
-- 状态数据库默认 `.codexflow/state.db`，由 `Storage:SqlitePath` 配置，启动时自动应用迁移。
+宿主监听本机回环地址，通常为 `http://127.0.0.1:5206`。使用生成的 `host.token` 进行 API 身份验证；缺少令牌或令牌错误会返回 `401`。桌面连接向导可以发现本机实例，也可以指定地址与令牌文件；需要控制平面的操作还需对应控制凭据。
 
-### 验收用的容器镜像（可选，仅 Docker 后端需要）
+接口定义见 [OpenAPI 文档](docs/contracts/openapi.json) 与 [SSE 事件契约](docs/contracts/sse-events.schema.json)。仓库尚未提供独立的 `codexflow` CLI，主要入口为桌面应用和 HTTP 宿主。
 
-当配置 `Execution:Backend=Docker` 时，验收和用户代码在 `codexflow-verification` 镜像里执行，需要先构建：
+## 执行模式与结果验收
 
-```bash
+**Local** 在宿主机器执行支持的命令，**Docker** 在配置的容器环境中执行。权限审批与执行隔离是两个不同维度：审批不提供容器隔离，选择 Docker 也不代替操作审核。
+
+使用 Docker 验收后端时，先在仓库根目录构建固定版本镜像：
+
+```powershell
 docker build -t codexflow-verification:10.0.403-gitleaks8.30.1 docker/verification
 ```
 
-`CodexFlow.Local/appsettings.json` 里固定了镜像名和密钥扫描配置的 SHA-256。`docker/verification/gitleaks.toml` 的字节不能改动（`.gitattributes` 已禁止换行符转换），改了就要同步改这个哈希。
+随后选择或配置 Docker 后端。容器验收包含构建、测试与审计路径；本地模式回执可能明确标记跳过容器检查。作业完成不代表每一层验收均已通过。
 
-### 漏洞公告数据
+镜像名称与密钥扫描配置哈希固定在 `CodexFlow.Local/appsettings.json`。修改 `docker/verification/gitleaks.toml` 时，需要同步更新对应哈希。
 
-- NuGet 的公告由宿主自己刷新。
-- npm 和 PyPI 的公告是离线准备的，超过 48 小时网关就拒绝使用（依赖层返回 Error，不会放行）。需要手工刷新，会从 osv.dev 下载几百 MB：
+NuGet 漏洞公告由宿主刷新；npm 与 PyPI 公告需要离线准备：
 
-```bash
+```powershell
 python scripts/e2e/prepare-osv-advisories.py --out ./osv-advisories
 ```
 
-并把 `ArtifactAudit:OsvAdvisoryDirectory` 指向这个目录。
+将 `ArtifactAudit:OsvAdvisoryDirectory` 指向输出目录。下载可能达到数百 MB；超过 48 小时的公告数据会被依赖审计拒绝。相关缓存准备见[验收缓存指南](scripts/e2e/prepare-restore-cache.md)。
 
-## 测试
+## 项目架构
 
-```bash
+```mermaid
+flowchart LR
+    UI[Electron + React 桌面端] --> Main[Electron 主进程]
+    Main --> Host[本地 ASP.NET Core 宿主]
+    Host --> Runtime[计划与任务编排]
+    Host --> DB[(SQLite)]
+    Runtime --> Model[配置的模型接口]
+    Runtime --> Local[本地执行]
+    Runtime --> Docker[可选 Docker 执行]
+    Runtime --> Plugins[企业插件与业务 Skill]
+```
+
+| 目录 | 职责 |
+| --- | --- |
+| `clients/desktop` | Electron 生命周期、预加载桥接、React 界面、客户端测试与打包。 |
+| `CodexFlow.Local` | 本地宿主入口与服务组装。 |
+| `CodexFlow.Contracts` | 共享契约。 |
+| `CodexFlow.Core` | 核心服务、计划、执行、配置和业务 Skill 基础能力。 |
+| `CodexFlow.Orchestration` | 网关会话、作业、工作流编排与审计。 |
+| `CodexFlow.Gateway.Http` | HTTP API 层。 |
+| `CodexFlow.Storage.Sqlite` | SQLite 持久化。 |
+| `CodexFlow.Core.Tests` | 后端单元测试与集成测试。 |
+| `scripts/e2e/devsim` | 自然语言工作流场景与结构化断言。 |
+| `docs/contracts` | 桌面端使用的 OpenAPI 与 SSE 契约。 |
+| `docker/verification` | 验收镜像与扫描配置。 |
+
+五个库项目共同发布，统一使用 `Directory.Build.props` 中的版本号；桌面包由发布流水线注入对应版本。
+
+## 开发与测试
+
+在仓库根目录运行后端测试：
+
+```powershell
 dotnet test CodexFlow.Core.Tests
 ```
 
-这里目前只有 `CodexFlow.Core.Tests`。网关、作业执行器和验收的集成测试尚未补充（需要先实现基于 SQLite 的测试宿主）。部分测试需要 Docker 或真实模型接口，没有时会跳过。
+在 `clients/desktop` 运行客户端检查：
 
-## 开发者模拟（devsim）
+```powershell
+npm run lint
+npm run typecheck
+npm test
+npm run build
+npm run test:e2e
+```
 
-`scripts/e2e/devsim` 用自然语言和运行中的宿主对话（拉仓库、提问、要计划、批准、等作业、验收），并按结构化条件检查系统有没有做对，找的是系统的问题，不是模型措辞的差别。
+接口契约发生变化后，运行 `npm run generate:types`，检查 `src/shared/contracts` 下的变更。依赖 Docker 或真实模型的测试需要相应环境；客户端测试通过不代表这些集成已经验收。
 
-```bash
+开发者模拟器可对已启动的独立宿主执行自然语言对话、计划审批、作业等待与验收：
+
+```powershell
 python scripts/e2e/devsim list
 python scripts/e2e/devsim run bugfix-python-pager --api http://127.0.0.1:5206 --token-file .codexflow/host.token
 ```
 
-详见 `scripts/e2e/devsim/README.md`。其中 `faultproxy.py` 是个夹在宿主和模型之间的代理，用来让“重试”这类很少碰到的路径必然发生。
+令牌路径应按当前宿主的实际数据目录调整。场景说明与故障注入方式见 [devsim 指南](scripts/e2e/devsim/README.md)。
 
-## 许可
+## 常见问题
 
-[MPL-2.0](LICENSE)。版权：iwaitu。
+| 现象 | 检查方向 |
+| --- | --- |
+| 桌面端未连接或不断重启后端 | 查看 `logs/backend.log`，确认后端文件存在并能成功构建。 |
+| 后端构建提示 DLL 无法复制 | 关闭使用该输出目录的桌面端或宿主，重新构建，再启动。 |
+| 修改后端源码后看不到变化 | 重新构建 Release；客户端会优先选择已有 Release 产物。 |
+| 界面能打开，但模型请求失败 | 检查接口地址、API 模式、模型、凭据和模型服务连通性；界面连接状态仅表示本地后端连接。 |
+| API 返回 `401` | 使用当前宿主实例、正确数据目录下的令牌。 |
+| 无法审批或修改设置 | 检查独立宿主连接是否提供控制平面凭据。 |
+| Skill 向导无法继续 | 先接入插件并发现能力，确认模型配置及该功能是否启用。 |
+| Docker 验收失败 | 检查 Docker 服务、固定版本镜像、验收缓存和公告数据新鲜度。 |
+
+## 相关文档与许可
+
+- [发布流程](docs/releasing.md)
+- [本地执行威胁模型](docs/local-execution-threat-model.md)
+- [桌面端与本地执行设计](docs/plans/local-execution-and-desktop-client.md)
+- [业务 Skill 构建器设计](docs/plans/embedded-business-skill-builder.md)
+- [开发者模拟指南](scripts/e2e/devsim/README.md)
+
+设计文档可能包含超出某个发行版本的规划，具体可用能力应结合源码、发行说明和实际运行行为确认。
+
+[MPL-2.0](LICENSE)。Copyright © 2026 iwaitu。
