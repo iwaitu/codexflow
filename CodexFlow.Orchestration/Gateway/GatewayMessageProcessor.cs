@@ -51,6 +51,14 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<GatewayMessage, CodexFlow.Core.Agents.Tools.ToolCallBudget> ToolSearchBudgets = new();
     // How many times the dependency check has refused the plan of this message: the second refusal ends the model's attempts.
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<GatewayMessage, System.Runtime.CompilerServices.StrongBox<int>> PlanRefusals = new();
+    private static readonly string[] GatewayDefaultDailyToolNames =
+    [
+        "web_search",
+        "fetch_webpage",
+        "glob",
+        "user_learn_preference"
+    ];
+
     private static readonly string[] GatewayDeferredToolNames =
     [
         "apply_patch",
@@ -63,7 +71,33 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         "search_file_index",
         "skill",
         "hs_read",
-        "hs_write"
+        "hs_write",
+        "list_workspace",
+        "analyze_code",
+        "lsp_get_diagnostics",
+        "lsp_document_symbols",
+        "lsp_workspace_symbols",
+        "lsp_go_to_definition",
+        "lsp_find_references",
+        "save_project_summary",
+        "list_mcp_resources",
+        "read_mcp_resource",
+        "cron_create",
+        "cron_delete",
+        "cron_list",
+        "monitor",
+        "worker_output",
+        "task_output",
+        "task_list",
+        "task_get",
+        "task_create",
+        "task_update",
+        "task_stop",
+        "ask_user_question",
+        "enter_plan_mode",
+        "exit_plan_mode",
+        "zip_directory",
+        "download_artifact"
     ];
     private static readonly HashSet<string> BlockedPreviewExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -1594,6 +1628,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             sb.AppendLine("- 用户明确要求做一件验收环境可能还原不了的事（例如升级宿主没有取包的版本）时，把它单独放进一个任务，写明风险由用户承担、失败只影响这个任务；不要和有把握的任务混在一起。");
             sb.AppendLine("- 进入陌生仓库时，不要先猜 `src`/`app`/`lib`/`server`；优先使用 `search_file_index`、`ivilson_ls`、`search_in_files` 从 `.` 或已确认存在的真实目录开始。");
             sb.AppendLine("- 当需要把关键代码直接展示到前端预览区时，调用 `ui_show_file` 或 `ui_show_diff`。优先展示最相关的 1 到 2 个文件，不要在聊天中粘贴大段代码。");
+            sb.AppendLine("- 当用户询问实时信息、外部资料、最新价格或给定网页链接，且当前工具面包含 `web_search` / `fetch_webpage` 时，直接调用相应工具查证后再回答，不要凭记忆猜测；需要保存个人长期偏好时可使用 `user_learn_preference`，需要定时任务/MCP资源/LSP分析等辅助能力时可通过 `tool_search` 搜索激活。");
             return AppendGatewayToolCatalog(sb.ToString(), gatewayTools);
         }
 
@@ -2565,7 +2600,11 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                 new AIFunctionFactoryOptions { Name = "tool_search", Description = toolSearchTool.Description }));
         }
 
-        AddDeferredGatewayTools(tools, stageOneTools);
+        var defaultDailyLookup = includeDeferred
+            ? stageOneTools
+            : BuildGatewayToolLookup(message, session, includeDeferred: true, emit);
+        AddGatewayToolsByName(tools, defaultDailyLookup, GatewayDefaultDailyToolNames);
+        AddGatewayToolsByName(tools, stageOneTools, GatewayDeferredToolNames);
 
         FullTextAuditLogger.Log(
             _logger,
@@ -2940,15 +2979,16 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         return probe;
     }
 
-    private static void AddDeferredGatewayTools(
+    private static void AddGatewayToolsByName(
         List<AIFunction> tools,
-        IReadOnlyDictionary<string, ICodexTool> toolLookup)
+        IReadOnlyDictionary<string, ICodexTool> toolLookup,
+        IEnumerable<string> toolNames)
     {
         var existingNames = new HashSet<string>(
             tools.Select(static tool => tool.Name),
             StringComparer.OrdinalIgnoreCase);
 
-        foreach (var toolName in GatewayDeferredToolNames)
+        foreach (var toolName in toolNames)
         {
             if (!toolLookup.TryGetValue(toolName, out var tool) || !existingNames.Add(toolName))
             {
@@ -2965,6 +3005,18 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         Func<GatewaySseEvent, ValueTask>? emit = null)
     {
         var toolLookup = BuildGatewayToolLookup(message, session, includeDeferred: false, emit);
+        var defaultDailyLookup = BuildGatewayToolLookup(message, session, includeDeferred: true, emit);
+        var tools = new List<ICodexTool>();
+        var addedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var toolName in GatewayDefaultDailyToolNames)
+        {
+            if (defaultDailyLookup.TryGetValue(toolName, out var tool) && addedNames.Add(toolName))
+            {
+                tools.Add(tool);
+            }
+        }
+
         var runtimeToolNames = GatewayDeferredToolNames.Concat(new[]
         {
             "write_plan_file",
@@ -2975,7 +3027,6 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             "project_plan_to_tasks",
             "plan_diff"
         });
-        var tools = new List<ICodexTool>();
         var intent = GatewayIntentResolver.Resolve(message);
         foreach (var toolName in runtimeToolNames)
         {
@@ -2985,7 +3036,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                 continue;
             }
 
-            if (toolLookup.TryGetValue(toolName, out var tool))
+            if (toolLookup.TryGetValue(toolName, out var tool) && addedNames.Add(toolName))
             {
                 tools.Add(tool);
             }
