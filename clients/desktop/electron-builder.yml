@@ -18,6 +18,13 @@ extraResources:
       - '**/*'
 
 asar: true
+generateUpdatesFilesForAllChannels: true
+
+publish:
+  provider: github
+  owner: iwaitu
+  repo: codexflow
+  releaseType: release
 
 win:
   icon: build/icon.ico
@@ -63,5 +70,7 @@ mac:
       arch:
         - arm64
   category: public.app-category.developer-tools
+  hardenedRuntime: true
+  gatekeeperAssess: false
   identity: null
   artifactName: CodexFlow-Desktop-${version}-mac-${arch}.${ext}

@@ -13,6 +13,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import type { ConversationSummary, SessionSummary } from '../lib/apiClient';
+import { useI18n } from '../lib/i18n';
 import { CodexFlowBrand } from './CodexFlowBrand';
 
 interface SidebarProps {
@@ -68,6 +69,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenSettings,
   workspaceError,
 }) => {
+  const { t } = useI18n();
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
   const [localExpandedIds, setLocalExpandedIds] = useState<string[]>(() =>
@@ -122,8 +124,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <button
           type="button"
           onClick={onOpenSettings}
-          title="设置"
-          aria-label="打开设置"
+          title={t('nav.settings')}
+          aria-label={t('nav.settings')}
           className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
         >
           <Settings className="h-4 w-4" />
@@ -142,7 +144,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             }`}
           >
             <MessageSquare className="h-3.5 w-3.5" />
-            工作区对话
+            {t('nav.workspaceChat')}
           </button>
           <button
             type="button"
@@ -154,7 +156,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             }`}
           >
             <Blocks className="h-3.5 w-3.5" />
-            插件与 Skill
+            {t('nav.businessSkills')}
           </button>
         </div>
       )}
@@ -166,17 +168,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
           className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-800 bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-800"
         >
           <Plus className="h-3.5 w-3.5" />
-          新建工作区
+          {t('sidebar.newWorkspace')}
         </button>
         <button
           type="button"
           disabled={!controlPlaneAvailable}
           onClick={() => void onOpenFolder()}
-          title={controlPlaneAvailable ? '打开本地文件夹作为工作区' : '需要控制面凭据（请使用托管模式）'}
+          title={controlPlaneAvailable ? t('sidebar.openFolder') : t('status.readonlyNoControl')}
           className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-indigo-600/90 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-40"
         >
           <FolderPlus className="h-3.5 w-3.5" />
-          打开文件夹
+          {t('sidebar.openFolder')}
         </button>
       </div>
 
@@ -225,7 +227,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       <button
                         type="button"
                         onClick={() => handleToggleExpand(s.sessionId)}
-                        aria-label={isExpanded ? `折叠 ${s.name}` : `展开 ${s.name}`}
+                        aria-label={
+                          isExpanded
+                            ? t('sidebar.collapseWorkspace', { name: s.name })
+                            : t('sidebar.expandWorkspace', { name: s.name })
+                        }
                         aria-expanded={isExpanded}
                         className="rounded p-0.5 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
                       >
@@ -251,12 +257,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                             type="button"
                             disabled={isTurnRunning || creatingConversation}
                             onClick={() => void onCreateConversation(s.sessionId)}
-                            title={
-                              isTurnRunning
-                                ? '当前回合执行中，请稍后再新建会话'
-                                : `在「${s.name}」中新建会话`
-                            }
-                            aria-label={isActiveSession ? '新建会话' : `在 ${s.name} 新建会话`}
+                            title={t('sidebar.newConversation')}
+                            aria-label={isActiveSession ? t('sidebar.newConversation') : `${t('sidebar.newConversation')} (${s.name})`}
                             className="rounded p-1 text-slate-300 hover:bg-slate-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
                           >
                             <Plus className="h-3.5 w-3.5" />

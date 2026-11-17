@@ -3,6 +3,8 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Check, Copy } from 'lucide-react';
 import { codeToHtml } from 'shiki';
+import { useI18n } from '../lib/i18n';
+import { usePreferencesStore } from '../stores/usePreferencesStore';
 
 interface CodeBlockProps {
   language: string;
@@ -10,6 +12,8 @@ interface CodeBlockProps {
 }
 
 const CodeBlock: React.FC<CodeBlockProps> = ({ language, code }) => {
+  const { t } = useI18n();
+  const theme = usePreferencesStore((s) => s.theme);
   const [highlightedHtml, setHighlightedHtml] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -18,7 +22,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ language, code }) => {
     const lang = language || 'text';
     void codeToHtml(code, {
       lang,
-      theme: 'github-dark',
+      theme: theme === 'light' ? 'github-light' : 'github-dark',
     })
       .then((html) => {
         if (active) setHighlightedHtml(html);
@@ -29,7 +33,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ language, code }) => {
     return () => {
       active = false;
     };
-  }, [code, language]);
+  }, [code, language, theme]);
 
   const handleCopy = () => {
     void navigator.clipboard?.writeText(code).then(() => {
@@ -48,7 +52,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ language, code }) => {
           className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-slate-300 hover:bg-slate-800"
         >
           {copied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
-          <span>{copied ? '已复制' : '复制'}</span>
+          <span>{copied ? t('chat.copied') : t('chat.copy')}</span>
         </button>
       </div>
       {highlightedHtml ? (
@@ -74,6 +78,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
   content,
   allowImages = true,
 }) => {
+  const { t } = useI18n();
   return (
     <div className="markdown-body text-sm leading-relaxed text-slate-100">
       <ReactMarkdown
@@ -83,7 +88,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
             if (!allowImages) {
               return (
                 <span className="italic text-slate-400">
-                  [已禁用远程图片: {alt || src || 'image'}]
+                  {t('chat.remoteImageDisabled', { label: alt || src || 'image' })}
                 </span>
               );
             }

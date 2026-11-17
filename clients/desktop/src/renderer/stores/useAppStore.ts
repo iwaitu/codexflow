@@ -18,6 +18,20 @@ import {
   type UiToolCall,
   type WorkerBarState,
 } from '../lib/sessionRecovery';
+import { translate, type I18nKey } from '../lib/i18n';
+import { usePreferencesStore } from './usePreferencesStore';
+
+function dispatchDesktopNotification(titleKey: I18nKey, body: string): void {
+  const prefs = usePreferencesStore.getState();
+  if (!prefs.notificationsEnabled || typeof window === 'undefined') {
+    return;
+  }
+  void window.codexflow?.showNotification?.({
+    title: translate(prefs.language, titleKey),
+    body,
+    onlyWhenUnfocused: prefs.notifyOnlyWhenUnfocused,
+  });
+}
 
 export type ConversationMode = 'continue-current' | 'reuse-master' | 'new-thread';
 export type InspectorTab = 'files' | 'changes' | 'jobs';
@@ -421,10 +435,10 @@ function reduceSseEvent(
         }
         return { pendingApprovals: [...s.pendingApprovals, normalized] };
       });
-      void window.codexflow?.showNotification({
-        title: 'CodexFlow 需要执行审批',
-        body: `${normalized.tool}: ${normalized.executable}`,
-      });
+      dispatchDesktopNotification(
+        'notify.toolApprovalTitle',
+        `${normalized.tool}: ${normalized.executable}`,
+      );
       return;
     }
 
@@ -439,6 +453,11 @@ function reduceSseEvent(
     }
 
     case 'plan_approval_requested': {
+      const prefs = usePreferencesStore.getState();
+      dispatchDesktopNotification(
+        'notify.planApprovalTitle',
+        translate(prefs.language, 'notify.planApprovalBody'),
+      );
       const conn = get().connection;
       const sid = get().activeSessionId;
       const targetGen = get().sessionGeneration;
@@ -459,10 +478,13 @@ function reduceSseEvent(
       set({ workerBar: { status: 'started', message: String(evtData.content ?? evtData.text ?? '后台 Worker 正在执行...') } });
       refreshTurnMetadataAfterFinish(get, set, true);
       return;
-    case 'worker_waiting_user':
-      set({ workerBar: { status: 'waiting_user', message: String(evtData.content ?? evtData.text ?? '后台 Worker 等待用户审批') } });
+    case 'worker_waiting_user': {
+      const workerMsg = String(evtData.content ?? evtData.text ?? '后台 Worker 等待用户审批');
+      set({ workerBar: { status: 'waiting_user', message: workerMsg } });
+      dispatchDesktopNotification('notify.workerWaitingTitle', workerMsg);
       refreshTurnMetadataAfterFinish(get, set, true);
       return;
+    }
     case 'worker_completed':
       set((s) => ({
         workerBar: { status: 'completed', message: String(evtData.content ?? evtData.text ?? '后台 Worker 已完成') },
@@ -500,6 +522,7 @@ function reduceSseEvent(
     case 'error': {
       const d = evtData as { error?: string; message?: string | null };
       const msg = d.message || d.error || '发生错误';
+      const hadActiveTurn = get().isTurnRunning;
       set((s) => ({
         isTurnRunning: false,
         isThinkingStreaming: false,
@@ -518,12 +541,19 @@ function reduceSseEvent(
         streamingContent: '',
         streamingThinking: '',
       }));
+      if (hadActiveTurn) {
+        dispatchDesktopNotification('notify.turnErrorTitle', msg);
+      }
       refreshTurnMetadataAfterFinish(get, set, false);
       return;
     }
 
     case 'done': {
       const d = evtData as { source?: string | null };
+      const prevState = get();
+      const shouldNotifyDone =
+        d.source !== 'cancelled' &&
+        (prevState.isTurnRunning || Boolean(prevState.streamingContent || prevState.streamingThinking));
       set((s) => {
         const nextMessages = [...s.messages];
         if (s.streamingContent || s.streamingThinking) {
@@ -547,6 +577,13 @@ function reduceSseEvent(
           workspaceRevision: s.workspaceRevision + 1,
         };
       });
+      if (shouldNotifyDone) {
+        const prefs = usePreferencesStore.getState();
+        dispatchDesktopNotification(
+          'notify.turnDoneTitle',
+          translate(prefs.language, 'notify.turnDoneBody'),
+        );
+      }
       refreshTurnMetadataAfterFinish(get, set, true);
       return;
     }

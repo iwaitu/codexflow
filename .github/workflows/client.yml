@@ -200,7 +200,7 @@ jobs:
         run: |
           mkdir -p release-assets
           shopt -s nullglob
-          for f in dist/*.exe dist/*.zip dist/*.AppImage dist/*.tar.gz dist/*.dmg; do
+          for f in dist/*.exe dist/*.zip dist/*.AppImage dist/*.tar.gz dist/*.dmg dist/latest*.yml dist/*.blockmap; do
             cp "$f" release-assets/
           done
           ls -la release-assets/

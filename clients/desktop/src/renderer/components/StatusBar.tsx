@@ -1,7 +1,9 @@
 import React from 'react';
-import { AlertTriangle, RefreshCw, Shield, ShieldAlert } from 'lucide-react';
+import { AlertTriangle, Command, Languages, Moon, RefreshCw, Shield, ShieldAlert, Sun } from 'lucide-react';
 import type { BackendConnectionPublicInfo } from '@shared/ipc';
 import type { SessionContextWindow, SystemStatusSummary } from '../lib/apiClient';
+import { useI18n } from '../lib/i18n';
+import { usePreferencesStore } from '../stores/usePreferencesStore';
 import { ContextUsageRing } from './ContextUsageRing';
 
 interface StatusBarProps {
@@ -10,6 +12,7 @@ interface StatusBarProps {
   systemStatus: SystemStatusSummary | null;
   contextWindow: SessionContextWindow | null;
   onOpenSettings: () => void;
+  onOpenCommandPalette?: () => void;
   onRestartBackend: () => void;
 }
 
@@ -19,14 +22,17 @@ export const StatusBar: React.FC<StatusBarProps> = ({
   systemStatus,
   contextWindow,
   onOpenSettings,
+  onOpenCommandPalette,
   onRestartBackend,
 }) => {
+  const { language, t } = useI18n();
+  const { theme, toggleTheme, toggleLanguage } = usePreferencesStore();
   const statusLabel = {
-    starting: '启动中',
-    ready: '已连接',
-    reconnecting: '重连中',
-    error: '连接错误',
-    disconnected: '已断开',
+    starting: t('status.starting'),
+    ready: t('status.ready'),
+    reconnecting: t('status.reconnecting'),
+    error: t('status.error'),
+    disconnected: t('status.disconnected'),
   }[connection?.status ?? 'starting'];
 
   const backend = systemStatus?.executionBackend ?? 'Local';
@@ -48,7 +54,7 @@ export const StatusBar: React.FC<StatusBarProps> = ({
             }`}
           />
           <span>
-            {connection?.mode === 'standalone' ? '独立实例' : '托管宿主'}: {statusLabel} (SSE: {sseState})
+            {connection?.mode === 'standalone' ? t('status.standalone') : t('status.managed')}: {statusLabel} (SSE: {sseState})
           </span>
         </span>
 
@@ -57,7 +63,7 @@ export const StatusBar: React.FC<StatusBarProps> = ({
           onClick={onOpenSettings}
           className="rounded border border-slate-800 bg-slate-900 px-2 py-0.5 text-slate-200 hover:bg-slate-800"
         >
-          后端: <strong>{backend}</strong> · 权限: <strong>{perm}</strong>
+          {t('status.backendAndPerm', { backend, perm })}
         </button>
 
         {!selfProtection && (
@@ -66,24 +72,28 @@ export const StatusBar: React.FC<StatusBarProps> = ({
             className="inline-flex items-center gap-1 rounded bg-rose-500/20 px-2 py-0.5 font-medium text-rose-300"
           >
             <ShieldAlert className="h-3.5 w-3.5" />
-            防自批保证不成立
+            {t('status.selfApprovalBroken')}
           </span>
         )}
 
         {!controlAvailable && (
           <span className="inline-flex items-center gap-1 rounded bg-amber-500/15 px-2 py-0.5 text-amber-300">
             <AlertTriangle className="h-3.5 w-3.5" />
-            只读连接（无控制面）
+            {t('status.readonlyNoControl')}
           </span>
         )}
       </div>
 
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2">
         {connection?.clientVersion && (
           <span
             data-testid="client-version-badge"
             className="rounded border border-slate-800 bg-slate-900 px-2 py-0.5 font-mono text-slate-300"
-            title={systemStatus?.version ? `宿主版本: ${systemStatus.version}` : '客户端版本'}
+            title={
+              systemStatus?.version
+                ? t('status.hostVersion', { version: systemStatus.version })
+                : t('status.clientVersion')
+            }
           >
             v{connection.clientVersion}
           </span>
@@ -96,7 +106,7 @@ export const StatusBar: React.FC<StatusBarProps> = ({
             className="inline-flex items-center gap-1 text-amber-300 hover:underline"
           >
             <Shield className="h-3 w-3" />
-            未配置模型
+            {t('status.modelUnconfigured')}
           </button>
         )}
         {connection?.mode === 'managed' && connection.status === 'error' && (
@@ -106,9 +116,46 @@ export const StatusBar: React.FC<StatusBarProps> = ({
             className="inline-flex items-center gap-1 rounded bg-slate-800 px-2 py-0.5 text-slate-200 hover:bg-slate-700"
           >
             <RefreshCw className="h-3 w-3" />
-            重启后端
+            {t('status.restartBackend')}
           </button>
         )}
+
+        {onOpenCommandPalette && (
+          <button
+            type="button"
+            data-testid="status-command-palette-button"
+            onClick={onOpenCommandPalette}
+            title={`${t('nav.commandPalette')} (Ctrl/Cmd+K)`}
+            aria-label={t('nav.commandPalette')}
+            className="inline-flex items-center gap-1 rounded border border-slate-800 bg-slate-900 px-2 py-0.5 text-slate-300 hover:bg-slate-800 hover:text-slate-100"
+          >
+            <Command className="h-3 w-3" />
+            <span className="font-mono text-[10px]">Ctrl+K</span>
+          </button>
+        )}
+
+        <button
+          type="button"
+          data-testid="status-theme-toggle"
+          onClick={toggleTheme}
+          title={t('status.toggleTheme')}
+          aria-label={t('status.toggleTheme')}
+          className="inline-flex items-center rounded border border-slate-800 bg-slate-900 p-1 text-slate-300 hover:bg-slate-800 hover:text-slate-100"
+        >
+          {theme === 'dark' ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
+        </button>
+
+        <button
+          type="button"
+          data-testid="status-language-toggle"
+          onClick={toggleLanguage}
+          title={t('status.toggleLanguage')}
+          aria-label={t('status.toggleLanguage')}
+          className="inline-flex items-center gap-1 rounded border border-slate-800 bg-slate-900 px-1.5 py-0.5 font-mono text-[10px] text-slate-300 hover:bg-slate-800 hover:text-slate-100"
+        >
+          <Languages className="h-3 w-3" />
+          <span>{language === 'zh-CN' ? '中' : 'EN'}</span>
+        </button>
       </div>
     </footer>
   );

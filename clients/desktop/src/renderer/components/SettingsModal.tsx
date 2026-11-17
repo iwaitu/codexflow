@@ -1,20 +1,26 @@
 import React, { useEffect, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { AlertTriangle, Trash2, X } from 'lucide-react';
+import { AlertTriangle, Download, RefreshCw, Trash2, X } from 'lucide-react';
 import type {
+  AppUpdateState,
   ExecutionBackendKind,
   ExecutionPermissionModeKind,
   PersistedPermissionRule,
 } from '@shared/ipc';
 import type { ExecutionSettings, ModelSettings, SystemStatusSummary } from '../lib/apiClient';
 import { isExecutionRiskIncreasing, isRelaxingPermission } from '../lib/executionPolicy';
+import { useI18n } from '../lib/i18n';
 import { parseModelSettingsInput } from '../lib/modelSettingsForm';
+import { usePreferencesStore } from '../stores/usePreferencesStore';
 import { MaxContextField } from './MaxContextField';
 
 export { isRelaxingPermission };
 
+export type SettingsTabKind = 'execution' | 'model' | 'rules' | 'preferences';
+
 interface SettingsModalProps {
   open: boolean;
+  initialTab?: SettingsTabKind;
   systemStatus: SystemStatusSummary | null;
   executionSettings: ExecutionSettings | null;
   modelSettings: ModelSettings | null;
@@ -25,6 +31,7 @@ interface SettingsModalProps {
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   open,
+  initialTab = 'execution',
   systemStatus,
   executionSettings,
   modelSettings,
@@ -32,7 +39,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onClose,
   onUpdated,
 }) => {
-  const [tab, setTab] = useState<'execution' | 'model' | 'rules'>('execution');
+  const { t } = useI18n();
+  const {
+    theme,
+    language,
+    notificationsEnabled,
+    notifyOnlyWhenUnfocused,
+    minimizeToTrayOnClose,
+    setTheme,
+    setLanguage,
+    setNotificationsEnabled,
+    setNotifyOnlyWhenUnfocused,
+    setMinimizeToTrayOnClose,
+  } = usePreferencesStore();
+  const [tab, setTab] = useState<SettingsTabKind>(initialTab);
+  const [updateState, setUpdateState] = useState<AppUpdateState | null>(null);
 
   const currentBackend = (executionSettings?.backend as ExecutionBackendKind) || 'Local';
   const currentMode = (executionSettings?.permissionMode as ExecutionPermissionModeKind) || 'Ask';
@@ -62,6 +83,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   useEffect(() => {
     if (!open) return;
+    setTab(initialTab);
     setBackend(currentBackend);
     setPermissionMode(currentMode);
     setApiUrl(modelSettings?.apiUrl ?? '');
@@ -74,7 +96,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setConfirmRelaxOpen(false);
     setNotice(null);
     setError(null);
-  }, [open, currentBackend, currentMode, modelSettings]);
+  }, [open, initialTab, currentBackend, currentMode, modelSettings]);
+
+  useEffect(() => {
+    if (!open || tab !== 'preferences') return;
+    let active = true;
+    void window.codexflow?.getUpdateState?.().then((state) => {
+      if (active && state) setUpdateState(state);
+    });
+    const unsubscribe = window.codexflow?.onUpdateStateChanged?.((state) => {
+      if (active) setUpdateState(state);
+    });
+    return () => {
+      active = false;
+      unsubscribe?.();
+    };
+  }, [open, tab]);
 
   const loadRules = async () => {
     if (!controlPlaneAvailable) return;
@@ -173,7 +210,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       const res = await window.codexflow.deletePermissionRule(id);
       if (res.ok) {
         setRules((prev) => prev.filter((r) => r.id !== id));
-        setNotice('规则已撤销。');
+        setNotice(t('settings.ruleRevoked'));
       } else {
         setError(res.errorMessage || `撤销规则失败 (${res.status})`);
       }
@@ -188,26 +225,31 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         <Dialog.Overlay className="fixed inset-0 z-40 bg-black/70 backdrop-blur-sm" />
         <Dialog.Content className="fixed left-1/2 top-1/2 z-50 max-h-[90vh] w-full max-w-2xl -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl">
           <div className="flex items-center justify-between">
-            <Dialog.Title className="text-base font-semibold text-slate-100">设置</Dialog.Title>
+            <Dialog.Title className="text-base font-semibold text-slate-100">{t('settings.title')}</Dialog.Title>
             <button
               type="button"
               onClick={onClose}
+              aria-label={t('settings.close')}
               className="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
             >
               <X className="h-4 w-4" />
             </button>
           </div>
 
-          <div className="mt-4 flex gap-2 border-b border-slate-800 pb-3 text-xs">
-            {[
-              ['execution', '执行与权限'],
-              ['model', '模型设置'],
-              ['rules', '始终允许规则'],
-            ].map(([key, label]) => (
+          <div className="mt-4 flex flex-wrap gap-2 border-b border-slate-800 pb-3 text-xs">
+            {(
+              [
+                ['execution', t('settings.tab.execution')],
+                ['model', t('settings.tab.model')],
+                ['rules', t('settings.tab.rules')],
+                ['preferences', t('settings.tab.preferences')],
+              ] as const
+            ).map(([key, label]) => (
               <button
                 key={key}
                 type="button"
-                onClick={() => setTab(key as 'execution' | 'model' | 'rules')}
+                data-testid={`settings-tab-${key}`}
+                onClick={() => setTab(key)}
                 className={`rounded-lg px-3 py-1.5 font-medium ${
                   tab === key ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
                 }`}
@@ -221,9 +263,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <form onSubmit={handleExecutionSubmit} className="mt-4 space-y-4 text-xs">
               <div className="grid grid-cols-2 gap-3">
                 <label className="block">
-                  <span className="mb-1 block text-slate-300">执行后端</span>
+                  <span className="mb-1 block text-slate-300">{t('settings.executionBackend')}</span>
                   <select
-                    aria-label="执行后端"
+                    aria-label={t('settings.executionBackend')}
                     value={backend}
                     onChange={(e) => setBackend(e.target.value as ExecutionBackendKind)}
                     className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
@@ -236,9 +278,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </label>
 
                 <label className="block">
-                  <span className="mb-1 block text-slate-300">权限模式</span>
+                  <span className="mb-1 block text-slate-300">{t('settings.permissionMode')}</span>
                   <select
-                    aria-label="权限模式"
+                    aria-label={t('settings.permissionMode')}
                     value={permissionMode}
                     onChange={(e) => setPermissionMode(e.target.value as ExecutionPermissionModeKind)}
                     className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
@@ -279,14 +321,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       onClick={() => void applyExecutionUpdate()}
                       className="rounded-lg bg-amber-600 px-3 py-1 font-medium text-white hover:bg-amber-500"
                     >
-                      确认放宽
+                      {t('settings.confirmRelaxButton')}
                     </button>
                     <button
                       type="button"
                       onClick={() => setConfirmRelaxOpen(false)}
                       className="rounded-lg border border-slate-700 px-3 py-1 text-slate-300 hover:bg-slate-800"
                     >
-                      取消
+                      {t('settings.cancel')}
                     </button>
                   </div>
                 </div>
@@ -301,7 +343,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   disabled={saving || !controlPlaneAvailable}
                   className="rounded-lg bg-indigo-600 px-4 py-1.5 font-medium text-white hover:bg-indigo-500 disabled:opacity-40"
                 >
-                  保存执行设置
+                  {t('settings.saveExecution')}
                 </button>
               </div>
             </form>
@@ -401,19 +443,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   disabled={saving || !controlPlaneAvailable}
                   className="rounded-lg bg-indigo-600 px-4 py-1.5 font-medium text-white hover:bg-indigo-500 disabled:opacity-40"
                 >
-                  保存模型设置
+                  {t('settings.saveModel')}
                 </button>
               </div>
             </form>
           )}
 
-              {tab === 'rules' && (
+          {tab === 'rules' && (
             <div className="mt-4 space-y-2 text-xs">
               {notice && <div className="text-emerald-300">{notice}</div>}
               {error && <div className="text-rose-300">{error}</div>}
               {rules.length === 0 ? (
                 <div className="rounded-lg border border-slate-800 bg-slate-950 p-4 text-center text-slate-400">
-                  暂无持久化的“始终允许”规则。
+                  {t('settings.noRules')}
                 </div>
               ) : (
                 <div className="max-h-64 space-y-2 overflow-y-auto">
@@ -435,7 +477,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         type="button"
                         onClick={() => void handleDeleteRule(r.id)}
                         className="rounded p-1.5 text-slate-400 hover:bg-rose-950 hover:text-rose-300"
-                        title="撤销规则"
+                        title={t('settings.revokeRule')}
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
@@ -443,6 +485,182 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   ))}
                 </div>
               )}
+            </div>
+          )}
+
+          {tab === 'preferences' && (
+            <div data-testid="settings-preferences-panel" className="mt-4 space-y-4 text-xs">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded-xl border border-slate-800 bg-slate-950 p-3">
+                  <div className="mb-2 font-medium text-slate-200">{t('settings.themeLabel')}</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      data-testid="theme-select-dark"
+                      onClick={() => setTheme('dark')}
+                      className={`rounded-lg border px-2.5 py-1.5 font-medium transition ${
+                        theme === 'dark'
+                          ? 'border-indigo-500 bg-indigo-600 text-white'
+                          : 'border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800'
+                      }`}
+                    >
+                      {t('settings.themeDark')}
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="theme-select-light"
+                      onClick={() => setTheme('light')}
+                      className={`rounded-lg border px-2.5 py-1.5 font-medium transition ${
+                        theme === 'light'
+                          ? 'border-indigo-500 bg-indigo-600 text-white'
+                          : 'border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800'
+                      }`}
+                    >
+                      {t('settings.themeLight')}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-slate-800 bg-slate-950 p-3">
+                  <div className="mb-2 font-medium text-slate-200">{t('settings.languageLabel')}</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      data-testid="lang-select-zh-CN"
+                      onClick={() => setLanguage('zh-CN')}
+                      className={`rounded-lg border px-2.5 py-1.5 font-medium transition ${
+                        language === 'zh-CN'
+                          ? 'border-indigo-500 bg-indigo-600 text-white'
+                          : 'border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800'
+                      }`}
+                    >
+                      {t('settings.languageZh')}
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="lang-select-en-US"
+                      onClick={() => setLanguage('en-US')}
+                      className={`rounded-lg border px-2.5 py-1.5 font-medium transition ${
+                        language === 'en-US'
+                          ? 'border-indigo-500 bg-indigo-600 text-white'
+                          : 'border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800'
+                      }`}
+                    >
+                      {t('settings.languageEn')}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-2.5 rounded-xl border border-slate-800 bg-slate-950 p-3.5">
+                <label className="flex cursor-pointer items-start justify-between gap-3">
+                  <div>
+                    <div className="font-medium text-slate-200">{t('settings.notificationsLabel')}</div>
+                    <div className="mt-0.5 text-[11px] text-slate-400">{t('settings.notificationsDesc')}</div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    data-testid="pref-notifications-toggle"
+                    checked={notificationsEnabled}
+                    onChange={(e) => setNotificationsEnabled(e.target.checked)}
+                    className="mt-1 h-4 w-4 rounded border-slate-700 accent-indigo-600"
+                  />
+                </label>
+
+                <label className="flex cursor-pointer items-start justify-between gap-3 border-t border-slate-800/80 pt-2.5">
+                  <div>
+                    <div className="font-medium text-slate-200">{t('settings.notifyUnfocusedLabel')}</div>
+                    <div className="mt-0.5 text-[11px] text-slate-400">{t('settings.notifyUnfocusedDesc')}</div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    data-testid="pref-notify-unfocused-toggle"
+                    disabled={!notificationsEnabled}
+                    checked={notifyOnlyWhenUnfocused}
+                    onChange={(e) => setNotifyOnlyWhenUnfocused(e.target.checked)}
+                    className="mt-1 h-4 w-4 rounded border-slate-700 accent-indigo-600 disabled:opacity-40"
+                  />
+                </label>
+
+                <label className="flex cursor-pointer items-start justify-between gap-3 border-t border-slate-800/80 pt-2.5">
+                  <div>
+                    <div className="font-medium text-slate-200">{t('settings.minimizeToTrayLabel')}</div>
+                    <div className="mt-0.5 text-[11px] text-slate-400">{t('settings.minimizeToTrayDesc')}</div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    data-testid="pref-minimize-tray-toggle"
+                    checked={minimizeToTrayOnClose}
+                    onChange={(e) => setMinimizeToTrayOnClose(e.target.checked)}
+                    className="mt-1 h-4 w-4 rounded border-slate-700 accent-indigo-600"
+                  />
+                </label>
+              </div>
+
+              <div className="rounded-xl border border-slate-800 bg-slate-950 p-3.5">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <div className="font-medium text-slate-200">{t('settings.updatesSection')}</div>
+                    <div className="mt-0.5 text-[11px] text-slate-400">
+                      {t('settings.currentVersion', {
+                        version: updateState?.currentVersion ?? systemStatus?.version ?? '0.1.5',
+                      })}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {updateState?.status === 'available' && updateState.availableVersion && (
+                      <button
+                        type="button"
+                        onClick={() => void window.codexflow?.downloadUpdate?.()}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 font-medium text-white hover:bg-indigo-500"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                        {t('settings.downloadUpdate', { version: updateState.availableVersion })}
+                      </button>
+                    )}
+                    {updateState?.status === 'downloaded' && updateState.availableVersion && (
+                      <button
+                        type="button"
+                        onClick={() => void window.codexflow?.quitAndInstall?.()}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 font-medium text-white hover:bg-emerald-500"
+                      >
+                        {t('settings.restartAndInstall', { version: updateState.availableVersion })}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      data-testid="check-updates-button"
+                      disabled={updateState?.status === 'checking' || updateState?.status === 'downloading'}
+                      onClick={() =>
+                        void window.codexflow?.checkForUpdates?.().then((state) => {
+                          if (state) setUpdateState(state);
+                        })
+                      }
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 font-medium text-slate-200 hover:bg-slate-800 disabled:opacity-40"
+                    >
+                      <RefreshCw className={`h-3.5 w-3.5 ${updateState?.status === 'checking' ? 'animate-spin' : ''}`} />
+                      {updateState?.status === 'checking'
+                        ? t('settings.checkingUpdates')
+                        : t('settings.checkUpdates')}
+                    </button>
+                  </div>
+                </div>
+                <div data-testid="update-status-message" className="mt-2 text-[11px] text-slate-400">
+                  {updateState?.status === 'available' && updateState.availableVersion
+                    ? t('settings.updateAvailable', { version: updateState.availableVersion })
+                    : updateState?.status === 'not-available'
+                      ? t('settings.updateNotAvailable')
+                      : updateState?.status === 'downloading'
+                        ? t('settings.downloadingUpdate', { progress: updateState.downloadProgress ?? 0 })
+                        : updateState?.status === 'downloaded' && updateState.availableVersion
+                          ? t('settings.updateDownloaded', { version: updateState.availableVersion })
+                          : updateState?.status === 'unavailable'
+                            ? t('settings.updateUnavailable')
+                            : updateState?.status === 'error'
+                              ? t('settings.updateError', { message: updateState.message ?? '' })
+                              : t('settings.updateIdle')}
+                </div>
+              </div>
             </div>
           )}
         </Dialog.Content>

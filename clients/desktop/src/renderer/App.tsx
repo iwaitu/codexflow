@@ -3,8 +3,9 @@ import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Cpu, FileDiff, FolderTree } from 'lucide-react';
 import { BusinessSkillsHub } from './components/business-skills/BusinessSkillsHub';
 import { ChatView } from './components/ChatView';
+import { CommandPaletteModal, type CommandPaletteItem } from './components/CommandPaletteModal';
 import { Composer, type WorkspaceAttachmentRequest } from './components/Composer';
-import { SettingsModal } from './components/SettingsModal';
+import { SettingsModal, type SettingsTabKind } from './components/SettingsModal';
 import { Sidebar } from './components/Sidebar';
 import { StatusBar } from './components/StatusBar';
 import { WelcomeWizardModal } from './components/WelcomeWizardModal';
@@ -15,16 +16,22 @@ import {
   type ChatAttachment,
   type PendingAttachment,
 } from './lib/attachments';
+import { useI18n } from './lib/i18n';
 import { SessionSseClient } from './lib/sseClient';
 import { useAppStore, type InspectorTab } from './stores/useAppStore';
+import { usePreferencesStore } from './stores/usePreferencesStore';
 
 export const App: React.FC = () => {
   const queryClient = useQueryClient();
+  const { t } = useI18n();
+  const { toggleTheme, toggleLanguage, syncHostPreferences } = usePreferencesStore();
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [creatingConversation, setCreatingConversation] = useState(false);
   const [primaryView, setPrimaryView] = useState<'chat' | 'business-skills'>('chat');
   const [expandedSessionIds, setExpandedSessionIds] = useState<string[]>([]);
   const [externalAttachment, setExternalAttachment] = useState<WorkspaceAttachmentRequest | null>(null);
+  const [isCommandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTabKind>('execution');
   const sseRef = useRef<SessionSseClient | null>(null);
   const prevRestartCount = useRef<number>(0);
   const wasTurnRunningRef = useRef(false);
@@ -86,6 +93,10 @@ export const App: React.FC = () => {
     setContextWindow,
     setJobs,
   } = useAppStore();
+
+  useEffect(() => {
+    syncHostPreferences();
+  }, [syncHostPreferences]);
 
   useEffect(() => {
     let active = true;
@@ -531,6 +542,237 @@ export const App: React.FC = () => {
   const controlPlaneAvailable =
     connection?.controlPlaneAvailable ?? systemStatusQuery.data?.controlPlaneAvailable ?? true;
 
+  const openSettingsTab = (tab: SettingsTabKind = 'execution') => {
+    setSettingsInitialTab(tab);
+    setSettingsOpen(true);
+  };
+
+  const commandActionsRef = useRef<{
+    newConversation: () => void;
+    newWorkspace: () => void;
+    openFolder: () => void;
+    openSettings: (tab?: SettingsTabKind) => void;
+    toggleInspector: (tab: InspectorTab) => void;
+    switchView: (view: 'chat' | 'business-skills') => void;
+  } | null>(null);
+
+  commandActionsRef.current = {
+    newConversation: () => void handleCreateConversation(),
+    newWorkspace: () => void handleCreateSession(),
+    openFolder: () => void handleOpenFolder(),
+    openSettings: (tab = 'execution') => openSettingsTab(tab),
+    toggleInspector: (tab) => {
+      setPrimaryView('chat');
+      toggleInspectorTab(tab);
+    },
+    switchView: (view) => setPrimaryView(view),
+  };
+
+  useEffect(() => {
+    const unsubscribe = window.codexflow?.onCommandAction?.((action) => {
+      const actions = commandActionsRef.current;
+      if (!actions) return;
+      switch (action) {
+        case 'new-conversation':
+          actions.newConversation();
+          return;
+        case 'new-workspace':
+          actions.newWorkspace();
+          return;
+        case 'open-folder':
+          actions.openFolder();
+          return;
+        case 'open-settings':
+          actions.openSettings('execution');
+          return;
+        case 'toggle-inspector-files':
+          actions.toggleInspector('files');
+          return;
+        case 'toggle-inspector-changes':
+          actions.toggleInspector('changes');
+          return;
+        case 'toggle-inspector-jobs':
+          actions.toggleInspector('jobs');
+          return;
+        case 'switch-view-chat':
+          actions.switchView('chat');
+          return;
+        case 'switch-view-skills':
+          actions.switchView('business-skills');
+          return;
+      }
+    });
+    return () => {
+      unsubscribe?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.isComposing) return;
+      const mod = event.ctrlKey || event.metaKey;
+      if (!mod) return;
+      const key = event.key.toLowerCase();
+      const actions = commandActionsRef.current;
+      if (!actions) return;
+
+      if (key === 'k' && !event.shiftKey && !event.altKey) {
+        event.preventDefault();
+        setCommandPaletteOpen((prev) => !prev);
+        return;
+      }
+      if (key === ',' && !event.shiftKey && !event.altKey) {
+        event.preventDefault();
+        actions.openSettings('execution');
+        return;
+      }
+      if (key === 'n' && !event.shiftKey && !event.altKey) {
+        event.preventDefault();
+        actions.newConversation();
+        return;
+      }
+      if (key === 'o' && !event.shiftKey && !event.altKey && controlPlaneAvailable) {
+        event.preventDefault();
+        actions.openFolder();
+        return;
+      }
+      if (event.shiftKey && !event.altKey && activeSessionId) {
+        if (key === 'f') {
+          event.preventDefault();
+          actions.toggleInspector('files');
+        } else if (key === 'g') {
+          event.preventDefault();
+          actions.toggleInspector('changes');
+        } else if (key === 'j') {
+          event.preventDefault();
+          actions.toggleInspector('jobs');
+        }
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [activeSessionId, controlPlaneAvailable]);
+
+  const commandPaletteItems = useMemo<CommandPaletteItem[]>(
+    () => [
+      {
+        id: 'new-conversation',
+        group: t('palette.group.workspace'),
+        label: t('palette.cmd.newConversation'),
+        keywords: 'new chat thread 新建对话 会话',
+        shortcut: 'Ctrl/Cmd+N',
+        disabled: !auth || !activeSessionId || isTurnRunning || creatingConversation,
+        onRun: () => void handleCreateConversation(),
+      },
+      {
+        id: 'new-workspace',
+        group: t('palette.group.workspace'),
+        label: t('palette.cmd.newWorkspace'),
+        keywords: 'new session workspace 新建工作区',
+        disabled: !auth,
+        onRun: () => void handleCreateSession(),
+      },
+      {
+        id: 'open-folder',
+        group: t('palette.group.workspace'),
+        label: t('palette.cmd.openFolder'),
+        keywords: 'open folder directory workspace 打开文件夹 目录',
+        shortcut: 'Ctrl/Cmd+O',
+        disabled: !controlPlaneAvailable,
+        onRun: () => void handleOpenFolder(),
+      },
+      {
+        id: 'view-chat',
+        group: t('palette.group.view'),
+        label: t('palette.cmd.viewChat'),
+        keywords: 'chat view workspace 对话 工作区',
+        onRun: () => setPrimaryView('chat'),
+      },
+      {
+        id: 'view-skills',
+        group: t('palette.group.view'),
+        label: t('palette.cmd.viewSkills'),
+        keywords: 'plugins skills hub 插件 技能',
+        onRun: () => setPrimaryView('business-skills'),
+      },
+      {
+        id: 'toggle-files',
+        group: t('palette.group.view'),
+        label: t('palette.cmd.toggleFiles'),
+        keywords: 'files tree inspector 文件树',
+        shortcut: 'Ctrl/Cmd+Shift+F',
+        disabled: !activeSessionId,
+        onRun: () => {
+          setPrimaryView('chat');
+          toggleInspectorTab('files');
+        },
+      },
+      {
+        id: 'toggle-changes',
+        group: t('palette.group.view'),
+        label: t('palette.cmd.toggleChanges'),
+        keywords: 'git diff changes 变更 差异',
+        shortcut: 'Ctrl/Cmd+Shift+G',
+        disabled: !activeSessionId,
+        onRun: () => {
+          setPrimaryView('chat');
+          toggleInspectorTab('changes');
+        },
+      },
+      {
+        id: 'toggle-jobs',
+        group: t('palette.group.view'),
+        label: t('palette.cmd.toggleJobs'),
+        keywords: 'background jobs 作业 任务',
+        shortcut: 'Ctrl/Cmd+Shift+J',
+        disabled: !activeSessionId,
+        onRun: () => {
+          setPrimaryView('chat');
+          toggleInspectorTab('jobs');
+        },
+      },
+      {
+        id: 'toggle-theme',
+        group: t('palette.group.preferences'),
+        label: t('palette.cmd.toggleTheme'),
+        keywords: 'theme dark light 主题 深色 浅色',
+        onRun: () => toggleTheme(),
+      },
+      {
+        id: 'toggle-language',
+        group: t('palette.group.preferences'),
+        label: t('palette.cmd.toggleLanguage'),
+        keywords: 'language i18n chinese english 语言 中文 英文',
+        onRun: () => toggleLanguage(),
+      },
+      {
+        id: 'open-settings',
+        group: t('palette.group.system'),
+        label: t('palette.cmd.openSettings'),
+        keywords: 'settings preferences 设置 配置',
+        shortcut: 'Ctrl/Cmd+,',
+        onRun: () => openSettingsTab('execution'),
+      },
+      {
+        id: 'check-updates',
+        group: t('palette.group.system'),
+        label: t('palette.cmd.checkUpdates'),
+        keywords: 'update version release 检查更新 版本',
+        onRun: () => openSettingsTab('preferences'),
+      },
+      {
+        id: 'restart-backend',
+        group: t('palette.group.system'),
+        label: t('palette.cmd.restartBackend'),
+        keywords: 'restart host backend 重启后端',
+        disabled: connection?.mode !== 'managed',
+        onRun: () => void window.codexflow.restartBackend(),
+      },
+    ],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [t, auth, activeSessionId, isTurnRunning, creatingConversation, controlPlaneAvailable, connection?.mode],
+  );
+
   return (
     <div className="flex h-screen w-screen flex-col bg-slate-950 text-slate-100">
       <div className="flex min-h-0 flex-1">
@@ -585,7 +827,7 @@ export const App: React.FC = () => {
             await apiClient.deleteConversation(auth, cid);
             void queryClient.invalidateQueries({ queryKey: ['conversations'] });
           }}
-          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenSettings={() => openSettingsTab('execution')}
           workspaceError={workspaceError}
         />
 
@@ -605,7 +847,7 @@ export const App: React.FC = () => {
               <div className="flex h-11 shrink-0 items-center justify-between border-b border-slate-800/80 bg-slate-950/60 px-4 text-xs">
                 <div className="flex min-w-0 items-center gap-2">
                   <span className="truncate font-medium text-slate-200">
-                    {activeWorkspaceSession?.name || '未选择工作区'}
+                    {activeWorkspaceSession?.name || t('workspace.unselected')}
                   </span>
                   {activeWorkspacePath && (
                     <span className="hidden truncate font-mono text-[11px] text-slate-500 md:inline" title={activeWorkspacePath}>
@@ -618,7 +860,7 @@ export const App: React.FC = () => {
                     type="button"
                     disabled={!activeSessionId}
                     onClick={() => toggleInspectorTab('files')}
-                    aria-label="工作区文件"
+                    aria-label={t('workspace.filesAria')}
                     className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium disabled:opacity-40 ${
                       isInspectorOpen && inspectorTab === 'files'
                         ? 'border-indigo-500/60 bg-indigo-500/20 text-indigo-200'
@@ -626,13 +868,13 @@ export const App: React.FC = () => {
                     }`}
                   >
                     <FolderTree className="h-3.5 w-3.5" />
-                    <span>文件</span>
+                    <span>{t('workspace.files')}</span>
                   </button>
                   <button
                     type="button"
                     disabled={!activeSessionId}
                     onClick={() => toggleInspectorTab('changes')}
-                    aria-label="代码变更"
+                    aria-label={t('workspace.changesAria')}
                     className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium disabled:opacity-40 ${
                       isInspectorOpen && inspectorTab === 'changes'
                         ? 'border-indigo-500/60 bg-indigo-500/20 text-indigo-200'
@@ -641,14 +883,15 @@ export const App: React.FC = () => {
                   >
                     <FileDiff className="h-3.5 w-3.5" />
                     <span>
-                      变更{changesQuery.data?.files?.length ? ` (${changesQuery.data.files.length})` : ''}
+                      {t('workspace.changes')}
+                      {changesQuery.data?.files?.length ? ` (${changesQuery.data.files.length})` : ''}
                     </span>
                   </button>
                   <button
                     type="button"
                     disabled={!activeSessionId}
                     onClick={() => toggleInspectorTab('jobs')}
-                    aria-label="后台作业"
+                    aria-label={t('workspace.jobsAria')}
                     className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium disabled:opacity-40 ${
                       isInspectorOpen && inspectorTab === 'jobs'
                         ? 'border-indigo-500/60 bg-indigo-500/20 text-indigo-200'
@@ -656,7 +899,10 @@ export const App: React.FC = () => {
                     }`}
                   >
                     <Cpu className="h-3.5 w-3.5" />
-                    <span>作业{jobs.length > 0 ? ` (${jobs.length})` : ''}</span>
+                    <span>
+                      {t('workspace.jobs')}
+                      {jobs.length > 0 ? ` (${jobs.length})` : ''}
+                    </span>
                   </button>
                 </div>
               </div>
@@ -737,7 +983,8 @@ export const App: React.FC = () => {
         sseState={sseState}
         systemStatus={systemStatusQuery.data ?? null}
         contextWindow={contextWindow}
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenSettings={() => openSettingsTab('execution')}
+        onOpenCommandPalette={() => setCommandPaletteOpen(true)}
         onRestartBackend={() => void window.codexflow.restartBackend()}
       />
 
@@ -752,12 +999,19 @@ export const App: React.FC = () => {
 
       <SettingsModal
         open={isSettingsOpen}
+        initialTab={settingsInitialTab}
         systemStatus={systemStatusQuery.data ?? null}
         executionSettings={executionSettingsQuery.data ?? null}
         modelSettings={modelSettingsQuery.data ?? null}
         controlPlaneAvailable={controlPlaneAvailable}
         onClose={() => setSettingsOpen(false)}
         onUpdated={refreshMetadata}
+      />
+
+      <CommandPaletteModal
+        open={isCommandPaletteOpen}
+        commands={commandPaletteItems}
+        onOpenChange={setCommandPaletteOpen}
       />
     </div>
   );

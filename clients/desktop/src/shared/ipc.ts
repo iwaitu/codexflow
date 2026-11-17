@@ -219,6 +219,50 @@ export type BusinessApprovalRequestDto = components['schemas']['BusinessApproval
 
 export type CredentialSlotKind = 'document' | 'execution';
 
+export type DesktopTheme = 'dark' | 'light';
+export type DesktopLanguage = 'zh-CN' | 'en-US';
+
+export interface DesktopPreferencesPayload {
+  theme?: DesktopTheme;
+  language?: DesktopLanguage;
+  minimizeToTrayOnClose?: boolean;
+}
+
+export interface DesktopNotificationPayload {
+  title: string;
+  body: string;
+  onlyWhenUnfocused?: boolean;
+}
+
+export type DesktopCommandAction =
+  | 'new-conversation'
+  | 'new-workspace'
+  | 'open-folder'
+  | 'open-settings'
+  | 'toggle-inspector-files'
+  | 'toggle-inspector-changes'
+  | 'toggle-inspector-jobs'
+  | 'switch-view-chat'
+  | 'switch-view-skills';
+
+export type AppUpdateStatus =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'not-available'
+  | 'downloading'
+  | 'downloaded'
+  | 'unavailable'
+  | 'error';
+
+export interface AppUpdateState {
+  status: AppUpdateStatus;
+  currentVersion: string;
+  availableVersion: string | null;
+  downloadProgress: number | null;
+  message: string | null;
+}
+
 export interface DesktopBridge {
   getBackendConnection(): Promise<BackendConnectionPublicInfo>;
   onBackendConnectionChanged(listener: (info: BackendConnectionPublicInfo) => void): () => void;
@@ -281,7 +325,14 @@ export interface DesktopBridge {
   switchToManaged(): Promise<BackendConnectionPublicInfo>;
   restartBackend(): Promise<BackendConnectionPublicInfo>;
   openExternal(url: string): Promise<boolean>;
-  showNotification(payload: { title: string; body: string }): Promise<void>;
+  showNotification(payload: DesktopNotificationPayload): Promise<void>;
+  setDesktopPreferences(payload: DesktopPreferencesPayload): Promise<void>;
+  onCommandAction(listener: (action: DesktopCommandAction) => void): () => void;
+  getUpdateState(): Promise<AppUpdateState>;
+  onUpdateStateChanged(listener: (state: AppUpdateState) => void): () => void;
+  checkForUpdates(): Promise<AppUpdateState>;
+  downloadUpdate(): Promise<AppUpdateState>;
+  quitAndInstall(): Promise<boolean>;
 }
 
 export const IPC_CHANNELS = {
@@ -318,4 +369,11 @@ export const IPC_CHANNELS = {
   restartBackend: 'codexflow:restart-backend',
   openExternal: 'codexflow:open-external',
   showNotification: 'codexflow:show-notification',
+  setDesktopPreferences: 'codexflow:set-desktop-preferences',
+  commandAction: 'codexflow:command-action',
+  getUpdateState: 'codexflow:get-update-state',
+  updateStateChanged: 'codexflow:update-state-changed',
+  checkForUpdates: 'codexflow:check-for-updates',
+  downloadUpdate: 'codexflow:download-update',
+  quitAndInstall: 'codexflow:quit-and-install',
 } as const;

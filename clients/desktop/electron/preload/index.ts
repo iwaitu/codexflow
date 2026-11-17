@@ -1,12 +1,16 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import {
   IPC_CHANNELS,
+  type AppUpdateState,
   type BackendConnectionPublicInfo,
   type BusinessSkillRetentionPruneRequest,
   type ConnectStandalonePayload,
   type CreateBusinessPluginRequest,
   type CredentialSlotKind,
   type DesktopBridge,
+  type DesktopCommandAction,
+  type DesktopNotificationPayload,
+  type DesktopPreferencesPayload,
   type DroppedFileClassifyInput,
   type GenerateSkillCandidateRequest,
   type OpenLocalWorkspacePayload,
@@ -96,8 +100,32 @@ const api: DesktopBridge = {
   switchToManaged: () => ipcRenderer.invoke(IPC_CHANNELS.switchToManaged),
   restartBackend: () => ipcRenderer.invoke(IPC_CHANNELS.restartBackend),
   openExternal: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.openExternal, url),
-  showNotification: (payload: { title: string; body: string }) =>
+  showNotification: (payload: DesktopNotificationPayload) =>
     ipcRenderer.invoke(IPC_CHANNELS.showNotification, payload),
+  setDesktopPreferences: (payload: DesktopPreferencesPayload) =>
+    ipcRenderer.invoke(IPC_CHANNELS.setDesktopPreferences, payload),
+  onCommandAction: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, action: DesktopCommandAction) => {
+      listener(action);
+    };
+    ipcRenderer.on(IPC_CHANNELS.commandAction, handler);
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.commandAction, handler);
+    };
+  },
+  getUpdateState: () => ipcRenderer.invoke(IPC_CHANNELS.getUpdateState),
+  onUpdateStateChanged: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, state: AppUpdateState) => {
+      listener(state);
+    };
+    ipcRenderer.on(IPC_CHANNELS.updateStateChanged, handler);
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.updateStateChanged, handler);
+    };
+  },
+  checkForUpdates: () => ipcRenderer.invoke(IPC_CHANNELS.checkForUpdates),
+  downloadUpdate: () => ipcRenderer.invoke(IPC_CHANNELS.downloadUpdate),
+  quitAndInstall: () => ipcRenderer.invoke(IPC_CHANNELS.quitAndInstall),
 };
 
 contextBridge.exposeInMainWorld('codexflow', api);

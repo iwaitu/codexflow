@@ -3,10 +3,16 @@ import { existsSync, lstatSync, realpathSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 import {
   IPC_CHANNELS,
+  type AppUpdateState,
   type ClassifiedDroppedFile,
   type ConnectStandalonePayload,
   type CreateBusinessPluginRequest,
   type CredentialSlotKind,
+  type DesktopCommandAction,
+  type DesktopLanguage,
+  type DesktopNotificationPayload,
+  type DesktopPreferencesPayload,
+  type DesktopTheme,
   type DroppedFileClassifyInput,
   type GenerateSkillCandidateRequest,
   type OpenLocalWorkspacePayload,
@@ -32,6 +38,8 @@ import {
   registerAppSchemePrivileges,
 } from './protocol';
 import { isTrustedRendererOrigin, validateIpcCaller } from './securityUtils';
+import { TrayManager } from './trayManager';
+import { UpdaterManager } from './updaterManager';
 
 registerAppSchemePrivileges();
 
@@ -39,6 +47,18 @@ const isDev = Boolean(process.env.ELECTRON_RENDERER_URL);
 let mainWindow: BrowserWindow | null = null;
 let backendManager: BackendManager | null = null;
 let gatewayProxy: LocalBackendProxy | null = null;
+let trayManager: TrayManager | null = null;
+let updaterManager: UpdaterManager | null = null;
+let isQuitting = false;
+const desktopPreferences: {
+  theme: DesktopTheme;
+  language: DesktopLanguage;
+  minimizeToTrayOnClose: boolean;
+} = {
+  theme: 'dark',
+  language: 'zh-CN',
+  minimizeToTrayOnClose: false,
+};
 
 function getAllowedRendererOrigins(): Set<string> {
   const allowed = new Set<string>([APP_ORIGIN]);
@@ -82,7 +102,44 @@ async function openSafeExternalUrl(rawUrl: string): Promise<boolean> {
   }
 }
 
+function resolveAppIconPath(): string | undefined {
+  const candidates = [
+    resolve(__dirname, '../renderer/icon.png'),
+    resolve(process.resourcesPath, 'icon.png'),
+    resolve(__dirname, '../../build/icon.png'),
+  ];
+  return candidates.find((p) => existsSync(p));
+}
+
+function restoreMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    mainWindow = createMainWindow();
+    return;
+  }
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+  mainWindow.show();
+  mainWindow.focus();
+  trayManager?.refreshMenu();
+}
+
+function dispatchCommandAction(action: DesktopCommandAction): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  mainWindow.webContents.send(IPC_CHANNELS.commandAction, action);
+}
+
+function broadcastUpdateState(state: AppUpdateState): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  mainWindow.webContents.send(IPC_CHANNELS.updateStateChanged, state);
+}
+
 function broadcastConnectionChange(): void {
+  trayManager?.refreshMenu();
   if (!backendManager || !mainWindow || mainWindow.isDestroyed()) {
     return;
   }
@@ -90,7 +147,7 @@ function broadcastConnectionChange(): void {
 }
 
 function createMainWindow(): BrowserWindow {
-  const windowIconPath = resolve(__dirname, '../renderer/icon.png');
+  const windowIconPath = resolveAppIconPath();
   const win = new BrowserWindow({
     width: 1380,
     height: 900,
@@ -98,8 +155,8 @@ function createMainWindow(): BrowserWindow {
     minHeight: 680,
     show: false,
     title: 'CodexFlow Desktop',
-    ...(existsSync(windowIconPath) ? { icon: windowIconPath } : {}),
-    backgroundColor: '#0b0f17',
+    ...(windowIconPath ? { icon: windowIconPath } : {}),
+    backgroundColor: desktopPreferences.theme === 'light' ? '#f8fafc' : '#0b0f17',
     webPreferences: {
       preload: join(__dirname, '../preload/index.cjs'),
       contextIsolation: true,
@@ -130,6 +187,23 @@ function createMainWindow(): BrowserWindow {
 
   win.once('ready-to-show', () => {
     win.show();
+    trayManager?.refreshMenu();
+  });
+
+  win.on('show', () => {
+    trayManager?.refreshMenu();
+  });
+
+  win.on('hide', () => {
+    trayManager?.refreshMenu();
+  });
+
+  win.on('close', (event) => {
+    if (!isQuitting && desktopPreferences.minimizeToTrayOnClose) {
+      event.preventDefault();
+      win.hide();
+      trayManager?.refreshMenu();
+    }
   });
 
   if (isDev && process.env.ELECTRON_RENDERER_URL) {
@@ -502,11 +576,90 @@ function registerIpcHandlers(manager: BackendManager): void {
     return openSafeExternalUrl(rawUrl);
   });
 
-  ipcMain.handle(IPC_CHANNELS.showNotification, (event, payload: { title: string; body: string }) => {
+  ipcMain.handle(IPC_CHANNELS.showNotification, (event, payload: DesktopNotificationPayload) => {
     assertTrustedIpcSender(event);
-    if (Notification.isSupported()) {
-      new Notification({ title: payload.title, body: payload.body }).show();
+    if (
+      payload.onlyWhenUnfocused &&
+      mainWindow &&
+      !mainWindow.isDestroyed() &&
+      mainWindow.isFocused() &&
+      mainWindow.isVisible()
+    ) {
+      return;
     }
+    if (Notification.isSupported()) {
+      const iconPath = resolveAppIconPath();
+      const notification = new Notification({
+        title: payload.title,
+        body: payload.body,
+        ...(iconPath ? { icon: iconPath } : {}),
+      });
+      notification.on('click', () => {
+        restoreMainWindow();
+      });
+      notification.show();
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.setDesktopPreferences, (event, payload: DesktopPreferencesPayload) => {
+    assertTrustedIpcSender(event);
+    if (payload.theme === 'dark' || payload.theme === 'light') {
+      desktopPreferences.theme = payload.theme;
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.setBackgroundColor(payload.theme === 'light' ? '#f8fafc' : '#0b0f17');
+      }
+    }
+    if (payload.language === 'zh-CN' || payload.language === 'en-US') {
+      desktopPreferences.language = payload.language;
+    }
+    if (typeof payload.minimizeToTrayOnClose === 'boolean') {
+      desktopPreferences.minimizeToTrayOnClose = payload.minimizeToTrayOnClose;
+    }
+    trayManager?.refreshMenu();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.getUpdateState, (event) => {
+    assertTrustedIpcSender(event);
+    return (
+      updaterManager?.getState() ?? {
+        status: 'unavailable',
+        currentVersion: app.getVersion(),
+        availableVersion: null,
+        downloadProgress: null,
+        message: null,
+      }
+    );
+  });
+
+  ipcMain.handle(IPC_CHANNELS.checkForUpdates, (event) => {
+    assertTrustedIpcSender(event);
+    return updaterManager
+      ? updaterManager.checkForUpdates()
+      : Promise.resolve({
+          status: 'unavailable' as const,
+          currentVersion: app.getVersion(),
+          availableVersion: null,
+          downloadProgress: null,
+          message: null,
+        });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.downloadUpdate, (event) => {
+    assertTrustedIpcSender(event);
+    return updaterManager
+      ? updaterManager.downloadUpdate()
+      : Promise.resolve({
+          status: 'unavailable' as const,
+          currentVersion: app.getVersion(),
+          availableVersion: null,
+          downloadProgress: null,
+          message: null,
+        });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.quitAndInstall, (event) => {
+    assertTrustedIpcSender(event);
+    return updaterManager?.quitAndInstall() ?? false;
   });
 }
 
@@ -515,10 +668,7 @@ if (!singleInstanceLock) {
   app.quit();
 } else {
   app.on('second-instance', () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.focus();
-    }
+    restoreMainWindow();
   });
 
   void app.whenReady().then(async () => {
@@ -545,6 +695,16 @@ if (!singleInstanceLock) {
       onChange: () => broadcastConnectionChange(),
     });
 
+    updaterManager = new UpdaterManager({
+      currentVersion: app.getVersion(),
+      isPackaged: app.isPackaged,
+      onStateChange: (state) => broadcastUpdateState(state),
+      onPrepareInstall: () => {
+        isQuitting = true;
+        trayManager?.dispose();
+      },
+    });
+
     gatewayProxy = new LocalBackendProxy(
       () => backendManager?.getUpstreamState() ?? { targetBaseUrl: null, expectedAccessToken: null, controlToken: null },
       getAllowedRendererOrigins(),
@@ -557,15 +717,43 @@ if (!singleInstanceLock) {
     mainWindow = createMainWindow();
     mainWindow.on('closed', () => {
       mainWindow = null;
+      trayManager?.refreshMenu();
     });
+
+    try {
+      trayManager = new TrayManager({
+        iconPaths: [
+          resolve(__dirname, '../renderer/icon.png'),
+          resolve(process.resourcesPath, 'icon.png'),
+          resolve(__dirname, '../../build/icon.png'),
+          resolve(__dirname, '../../build/icon.ico'),
+        ],
+        getLanguage: () => desktopPreferences.language,
+        getConnectionStatus: () => backendManager?.getPublicInfo().status ?? 'starting',
+        isWindowVisible: () => Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()),
+        onShowWindow: () => restoreMainWindow(),
+        onHideWindow: () => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.hide();
+            trayManager?.refreshMenu();
+          }
+        },
+        onDispatchCommand: (action) => dispatchCommandAction(action),
+        onQuit: () => {
+          isQuitting = true;
+          app.quit();
+        },
+      });
+      trayManager.initialize();
+    } catch {
+      trayManager = null;
+    }
 
     // Launch managed backend without blocking initial window paint.
     void backendManager.startManaged();
 
     app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) {
-        mainWindow = createMainWindow();
-      }
+      restoreMainWindow();
     });
   });
 
@@ -577,6 +765,8 @@ if (!singleInstanceLock) {
 
   let isDisposing = false;
   app.on('before-quit', (event) => {
+    isQuitting = true;
+    trayManager?.dispose();
     if ((backendManager || gatewayProxy) && !isDisposing) {
       isDisposing = true;
       event.preventDefault();

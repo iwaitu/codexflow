@@ -1,6 +1,6 @@
 {
   "name": "codexflow-desktop",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "description": "CodexFlow Electron desktop client MVP",
   "main": "./out/main/index.js",
@@ -31,6 +31,7 @@
     "@tanstack/react-query": "^5.81.2",
     "@tanstack/react-virtual": "^3.13.12",
     "clsx": "^2.1.1",
+    "electron-updater": "^6.8.11",
     "lucide-react": "^0.515.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

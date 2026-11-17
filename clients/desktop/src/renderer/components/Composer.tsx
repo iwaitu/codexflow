@@ -6,6 +6,7 @@ import {
   MAX_ATTACHMENTS_PER_MESSAGE,
   type PendingAttachment,
 } from '../lib/attachments';
+import { useI18n } from '../lib/i18n';
 import type { ConversationMode } from '../stores/useAppStore';
 
 export interface WorkspaceAttachmentRequest {
@@ -38,6 +39,7 @@ export const Composer: React.FC<ComposerProps> = ({
   onSend,
   onCancel,
 }) => {
+  const { t } = useI18n();
   const [text, setText] = useState('');
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
@@ -306,8 +308,8 @@ export const Composer: React.FC<ComposerProps> = ({
           }}
           placeholder={
             disabled
-              ? '等待后端连接就绪...'
-              : '输入指令或问题（支持拖拽本地文件到此处，Enter 发送，Shift+Enter 换行）...'
+              ? '...'
+              : t('composer.placeholder')
           }
           className="w-full resize-none bg-transparent px-2 py-1 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none disabled:opacity-50"
         />
@@ -360,7 +362,7 @@ export const Composer: React.FC<ComposerProps> = ({
                 className="inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-rose-500"
               >
                 <Square className="h-3.5 w-3.5 fill-current" />
-                停止
+                {t('composer.stop')}
               </button>
             ) : (
               <button
@@ -370,7 +372,7 @@ export const Composer: React.FC<ComposerProps> = ({
                 className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-40"
               >
                 <Send className="h-3.5 w-3.5" />
-                {sending ? '发送中...' : '发送'}
+                {sending ? '...' : t('composer.send')}
               </button>
             )}
           </div>

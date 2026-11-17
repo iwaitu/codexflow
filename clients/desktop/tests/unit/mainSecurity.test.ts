@@ -11,6 +11,7 @@ import {
   resolveSafeAppPath,
   validateIpcCaller,
 } from '../../electron/main/securityUtils';
+import { UpdaterManager } from '../../electron/main/updaterManager';
 
 describe('Main-process security boundaries & lifecycle (B1, B3, B4, R3)', () => {
   it('B1: BackendManager blocks control.token in access slots and never leaks controlToken in public info', async () => {
@@ -298,5 +299,18 @@ describe('Main-process security boundaries & lifecycle (B1, B3, B4, R3)', () => 
     );
     expect(devEnvOverride.ASPNETCORE_ENVIRONMENT).toBe('Production');
     expect(devEnvOverride.DOTNET_ENVIRONMENT).toBe('Production');
+  });
+
+  it('UpdaterManager safely degrades in unpackaged mode without throwing', async () => {
+    const manager = new UpdaterManager({
+      currentVersion: '0.1.5',
+      isPackaged: false,
+      onStateChange: vi.fn(),
+      onPrepareInstall: vi.fn(),
+    });
+    expect(manager.getState().status).toBe('unavailable');
+    const checked = await manager.checkForUpdates();
+    expect(checked.status).toBe('unavailable');
+    expect(manager.quitAndInstall()).toBe(false);
   });
 });

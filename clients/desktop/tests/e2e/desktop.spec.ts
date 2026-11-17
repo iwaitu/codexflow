@@ -185,6 +185,23 @@ test('Electron MVP cold start, security isolation, permission rule revoke, appro
     await page.getByRole('button', { name: '展开 默认工作区' }).click();
     await expect(page.getByText('会话标题已总结').first()).toBeVisible({ timeout: 5_000 });
 
+    // 9. P5 Enhancements: Command Palette (Ctrl+K), Theme Toggle, and Language Switch
+    await page.keyboard.press('Control+k');
+    await expect(page.getByTestId('command-palette-modal')).toBeVisible({ timeout: 5_000 });
+    await page.getByTestId('command-palette-input').fill('主题');
+    await page.getByTestId('command-item-toggle-theme').click();
+    await expect(page.locator('html')).toHaveClass(/light/);
+
+    await page.getByTestId('status-language-toggle').click();
+    await expect(page.locator('html')).toHaveAttribute('lang', 'en-US');
+    await expect(page.getByRole('button', { name: 'Plugins & Skills' })).toBeVisible();
+
+    // Switch back to dark & zh-CN before exit
+    await page.getByTestId('status-language-toggle').click();
+    await page.getByTestId('status-theme-toggle').click();
+    await expect(page.locator('html')).toHaveClass(/dark/);
+    await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN');
+
     expect(cspErrors).toEqual([]);
     expect(pageErrors).toEqual([]);
   } finally {
