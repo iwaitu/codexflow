@@ -6,7 +6,7 @@ English | [简体中文](README.zh-CN.md)
 
 CodexFlow brings conversations, planning, tool approvals, workspace files, changes, and jobs into one Electron application. A .NET host runs locally, persists state in SQLite, and connects to your configured model endpoint. You can work against a local folder, review a proposed plan, approve execution, and inspect the result without switching between separate API scripts.
 
-The first-generation desktop application is implemented. The source version is **0.1.4**; this repository contains the desktop client, local host, reusable .NET libraries, and test tooling.
+The first-generation desktop application is implemented. The source version is **0.1.5**; this repository contains the desktop client, local host, reusable .NET libraries, and test tooling.
 
 ![CodexFlow Desktop workspace](docs/images/desktop-workspace.jpg)
 
@@ -143,6 +143,8 @@ The **Plugins & Skill** area provides three views: **My plugins**, **My Skills**
 5. **Publish a version:** publish the reviewed Skill and access it from My Skills.
 
 The implementation separates document and execution credential slots and exposes human-controlled risk classification and write-operation approvals. Connections, credentials, model access, and a usable capability catalog are prerequisites for a real workflow; an empty catalog, as shown above, is a fresh starting state.
+
+Business plugin credential persistence currently uses Windows DPAPI. Linux and macOS reject credential persistence until a native secure store is implemented; enabling the feature does not remove that platform limitation.
 
 ## Configuration and data
 

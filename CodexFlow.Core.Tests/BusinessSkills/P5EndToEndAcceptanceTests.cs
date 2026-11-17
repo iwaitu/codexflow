@@ -168,13 +168,17 @@ public sealed class P5EndToEndAcceptanceTests : IDisposable
                 new EndpointPolicyDto { AllowedOrigin = OutboundTargetPolicyGuard.GetOriginString(erpUri), AllowPlainHttpForIntranet = true })))
                 .Content.ReadFromJsonAsync<BusinessPluginDto>();
 
-            await control.PutAsJsonAsync($"/api/plugins/{plugin!.Id}/credentials/document",
+            var documentCredentialResponse = await control.PutAsJsonAsync($"/api/plugins/{plugin!.Id}/credentials/document",
                 new SetPluginCredentialRequest(BusinessAuthKind.Bearer, $$"""{"token":"{{docSecret}}"}"""));
-            await control.PutAsJsonAsync($"/api/plugins/{plugin.Id}/credentials/execution",
+            documentCredentialResponse.EnsureSuccessStatusCode();
+            var executionCredentialResponse = await control.PutAsJsonAsync($"/api/plugins/{plugin.Id}/credentials/execution",
                 new SetPluginCredentialRequest(BusinessAuthKind.ApiKey, $$"""{"headerName":"X-API-Key","apiKey":"{{execSecret}}"}"""));
+            executionCredentialResponse.EnsureSuccessStatusCode();
 
-            var disc = await (await control.PostAsJsonAsync($"/api/plugins/{plugin.Id}/discover", new DiscoverPluginRequest("p5-inj-disc")))
-                .Content.ReadFromJsonAsync<DiscoverPluginResultDto>();
+            var discoveryResponse = await control.PostAsJsonAsync($"/api/plugins/{plugin.Id}/discover", new DiscoverPluginRequest("p5-inj-disc"));
+            discoveryResponse.EnsureSuccessStatusCode();
+            var disc = await discoveryResponse.Content.ReadFromJsonAsync<DiscoverPluginResultDto>();
+            Assert.NotNull(disc?.Snapshot);
             var listCustomersId = $"{plugin.Id}:GET:/api/customers";
 
             await control.PutAsJsonAsync($"/api/plugins/{plugin.Id}/capabilities/risk",
@@ -881,7 +885,7 @@ public sealed class P5EndToEndAcceptanceTests : IDisposable
         }
 
         var guard = new OutboundTargetPolicyGuard();
-        var credStore = new DpapiBusinessCredentialStore(Path.Combine(credDir, "business-plugins"));
+        var credStore = new InMemoryBusinessCredentialStore();
 
         builder.Services.AddControllers().AddApplicationPart(typeof(BusinessPluginsController).Assembly);
         builder.Services.AddSingleton(creds);

@@ -189,12 +189,15 @@ public sealed class P3SkillRunAndApprovalTests : IDisposable
             var plugin = await createPluginResp.Content.ReadFromJsonAsync<BusinessPluginDto>();
             Assert.NotNull(plugin);
 
-            await control.PutAsJsonAsync($"/api/plugins/{plugin!.Id}/credentials/execution", new SetPluginCredentialRequest(
+            var credentialResponse = await control.PutAsJsonAsync($"/api/plugins/{plugin!.Id}/credentials/execution", new SetPluginCredentialRequest(
                 BusinessAuthKind.Bearer,
                 """{"token":"p3-secret-token"}"""));
+            credentialResponse.EnsureSuccessStatusCode();
 
             var discResp = await control.PostAsJsonAsync($"/api/plugins/{plugin.Id}/discover", new DiscoverPluginRequest("p3-disc-1"));
+            discResp.EnsureSuccessStatusCode();
             var disc = await discResp.Content.ReadFromJsonAsync<DiscoverPluginResultDto>();
+            Assert.NotNull(disc?.Snapshot);
             var listInvId = $"{plugin.Id}:GET:/api/invoices";
             var createTaskId = $"{plugin.Id}:POST:/api/collection-tasks";
 
@@ -711,7 +714,7 @@ public sealed class P3SkillRunAndApprovalTests : IDisposable
         builder.Logging.ClearProviders();
 
         var guard = new OutboundTargetPolicyGuard();
-        var credStore = new DpapiBusinessCredentialStore(Path.Combine(credDir, "business-plugins"));
+        var credStore = new InMemoryBusinessCredentialStore();
 
         builder.Services.AddControllers().AddApplicationPart(typeof(BusinessPluginsController).Assembly);
         builder.Services.AddSingleton(creds);
