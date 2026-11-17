@@ -20,6 +20,7 @@ using CodexFlow.Core.Services;
 using CodexFlow.Local;
 using CodexFlow.Orchestration.Hosting;
 using CodexFlow.Orchestration.Jobs;
+using CodexFlow.Orchestration.Services;
 using CodexFlow.Storage.Sqlite;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -139,6 +140,190 @@ public sealed class P3ApiAndWorkspaceAdmissionTests : IDisposable
         Assert.DoesNotContain("sk-super-secret", rawJson, StringComparison.Ordinal);
         var fetched = await getResp.Content.ReadFromJsonAsync<ModelSettingsDto>();
         Assert.Equal("9876", fetched!.ApiKeyLast4);
+    }
+
+    [Fact]
+    public async Task ModelSettings_UpdatingMaxTokensLength_HotUpdatesContextWindowWithoutRestart()
+    {
+        var globalSettings = Path.Combine(_root, "global-hot", "appsettings.json");
+        var contextOptions = new ContextCompressionTriggerOptions { ModelMaxContextTokens = 128000 };
+        await using var host = await P3TestHost.StartAsync(
+            _root,
+            globalSettings,
+            ExecutionBackend.Local,
+            ExecutionPermissionMode.Ask,
+            configureServices: (services, _) => services.AddSingleton(contextOptions));
+
+        using var normalClient = host.CreateNormalClient();
+        using var controlClient = host.CreateControlClient();
+
+        var bootstrapResp = await normalClient.PostAsJsonAsync("/api/gateway/session/bootstrap", new { });
+        bootstrapResp.EnsureSuccessStatusCode();
+        using var bootstrapJson = System.Text.Json.JsonDocument.Parse(await bootstrapResp.Content.ReadAsStringAsync());
+        var sessionId = bootstrapJson.RootElement.GetProperty("sessionId").GetString()!;
+
+        var firstPut = await controlClient.PutAsJsonAsync("/api/settings/model", new UpdateModelSettingsRequest(
+            MaxTokensLength: 64000));
+        Assert.Equal(HttpStatusCode.OK, firstPut.StatusCode);
+
+        using (var cw1 = System.Text.Json.JsonDocument.Parse(
+            await normalClient.GetStringAsync($"/api/gateway/session/{sessionId}/context-window")))
+        {
+            Assert.Equal(64000, cw1.RootElement.GetProperty("modelMaxTokens").GetInt32());
+        }
+
+        var secondPut = await controlClient.PutAsJsonAsync("/api/settings/model", new UpdateModelSettingsRequest(
+            MaxTokensLength: 131072));
+        Assert.Equal(HttpStatusCode.OK, secondPut.StatusCode);
+
+        using (var cw2 = System.Text.Json.JsonDocument.Parse(
+            await normalClient.GetStringAsync($"/api/gateway/session/{sessionId}/context-window")))
+        {
+            Assert.Equal(131072, cw2.RootElement.GetProperty("modelMaxTokens").GetInt32());
+        }
+    }
+
+    [Fact]
+    public async Task ContextWindowSnapshot_UsesLastReportedModelTokensPlusDelta_AndResetsOnCompression()
+    {
+        var globalSettings = Path.Combine(_root, "global-cw", "appsettings.json");
+        await using var host = await P3TestHost.StartAsync(
+            _root,
+            globalSettings,
+            ExecutionBackend.Local,
+            ExecutionPermissionMode.Ask);
+
+        using var normalClient = host.CreateNormalClient();
+        var bootstrapResp = await normalClient.PostAsJsonAsync("/api/gateway/session/bootstrap", new { });
+        bootstrapResp.EnsureSuccessStatusCode();
+        using var bootstrapJson = System.Text.Json.JsonDocument.Parse(await bootstrapResp.Content.ReadAsStringAsync());
+        var sessionId = bootstrapJson.RootElement.GetProperty("sessionId").GetString()!;
+
+        using (var scope = host.Services.CreateAsyncScope())
+        {
+            var sessionManager = scope.ServiceProvider.GetRequiredService<CodexSessionManager>();
+            await sessionManager.RecordMessagesAsync(sessionId, ("user", "你好"), ("assistant", "你好，请问有什么需要帮忙？"));
+            await sessionManager.RecordRuntimeUsageAsync(sessionId, 6590, 458, CancellationToken.None, cachedPromptTokens: 3200, lastContextTokens: 7048);
+        }
+
+        using (var cw1 = System.Text.Json.JsonDocument.Parse(
+            await normalClient.GetStringAsync($"/api/gateway/session/{sessionId}/context-window")))
+        {
+            Assert.Equal(7048, cw1.RootElement.GetProperty("estimatedTokens").GetInt64());
+            Assert.Equal(6590 + 458, cw1.RootElement.GetProperty("totalSessionTokens").GetInt64());
+        }
+
+        // 新发起一轮 400 字符用户消息尚未完成时，基于实测基线 7048 实时叠加估算增量。
+        using (var scope = host.Services.CreateAsyncScope())
+        {
+            var sessionManager = scope.ServiceProvider.GetRequiredService<CodexSessionManager>();
+            await sessionManager.RecordMessagesAsync(sessionId, ("user", new string('x', 400)));
+        }
+
+        using (var cw2 = System.Text.Json.JsonDocument.Parse(
+            await normalClient.GetStringAsync($"/api/gateway/session/{sessionId}/context-window")))
+        {
+            var estimated = cw2.RootElement.GetProperty("estimatedTokens").GetInt64();
+            Assert.True(estimated > 7048, $"Expected active context tokens > 7048 after new turn, got {estimated}");
+        }
+
+        // 当触发强制全量压缩后，旧的实测高水位基线应被清理。
+        using (var scope = host.Services.CreateAsyncScope())
+        {
+            var sessionManager = scope.ServiceProvider.GetRequiredService<CodexSessionManager>();
+            await sessionManager.ApplyContextGovernanceAsync(sessionId, warnLimitChars: 10);
+        }
+
+        using (var cw3 = System.Text.Json.JsonDocument.Parse(
+            await normalClient.GetStringAsync($"/api/gateway/session/{sessionId}/context-window")))
+        {
+            var postCompression = cw3.RootElement.GetProperty("estimatedTokens").GetInt64();
+            Assert.True(postCompression < 7048, $"Expected context tokens to drop after compression, got {postCompression}");
+        }
+    }
+
+    [Fact]
+    public async Task SessionAttachments_UploadAndSendWithAttachments_ValidatesPathsAndHidesUploadNoiseInGitDiff()
+    {
+        var globalSettings = Path.Combine(_root, "global-attach", "appsettings.json");
+        var capturedContentTcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var processorMock = new Mock<IGatewayMessageProcessor>();
+        processorMock
+            .Setup(p => p.ProcessAsync(It.IsAny<GatewayMessage>(), It.IsAny<Func<GatewaySseEvent, ValueTask>>(), It.IsAny<CancellationToken>()))
+            .Callback<GatewayMessage, Func<GatewaySseEvent, ValueTask>, CancellationToken>((msg, _, _) =>
+            {
+                capturedContentTcs.TrySetResult(msg.Content ?? string.Empty);
+            })
+            .Returns(Task.CompletedTask);
+
+        await using var host = await P3TestHost.StartAsync(
+            _root,
+            globalSettings,
+            ExecutionBackend.Local,
+            ExecutionPermissionMode.Ask,
+            customProcessor: processorMock.Object);
+
+        using var normalClient = host.CreateNormalClient();
+        var bootstrapResp = await normalClient.PostAsJsonAsync("/api/gateway/session/bootstrap", new { });
+        bootstrapResp.EnsureSuccessStatusCode();
+        using var bootstrapJson = System.Text.Json.JsonDocument.Parse(await bootstrapResp.Content.ReadAsStringAsync());
+        var sessionId = bootstrapJson.RootElement.GetProperty("sessionId").GetString()!;
+
+        // Empty file upload is rejected cleanly with 400.
+        using (var emptyForm = new MultipartFormDataContent())
+        {
+            emptyForm.Add(new ByteArrayContent([]), "file", "empty.txt");
+            var emptyResp = await normalClient.PostAsync($"/api/gateway/session/{sessionId}/attachments", emptyForm);
+            Assert.Equal(HttpStatusCode.BadRequest, emptyResp.StatusCode);
+        }
+
+        // Traversing file name is sanitized inside .codexflow-attachments/.
+        UploadedAttachmentDto uploaded;
+        using (var validForm = new MultipartFormDataContent())
+        {
+            var payload = System.Text.Encoding.UTF8.GetBytes("col1,col2\n10,20\n");
+            var fileContent = new ByteArrayContent(payload);
+            fileContent.Headers.ContentType = new MediaTypeHeaderValue("text/csv");
+            validForm.Add(fileContent, "file", "../../evil\\metrics.csv");
+            var uploadResp = await normalClient.PostAsync($"/api/gateway/session/{sessionId}/attachments", validForm);
+            Assert.Equal(HttpStatusCode.OK, uploadResp.StatusCode);
+            uploaded = (await uploadResp.Content.ReadFromJsonAsync<UploadedAttachmentDto>())!;
+            Assert.NotNull(uploaded);
+            Assert.Equal("metrics.csv", uploaded.Name);
+            Assert.StartsWith($"{GatewayAttachmentService.AttachmentDirectoryName}/", uploaded.RelativePath, StringComparison.Ordinal);
+            Assert.EndsWith("-metrics.csv", uploaded.RelativePath, StringComparison.Ordinal);
+            Assert.DoesNotContain("..", uploaded.RelativePath, StringComparison.Ordinal);
+            Assert.Equal(payload.LongLength, uploaded.SizeBytes);
+        }
+
+        // Chat rejects traversal or missing relative paths even if crafted directly against the HTTP API.
+        var badChatResp = await normalClient.PostAsJsonAsync("/api/gateway/chat", new GatewayChatRequest
+        {
+            SessionId = sessionId,
+            Message = "check",
+            Attachments = [new ChatAttachmentDto("secret.txt", "../outside.txt", 10, "text/plain", true)]
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, badChatResp.StatusCode);
+
+        // Sending chat with only the uploaded attachment (empty text) succeeds and embeds structured metadata + readable guidance.
+        var chatResp = await normalClient.PostAsJsonAsync("/api/gateway/chat", new GatewayChatRequest
+        {
+            SessionId = sessionId,
+            Message = string.Empty,
+            Attachments = [new ChatAttachmentDto(uploaded.Name, uploaded.RelativePath, uploaded.SizeBytes, uploaded.ContentType, false)]
+        });
+        Assert.Equal(HttpStatusCode.Accepted, chatResp.StatusCode);
+
+        var processedContent = await capturedContentTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Contains("<codexflow_attachments>", processedContent, StringComparison.Ordinal);
+        Assert.Contains(uploaded.RelativePath, processedContent, StringComparison.Ordinal);
+        Assert.Contains("metrics.csv", processedContent, StringComparison.Ordinal);
+
+        // Attachment staging directory should not pollute git diff filtering helper.
+        Assert.Equal(
+            string.Empty,
+            WorkspaceFileExplorerService.FilterInternalMetadataDiffSections(
+                $"diff --git a/{uploaded.RelativePath} b/{uploaded.RelativePath}\nnew file mode 100644\n+++ b/{uploaded.RelativePath}\n+1,2"));
     }
 
     [Fact]

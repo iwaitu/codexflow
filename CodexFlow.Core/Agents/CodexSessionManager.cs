@@ -16,6 +16,8 @@ public class CodexSessionManager
 {
     private const string ContextEstimatedCharsMetadataKey = "ContextWindowEstimatedChars";
     private const string ContextEstimatedTokensMetadataKey = "ContextWindowEstimatedTokens";
+    private const string ContextLastReportedTokensMetadataKey = "ContextWindowLastReportedTokens";
+    private const string ContextLastBaselineEstimatedTokensMetadataKey = "ContextWindowLastBaselineEstimatedTokens";
     private const string ContextRecentTurnsMetadataKey = "ContextWindowRecentTurns";
     private const string ContextSummaryCharsMetadataKey = "ContextWindowSummaryChars";
     private const string ContextUpdatedAtUtcMetadataKey = "ContextWindowUpdatedAtUtc";
@@ -253,7 +255,8 @@ public class CodexSessionManager
         int promptTokens,
         int completionTokens,
         CancellationToken ct = default,
-        int cachedPromptTokens = 0)
+        int cachedPromptTokens = 0,
+        int? lastContextTokens = null)
     {
         var session = await GetOrCreateSessionAsync(sessionId, string.Empty, string.Empty, (Uri?)null).ConfigureAwait(false);
 
@@ -265,12 +268,50 @@ public class CodexSessionManager
             changed |= AccumulateLongMetadata(session.Metadata, SessionCachedPromptTokensMetadataKey, cachedPromptTokens);
         }
         changed |= RefreshContextWindowSnapshot(session);
+        if (lastContextTokens is > 0)
+        {
+            var baselineEstimated = EstimateConversationContextTokens(session);
+            changed |= SetMetadataValue(
+                session.Metadata,
+                ContextLastReportedTokensMetadataKey,
+                lastContextTokens.Value.ToString(CultureInfo.InvariantCulture));
+            changed |= SetMetadataValue(
+                session.Metadata,
+                ContextLastBaselineEstimatedTokensMetadataKey,
+                baselineEstimated.ToString(CultureInfo.InvariantCulture));
+        }
 
         if (changed)
         {
             await UpdateSessionAsync(session).ConfigureAwait(false);
         }
     }
+
+    /// <summary>
+    /// 解析当前会话真实的上下文窗口占用 Token 数：优先采用最近一次模型实测窗口水位并叠加后续新增轮次的估算增量。
+    /// </summary>
+    public static long ResolveActiveContextTokens(CodexSession session)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+
+        var estimatedTokens = ParseLongMetadata(session.Metadata, ContextEstimatedTokensMetadataKey);
+        var lastReportedTokens = ParseLongMetadata(session.Metadata, ContextLastReportedTokensMetadataKey);
+        if (lastReportedTokens <= 0)
+        {
+            return estimatedTokens;
+        }
+
+        var baselineEstimated = ParseLongMetadata(session.Metadata, ContextLastBaselineEstimatedTokensMetadataKey);
+        var delta = Math.Max(0L, estimatedTokens - baselineEstimated);
+        return checked(lastReportedTokens + delta);
+    }
+
+    private static long ParseLongMetadata(Dictionary<string, string> metadata, string key)
+        => metadata.TryGetValue(key, out var raw) &&
+           long.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) &&
+           parsed > 0
+            ? parsed
+            : 0L;
 
     /// <summary>
     /// Persists the latest runtime working set as compact session metadata.
@@ -690,6 +731,9 @@ public class CodexSessionManager
                 .ConfigureAwait(false);
             session.LastCompressedAt = DateTime.UtcNow;
             session.RecentTurns.Clear();
+            // 历史压缩完成后，旧回合的实际模型水位已失效，等待下一轮请求重新上报压缩后的上下文尺寸。
+            session.Metadata.Remove(ContextLastReportedTokensMetadataKey);
+            session.Metadata.Remove(ContextLastBaselineEstimatedTokensMetadataKey);
             changed = true;
         }
 

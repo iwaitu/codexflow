@@ -2,6 +2,7 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+using System.Text;
 using CodexFlow.Core.Agents;
 using Microsoft.Extensions.Logging;
 
@@ -84,7 +85,10 @@ public sealed class DefaultContextWindowManager : IContextWindowManager
                 (capture.AssistantRole, result.FinalText)).ConfigureAwait(false);
         }
 
-        if ((result.TotalPromptTokens ?? 0) > 0 || (result.TotalCompletionTokens ?? 0) > 0)
+        var lastContextTokens = ResolveLastContextTokens(result);
+        if ((result.TotalPromptTokens ?? 0) > 0 ||
+            (result.TotalCompletionTokens ?? 0) > 0 ||
+            lastContextTokens is > 0)
         {
             await _sessionManager
                 .RecordRuntimeUsageAsync(
@@ -92,7 +96,8 @@ public sealed class DefaultContextWindowManager : IContextWindowManager
                     result.TotalPromptTokens ?? 0,
                     result.TotalCompletionTokens ?? 0,
                     ct,
-                    result.TotalCachedPromptTokens ?? 0)
+                    result.TotalCachedPromptTokens ?? 0,
+                    lastContextTokens)
                 .ConfigureAwait(false);
         }
 
@@ -107,11 +112,44 @@ public sealed class DefaultContextWindowManager : IContextWindowManager
         }
 
         _logger.LogDebug(
-            "Context window completion persisted by runtime for session {SessionId}. Termination={Termination}, PromptTokens={PromptTokens}, CompletionTokens={CompletionTokens}, Checkpoint={Checkpoint}",
+            "Context window completion persisted by runtime for session {SessionId}. Termination={Termination}, PromptTokens={PromptTokens}, CompletionTokens={CompletionTokens}, LastContextTokens={LastContextTokens}, Checkpoint={Checkpoint}",
             request.SessionId,
             result.TerminationReason,
             result.TotalPromptTokens ?? 0,
             result.TotalCompletionTokens ?? 0,
+            lastContextTokens ?? 0,
             result.RuntimeCheckpoint != null);
+    }
+
+    private static int? ResolveLastContextTokens(QueryRuntimeResult result)
+    {
+        var lastPrompt = result.LastStepPromptTokens ?? 0;
+        var lastCompletion = result.LastStepCompletionTokens ?? 0;
+        if (lastPrompt > 0 || lastCompletion > 0)
+        {
+            return checked(lastPrompt + lastCompletion);
+        }
+
+        if (result.TotalRounds <= 1)
+        {
+            var totalPrompt = result.TotalPromptTokens ?? 0;
+            var totalCompletion = result.TotalCompletionTokens ?? 0;
+            if (totalPrompt > 0 || totalCompletion > 0)
+            {
+                return checked(totalPrompt + totalCompletion);
+            }
+        }
+
+        var snapshotPrompt = result.LastPromptAssemblySnapshot?.EstimatedPromptTokens ?? 0;
+        if (snapshotPrompt > 0)
+        {
+            var replyBytes = string.IsNullOrEmpty(result.FinalText)
+                ? 0
+                : Encoding.UTF8.GetByteCount(result.FinalText);
+            var replyEstimatedTokens = replyBytes > 0 ? (int)Math.Ceiling(replyBytes / 4.0d) : 0;
+            return checked(snapshotPrompt + replyEstimatedTokens);
+        }
+
+        return null;
     }
 }

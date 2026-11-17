@@ -12,10 +12,16 @@ public sealed class ContextCompressionTriggerOptions
 {
     public const string SectionName = "ContextCompression";
 
+    private int _modelMaxContextTokens = 200000;
+
     /// <summary>
-    /// Resolved from <c>VllmAgent:MaxTokensLength</c> at startup.
+    /// Resolved from <c>VllmAgent:MaxTokensLength</c> at startup and refreshed on configuration/settings updates.
     /// </summary>
-    public int ModelMaxContextTokens { get; set; } = 200000;
+    public int ModelMaxContextTokens
+    {
+        get => Volatile.Read(ref _modelMaxContextTokens);
+        set => Volatile.Write(ref _modelMaxContextTokens, value);
+    }
 
     /// <summary>
     /// Auto-compress when the estimated conversation-context tokens reach this ratio

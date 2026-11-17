@@ -19,6 +19,7 @@ using CodexFlow.Telemetry;
 using CodexFlow.Infrastructure.Jobs;
 using CodexFlow.QueryRuntime.Models;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Primitives;
 
 namespace CodexFlow.Orchestration.Hosting;
 
@@ -148,12 +149,12 @@ public static class OrchestrationServiceCollectionExtensions
         {
             var options = new CodexFlow.Core.Models.ContextCompressionTriggerOptions();
             configuration.GetSection(CodexFlow.Core.Models.ContextCompressionTriggerOptions.SectionName).Bind(options);
+            SyncMaxContextTokens(options, configuration);
 
-            var modelMaxContextTokens = configuration.GetSection("VllmAgent").GetValue<int?>("MaxTokensLength");
-            if (modelMaxContextTokens.HasValue && modelMaxContextTokens.Value > 0)
-            {
-                options.ModelMaxContextTokens = modelMaxContextTokens.Value;
-            }
+            // 热更新场景：当 ~/.codexflow/appsettings.json 等配置源变更并重载时，立即同步上下文上限。
+            ChangeToken.OnChange(
+                () => configuration.GetReloadToken(),
+                () => SyncMaxContextTokens(options, configuration));
 
             return options;
         });
@@ -253,5 +254,14 @@ public static class OrchestrationServiceCollectionExtensions
             _ => new WorkspaceRootProvider(Path.Combine(Directory.GetCurrentDirectory(), "workspaces")));
 
         return services;
+    }
+
+    private static void SyncMaxContextTokens(CodexFlow.Core.Models.ContextCompressionTriggerOptions options, IConfiguration configuration)
+    {
+        var modelMaxContextTokens = configuration.GetSection("VllmAgent").GetValue<int?>("MaxTokensLength");
+        if (modelMaxContextTokens.HasValue && modelMaxContextTokens.Value > 0)
+        {
+            options.ModelMaxContextTokens = modelMaxContextTokens.Value;
+        }
     }
 }

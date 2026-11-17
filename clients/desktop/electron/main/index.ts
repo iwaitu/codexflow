@@ -1,8 +1,11 @@
 import { app, BrowserWindow, dialog, ipcMain, Notification, shell, type IpcMainInvokeEvent } from 'electron';
-import { join, resolve } from 'node:path';
+import { existsSync, lstatSync, realpathSync } from 'node:fs';
+import { join, relative, resolve, sep } from 'node:path';
 import {
   IPC_CHANNELS,
+  type ClassifiedDroppedFile,
   type ConnectStandalonePayload,
+  type DroppedFileClassifyInput,
   type OpenLocalWorkspacePayload,
   type PlanChatControlPayload,
   type SubmitToolApprovalPayload,
@@ -15,6 +18,7 @@ import { LocalBackendProxy } from './localBackendProxy';
 import {
   APP_ORIGIN,
   attachCspHeaderHook,
+  isPathStrictlyInsideRoot,
   registerAppProtocolHandler,
   registerAppSchemePrivileges,
 } from './protocol';
@@ -77,6 +81,7 @@ function broadcastConnectionChange(): void {
 }
 
 function createMainWindow(): BrowserWindow {
+  const windowIconPath = resolve(__dirname, '../renderer/icon.png');
   const win = new BrowserWindow({
     width: 1380,
     height: 900,
@@ -84,6 +89,7 @@ function createMainWindow(): BrowserWindow {
     minHeight: 680,
     show: false,
     title: 'CodexFlow Desktop',
+    ...(existsSync(windowIconPath) ? { icon: windowIconPath } : {}),
     backgroundColor: '#0b0f17',
     webPreferences: {
       preload: join(__dirname, '../preload/index.cjs'),
@@ -187,6 +193,61 @@ function registerIpcHandlers(manager: BackendManager): void {
       ? await dialog.showOpenDialog(targetWindow, { properties: ['openDirectory'] })
       : await dialog.showOpenDialog({ properties: ['openDirectory'] });
     return result.canceled ? null : (result.filePaths[0] ?? null);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.classifyDroppedFiles, (event, payload: DroppedFileClassifyInput): ClassifiedDroppedFile[] => {
+    assertTrustedIpcSender(event);
+    let realRoot: string | null = null;
+    if (payload.workspacePath) {
+      try {
+        realRoot = realpathSync(resolve(payload.workspacePath));
+      } catch {
+        realRoot = null;
+      }
+    }
+
+    const results: ClassifiedDroppedFile[] = [];
+    for (const rawPath of payload.filePaths ?? []) {
+      if (typeof rawPath !== 'string' || !rawPath.trim()) continue;
+      try {
+        const stat = lstatSync(rawPath);
+        const isDir = stat.isDirectory();
+        let workspaceRelativePath: string | null = null;
+        if (!isDir && realRoot) {
+          try {
+            const realTarget = realpathSync(rawPath);
+            if (isPathStrictlyInsideRoot(realRoot, realTarget)) {
+              const rel = relative(realRoot, realTarget).split(sep).join('/');
+              const segs = rel.split('/');
+              const isProtected = segs.some((s) =>
+                ['.git', '.gitmodules', '.codexflow', 'host.token', 'control.token'].includes(s.toLowerCase()),
+              );
+              if (rel && !isProtected) {
+                workspaceRelativePath = rel;
+              }
+            }
+          } catch {
+            workspaceRelativePath = null;
+          }
+        }
+        results.push({
+          filePath: rawPath,
+          exists: true,
+          isDirectory: isDir,
+          sizeBytes: isDir ? 0 : stat.size,
+          workspaceRelativePath,
+        });
+      } catch {
+        results.push({
+          filePath: rawPath,
+          exists: false,
+          isDirectory: false,
+          sizeBytes: 0,
+          workspaceRelativePath: null,
+        });
+      }
+    }
+    return results;
   });
 
   ipcMain.handle(IPC_CHANNELS.pickStandaloneTokenFile, async (event, kind: 'access' | 'control') => {

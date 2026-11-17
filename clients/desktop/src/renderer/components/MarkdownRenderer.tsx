@@ -97,6 +97,39 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content }) =
               </a>
             );
           },
+          table({ children }) {
+            return (
+              <div className="my-3 overflow-x-auto rounded-lg border border-slate-700/80 bg-slate-950/60">
+                <table className="min-w-full border-collapse text-left text-xs">{children}</table>
+              </div>
+            );
+          },
+          thead({ children }) {
+            return <thead className="bg-slate-800/80 text-slate-200">{children}</thead>;
+          },
+          tbody({ children }) {
+            return <tbody className="divide-y divide-slate-800/80">{children}</tbody>;
+          },
+          tr({ children }) {
+            return <tr className="transition-colors even:bg-slate-900/35 hover:bg-slate-800/40">{children}</tr>;
+          },
+          th({ style, children }) {
+            return (
+              <th
+                style={style}
+                className="whitespace-nowrap border-b border-r border-slate-700/80 px-3 py-2 font-semibold text-slate-100 last:border-r-0"
+              >
+                {children}
+              </th>
+            );
+          },
+          td({ style, children }) {
+            return (
+              <td style={style} className="border-r border-slate-800/80 px-3 py-2 align-top text-slate-200 last:border-r-0">
+                {children}
+              </td>
+            );
+          },
         }}
       >
         {content}

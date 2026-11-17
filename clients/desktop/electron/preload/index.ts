@@ -1,9 +1,10 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import {
   IPC_CHANNELS,
   type BackendConnectionPublicInfo,
   type ConnectStandalonePayload,
   type DesktopBridge,
+  type DroppedFileClassifyInput,
   type OpenLocalWorkspacePayload,
   type PlanChatControlPayload,
   type SubmitToolApprovalPayload,
@@ -36,6 +37,16 @@ const api: DesktopBridge = {
   openLocalWorkspace: (payload: OpenLocalWorkspacePayload) =>
     ipcRenderer.invoke(IPC_CHANNELS.openLocalWorkspace, payload),
   pickFolder: () => ipcRenderer.invoke(IPC_CHANNELS.pickFolder),
+  getPathForFile: (file: File) => {
+    try {
+      const resolved = webUtils.getPathForFile(file);
+      return resolved || null;
+    } catch {
+      return null;
+    }
+  },
+  classifyDroppedFiles: (payload: DroppedFileClassifyInput) =>
+    ipcRenderer.invoke(IPC_CHANNELS.classifyDroppedFiles, payload),
   pickStandaloneTokenFile: (kind: 'access' | 'control') =>
     ipcRenderer.invoke(IPC_CHANNELS.pickStandaloneTokenFile, kind),
   discoverStandaloneInstance: (dataDirectory?: string) =>

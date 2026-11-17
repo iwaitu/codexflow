@@ -1306,7 +1306,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         Ticket = "non-streaming-llm-migration",
         ReviewBy = "2026-06-30",
         Scope = ApprovedNonStreamingLlmScope.Exception)]
-    private async Task TryGenerateAndEmitConversationTitleAsync(
+    internal async Task TryGenerateAndEmitConversationTitleAsync(
         string conversationId,
         string sessionId,
         string userMessage,
@@ -1333,9 +1333,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             }
 
             var currentTitle = conversation.Name?.Trim() ?? string.Empty;
-            if (!string.IsNullOrWhiteSpace(currentTitle) &&
-                !string.Equals(currentTitle, "新对话", StringComparison.OrdinalIgnoreCase) &&
-                !string.Equals(currentTitle, "New Conversation", StringComparison.OrdinalIgnoreCase))
+            if (!ConversationTitlePolicy.IsDefaultPlaceholderTitle(currentTitle))
             {
                 // P1-04: 标题生成跳过原因日志 - 已有标题
                 _logger.LogInformation("[Gateway] TryGenerateAndEmitConversationTitleAsync: 跳过 - 已有标题 ConversationId={ConversationId}, CurrentTitle={CurrentTitle}", conversationId, currentTitle);
@@ -1348,34 +1346,54 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                 return;
             }
 
-            var preview = aiMessage.Length > 200 ? aiMessage[..200] + "..." : aiMessage;
+            var userPreview = userMessage.Length > 400 ? userMessage[..400] + "..." : userMessage;
+            var aiPreview = aiMessage.Length > 200 ? aiMessage[..200] + "..." : aiMessage;
             var prompt = $@"请根据以下对话内容，总结一个 5 到 8 个字的简短标题。
-只需回复标题文本，不要包含任何标点符号。
+只需回复标题文本，不要包含任何标点符号或思考过程。
 
 [用户提问]
-{userMessage}
+{userPreview}
 
 [助手回答]
-{preview}";
+{aiPreview}";
 
-            var response = await llmExecutor.ExecuteAsync(
-                new LLMExecutionRequest(
-                    Messages: [new ChatMessage(ChatRole.User, prompt)],
-                    Options: new VllmChatOptions
-                    {
-                        ThinkingEnabled = false,
-                        Temperature = 0.2f
-                    },
-                    Scenario: MemoryInjectionScenario.Chat,
-                    Session: null,
-                    Caller: nameof(GatewayMessageProcessor)),
-                ct);
+            var title = string.Empty;
+            try
+            {
+                var response = await llmExecutor.ExecuteAsync(
+                    new LLMExecutionRequest(
+                        Messages: [new ChatMessage(ChatRole.User, prompt)],
+                        Options: new VllmChatOptions
+                        {
+                            ThinkingEnabled = false,
+                            Temperature = 0.2f
+                        },
+                        Scenario: MemoryInjectionScenario.Chat,
+                        Session: null,
+                        Caller: nameof(GatewayMessageProcessor)),
+                    ct);
 
-            var title = response.Text?.Trim().Replace("\"", "").Replace("'", "") ?? "新对话";
-            title = Regex.Replace(title, @"\s+", " ").Trim();
-            const int maxAutoTitleLength = 18;
-            if (title.Length > maxAutoTitleLength) title = title[..maxAutoTitleLength] + "…";
-            if (string.IsNullOrWhiteSpace(title)) title = "新对话";
+                title = ConversationTitlePolicy.SanitizeGeneratedTitle(response?.Text);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Gateway] TryGenerateAndEmitConversationTitleAsync: 模型摘要失败，尝试使用用户消息兜底 ConversationId={ConversationId}", conversationId);
+            }
+
+            if (string.IsNullOrWhiteSpace(title))
+            {
+                title = ConversationTitlePolicy.BuildFallbackTitle(userMessage);
+            }
+
+            if (string.IsNullOrWhiteSpace(title))
+            {
+                _logger.LogInformation("[Gateway] TryGenerateAndEmitConversationTitleAsync: 跳过 - 无可用标题摘要 ConversationId={ConversationId}", conversationId);
+                return;
+            }
 
             await chatService.SetName(conversationId, title);
 

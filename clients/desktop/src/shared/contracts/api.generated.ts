@@ -443,6 +443,73 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/gateway/session/{sessionId}/attachments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    sessionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "multipart/form-data": {
+                        file?: components["schemas"]["IFormFile"];
+                    };
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["UploadedAttachmentDto"];
+                        "text/json": components["schemas"]["UploadedAttachmentDto"];
+                        "text/plain": components["schemas"]["UploadedAttachmentDto"];
+                    };
+                };
+                /** @description Bad Request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["GatewayErrorResponse"];
+                        "text/json": components["schemas"]["GatewayErrorResponse"];
+                        "text/plain": components["schemas"]["GatewayErrorResponse"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ProblemDetails"];
+                        "text/json": components["schemas"]["ProblemDetails"];
+                        "text/plain": components["schemas"]["ProblemDetails"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/gateway/session/{sessionId}/cancel": {
         parameters: {
             query?: never;
@@ -625,7 +692,47 @@ export type paths = {
             };
         };
         put?: never;
-        post?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    sessionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/*+json": null | components["schemas"]["CreateConversationRequest"];
+                    "application/json": null | components["schemas"]["CreateConversationRequest"];
+                    "text/json": null | components["schemas"]["CreateConversationRequest"];
+                };
+            };
+            responses: {
+                /** @description Created */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ConversationSummaryDto"];
+                        "text/json": components["schemas"]["ConversationSummaryDto"];
+                        "text/plain": components["schemas"]["ConversationSummaryDto"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["GatewayErrorResponse"];
+                        "text/json": components["schemas"]["GatewayErrorResponse"];
+                        "text/plain": components["schemas"]["GatewayErrorResponse"];
+                    };
+                };
+            };
+        };
         delete?: never;
         options?: never;
         head?: never;
@@ -1920,6 +2027,15 @@ export type components = {
             sessionId: string;
             status: string;
         };
+        ChatAttachmentDto: {
+            contentType?: null | string;
+            /** @default false */
+            isWorkspaceReference: boolean;
+            name: string;
+            relativePath: string;
+            /** Format: int64 */
+            sizeBytes: number | string;
+        };
         ContinueWorkerHttpRequest: {
             prompt?: null | string;
             resumeToken?: null | string;
@@ -1941,6 +2057,9 @@ export type components = {
             payloadJson?: null | string;
             sessionId?: string;
             taskId?: null | string;
+        };
+        CreateConversationRequest: {
+            name?: null | string;
         };
         DeletePermissionRuleResponse: {
             removed: boolean;
@@ -1975,6 +2094,7 @@ export type components = {
         };
         GatewayChatRequest: {
             approveGitPush?: boolean;
+            attachments?: null | components["schemas"]["ChatAttachmentDto"][];
             branch?: null | string;
             conversationId?: null | string;
             conversationMode?: null | string;
@@ -2000,6 +2120,8 @@ export type components = {
             planVersion?: null | string;
             startExecution?: null | boolean;
         };
+        /** Format: binary */
+        IFormFile: string;
         ModelSettingsDto: {
             apiKeyLast4: null | string;
             apiKeySet: boolean;
@@ -2238,6 +2360,13 @@ export type components = {
         UpdateSessionRequest: {
             isArchived?: null | boolean;
             name?: null | string;
+        };
+        UploadedAttachmentDto: {
+            contentType: string;
+            name: string;
+            relativePath: string;
+            /** Format: int64 */
+            sizeBytes: number | string;
         };
         VerifyForgeArtifactRequest: {
             jobId: string;

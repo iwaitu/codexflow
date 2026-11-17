@@ -47,6 +47,7 @@ process.stdin.on('end', () => {
     epoch: `epoch-${process.pid}`,
     seq: 1,
     messages: [],
+    conversations: [],
     pendingApprovals: [],
     jobs: [],
     rules: [
@@ -242,7 +243,27 @@ process.stdin.on('end', () => {
       }
 
       if (req.method === 'GET' && url.pathname === '/api/gateway/session/sess-mock-1/conversations') {
-        return sendJson(200, { items: [], total: 0, page: 1, pageSize: 50 });
+        return sendJson(200, {
+          items: state.conversations,
+          total: state.conversations.length,
+          page: 1,
+          pageSize: 50,
+        });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/gateway/session/sess-mock-1/conversations') {
+        const created = {
+          conversationId: `conv-mock-${Date.now()}`,
+          sessionId: 'sess-mock-1',
+          name: body.name && String(body.name).trim() ? String(body.name).trim() : '新会话',
+          threadType: 'Chat',
+          isArchived: false,
+          taskId: null,
+          createdUtc: new Date().toISOString(),
+          updatedAtUtc: new Date().toISOString(),
+        };
+        state.conversations.unshift(created);
+        return sendJson(201, created);
       }
 
       if (req.method === 'GET' && url.pathname === '/api/gateway/session/sess-mock-1/context-window') {
@@ -352,6 +373,18 @@ process.stdin.on('end', () => {
             persistState();
             broadcastSse('content', { type: 'content', content: reply, text: reply });
             broadcastSse('done', { type: 'done', messageId: `msg-${Date.now()}`, source: 'UserChat' });
+            const targetConv = body.conversationId
+              ? state.conversations.find((c) => c.conversationId === body.conversationId)
+              : null;
+            if (targetConv && targetConv.name === '新会话') {
+              targetConv.name = '会话标题已总结';
+              targetConv.updatedAtUtc = new Date().toISOString();
+              broadcastSse('updateconversationtitle', {
+                conversationId: targetConv.conversationId,
+                title: targetConv.name,
+                sessionId: 'sess-mock-1',
+              });
+            }
             return;
           }
           broadcastSse('content', { type: 'content', content: '正在请求执行命令...', text: '正在请求执行命令...' });

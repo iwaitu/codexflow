@@ -246,7 +246,7 @@ public static class WorkspaceFileExplorerService
             : "HEAD";
 
         var rawFiles = await gitService.GetWorkingTreeChangedFilesAsync(fullRoot, baseRef).ConfigureAwait(false);
-        var files = rawFiles.Where(static f => !IsInternalMetadataPath(f.FilePath)).ToArray();
+        var files = rawFiles.Where(static f => !IsDiffExcludedPath(f.FilePath)).ToArray();
 
         var diff = await gitService.GetWorkingTreeDiffAsync(fullRoot, baseRef).ConfigureAwait(false);
         diff = FilterInternalMetadataDiffSections(diff);
@@ -272,6 +272,29 @@ public static class WorkspaceFileExplorerService
         foreach (var seg in relativePath.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries))
         {
             if (HiddenInternalNames.Contains(seg))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsDiffExcludedPath(string? relativePath)
+    {
+        if (IsInternalMetadataPath(relativePath))
+        {
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(relativePath))
+        {
+            return false;
+        }
+
+        foreach (var seg in relativePath.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (string.Equals(seg, GatewayAttachmentService.AttachmentDirectoryName, StringComparison.OrdinalIgnoreCase))
             {
                 return true;
             }
@@ -358,7 +381,7 @@ public static class WorkspaceFileExplorerService
             var tokens = SplitDiffGitQuotedHeader(rest.ToString());
             foreach (var token in tokens)
             {
-                if (IsInternalMetadataPath(StripDiffPrefix(UnescapeGitPath(token))))
+                if (IsDiffExcludedPath(StripDiffPrefix(UnescapeGitPath(token))))
                 {
                     return true;
                 }
@@ -384,7 +407,7 @@ public static class WorkspaceFileExplorerService
             if (string.Equals(lhs, rhs, StringComparison.Ordinal)
                 || (HasKnownDiffPrefix(rawLhs) && HasKnownDiffPrefix(rawRhs)))
             {
-                if (IsInternalMetadataPath(lhs) || IsInternalMetadataPath(rhs))
+                if (IsDiffExcludedPath(lhs) || IsDiffExcludedPath(rhs))
                 {
                     return true;
                 }

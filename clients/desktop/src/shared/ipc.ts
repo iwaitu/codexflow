@@ -164,6 +164,19 @@ export interface ConnectStandalonePayload {
   controlTokenHandle?: string;
 }
 
+export interface DroppedFileClassifyInput {
+  filePaths: string[];
+  workspacePath?: string | null;
+}
+
+export interface ClassifiedDroppedFile {
+  filePath: string;
+  exists: boolean;
+  isDirectory: boolean;
+  sizeBytes: number;
+  workspaceRelativePath: string | null;
+}
+
 export interface DesktopBridge {
   getBackendConnection(): Promise<BackendConnectionPublicInfo>;
   onBackendConnectionChanged(listener: (info: BackendConnectionPublicInfo) => void): () => void;
@@ -175,6 +188,8 @@ export interface DesktopBridge {
   deletePermissionRule(ruleId: string): Promise<ControlPlaneCallResult<DeletePermissionRuleResult>>;
   openLocalWorkspace(payload: OpenLocalWorkspacePayload): Promise<ControlPlaneCallResult<OpenLocalWorkspaceResult>>;
   pickFolder(): Promise<string | null>;
+  getPathForFile(file: File): string | null;
+  classifyDroppedFiles(payload: DroppedFileClassifyInput): Promise<ClassifiedDroppedFile[]>;
   pickStandaloneTokenFile(kind: 'access' | 'control'): Promise<PickedTokenFileResult | null>;
   discoverStandaloneInstance(dataDirectory?: string): Promise<StandaloneDiscoveryResult | null>;
   connectStandalone(payload: ConnectStandalonePayload): Promise<BackendConnectionPublicInfo>;
@@ -195,6 +210,7 @@ export const IPC_CHANNELS = {
   deletePermissionRule: 'codexflow:delete-permission-rule',
   openLocalWorkspace: 'codexflow:open-local-workspace',
   pickFolder: 'codexflow:pick-folder',
+  classifyDroppedFiles: 'codexflow:classify-dropped-files',
   pickStandaloneTokenFile: 'codexflow:pick-standalone-token-file',
   discoverStandaloneInstance: 'codexflow:discover-standalone-instance',
   connectStandalone: 'codexflow:connect-standalone',

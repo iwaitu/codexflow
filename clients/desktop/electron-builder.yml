@@ -20,6 +20,7 @@ extraResources:
 asar: true
 
 win:
+  icon: build/icon.ico
   target:
     - target: nsis
       arch:
@@ -31,6 +32,8 @@ win:
   artifactName: CodexFlow-Desktop-${version}-win-${arch}-portable.${ext}
 
 nsis:
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
   oneClick: false
   allowToChangeInstallationDirectory: true
   perMachine: false
@@ -39,6 +42,7 @@ nsis:
   artifactName: CodexFlow-Desktop-${version}-win-${arch}-setup.${ext}
 
 linux:
+  icon: build/icon.png
   target:
     - target: AppImage
       arch:
@@ -50,6 +54,7 @@ linux:
   artifactName: CodexFlow-Desktop-${version}-linux-${arch}.${ext}
 
 mac:
+  icon: build/icon.png
   target:
     - target: dmg
       arch:

@@ -21,6 +21,13 @@ import {
 
 export type ConversationMode = 'continue-current' | 'reuse-master' | 'new-thread';
 
+export interface ConversationTitleUpdate {
+  conversationId: string;
+  title: string;
+  sessionId: string | null;
+  seq: number;
+}
+
 export interface BufferedSseItem {
   event: ParsedSseEvent;
   connectionGeneration: number;
@@ -56,6 +63,7 @@ export interface AppState {
   activeSessionId: string | null;
   activeConversationId: string | null;
   conversationMode: ConversationMode;
+  latestTitleUpdate: ConversationTitleUpdate | null;
 
   messages: UiMessage[];
   messagesTruncated: boolean;
@@ -84,6 +92,7 @@ export interface AppState {
   setSseState: (state: 'connecting' | 'connected' | 'reconnecting' | 'closed') => void;
   setActiveSession: (sessionId: string | null) => void;
   setActiveConversation: (conversationId: string | null) => void;
+  startNewConversation: (conversationId: string) => void;
   setConversationMode: (mode: ConversationMode) => void;
   setTurnNotice: (notice: string | null) => void;
   setSettingsOpen: (open: boolean) => void;
@@ -99,6 +108,39 @@ export interface AppState {
   setJobs: (jobs: BackgroundJob[]) => void;
   setPlan: (plan: SessionPlan | null) => void;
   clearTurnVisuals: () => void;
+}
+
+function refreshTurnMetadataAfterFinish(
+  get: () => AppState,
+  set: (partial: Partial<AppState> | ((state: AppState) => Partial<AppState> | AppState)) => void,
+  includeJobs: boolean,
+): void {
+  const conn = get().connection;
+  const sid = get().activeSessionId;
+  const targetGen = get().sessionGeneration;
+  if (!conn?.baseUrl || !conn.accessToken || !sid) {
+    return;
+  }
+  const auth = { baseUrl: conn.baseUrl, accessToken: conn.accessToken };
+  void apiClient
+    .getContextWindow(auth, sid)
+    .then((cw) => {
+      if (get().activeSessionId === sid && get().sessionGeneration === targetGen) {
+        set({ contextWindow: cw });
+      }
+    })
+    .catch(() => undefined);
+
+  if (includeJobs) {
+    void apiClient
+      .listJobs(auth, sid)
+      .then((jobs) => {
+        if (get().activeSessionId === sid && get().sessionGeneration === targetGen) {
+          set({ jobs });
+        }
+      })
+      .catch(() => undefined);
+  }
 }
 
 function reduceSseEvent(
@@ -151,7 +193,27 @@ function reduceSseEvent(
     case 'setconversationid': {
       const convId = evtData.conversationId as string | undefined;
       if (convId) {
-        set({ activeConversationId: convId });
+        set((s) => ({
+          activeConversationId: convId,
+          conversationMode: s.conversationMode === 'new-thread' ? 'continue-current' : s.conversationMode,
+        }));
+      }
+      return;
+    }
+
+    case 'updateconversationtitle': {
+      const convId = typeof evtData.conversationId === 'string' ? evtData.conversationId : '';
+      const title = typeof evtData.title === 'string' ? evtData.title.trim() : '';
+      const sessionId = typeof evtData.sessionId === 'string' ? evtData.sessionId : null;
+      if (convId && title) {
+        set((s) => ({
+          latestTitleUpdate: {
+            conversationId: convId,
+            title,
+            sessionId,
+            seq: (s.latestTitleUpdate?.seq ?? 0) + 1,
+          },
+        }));
       }
       return;
     }
@@ -437,6 +499,7 @@ function reduceSseEvent(
         streamingContent: '',
         streamingThinking: '',
       }));
+      refreshTurnMetadataAfterFinish(get, set, false);
       return;
     }
 
@@ -464,27 +527,7 @@ function reduceSseEvent(
           turnNotice: d.source === 'cancelled' ? '本回合已取消。' : null,
         };
       });
-      const conn = get().connection;
-      const sid = get().activeSessionId;
-      const targetGen = get().sessionGeneration;
-      if (conn?.baseUrl && conn.accessToken && sid) {
-        void apiClient
-          .getContextWindow({ baseUrl: conn.baseUrl, accessToken: conn.accessToken }, sid)
-          .then((cw) => {
-            if (get().activeSessionId === sid && get().sessionGeneration === targetGen) {
-              set({ contextWindow: cw });
-            }
-          })
-          .catch(() => undefined);
-        void apiClient
-          .listJobs({ baseUrl: conn.baseUrl, accessToken: conn.accessToken }, sid)
-          .then((jobs) => {
-            if (get().activeSessionId === sid && get().sessionGeneration === targetGen) {
-              set({ jobs });
-            }
-          })
-          .catch(() => undefined);
-      }
+      refreshTurnMetadataAfterFinish(get, set, true);
       return;
     }
 
@@ -508,6 +551,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   activeSessionId: null,
   activeConversationId: null,
   conversationMode: 'reuse-master',
+  latestTitleUpdate: null,
 
   messages: [],
   messagesTruncated: false,
@@ -636,10 +680,26 @@ export const useAppStore = create<AppState>((set, get) => ({
       asOfEventId: 0,
       channelEpoch: null,
       turnNotice: null,
+      latestTitleUpdate: null,
     }));
   },
 
   setActiveConversation: (activeConversationId) => set({ activeConversationId }),
+  startNewConversation: (conversationId) =>
+    set((s) => ({
+      reconcileGeneration: s.reconcileGeneration + 1,
+      activeConversationId: conversationId,
+      conversationMode: 'continue-current',
+      messages: [],
+      messagesTruncated: false,
+      streamingContent: '',
+      streamingThinking: '',
+      isThinkingStreaming: false,
+      streamingTruncated: false,
+      isTurnRunning: false,
+      toolCalls: [],
+      turnNotice: null,
+    })),
   setConversationMode: (conversationMode) => set({ conversationMode }),
   setTurnNotice: (turnNotice) => set({ turnNotice }),
   setSettingsOpen: (isSettingsOpen) => set({ isSettingsOpen }),

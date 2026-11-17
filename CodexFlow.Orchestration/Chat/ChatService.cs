@@ -81,6 +81,7 @@ namespace CodexFlow.Application
                 return;
             }
             conversation.Name = name;
+            conversation.UpdateAt = DateTime.UtcNow;
             _db.Conversations.Update(conversation);
             await _db.SaveChangesAsync();
         }

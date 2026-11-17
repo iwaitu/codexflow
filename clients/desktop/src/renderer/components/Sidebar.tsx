@@ -10,6 +10,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import type { ConversationSummary, SessionSummary } from '../lib/apiClient';
+import { CodexFlowBrand } from './CodexFlowBrand';
 
 interface SidebarProps {
   sessions: SessionSummary[];
@@ -17,8 +18,11 @@ interface SidebarProps {
   activeSessionId: string | null;
   activeConversationId: string | null;
   controlPlaneAvailable: boolean;
+  isTurnRunning?: boolean;
+  creatingConversation?: boolean;
   onSelectSession: (sessionId: string) => void;
   onSelectConversation: (conversationId: string) => void;
+  onCreateConversation?: () => Promise<void>;
   onCreateSession: () => Promise<void>;
   onOpenFolder: () => Promise<void>;
   onRenameSession: (sessionId: string, name: string) => Promise<void>;
@@ -36,8 +40,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
   activeSessionId,
   activeConversationId,
   controlPlaneAvailable,
+  isTurnRunning = false,
+  creatingConversation = false,
   onSelectSession,
   onSelectConversation,
+  onCreateConversation,
   onCreateSession,
   onOpenFolder,
   onRenameSession,
@@ -67,10 +74,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   return (
     <aside className="flex h-full w-72 shrink-0 flex-col border-r border-slate-800 bg-slate-950">
       <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
-        <div>
-          <div className="text-sm font-semibold tracking-wide text-slate-100">CodexFlow</div>
-          <div className="text-[11px] text-slate-400">Desktop MVP</div>
-        </div>
+        <CodexFlowBrand subtitle="Desktop" iconClassName="h-8 w-8" />
         <button
           type="button"
           onClick={onOpenSettings}
@@ -190,58 +194,79 @@ export const Sidebar: React.FC<SidebarProps> = ({
           })}
         </div>
 
-        {conversations.length > 0 && (
+        {activeSessionId && (
           <div className="mt-5">
-            <div className="mb-2 text-[11px] font-medium uppercase tracking-wider text-slate-500">
-              对话线程 ({conversations.length})
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <span className="text-[11px] font-medium uppercase tracking-wider text-slate-500">
+                对话线程 ({conversations.length})
+              </span>
+              {onCreateConversation && (
+                <button
+                  type="button"
+                  disabled={isTurnRunning || creatingConversation}
+                  onClick={() => void onCreateConversation()}
+                  title={isTurnRunning ? '当前回合执行中，请稍后再新建会话' : '在当前工作区创建新会话'}
+                  aria-label="新建会话"
+                  className="inline-flex items-center gap-1 rounded-md border border-slate-700/80 bg-slate-900 px-2 py-0.5 text-[11px] font-medium text-slate-200 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <Plus className="h-3 w-3" />
+                  <span>{creatingConversation ? '创建中...' : '新建会话'}</span>
+                </button>
+              )}
             </div>
-            <div className="space-y-1">
-              {conversations.map((c) => {
-                const isActive = c.conversationId === activeConversationId;
-                return (
-                  <div
-                    key={c.conversationId}
-                    className={`group flex items-center justify-between gap-1 rounded-lg px-2.5 py-1.5 text-xs ${
-                      isActive
-                        ? 'bg-slate-800 text-slate-100'
-                        : 'text-slate-400 hover:bg-slate-900 hover:text-slate-200'
-                    }`}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => onSelectConversation(c.conversationId)}
-                      className="flex min-w-0 flex-1 items-center gap-2 text-left"
+            {conversations.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-slate-800 px-2.5 py-2 text-[11px] leading-relaxed text-slate-500">
+                暂无会话，点击右上角「新建会话」或在右侧直接输入消息开始。
+              </div>
+            ) : (
+              <div className="space-y-1">
+                {conversations.map((c) => {
+                  const isActive = c.conversationId === activeConversationId;
+                  return (
+                    <div
+                      key={c.conversationId}
+                      className={`group flex items-center justify-between gap-1 rounded-lg px-2.5 py-1.5 text-xs ${
+                        isActive
+                          ? 'bg-slate-800 text-slate-100'
+                          : 'text-slate-400 hover:bg-slate-900 hover:text-slate-200'
+                      }`}
                     >
-                      <MessageSquare className="h-3 w-3 shrink-0" />
-                      <span className="truncate">{c.name || c.conversationId}</span>
-                    </button>
-                    <div className="hidden items-center gap-0.5 group-hover:flex">
                       <button
                         type="button"
-                        title="重命名对话"
-                        onClick={() => {
-                          const next = window.prompt('输入新的对话名称', c.name);
-                          if (next && next.trim()) {
-                            void onRenameConversation(c.conversationId, next.trim());
-                          }
-                        }}
-                        className="rounded p-1 hover:bg-slate-700"
+                        onClick={() => onSelectConversation(c.conversationId)}
+                        className="flex min-w-0 flex-1 items-center gap-2 text-left"
                       >
-                        <Pencil className="h-3 w-3" />
+                        <MessageSquare className="h-3 w-3 shrink-0" />
+                        <span className="truncate">{c.name || c.conversationId}</span>
                       </button>
-                      <button
-                        type="button"
-                        title="删除对话"
-                        onClick={() => void onDeleteConversation(c.conversationId)}
-                        className="rounded p-1 hover:bg-rose-950 hover:text-rose-300"
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </button>
+                      <div className="hidden items-center gap-0.5 group-hover:flex">
+                        <button
+                          type="button"
+                          title="重命名对话"
+                          onClick={() => {
+                            const next = window.prompt('输入新的对话名称', c.name);
+                            if (next && next.trim()) {
+                              void onRenameConversation(c.conversationId, next.trim());
+                            }
+                          }}
+                          className="rounded p-1 hover:bg-slate-700"
+                        >
+                          <Pencil className="h-3 w-3" />
+                        </button>
+                        <button
+                          type="button"
+                          title="删除对话"
+                          onClick={() => void onDeleteConversation(c.conversationId)}
+                          className="rounded p-1 hover:bg-rose-950 hover:text-rose-300"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
       </div>

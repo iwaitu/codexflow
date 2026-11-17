@@ -1230,6 +1230,86 @@ public sealed class QreV2BackedQueryRuntimeEngineTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_ContextOptionsMaxTokensUpdatedBetweenTurns_AppliesNewBudgetOnNextTurn()
+    {
+        var llm = new ScriptedLlmExecutor(TextStep("turn 1 ok"), TextStep("must not execute"));
+        var contextOptions = new ContextCompressionTriggerOptions
+        {
+            ModelMaxContextTokens = 20_000,
+            AutoCompressionTriggerRatio = 1
+        };
+        var engine = CreateEngine(llm, contextOptions: contextOptions);
+
+        var firstResult = await engine.ExecuteAsync(
+            CreateRequest() with
+            {
+                InitialMessages =
+                [
+                    new ChatMessage(ChatRole.System, "short system"),
+                    new ChatMessage(ChatRole.User, "short goal")
+                ]
+            },
+            new RecordingEventSink(),
+            CancellationToken.None);
+        Assert.Equal("turn 1 ok", firstResult.FinalText);
+
+        contextOptions.ModelMaxContextTokens = 2_048;
+
+        var secondResult = await engine.ExecuteAsync(
+            CreateRequest() with
+            {
+                InitialMessages =
+                [
+                    new ChatMessage(ChatRole.System, new string('s', 40_000)),
+                    new ChatMessage(ChatRole.User, "short goal")
+                ]
+            },
+            new RecordingEventSink(),
+            CancellationToken.None);
+
+        Assert.Equal(QueryTerminationReason.ContextHardLimit, secondResult.TerminationReason);
+        Assert.Single(llm.Requests);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_MultiStepToolTurn_TracksLastStepUsageSeparatelyFromTotalTurnUsage()
+    {
+        var tool = ContractTool("echo_tool");
+        var llm = new ScriptedLlmExecutor(
+            new ChatResponseUpdate[]
+            {
+                new()
+                {
+                    Role = ChatRole.Assistant,
+                    Contents = [new FunctionCallContent("call-1", "echo_tool", new Dictionary<string, object?>())],
+                    FinishReason = ChatFinishReason.ToolCalls
+                },
+                new UsageChatResponseUpdate
+                {
+                    Usage = new UsageDetails { InputTokenCount = 5000, OutputTokenCount = 120, TotalTokenCount = 5120 }
+                }
+            },
+            AnswerWithUsage(
+                "final reply",
+                new UsageDetails { InputTokenCount = 6590, OutputTokenCount = 458, TotalTokenCount = 7048 }));
+
+        var engine = CreateEngine(llm);
+        var result = await engine.ExecuteAsync(
+            CreateRequest() with { AvailableTools = [tool] },
+            new RecordingEventSink(),
+            CancellationToken.None);
+
+        Assert.True(
+            result.TerminationReason == QueryTerminationReason.Normal,
+            $"Unexpected termination {result.TerminationReason}: {result.TerminalDetailCode} - {result.TerminalDetailMessage}");
+        Assert.Equal(2, result.TotalRounds);
+        Assert.Equal(5000 + 6590, result.TotalPromptTokens);
+        Assert.Equal(120 + 458, result.TotalCompletionTokens);
+        Assert.Equal(6590, result.LastStepPromptTokens);
+        Assert.Equal(458, result.LastStepCompletionTokens);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_C5DynamicContextIsEphemeralPreparedInput()
     {
         var llm = new ScriptedLlmExecutor(InspectingStep(

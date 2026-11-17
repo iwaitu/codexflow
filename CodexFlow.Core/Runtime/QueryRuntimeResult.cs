@@ -48,6 +48,12 @@ public sealed record QueryRuntimeResult
     /// <summary>累计 completion tokens</summary>
     public int? TotalCompletionTokens { get; init; }
 
+    /// <summary>本回合最后一次模型请求的 prompt tokens（反映单次上下文窗口实际输入水位）</summary>
+    public int? LastStepPromptTokens { get; init; }
+
+    /// <summary>本回合最后一次模型请求的 completion tokens</summary>
+    public int? LastStepCompletionTokens { get; init; }
+
     /// <summary>
     /// 累计 prompt tokens 中由 provider 提示缓存命中的部分（是 <see cref="TotalPromptTokens"/> 的子集，不是额外的量）。
     /// provider 没有上报缓存命中时为 null。

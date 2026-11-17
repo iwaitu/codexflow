@@ -6,15 +6,22 @@ import { SettingsModal } from './components/SettingsModal';
 import { Sidebar } from './components/Sidebar';
 import { StatusBar } from './components/StatusBar';
 import { WelcomeWizardModal } from './components/WelcomeWizardModal';
-import { ApiError, apiClient } from './lib/apiClient';
+import { ApiError, apiClient, type ConversationSummary } from './lib/apiClient';
+import {
+  formatOptimisticMessageWithAttachments,
+  type ChatAttachment,
+  type PendingAttachment,
+} from './lib/attachments';
 import { SessionSseClient } from './lib/sseClient';
 import { useAppStore } from './stores/useAppStore';
 
 export const App: React.FC = () => {
   const queryClient = useQueryClient();
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [creatingConversation, setCreatingConversation] = useState(false);
   const sseRef = useRef<SessionSseClient | null>(null);
   const prevRestartCount = useRef<number>(0);
+  const wasTurnRunningRef = useRef(false);
 
   const {
     connection,
@@ -23,6 +30,7 @@ export const App: React.FC = () => {
     activeConversationId,
     instanceKey,
     conversationMode,
+    latestTitleUpdate,
     messages,
     messagesTruncated,
     streamingContent,
@@ -44,6 +52,7 @@ export const App: React.FC = () => {
     setSseState,
     setActiveSession,
     setActiveConversation,
+    startNewConversation,
     setConversationMode,
     setTurnNotice,
     setSettingsOpen,
@@ -189,23 +198,101 @@ export const App: React.FC = () => {
     };
   }, [auth, activeSessionId, applySseEvent, reconcileSession, setSseState]);
 
+  // 实时响应后端 updateconversationtitle SSE 事件，秒级刷新侧栏标题
+  useEffect(() => {
+    if (!auth || !latestTitleUpdate) return;
+    const targetSessionId = latestTitleUpdate.sessionId ?? activeSessionId;
+    if (!targetSessionId) return;
+
+    const queryKey = ['conversations', instanceKey, auth.baseUrl, targetSessionId] as const;
+    queryClient.setQueryData<{ items: ConversationSummary[]; total: number; page: number; pageSize: number } | undefined>(
+      queryKey,
+      (prev) => {
+        if (!prev) return prev;
+        let touched = false;
+        const items = prev.items.map((item) => {
+          if (item.conversationId === latestTitleUpdate.conversationId) {
+            touched = true;
+            return { ...item, name: latestTitleUpdate.title, updatedAtUtc: new Date().toISOString() };
+          }
+          return item;
+        });
+        return touched ? { ...prev, items } : prev;
+      },
+    );
+    void queryClient.invalidateQueries({ queryKey });
+  }, [auth, instanceKey, activeSessionId, latestTitleUpdate, queryClient]);
+
+  // 绑定新会话 ID 或回合结束后刷新一次会话列表，确保新创建的线程与排序同步
+  useEffect(() => {
+    const turnFinished = wasTurnRunningRef.current && !isTurnRunning;
+    wasTurnRunningRef.current = isTurnRunning;
+
+    if (!auth || !activeSessionId) return;
+    if (turnFinished || activeConversationId) {
+      void queryClient.invalidateQueries({ queryKey: ['conversations', instanceKey, auth.baseUrl, activeSessionId] });
+    }
+  }, [auth, instanceKey, activeSessionId, activeConversationId, isTurnRunning, queryClient]);
+
   const refreshMetadata = () => {
     void queryClient.invalidateQueries({ queryKey: ['system-status'] });
     void queryClient.invalidateQueries({ queryKey: ['execution-settings'] });
     void queryClient.invalidateQueries({ queryKey: ['model-settings'] });
     void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+    if (auth && activeSessionId) {
+      const targetSessionId = activeSessionId;
+      const targetGeneration = useAppStore.getState().sessionGeneration;
+      void apiClient
+        .getContextWindow(auth, targetSessionId)
+        .then((cw) => {
+          const latest = useAppStore.getState();
+          if (latest.activeSessionId === targetSessionId && latest.sessionGeneration === targetGeneration) {
+            latest.setContextWindow(cw);
+          }
+        })
+        .catch(() => undefined);
+    }
   };
 
-  const handleSend = async (text: string) => {
+  const activeWorkspacePath = useMemo(() => {
+    if (!activeSessionId || !sessionsQuery.data?.items) return null;
+    return sessionsQuery.data.items.find((s) => s.sessionId === activeSessionId)?.workspacePath ?? null;
+  }, [activeSessionId, sessionsQuery.data]);
+
+  const handleSend = async (text: string, pendingAttachments: PendingAttachment[] = []) => {
     if (!auth || !activeSessionId) return;
     setTurnNotice(null);
-    appendOptimisticUserMessage(text);
+
+    const resolvedAttachments: ChatAttachment[] = [];
+    for (const item of pendingAttachments) {
+      if (item.workspaceRelativePath) {
+        resolvedAttachments.push({
+          name: item.name,
+          relativePath: item.workspaceRelativePath,
+          sizeBytes: item.sizeBytes,
+          contentType: item.contentType,
+          isWorkspaceReference: true,
+        });
+      } else {
+        const uploaded = await apiClient.uploadAttachment(auth, activeSessionId, item.file);
+        resolvedAttachments.push({
+          name: uploaded.name,
+          relativePath: uploaded.relativePath,
+          sizeBytes: uploaded.sizeBytes,
+          contentType: uploaded.contentType,
+          isWorkspaceReference: false,
+        });
+      }
+    }
+
+    appendOptimisticUserMessage(formatOptimisticMessageWithAttachments(text, resolvedAttachments));
     try {
       await apiClient.sendChat(auth, {
         sessionId: activeSessionId,
         message: text,
         conversationId: activeConversationId ?? undefined,
         conversationMode,
+        attachments: resolvedAttachments.length > 0 ? resolvedAttachments : undefined,
       });
       void queryClient.invalidateQueries({ queryKey: ['conversations', instanceKey, auth.baseUrl, activeSessionId] });
     } catch (error) {
@@ -232,6 +319,37 @@ export const App: React.FC = () => {
     const created = await apiClient.createSession(auth, `工作区 ${new Date().toLocaleTimeString()}`);
     setActiveSession(created.sessionId);
     void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+  };
+
+  const handleCreateConversation = async () => {
+    if (!auth || !activeSessionId || isTurnRunning || creatingConversation) return;
+    setWorkspaceError(null);
+    setCreatingConversation(true);
+    try {
+      const created = await apiClient.createConversation(auth, activeSessionId);
+      startNewConversation(created.conversationId);
+      const queryKey = ['conversations', instanceKey, auth.baseUrl, activeSessionId] as const;
+      queryClient.setQueryData<{ items: ConversationSummary[]; total: number; page: number; pageSize: number } | undefined>(
+        queryKey,
+        (prev) => {
+          if (!prev) {
+            return { items: [created], total: 1, page: 1, pageSize: 50 };
+          }
+          const exists = prev.items.some((item) => item.conversationId === created.conversationId);
+          const remaining = prev.items.filter((item) => item.conversationId !== created.conversationId);
+          return {
+            ...prev,
+            items: [created, ...remaining],
+            total: exists ? prev.total : prev.total + 1,
+          };
+        },
+      );
+      void queryClient.invalidateQueries({ queryKey });
+    } catch (error) {
+      setWorkspaceError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setCreatingConversation(false);
+    }
   };
 
   const handleOpenFolder = async () => {
@@ -294,8 +412,11 @@ export const App: React.FC = () => {
           activeSessionId={activeSessionId}
           activeConversationId={activeConversationId}
           controlPlaneAvailable={controlPlaneAvailable}
+          isTurnRunning={isTurnRunning}
+          creatingConversation={creatingConversation}
           onSelectSession={(sid) => setActiveSession(sid)}
           onSelectConversation={(cid) => void handleSelectConversation(cid)}
+          onCreateConversation={handleCreateConversation}
           onCreateSession={handleCreateSession}
           onOpenFolder={handleOpenFolder}
           onRenameSession={async (sid, name) => {
@@ -361,6 +482,7 @@ export const App: React.FC = () => {
             isTurnRunning={isTurnRunning}
             conversationMode={conversationMode}
             turnNotice={turnNotice}
+            workspacePath={activeWorkspacePath}
             onChangeMode={setConversationMode}
             onSend={handleSend}
             onCancel={handleCancel}
@@ -380,6 +502,7 @@ export const App: React.FC = () => {
       <WelcomeWizardModal
         open={isWizardOpen}
         systemStatus={systemStatusQuery.data ?? null}
+        modelSettings={modelSettingsQuery.data ?? null}
         controlPlaneAvailable={controlPlaneAvailable}
         onClose={() => setWizardOpen(false, true)}
         onSaved={refreshMetadata}

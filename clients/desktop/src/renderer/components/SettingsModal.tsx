@@ -8,6 +8,8 @@ import type {
 } from '@shared/ipc';
 import type { ExecutionSettings, ModelSettings, SystemStatusSummary } from '../lib/apiClient';
 import { isExecutionRiskIncreasing, isRelaxingPermission } from '../lib/executionPolicy';
+import { parseModelSettingsInput } from '../lib/modelSettingsForm';
+import { MaxContextField } from './MaxContextField';
 
 export { isRelaxingPermission };
 
@@ -41,6 +43,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [apiUrl, setApiUrl] = useState(modelSettings?.apiUrl ?? '');
   const [apiMode, setApiMode] = useState(modelSettings?.apiMode ?? 'ChatCompletions');
   const [model, setModel] = useState(modelSettings?.model ?? '');
+  const [maxTokensLength, setMaxTokensLength] = useState(
+    modelSettings?.maxTokensLength != null ? String(modelSettings.maxTokensLength) : '',
+  );
+  const [temperature, setTemperature] = useState(
+    modelSettings?.temperature != null ? String(modelSettings.temperature) : '',
+  );
+  const [topP, setTopP] = useState(
+    modelSettings?.topP != null ? String(modelSettings.topP) : '',
+  );
   const [apiKey, setApiKey] = useState('');
 
   const [rules, setRules] = useState<PersistedPermissionRule[]>([]);
@@ -56,6 +67,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setApiUrl(modelSettings?.apiUrl ?? '');
     setApiMode(modelSettings?.apiMode ?? 'ChatCompletions');
     setModel(modelSettings?.model ?? '');
+    setMaxTokensLength(modelSettings?.maxTokensLength != null ? String(modelSettings.maxTokensLength) : '');
+    setTemperature(modelSettings?.temperature != null ? String(modelSettings.temperature) : '');
+    setTopP(modelSettings?.topP != null ? String(modelSettings.topP) : '');
     setApiKey('');
     setConfirmRelaxOpen(false);
     setNotice(null);
@@ -118,22 +132,32 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   const handleModelSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    const parsed = parseModelSettingsInput({
+      apiUrl,
+      apiMode,
+      model,
+      maxTokensLength,
+      temperature,
+      topP,
+      apiKey,
+    });
+    if (!parsed.ok) {
+      setError(parsed.error);
+      setNotice(null);
+      return;
+    }
+
     setSaving(true);
     setError(null);
     setNotice(null);
     try {
-      const res = await window.codexflow.updateModelSettings({
-        apiUrl: apiUrl.trim() || undefined,
-        apiMode,
-        model: model.trim() || undefined,
-        apiKey: apiKey.trim() || undefined,
-      });
+      const res = await window.codexflow.updateModelSettings(parsed.payload);
       if (!res.ok) {
         setError(res.errorMessage || `模型配置保存失败 (${res.status})`);
         return;
       }
       setApiKey('');
-      setNotice('模型配置已更新。');
+      setNotice('模型配置已更新，上下文与模型参数将在后续请求立即生效。');
       onUpdated();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -162,7 +186,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     <Dialog.Root open={open} onOpenChange={(v) => (!v ? onClose() : undefined)}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-40 bg-black/70 backdrop-blur-sm" />
-        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-2xl -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl">
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 max-h-[90vh] w-full max-w-2xl -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl">
           <div className="flex items-center justify-between">
             <Dialog.Title className="text-base font-semibold text-slate-100">设置</Dialog.Title>
             <button
@@ -284,7 +308,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           )}
 
           {tab === 'model' && (
-            <form onSubmit={(e) => void handleModelSubmit(e)} className="mt-4 space-y-3 text-xs">
+            <form noValidate onSubmit={(e) => void handleModelSubmit(e)} className="mt-4 space-y-3 text-xs">
               <label className="block">
                 <span className="mb-1 block text-slate-300">ApiUrl</span>
                 <input
@@ -314,6 +338,44 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <option value="ChatCompletions">ChatCompletions</option>
                     <option value="Responses">Responses</option>
                   </select>
+                </label>
+              </div>
+
+              <MaxContextField
+                value={maxTokensLength}
+                onChange={setMaxTokensLength}
+                helperText="留空则保持当前设置不变；用于计算上下文占用并作为 85% 自动压缩阈值依据（单位：tokens）。"
+              />
+
+              <div className="grid grid-cols-2 gap-3">
+                <label className="block">
+                  <span className="mb-1 block text-slate-300">Temperature（0 ~ 2，可选）</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={2}
+                    step="0.05"
+                    aria-label="Temperature"
+                    value={temperature}
+                    onChange={(e) => setTemperature(e.target.value)}
+                    placeholder="留空则保持当前配置"
+                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+                  />
+                </label>
+
+                <label className="block">
+                  <span className="mb-1 block text-slate-300">TopP（0 ~ 1，可选）</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={1}
+                    step="0.05"
+                    aria-label="TopP"
+                    value={topP}
+                    onChange={(e) => setTopP(e.target.value)}
+                    placeholder="留空则保持当前配置"
+                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+                  />
                 </label>
               </div>
 

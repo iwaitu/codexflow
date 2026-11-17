@@ -6,6 +6,7 @@ using System.Reflection;
 using CodexFlow.Core.Configuration;
 using CodexFlow.Core.Execution;
 using CodexFlow.Core.Execution.Approval;
+using CodexFlow.Core.Models;
 using CodexFlow.Orchestration.Hosting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
@@ -91,7 +92,8 @@ public sealed class ExecutionSettingsController(
     IControlPlaneStateProvider? controlPlane = null,
     IModelSettingsService? modelSettingsService = null,
     IHostPreflightService? preflightService = null,
-    IConfiguration? configuration = null) : ControllerBase
+    IConfiguration? configuration = null,
+    ContextCompressionTriggerOptions? contextCompressionTriggerOptions = null) : ControllerBase
 {
     [HttpGet("api/settings/execution")]
     [Authorize(Policy = "ActiveUser")]
@@ -246,6 +248,13 @@ public sealed class ExecutionSettingsController(
                 Temperature: request.Temperature,
                 TopP: request.TopP,
                 ApiKey: request.ApiKey));
+
+            // 写盘后立刻同步内存中的上下文窗口上限，避免等待配置文件 FileSystemWatcher 重载期间读到旧阈值。
+            if (contextCompressionTriggerOptions is not null && updated.MaxTokensLength is > 0)
+            {
+                contextCompressionTriggerOptions.ModelMaxContextTokens = updated.MaxTokensLength.Value;
+            }
+
             return Ok(ToModelDto(updated));
         }
         catch (ArgumentException ex)

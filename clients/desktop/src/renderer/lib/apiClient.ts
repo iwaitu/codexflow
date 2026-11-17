@@ -19,6 +19,8 @@ export type BackgroundJob = components['schemas']['BackgroundJobDto'];
 export type WorkspaceDirectoryListing = components['schemas']['WorkspaceDirectoryListingDto'];
 export type WorkspaceFileContent = components['schemas']['WorkspaceFileContentDto'];
 export type WorkspaceChanges = components['schemas']['WorkspaceChangesDto'];
+export type ChatAttachment = components['schemas']['ChatAttachmentDto'];
+export type UploadedAttachment = components['schemas']['UploadedAttachmentDto'];
 
 export interface SessionContextWindow {
   sessionId: string;
@@ -102,23 +104,7 @@ export interface ApiAuthContext {
   accessToken: string;
 }
 
-async function requestJson<T>(
-  auth: ApiAuthContext,
-  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
-  path: string,
-  body?: unknown,
-  signal?: AbortSignal,
-): Promise<T> {
-  const response = await fetch(`${auth.baseUrl}${path}`, {
-    method,
-    headers: {
-      Authorization: `Bearer ${auth.accessToken}`,
-      ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-    signal,
-  });
-
+async function parseApiResponse<T>(response: Response, fallbackMessage: string): Promise<T> {
   if (response.status === 204) {
     return undefined as T;
   }
@@ -142,11 +128,31 @@ async function requestJson<T>(
       (typeof parsed?.message === 'string' && parsed.message) ||
       rawText ||
       response.statusText ||
-      `请求失败 (${response.status})`;
+      `${fallbackMessage} (${response.status})`;
     throw new ApiError(response.status, code, message);
   }
 
   return (parsed as T) ?? (undefined as T);
+}
+
+async function requestJson<T>(
+  auth: ApiAuthContext,
+  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+  path: string,
+  body?: unknown,
+  signal?: AbortSignal,
+): Promise<T> {
+  const response = await fetch(`${auth.baseUrl}${path}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${auth.accessToken}`,
+      ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+    },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal,
+  });
+
+  return parseApiResponse<T>(response, '请求失败');
 }
 
 export const apiClient = {
@@ -193,6 +199,15 @@ export const apiClient = {
       auth,
       'GET',
       `/api/gateway/session/${encodeURIComponent(sessionId)}/conversations?page=${page}&pageSize=${pageSize}`,
+    );
+  },
+
+  createConversation(auth: ApiAuthContext, sessionId: string, name?: string): Promise<ConversationSummary> {
+    return requestJson<ConversationSummary>(
+      auth,
+      'POST',
+      `/api/gateway/session/${encodeURIComponent(sessionId)}/conversations`,
+      name?.trim() ? { name: name.trim() } : {},
     );
   },
 
@@ -254,9 +269,24 @@ export const apiClient = {
       conversationId?: string;
       conversationMode?: string;
       structuredAction?: components['schemas']['GatewayStructuredActionRequest'];
+      attachments?: ChatAttachment[];
     },
   ): Promise<{ messageId: string; sessionId: string }> {
     return requestJson<{ messageId: string; sessionId: string }>(auth, 'POST', '/api/gateway/chat', payload);
+  },
+
+  async uploadAttachment(auth: ApiAuthContext, sessionId: string, file: File): Promise<UploadedAttachment> {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    const response = await fetch(`${auth.baseUrl}/api/gateway/session/${encodeURIComponent(sessionId)}/attachments`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${auth.accessToken}`,
+      },
+      body: form,
+    });
+
+    return parseApiResponse<UploadedAttachment>(response, '上传附件失败');
   },
 
   cancelTurn(auth: ApiAuthContext, sessionId: string): Promise<{ sessionId: string; cancelled: boolean; status: string }> {

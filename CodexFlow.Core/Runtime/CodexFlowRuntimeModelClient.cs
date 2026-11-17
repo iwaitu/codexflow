@@ -35,6 +35,11 @@ internal sealed class CodexFlowRuntimeModelClient(
     private readonly TimeSpan _timeout = timeout;
     private readonly ILogger _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     private readonly QreV2BackedQueryRuntimeEngine.TurnEvidence? _evidence = evidence;
+    private long _lastStepInputTokens;
+    private long _lastStepOutputTokens;
+
+    public long LastStepInputTokens => Volatile.Read(ref _lastStepInputTokens);
+    public long LastStepOutputTokens => Volatile.Read(ref _lastStepOutputTokens);
 
     public IAsyncEnumerable<QreProtocol.RuntimeModelStreamEvent> StreamAsync(
         QreProtocol.RuntimeModelRequest request,
@@ -60,6 +65,8 @@ internal sealed class CodexFlowRuntimeModelClient(
         for (var attempt = 0; ; attempt++)
         {
             var sawContent = false;
+            long attemptInputTokens = 0;
+            long attemptOutputTokens = 0;
             var held = new List<QreProtocol.RuntimeModelStreamEvent>();
             QreProtocol.RuntimeModelCompletedEvent? completion = null;
 
@@ -67,6 +74,18 @@ internal sealed class CodexFlowRuntimeModelClient(
                 .WithCancellation(ct)
                 .ConfigureAwait(false))
             {
+                if (runtimeEvent is QreProtocol.RuntimeUsageEvent usageEvent)
+                {
+                    if (usageEvent.Usage.InputTokens is > 0)
+                    {
+                        attemptInputTokens += usageEvent.Usage.InputTokens.Value;
+                    }
+                    if (usageEvent.Usage.OutputTokens is > 0)
+                    {
+                        attemptOutputTokens += usageEvent.Usage.OutputTokens.Value;
+                    }
+                }
+
                 if (runtimeEvent is QreProtocol.RuntimeModelCompletedEvent completed)
                 {
                     completion = completed;
@@ -91,6 +110,13 @@ internal sealed class CodexFlowRuntimeModelClient(
                 }
 
                 yield return runtimeEvent;
+            }
+
+            if (attemptInputTokens > 0 || attemptOutputTokens > 0)
+            {
+                // 记录最近一次模型调用（含重试或终轮 step）的实际输入/输出水位，用于真实上下文占用统计。
+                Volatile.Write(ref _lastStepInputTokens, attemptInputTokens);
+                Volatile.Write(ref _lastStepOutputTokens, attemptOutputTokens);
             }
 
             if (!sawContent && attempt == 0)

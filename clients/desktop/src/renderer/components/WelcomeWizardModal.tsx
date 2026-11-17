@@ -1,13 +1,17 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { CheckCircle2, Link2, ShieldAlert, Sparkles, X } from 'lucide-react';
+import { CheckCircle2, Link2, ShieldAlert, X } from 'lucide-react';
 import type { ExecutionBackendKind, ExecutionPermissionModeKind } from '@shared/ipc';
-import type { SystemStatusSummary } from '../lib/apiClient';
+import type { ModelSettings, SystemStatusSummary } from '../lib/apiClient';
 import { isExecutionRiskIncreasing } from '../lib/executionPolicy';
+import { DEFAULT_MAX_CONTEXT_TOKENS, parseModelSettingsInput } from '../lib/modelSettingsForm';
+import { CodexFlowBrand } from './CodexFlowBrand';
+import { MaxContextField } from './MaxContextField';
 
 interface WelcomeWizardModalProps {
   open: boolean;
   systemStatus: SystemStatusSummary | null;
+  modelSettings?: ModelSettings | null;
   controlPlaneAvailable: boolean;
   onClose: () => void;
   onSaved: () => void;
@@ -16,14 +20,18 @@ interface WelcomeWizardModalProps {
 export const WelcomeWizardModal: React.FC<WelcomeWizardModalProps> = ({
   open,
   systemStatus,
+  modelSettings = null,
   controlPlaneAvailable,
   onClose,
   onSaved,
 }) => {
   const [tab, setTab] = useState<'managed' | 'standalone'>('managed');
-  const [apiUrl, setApiUrl] = useState('');
-  const [apiMode, setApiMode] = useState('ChatCompletions');
-  const [model, setModel] = useState('');
+  const [apiUrl, setApiUrl] = useState(modelSettings?.apiUrl ?? '');
+  const [apiMode, setApiMode] = useState(modelSettings?.apiMode ?? 'ChatCompletions');
+  const [model, setModel] = useState(modelSettings?.model ?? '');
+  const [maxTokensLength, setMaxTokensLength] = useState(
+    String(modelSettings?.maxTokensLength ?? DEFAULT_MAX_CONTEXT_TOKENS),
+  );
   const [apiKey, setApiKey] = useState('');
   const currentBackend = (systemStatus?.executionBackend as ExecutionBackendKind) || 'Local';
   const currentPermissionMode = (systemStatus?.permissionMode as ExecutionPermissionModeKind) || 'Ask';
@@ -42,18 +50,42 @@ export const WelcomeWizardModal: React.FC<WelcomeWizardModalProps> = ({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const wasOpenRef = useRef(false);
+  useEffect(() => {
+    const justOpened = open && !wasOpenRef.current;
+    wasOpenRef.current = open;
+    if (!justOpened) return;
+    setApiUrl(modelSettings?.apiUrl ?? '');
+    setApiMode(modelSettings?.apiMode ?? 'ChatCompletions');
+    setModel(modelSettings?.model ?? '');
+    setMaxTokensLength(String(modelSettings?.maxTokensLength ?? DEFAULT_MAX_CONTEXT_TOKENS));
+    setApiKey('');
+    setBackend(currentBackend);
+    setPermissionMode(currentPermissionMode);
+    setConfirmRiskOpen(false);
+    setError(null);
+  }, [open, modelSettings, currentBackend, currentPermissionMode]);
+
   const executeSaveManaged = async () => {
+    const parsed = parseModelSettingsInput({
+      apiUrl,
+      apiMode,
+      model,
+      maxTokensLength,
+      apiKey,
+    });
+    if (!parsed.ok) {
+      setError(parsed.error);
+      setConfirmRiskOpen(false);
+      return;
+    }
+
     setSaving(true);
     setError(null);
     setConfirmRiskOpen(false);
     try {
-      if (apiUrl.trim() || model.trim() || apiKey.trim()) {
-        const modelRes = await window.codexflow.updateModelSettings({
-          apiUrl: apiUrl.trim() || undefined,
-          apiMode,
-          model: model.trim() || undefined,
-          apiKey: apiKey.trim() || undefined,
-        });
+      if (parsed.hasAnyChange) {
+        const modelRes = await window.codexflow.updateModelSettings(parsed.payload);
         if (!modelRes.ok) {
           setError(modelRes.errorMessage || '保存模型设置失败。');
           setSaving(false);
@@ -77,6 +109,18 @@ export const WelcomeWizardModal: React.FC<WelcomeWizardModalProps> = ({
 
   const handleSaveManaged = (e: React.FormEvent) => {
     e.preventDefault();
+    const parsed = parseModelSettingsInput({
+      apiUrl,
+      apiMode,
+      model,
+      maxTokensLength,
+      apiKey,
+    });
+    if (!parsed.ok) {
+      setError(parsed.error);
+      return;
+    }
+    setError(null);
     const { risky, reasons } = isExecutionRiskIncreasing(
       currentBackend,
       currentPermissionMode,
@@ -153,10 +197,10 @@ export const WelcomeWizardModal: React.FC<WelcomeWizardModalProps> = ({
     <Dialog.Root open={open} onOpenChange={(v) => (!v ? onClose() : undefined)}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-40 bg-black/70 backdrop-blur-sm" />
-        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-xl -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl">
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 max-h-[90vh] w-full max-w-xl -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl">
           <div className="flex items-center justify-between">
             <Dialog.Title className="flex items-center gap-2 text-base font-semibold text-slate-100">
-              <Sparkles className="h-4 w-4 text-indigo-400" />
+              <CodexFlowBrand showText={false} iconClassName="h-6 w-6" />
               首次运行向导
             </Dialog.Title>
             <button
@@ -191,7 +235,7 @@ export const WelcomeWizardModal: React.FC<WelcomeWizardModalProps> = ({
           </div>
 
           {tab === 'managed' ? (
-            <form onSubmit={(e) => void handleSaveManaged(e)} className="mt-4 space-y-4 text-xs">
+            <form noValidate onSubmit={(e) => void handleSaveManaged(e)} className="mt-4 space-y-4 text-xs">
               <div className="rounded-lg border border-slate-800 bg-slate-950/70 p-3">
                 <div className="flex items-center justify-between">
                   <span className="text-slate-300">
@@ -239,6 +283,13 @@ export const WelcomeWizardModal: React.FC<WelcomeWizardModalProps> = ({
                     <option value="Responses">Responses</option>
                   </select>
                 </label>
+
+                <div className="col-span-2">
+                  <MaxContextField
+                    value={maxTokensLength}
+                    onChange={setMaxTokensLength}
+                  />
+                </div>
 
                 <label className="col-span-2 block">
                   <span className="mb-1 block text-slate-300">API Key（仅写入本地配置，不回显完整密钥）</span>

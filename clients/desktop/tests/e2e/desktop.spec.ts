@@ -159,10 +159,13 @@ test('Electron MVP cold start, security isolation, permission rule revoke, appro
     expect(childPidsAfterCrash.length).toBeGreaterThanOrEqual(3);
     expect(isPidAlive(childPidsAfterCrash[1]!)).toBe(false);
 
-    // 6. Send another message after crash recovery to prove proxy + REST + SSE work cleanly on backend #3
+    // 6. Click "新建会话", verify thread appears as "新会话", send message, and verify SSE auto-title update
+    await page.getByRole('button', { name: '新建会话' }).click();
+    await expect(page.getByText('新会话')).toBeVisible({ timeout: 5_000 });
     await textarea.fill('验证重启后新端口通信');
     await page.getByRole('button', { name: '发送' }).click();
     await expect(page.getByText('收到重启后请求: 验证重启后新端口通信').first()).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText('会话标题已总结')).toBeVisible({ timeout: 10_000 });
 
     expect(cspErrors).toEqual([]);
     expect(pageErrors).toEqual([]);

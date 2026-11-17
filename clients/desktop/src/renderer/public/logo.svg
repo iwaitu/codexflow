@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="codeanywhere-core" x1="14" y1="14" x2="52" y2="50" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#9dd6ff"/>
+      <stop offset="52%" stop-color="#4aa8ff"/>
+      <stop offset="100%" stop-color="#0a63ff"/>
+    </linearGradient>
+    <linearGradient id="codeanywhere-halo" x1="12" y1="52" x2="56" y2="12" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#dff1ff" stop-opacity="0.28"/>
+      <stop offset="100%" stop-color="#4aa8ff" stop-opacity="0.9"/>
+    </linearGradient>
+  </defs>
+
+  <circle cx="32" cy="32" r="21" stroke="url(#codeanywhere-halo)" stroke-width="4.5" stroke-linecap="round" stroke-dasharray="86 42">
+    <animateTransform attributeName="transform" type="rotate" from="0 32 32" to="360 32 32" dur="8s" repeatCount="indefinite"/>
+  </circle>
+
+  <path d="M27 22 18.5 32 27 42" stroke="url(#codeanywhere-core)" stroke-width="4.25" stroke-linecap="round" stroke-linejoin="round">
+    <animate attributeName="opacity" values="0.72;1;0.72" dur="1.9s" repeatCount="indefinite"/>
+  </path>
+
+  <path d="M37 22 45.5 32 37 42" stroke="url(#codeanywhere-core)" stroke-width="4.25" stroke-linecap="round" stroke-linejoin="round">
+    <animate attributeName="opacity" values="1;0.72;1" dur="1.9s" repeatCount="indefinite"/>
+  </path>
+
+  <circle cx="32" cy="32" r="3.5" fill="url(#codeanywhere-core)">
+    <animate attributeName="r" values="3.2;4.3;3.2" dur="1.9s" repeatCount="indefinite"/>
+    <animate attributeName="opacity" values="0.85;1;0.85" dur="1.9s" repeatCount="indefinite"/>
+  </circle>
+</svg>

@@ -46,6 +46,9 @@ public sealed record ConversationSummaryDto(
     DateTime CreatedUtc,
     DateTime UpdatedAtUtc);
 
+public sealed record CreateConversationRequest(
+    string? Name = null);
+
 public sealed record UpdateConversationRequest(
     string? Name = null,
     bool? IsArchived = null);
@@ -301,6 +304,52 @@ public sealed class GatewaySessionWorkspaceController(
         var paged = await chatService.GetSessionConversations(sessionId, userId, page, pageSize, includeArchived).ConfigureAwait(false);
         var items = paged.List.Select(ToConversationDto).ToArray();
         return Ok(new PagedResponseDto<ConversationSummaryDto>(items, paged.Total, paged.Page, paged.PageSize));
+    }
+
+    [HttpPost("session/{sessionId}/conversations")]
+    [ProducesResponseType(typeof(ConversationSummaryDto), StatusCodes.Status201Created)]
+    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ConversationSummaryDto>> CreateConversation(
+        [FromRoute] string sessionId,
+        [FromBody] CreateConversationRequest? request = null,
+        CancellationToken ct = default)
+    {
+        _ = ct;
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrEmpty(userId)) return Unauthorized();
+
+        var session = await chatService.GetSession(sessionId).ConfigureAwait(false);
+        if (session is null || !string.Equals(session.UserId, userId, StringComparison.Ordinal))
+        {
+            return NotFound(new GatewayErrorResponse("session_not_found", "Session not found."));
+        }
+
+        var initialTitle = string.IsNullOrWhiteSpace(request?.Name)
+            ? CodexFlow.Gateway.ConversationTitlePolicy.DefaultNewConversationTitle
+            : request.Name.Trim();
+
+        var conversationId = await chatService.CreateConversationInSession(
+            userId,
+            sessionId,
+            "codex-v2",
+            initialTitle,
+            null,
+            ConversationThreadType.Chat).ConfigureAwait(false);
+
+        var created = await chatService.Get(conversationId).ConfigureAwait(false);
+        var dto = created is not null
+            ? ToConversationDto(created)
+            : new ConversationSummaryDto(
+                conversationId,
+                sessionId,
+                initialTitle,
+                ConversationThreadType.Chat.ToString(),
+                false,
+                null,
+                DateTime.UtcNow,
+                DateTime.UtcNow);
+
+        return StatusCode(StatusCodes.Status201Created, dto);
     }
 
     [HttpPatch("conversations/{conversationId}")]

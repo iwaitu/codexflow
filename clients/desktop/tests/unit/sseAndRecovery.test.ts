@@ -651,4 +651,41 @@ describe('SSE parser and recovery scenarios', () => {
       cwSpy.mockRestore();
     }
   });
+
+  it('handles updateconversationtitle SSE event, resets new-thread mode on setconversationid, and clears state on startNewConversation', () => {
+    const store = useAppStore.getState();
+    store.setActiveSession('sess-title');
+    store.setConversationMode('new-thread');
+    store.appendOptimisticUserMessage('请总结下这个方案');
+
+    useAppStore.getState().applySseEvent({
+      id: 10,
+      event: 'setconversationid',
+      data: { conversationId: 'conv-auto-1' },
+    } as never);
+
+    expect(useAppStore.getState().activeConversationId).toBe('conv-auto-1');
+    expect(useAppStore.getState().conversationMode).toBe('continue-current');
+
+    useAppStore.getState().applySseEvent({
+      id: 11,
+      event: 'updateconversationtitle',
+      data: { conversationId: 'conv-auto-1', title: '方案总结分析', sessionId: 'sess-title' },
+    } as never);
+
+    expect(useAppStore.getState().latestTitleUpdate).toEqual({
+      conversationId: 'conv-auto-1',
+      title: '方案总结分析',
+      sessionId: 'sess-title',
+      seq: 1,
+    });
+
+    useAppStore.getState().startNewConversation('conv-fresh-2');
+    const afterNew = useAppStore.getState();
+    expect(afterNew.activeConversationId).toBe('conv-fresh-2');
+    expect(afterNew.conversationMode).toBe('continue-current');
+    expect(afterNew.messages).toEqual([]);
+    expect(afterNew.streamingContent).toBe('');
+    expect(afterNew.toolCalls).toEqual([]);
+  });
 });

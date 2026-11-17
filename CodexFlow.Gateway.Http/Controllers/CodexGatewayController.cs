@@ -14,6 +14,7 @@ using CodexFlow.Core.Agents;
 using CodexFlow.Core.Models;
 using CodexFlow.Logging;
 using CodexFlow.Orchestration.Hosting;
+using CodexFlow.Orchestration.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -367,7 +368,7 @@ public class CodexGatewayController : ControllerBase
             dbSession.WorkspacePath ?? string.Empty,
             (Uri?)null);
 
-        var estimatedTokens = ParseLongMetadata(session.Metadata, "ContextWindowEstimatedTokens");
+        var estimatedTokens = CodexSessionManager.ResolveActiveContextTokens(session);
         var estimatedChars = ParseLongMetadata(session.Metadata, "ContextWindowEstimatedChars");
         var recentTurns = (int)ParseLongMetadata(session.Metadata, "ContextWindowRecentTurns");
         var summaryChars = ParseLongMetadata(session.Metadata, "ContextWindowSummaryChars");
@@ -456,6 +457,56 @@ public class CodexGatewayController : ControllerBase
     }
 
     /// <summary>
+    /// 上传单个本地文件到会话工作区的 <c>.codexflow-attachments/</c> 目录，返回工作区相对路径与元数据。
+    /// </summary>
+    [HttpPost("session/{sessionId}/attachments")]
+    [RequestSizeLimit(GatewayAttachmentService.MaxAttachmentBytes + 1024 * 1024)]
+    [ProducesResponseType(typeof(UploadedAttachmentDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<UploadedAttachmentDto>> UploadAttachment(
+        [FromRoute] string sessionId,
+        IFormFile? file,
+        CancellationToken ct = default)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrEmpty(userId)) return Unauthorized();
+
+        var dbSession = await _chatService.GetSession(sessionId).ConfigureAwait(false);
+        if (dbSession is null || !string.Equals(dbSession.UserId, userId, StringComparison.Ordinal))
+        {
+            return NotFound("Session not found");
+        }
+
+        if (file is null)
+        {
+            return BadRequest(new GatewayErrorResponse("invalid_attachment", "请选择要上传的附件文件。"));
+        }
+
+        try
+        {
+            await using var stream = file.OpenReadStream();
+            var saved = await GatewayAttachmentService.SaveUploadedAttachmentAsync(
+                dbSession.WorkspacePath,
+                file.FileName,
+                file.ContentType,
+                stream,
+                file.Length,
+                ct).ConfigureAwait(false);
+
+            return Ok(new UploadedAttachmentDto(
+                saved.Name,
+                saved.RelativePath,
+                saved.SizeBytes,
+                saved.ContentType));
+        }
+        catch (GatewayAttachmentValidationException ex)
+        {
+            return BadRequest(new GatewayErrorResponse(ex.ErrorCode, ex.Message));
+        }
+    }
+
+    /// <summary>
     /// 发送用户消息 — 入队到 Gateway，立即返回 202 Accepted
     /// </summary>
     [HttpPost("chat")]
@@ -464,8 +515,12 @@ public class CodexGatewayController : ControllerBase
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrEmpty(userId)) return Unauthorized();
 
-        if (string.IsNullOrWhiteSpace(request.Message))
-            return BadRequest("消息内容不能为空");
+        if (request is null)
+            return BadRequest("请求体不能为空");
+
+        var hasAttachments = request.Attachments is { Count: > 0 };
+        if (string.IsNullOrWhiteSpace(request.Message) && !hasAttachments)
+            return BadRequest("消息内容和附件不能同时为空");
 
         if (string.IsNullOrWhiteSpace(request.SessionId))
             return BadRequest("SessionId 不能为空");
@@ -475,6 +530,31 @@ public class CodexGatewayController : ControllerBase
         {
             _logger.LogWarning("[Gateway] Chat refused: {Violation}. Session={SessionId}", violation, request.SessionId);
             return NotFound("Session not found");
+        }
+
+        var messageContent = request.Message ?? string.Empty;
+        var attachmentCount = 0;
+        if (hasAttachments)
+        {
+            var dbSession = await _chatService.GetSession(request.SessionId).ConfigureAwait(false);
+            try
+            {
+                var inputs = request.Attachments!
+                    .Select(static a => new ChatAttachmentInput(
+                        a.Name,
+                        a.RelativePath,
+                        a.SizeBytes,
+                        a.ContentType,
+                        a.IsWorkspaceReference))
+                    .ToArray();
+                var validated = GatewayAttachmentService.ValidateChatAttachments(dbSession?.WorkspacePath, inputs);
+                attachmentCount = validated.Count;
+                messageContent = GatewayAttachmentService.FormatUserMessageWithAttachments(request.Message, validated);
+            }
+            catch (GatewayAttachmentValidationException ex)
+            {
+                return BadRequest(new GatewayErrorResponse(ex.ErrorCode, ex.Message));
+            }
         }
 
         FullTextAuditLogger.Log(
@@ -488,7 +568,8 @@ public class CodexGatewayController : ControllerBase
                 userId,
                 conversationId = request.ConversationId,
                 taskId = request.TaskId,
-                messageLength = request.Message.Length,
+                messageLength = messageContent.Length,
+                attachmentCount,
                 hasGitRepoUrl = !string.IsNullOrWhiteSpace(request.GitRepoUrl),
                 branch = request.Branch,
                 approveGitPush = request.ApproveGitPush
@@ -501,7 +582,7 @@ public class CodexGatewayController : ControllerBase
             UserId = userId,
             ConversationId = request.ConversationId,
             TaskId = request.TaskId,
-            Content = request.Message,
+            Content = messageContent,
             Meta = new GatewayMessageMeta
             {
                 GitRepoUrl = request.GitRepoUrl,
@@ -873,7 +954,25 @@ public class GatewayChatRequest
     /// parsing of <see cref="Message"/>. Approve/reject should carry the plan id/version/hash the user actually saw.
     /// </summary>
     public GatewayStructuredActionRequest? StructuredAction { get; set; }
+
+    /// <summary>Optional file attachments located inside the session workspace.</summary>
+    public IReadOnlyList<ChatAttachmentDto>? Attachments { get; set; }
 }
+
+/// <summary>Metadata returned after uploading a local file attachment into the session workspace.</summary>
+public sealed record UploadedAttachmentDto(
+    string Name,
+    string RelativePath,
+    long SizeBytes,
+    string ContentType);
+
+/// <summary>Attachment descriptor sent alongside <see cref="GatewayChatRequest"/>.</summary>
+public sealed record ChatAttachmentDto(
+    string Name,
+    string RelativePath,
+    long SizeBytes,
+    string? ContentType = null,
+    bool IsWorkspaceReference = false);
 
 /// <summary>Structured action payload for <see cref="GatewayChatRequest.StructuredAction"/>.</summary>
 public class GatewayStructuredActionRequest

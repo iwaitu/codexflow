@@ -30,7 +30,7 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
     private readonly ILogger<QreV2BackedQueryRuntimeEngine> _logger;
     private readonly IRuntimeHookDispatcher? _runtimeHookDispatcher;
     private readonly TimeSpan _modelStreamTimeout;
-    private readonly QreV2.RuntimeContextOptions _runtimeContextOptions;
+    private readonly ContextCompressionTriggerOptions _contextOptions;
     private readonly QreV2.IRuntimeAuditSink? _auditSink;
     private readonly string? _auditDirectory;
     private readonly CodexFlow.Core.Execution.Approval.IExecutionApprovalBroker? _approvalBroker;
@@ -53,7 +53,7 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
         _runtimeHookDispatcher = runtimeHookDispatcher;
         _modelStreamTimeout = TimeSpan.FromMilliseconds(
             Math.Max(0, backendOptions?.Value.ModelStreamTimeoutMs ?? new QueryRuntimeBackendOptions().ModelStreamTimeoutMs));
-        _runtimeContextOptions = CreateContextOptions(contextOptions ?? new ContextCompressionTriggerOptions());
+        _contextOptions = contextOptions ?? new ContextCompressionTriggerOptions();
         _auditSink = auditSink;
         _auditDirectory = string.IsNullOrWhiteSpace(backendOptions?.Value.AuditDirectory) ? null : backendOptions!.Value.AuditDirectory;
         _approvalBroker = approvalBroker;
@@ -157,7 +157,7 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
             {
                 ToolPipeline = toolPipeline,
                 ToolCatalogSelector = catalog,
-                ContextManager = new QreV2.RuntimeContextManager(_runtimeContextOptions),
+                ContextManager = new QreV2.RuntimeContextManager(CreateContextOptions(_contextOptions)),
                 AuditSink = auditSink,
                 AuditFailureMode = QreV2.RuntimeAuditFailureMode.FailClosed,
                 ToolApproval = request.InterventionHook == null
@@ -178,7 +178,7 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
                 bridge,
                 ct).ConfigureAwait(false);
             stopwatch.Stop();
-            var result = BuildResult(request, runtimeResult, queryId, stopwatch.ElapsedMilliseconds) with
+            var result = BuildResult(request, runtimeResult, queryId, stopwatch.ElapsedMilliseconds, modelClient) with
             {
                 WorkerReport = evidence.WorkerReport,
                 VerifiedWithoutChange = VerifiedNoChangeCompletion.IsStated(evidence.SnapshotForStopHook())
@@ -364,7 +364,8 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
         QueryRuntimeRequest request,
         QreV2.RuntimeTurnResult runtimeResult,
         Guid queryId,
-        long elapsedMs)
+        long elapsedMs,
+        CodexFlowRuntimeModelClient? modelClient = null)
     {
         var invocations = runtimeResult.Turn.Steps
             .SelectMany(static step => step.ToolInvocations ?? [])
@@ -386,6 +387,13 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
             _ => QueryTerminationReason.Exception
         };
 
+        var lastStepPrompt = modelClient?.LastStepInputTokens is > 0
+            ? ToNullableInt(modelClient.LastStepInputTokens)
+            : (runtimeResult.Turn.Steps.Count <= 1 ? ToNullableInt(runtimeResult.Usage.InputTokens) : null);
+        var lastStepCompletion = modelClient?.LastStepOutputTokens is > 0
+            ? ToNullableInt(modelClient.LastStepOutputTokens)
+            : (runtimeResult.Turn.Steps.Count <= 1 ? ToNullableInt(runtimeResult.Usage.OutputTokens) : null);
+
         return new QueryRuntimeResult
         {
             TerminationReason = termination,
@@ -404,6 +412,8 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
             FinalThinking = string.IsNullOrEmpty(thinking) ? null : thinking,
             TotalPromptTokens = ToNullableInt(runtimeResult.Usage.InputTokens),
             TotalCompletionTokens = ToNullableInt(runtimeResult.Usage.OutputTokens),
+            LastStepPromptTokens = lastStepPrompt,
+            LastStepCompletionTokens = lastStepCompletion,
             TotalCachedPromptTokens = runtimeResult.Usage.CachedInputTokens > 0
                 ? ToNullableInt(runtimeResult.Usage.CachedInputTokens)
                 : null,

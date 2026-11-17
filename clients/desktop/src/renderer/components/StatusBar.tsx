@@ -2,6 +2,7 @@ import React from 'react';
 import { AlertTriangle, RefreshCw, Shield, ShieldAlert } from 'lucide-react';
 import type { BackendConnectionPublicInfo } from '@shared/ipc';
 import type { SessionContextWindow, SystemStatusSummary } from '../lib/apiClient';
+import { ContextUsageRing } from './ContextUsageRing';
 
 interface StatusBarProps {
   connection: BackendConnectionPublicInfo | null;
@@ -32,7 +33,6 @@ export const StatusBar: React.FC<StatusBarProps> = ({
   const perm = systemStatus?.permissionMode ?? 'Ask';
   const selfProtection = connection?.selfApprovalProtection ?? systemStatus?.selfApprovalProtection ?? true;
   const controlAvailable = connection?.controlPlaneAvailable ?? systemStatus?.controlPlaneAvailable ?? true;
-  const usagePct = contextWindow ? Math.round(contextWindow.usageRatio * 100) : 0;
 
   return (
     <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-800 bg-slate-950 px-4 py-1.5 text-[11px] text-slate-400">
@@ -88,12 +88,7 @@ export const StatusBar: React.FC<StatusBarProps> = ({
             v{connection.clientVersion}
           </span>
         )}
-        {contextWindow && (
-          <span title={`已用 ${contextWindow.estimatedTokens} / ${contextWindow.modelMaxTokens} tokens`}>
-            上下文占用: {usagePct}% ({contextWindow.estimatedTokens.toLocaleString()} /{' '}
-            {contextWindow.modelMaxTokens.toLocaleString()})
-          </span>
-        )}
+        {contextWindow && <ContextUsageRing contextWindow={contextWindow} />}
         {systemStatus && !systemStatus.modelConfigured && (
           <button
             type="button"

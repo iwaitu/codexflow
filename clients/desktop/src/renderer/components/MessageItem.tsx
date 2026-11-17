@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { Bot, ChevronDown, ChevronRight, Info, User } from 'lucide-react';
+import { Bot, ChevronDown, ChevronRight, Info, Paperclip, User } from 'lucide-react';
+import { formatFileSize, parseMessageWithAttachments } from '../lib/attachments';
 import type { UiMessage } from '../lib/sessionRecovery';
 import { MarkdownRenderer } from './MarkdownRenderer';
 
@@ -20,6 +21,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message }) => {
   }
 
   const isUser = message.role === 'user';
+  const parsedUserContent = isUser ? parseMessageWithAttachments(message.content) : null;
 
   return (
     <div className={`flex gap-3 py-3 ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -55,7 +57,29 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message }) => {
         )}
 
         {isUser ? (
-          <div className="whitespace-pre-wrap text-sm">{message.content}</div>
+          <div>
+            {parsedUserContent?.text && (
+              <div className="whitespace-pre-wrap text-sm">{parsedUserContent.text}</div>
+            )}
+            {parsedUserContent && parsedUserContent.attachments.length > 0 && (
+              <div
+                data-testid="message-attachments"
+                className={`${parsedUserContent.text ? 'mt-2 border-t border-indigo-400/30 pt-2' : ''} flex flex-wrap gap-1.5`}
+              >
+                {parsedUserContent.attachments.map((att, idx) => (
+                  <span
+                    key={`${att.relativePath}-${idx}`}
+                    title={att.relativePath}
+                    className="inline-flex items-center gap-1 rounded-md bg-indigo-950/60 px-2 py-0.5 text-xs text-indigo-100 ring-1 ring-indigo-300/30"
+                  >
+                    <Paperclip className="h-3 w-3 shrink-0 text-indigo-200" />
+                    <span className="max-w-[200px] truncate font-medium">{att.name}</span>
+                    <span className="text-[10px] text-indigo-200/80">{formatFileSize(att.sizeBytes)}</span>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
         ) : (
           <MarkdownRenderer content={message.content} />
         )}
