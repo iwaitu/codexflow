@@ -70,42 +70,62 @@ function findSofficeInTree(rootDir) {
   return candidates.find((p) => existsSync(p)) ?? null;
 }
 
-function getOfficialDownloadSpec(platform, arch, version) {
+function getOfficialDownloadUrls(platform, arch, version) {
+  let relPath;
+  let fileName;
   if (platform === 'win') {
-    const msiName = `LibreOffice_${version}_Win_x86-64.msi`;
-    return {
-      fileName: msiName,
-      url:
-        process.env.LIBREOFFICE_ARCHIVE_URL ||
-        `https://download.documentfoundation.org/libreoffice/stable/${version}/win/x86_64/${msiName}`,
-    };
-  }
-  if (platform === 'mac') {
+    fileName = `LibreOffice_${version}_Win_x86-64.msi`;
+    relPath = `win/x86_64/${fileName}`;
+  } else if (platform === 'mac') {
     const macArch = arch === 'arm64' ? 'aarch64' : 'x86_64';
-    const dmgName = `LibreOffice_${version}_MacOS_${macArch}.dmg`;
-    return {
-      fileName: dmgName,
-      url:
-        process.env.LIBREOFFICE_ARCHIVE_URL ||
-        `https://download.documentfoundation.org/libreoffice/stable/${version}/mac/${macArch}/${dmgName}`,
-    };
+    fileName = `LibreOffice_${version}_MacOS_${macArch}.dmg`;
+    relPath = `mac/${macArch}/${fileName}`;
+  } else {
+    fileName = `LibreOffice_${version}_Linux_x86-64_deb.tar.gz`;
+    relPath = `deb/x86_64/${fileName}`;
   }
-  const tarName = `LibreOffice_${version}_Linux_x86-64_deb.tar.gz`;
+
+  if (process.env.LIBREOFFICE_ARCHIVE_URL) {
+    return { fileName, urls: [process.env.LIBREOFFICE_ARCHIVE_URL] };
+  }
+
   return {
-    fileName: tarName,
-    url:
-      process.env.LIBREOFFICE_ARCHIVE_URL ||
-      `https://download.documentfoundation.org/libreoffice/stable/${version}/deb/x86_64/${tarName}`,
+    fileName,
+    urls: [
+      `https://ftp.osuosl.org/pub/tdf/libreoffice/stable/${version}/${relPath}`,
+      `https://download.documentfoundation.org/libreoffice/stable/${version}/${relPath}`,
+      `https://download.documentfoundation.org/libreoffice/stable/${version}/${relPath}`,
+    ],
   };
 }
 
-async function downloadFile(url, destPath) {
-  console.log(`Downloading LibreOffice from ${url}...`);
-  const response = await fetch(url, { redirect: 'follow' });
-  if (!response.ok || !response.body) {
-    throw new Error(`Failed to download ${url}: HTTP ${response.status}`);
+async function downloadFileWithFallback(urls, destPath) {
+  const errors = [];
+  for (let i = 0; i < urls.length; i++) {
+    const url = urls[i];
+    rmSync(destPath, { force: true });
+    console.log(`Downloading LibreOffice (attempt ${i + 1}/${urls.length}) from ${url}...`);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error('Download timed out after 240s')), 240_000);
+    try {
+      const response = await fetch(url, { redirect: 'follow', signal: controller.signal });
+      if (!response.ok || !response.body) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      await pipeline(Readable.fromWeb(response.body), createWriteStream(destPath), {
+        signal: controller.signal,
+      });
+      return;
+    } catch (err) {
+      const msg = err instanceof Error ? `${err.message}${err.cause ? ` (${String(err.cause)})` : ''}` : String(err);
+      console.warn(`Mirror attempt ${i + 1} failed: ${msg}`);
+      errors.push(`${url}: ${msg}`);
+      rmSync(destPath, { force: true });
+    } finally {
+      clearTimeout(timer);
+    }
   }
-  await pipeline(Readable.fromWeb(response.body), createWriteStream(destPath));
+  throw new Error(`All LibreOffice download attempts failed:\n${errors.join('\n')}`);
 }
 
 function pruneUnneededExtras(libreOfficeDir) {
@@ -159,9 +179,9 @@ async function main() {
 
   try {
     const resolvedVersion = await resolveLibreOfficeVersion(opts.version);
-    const spec = getOfficialDownloadSpec(opts.platform, opts.arch, resolvedVersion);
+    const spec = getOfficialDownloadUrls(opts.platform, opts.arch, resolvedVersion);
     const archivePath = join(tempDir, spec.fileName);
-    await downloadFile(spec.url, archivePath);
+    await downloadFileWithFallback(spec.urls, archivePath);
 
     rmSync(targetRoot, { recursive: true, force: true });
     mkdirSync(targetRoot, { recursive: true });
