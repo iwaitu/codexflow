@@ -203,7 +203,7 @@ NuGet 漏洞公告由宿主刷新；npm 与 PyPI 公告需要离线准备：
 python scripts/e2e/prepare-osv-advisories.py --out ./osv-advisories
 ```
 
-将 `ArtifactAudit:OsvAdvisoryDirectory` 指向输出目录。下载可能达到数百 MB；超过 48 小时的公告数据会被依赖审计拒绝。相关缓存准备见[验收缓存指南](scripts/e2e/prepare-restore-cache.md)。
+将 `ArtifactAudit:OsvAdvisoryDirectory` 指向输出目录。下载可能达到数百 MB；超过 48 小时的公告数据会被依赖审计拒绝。相关缓存准备见[验收缓存指南](scripts/e2e/prepare-restore-cache.zh-CN.md)。
 
 ## 项目架构
 
