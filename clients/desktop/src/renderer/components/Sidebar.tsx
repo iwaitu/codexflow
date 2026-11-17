@@ -1,6 +1,9 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Archive,
+  Blocks,
+  ChevronDown,
+  ChevronRight,
   FolderOpen,
   FolderPlus,
   MessageSquare,
@@ -15,14 +18,19 @@ import { CodexFlowBrand } from './CodexFlowBrand';
 interface SidebarProps {
   sessions: SessionSummary[];
   conversations: ConversationSummary[];
+  conversationsBySession?: Record<string, ConversationSummary[]>;
+  expandedSessionIds?: string[];
+  onToggleExpandSession?: (sessionId: string) => void;
   activeSessionId: string | null;
   activeConversationId: string | null;
+  activePrimaryView?: 'chat' | 'business-skills';
+  onSelectPrimaryView?: (view: 'chat' | 'business-skills') => void;
   controlPlaneAvailable: boolean;
   isTurnRunning?: boolean;
   creatingConversation?: boolean;
   onSelectSession: (sessionId: string) => void;
-  onSelectConversation: (conversationId: string) => void;
-  onCreateConversation?: () => Promise<void>;
+  onSelectConversation: (conversationId: string, sessionId?: string) => void;
+  onCreateConversation?: (sessionId?: string) => Promise<void>;
   onCreateSession: () => Promise<void>;
   onOpenFolder: () => Promise<void>;
   onRenameSession: (sessionId: string, name: string) => Promise<void>;
@@ -37,8 +45,13 @@ interface SidebarProps {
 export const Sidebar: React.FC<SidebarProps> = ({
   sessions,
   conversations,
+  conversationsBySession,
+  expandedSessionIds,
+  onToggleExpandSession,
   activeSessionId,
   activeConversationId,
+  activePrimaryView = 'chat',
+  onSelectPrimaryView,
   controlPlaneAvailable,
   isTurnRunning = false,
   creatingConversation = false,
@@ -57,6 +70,37 @@ export const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
+  const [localExpandedIds, setLocalExpandedIds] = useState<string[]>(() =>
+    activeSessionId ? [activeSessionId] : [],
+  );
+
+  useEffect(() => {
+    if (!activeSessionId || expandedSessionIds !== undefined) {
+      return;
+    }
+    setLocalExpandedIds((prev) =>
+      prev.includes(activeSessionId) ? prev : [...prev, activeSessionId],
+    );
+  }, [activeSessionId, expandedSessionIds]);
+
+  const effectiveExpandedSet = new Set(expandedSessionIds ?? localExpandedIds);
+
+  const handleToggleExpand = (sessionId: string) => {
+    if (onToggleExpandSession) {
+      onToggleExpandSession(sessionId);
+      return;
+    }
+    setLocalExpandedIds((prev) =>
+      prev.includes(sessionId) ? prev.filter((id) => id !== sessionId) : [...prev, sessionId],
+    );
+  };
+
+  const handleSelectWorkspaceNode = (sessionId: string) => {
+    if (!effectiveExpandedSet.has(sessionId)) {
+      handleToggleExpand(sessionId);
+    }
+    onSelectSession(sessionId);
+  };
 
   const startRename = (id: string, currentName: string) => {
     setEditingSessionId(id);
@@ -86,6 +130,35 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </button>
       </div>
 
+      {onSelectPrimaryView && (
+        <div className="grid grid-cols-2 gap-1.5 border-b border-slate-800 px-3 py-2">
+          <button
+            type="button"
+            onClick={() => onSelectPrimaryView('chat')}
+            className={`inline-flex items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium transition ${
+              activePrimaryView === 'chat'
+                ? 'bg-indigo-600 text-white'
+                : 'bg-slate-900 text-slate-300 hover:bg-slate-800'
+            }`}
+          >
+            <MessageSquare className="h-3.5 w-3.5" />
+            工作区对话
+          </button>
+          <button
+            type="button"
+            onClick={() => onSelectPrimaryView('business-skills')}
+            className={`inline-flex items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium transition ${
+              activePrimaryView === 'business-skills'
+                ? 'bg-indigo-600 text-white'
+                : 'bg-slate-900 text-slate-300 hover:bg-slate-800'
+            }`}
+          >
+            <Blocks className="h-3.5 w-3.5" />
+            插件与 Skill
+          </button>
+        </div>
+      )}
+
       <div className="grid grid-cols-2 gap-2 border-b border-slate-800 p-3">
         <button
           type="button"
@@ -114,161 +187,184 @@ export const Sidebar: React.FC<SidebarProps> = ({
       )}
 
       <div className="flex-1 overflow-y-auto p-3">
-        <div className="mb-2 text-[11px] font-medium uppercase tracking-wider text-slate-500">
-          工作区与会话 ({sessions.length})
+        <div className="mb-2 flex items-center justify-between text-[11px] font-medium uppercase tracking-wider text-slate-500">
+          <span>工作区与会话 ({sessions.length})</span>
         </div>
-        <div className="space-y-1">
+
+        <div className="space-y-1.5">
           {sessions.map((s) => {
-            const isActive = s.sessionId === activeSessionId;
+            const isActiveSession = s.sessionId === activeSessionId;
             const isDefault = s.name === '默认工作区';
+            const isExpanded = effectiveExpandedSet.has(s.sessionId);
+            const sessionConversations =
+              conversationsBySession?.[s.sessionId] ?? (isActiveSession ? conversations : []);
+
             return (
-              <div
-                key={s.sessionId}
-                className={`group rounded-lg border px-2.5 py-2 text-xs transition ${
-                  isActive
-                    ? 'border-indigo-500/50 bg-indigo-950/30 text-slate-100'
-                    : 'border-transparent text-slate-300 hover:bg-slate-900'
-                }`}
-              >
-                {editingSessionId === s.sessionId ? (
-                  <input
-                    autoFocus
-                    value={editingName}
-                    onChange={(e) => setEditingName(e.target.value)}
-                    onBlur={() => void commitRename(s.sessionId)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') void commitRename(s.sessionId);
-                      if (e.key === 'Escape') setEditingSessionId(null);
-                    }}
-                    className="w-full rounded border border-indigo-500 bg-slate-950 px-1.5 py-0.5 text-xs text-slate-100 focus:outline-none"
-                  />
-                ) : (
-                  <div className="flex items-center justify-between gap-1">
-                    <button
-                      type="button"
-                      onClick={() => onSelectSession(s.sessionId)}
-                      className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                    >
-                      <FolderOpen className="h-3.5 w-3.5 shrink-0 text-indigo-400" />
-                      <span className="truncate font-medium">{s.name}</span>
-                    </button>
+              <div key={s.sessionId} className="select-none">
+                <div
+                  className={`group rounded-lg border px-2 py-1.5 text-xs transition ${
+                    isActiveSession
+                      ? 'border-indigo-500/50 bg-indigo-950/30 text-slate-100'
+                      : 'border-transparent text-slate-300 hover:bg-slate-900'
+                  }`}
+                >
+                  {editingSessionId === s.sessionId ? (
+                    <input
+                      autoFocus
+                      value={editingName}
+                      onChange={(e) => setEditingName(e.target.value)}
+                      onBlur={() => void commitRename(s.sessionId)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') void commitRename(s.sessionId);
+                        if (e.key === 'Escape') setEditingSessionId(null);
+                      }}
+                      className="w-full rounded border border-indigo-500 bg-slate-950 px-1.5 py-0.5 text-xs text-slate-100 focus:outline-none"
+                    />
+                  ) : (
+                    <div className="flex items-center justify-between gap-1">
+                      <button
+                        type="button"
+                        onClick={() => handleToggleExpand(s.sessionId)}
+                        aria-label={isExpanded ? `折叠 ${s.name}` : `展开 ${s.name}`}
+                        aria-expanded={isExpanded}
+                        className="rounded p-0.5 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+                      >
+                        {isExpanded ? (
+                          <ChevronDown className="h-3.5 w-3.5" />
+                        ) : (
+                          <ChevronRight className="h-3.5 w-3.5" />
+                        )}
+                      </button>
 
-                    {!isDefault && (
-                      <div className="hidden items-center gap-0.5 group-hover:flex">
-                        <button
-                          type="button"
-                          title="重命名"
-                          onClick={() => startRename(s.sessionId, s.name)}
-                          className="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
-                        >
-                          <Pencil className="h-3 w-3" />
-                        </button>
-                        <button
-                          type="button"
-                          title="归档"
-                          onClick={() => void onArchiveSession(s.sessionId)}
-                          className="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
-                        >
-                          <Archive className="h-3 w-3" />
-                        </button>
-                        <button
-                          type="button"
-                          title="删除"
-                          onClick={() => void onDeleteSession(s.sessionId)}
-                          className="rounded p-1 text-slate-400 hover:bg-rose-950 hover:text-rose-300"
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSelectWorkspaceNode(s.sessionId)}
+                        className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+                      >
+                        <FolderOpen className="h-3.5 w-3.5 shrink-0 text-indigo-400" />
+                        <span className="truncate font-medium">{s.name}</span>
+                      </button>
+
+                      <div className="flex shrink-0 items-center gap-0.5">
+                        {onCreateConversation && (isActiveSession || isExpanded) && (
+                          <button
+                            type="button"
+                            disabled={isTurnRunning || creatingConversation}
+                            onClick={() => void onCreateConversation(s.sessionId)}
+                            title={
+                              isTurnRunning
+                                ? '当前回合执行中，请稍后再新建会话'
+                                : `在「${s.name}」中新建会话`
+                            }
+                            aria-label={isActiveSession ? '新建会话' : `在 ${s.name} 新建会话`}
+                            className="rounded p-1 text-slate-300 hover:bg-slate-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            <Plus className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+
+                        {!isDefault && (
+                          <div className="hidden items-center gap-0.5 group-hover:flex">
+                            <button
+                              type="button"
+                              title="重命名"
+                              onClick={() => startRename(s.sessionId, s.name)}
+                              className="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+                            >
+                              <Pencil className="h-3 w-3" />
+                            </button>
+                            <button
+                              type="button"
+                              title="归档"
+                              onClick={() => void onArchiveSession(s.sessionId)}
+                              className="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+                            >
+                              <Archive className="h-3 w-3" />
+                            </button>
+                            <button
+                              type="button"
+                              title="删除"
+                              onClick={() => void onDeleteSession(s.sessionId)}
+                              className="rounded p-1 text-slate-400 hover:bg-rose-950 hover:text-rose-300"
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </button>
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </div>
-                )}
+                    </div>
+                  )}
 
-                {s.workspacePath && (
-                  <div className="mt-1 truncate pl-5 font-mono text-[10px] text-slate-500" title={s.workspacePath}>
-                    {s.workspacePath}
+                  {s.workspacePath && (
+                    <div
+                      className="mt-0.5 truncate pl-6 font-mono text-[10px] text-slate-500"
+                      title={s.workspacePath}
+                    >
+                      {s.workspacePath}
+                    </div>
+                  )}
+                </div>
+
+                {isExpanded && (
+                  <div className="ml-3 mt-1 space-y-0.5 border-l border-slate-800/90 pl-2.5">
+                    {sessionConversations.length === 0 ? (
+                      <div className="rounded-md border border-dashed border-slate-800/80 px-2 py-1.5 text-[11px] leading-relaxed text-slate-500">
+                        暂无会话，点击工作区右侧「+」新建或直接发送消息。
+                      </div>
+                    ) : (
+                      sessionConversations.map((c) => {
+                        const isActiveConv =
+                          isActiveSession && c.conversationId === activeConversationId;
+                        return (
+                          <div
+                            key={c.conversationId}
+                            className={`group flex items-center justify-between gap-1 rounded-md px-2 py-1.5 text-xs transition ${
+                              isActiveConv
+                                ? 'bg-slate-800 text-slate-100'
+                                : 'text-slate-400 hover:bg-slate-900 hover:text-slate-200'
+                            }`}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => onSelectConversation(c.conversationId, s.sessionId)}
+                              className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                            >
+                              <MessageSquare className="h-3 w-3 shrink-0" />
+                              <span className="truncate">{c.name || c.conversationId}</span>
+                            </button>
+                            <div className="hidden items-center gap-0.5 group-hover:flex">
+                              <button
+                                type="button"
+                                title="重命名对话"
+                                onClick={() => {
+                                  const next = window.prompt('输入新的对话名称', c.name);
+                                  if (next && next.trim()) {
+                                    void onRenameConversation(c.conversationId, next.trim());
+                                  }
+                                }}
+                                className="rounded p-1 hover:bg-slate-700"
+                              >
+                                <Pencil className="h-3 w-3" />
+                              </button>
+                              <button
+                                type="button"
+                                title="删除对话"
+                                onClick={() => void onDeleteConversation(c.conversationId)}
+                                className="rounded p-1 hover:bg-rose-950 hover:text-rose-300"
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
                   </div>
                 )}
               </div>
             );
           })}
         </div>
-
-        {activeSessionId && (
-          <div className="mt-5">
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <span className="text-[11px] font-medium uppercase tracking-wider text-slate-500">
-                对话线程 ({conversations.length})
-              </span>
-              {onCreateConversation && (
-                <button
-                  type="button"
-                  disabled={isTurnRunning || creatingConversation}
-                  onClick={() => void onCreateConversation()}
-                  title={isTurnRunning ? '当前回合执行中，请稍后再新建会话' : '在当前工作区创建新会话'}
-                  aria-label="新建会话"
-                  className="inline-flex items-center gap-1 rounded-md border border-slate-700/80 bg-slate-900 px-2 py-0.5 text-[11px] font-medium text-slate-200 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  <Plus className="h-3 w-3" />
-                  <span>{creatingConversation ? '创建中...' : '新建会话'}</span>
-                </button>
-              )}
-            </div>
-            {conversations.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-slate-800 px-2.5 py-2 text-[11px] leading-relaxed text-slate-500">
-                暂无会话，点击右上角「新建会话」或在右侧直接输入消息开始。
-              </div>
-            ) : (
-              <div className="space-y-1">
-                {conversations.map((c) => {
-                  const isActive = c.conversationId === activeConversationId;
-                  return (
-                    <div
-                      key={c.conversationId}
-                      className={`group flex items-center justify-between gap-1 rounded-lg px-2.5 py-1.5 text-xs ${
-                        isActive
-                          ? 'bg-slate-800 text-slate-100'
-                          : 'text-slate-400 hover:bg-slate-900 hover:text-slate-200'
-                      }`}
-                    >
-                      <button
-                        type="button"
-                        onClick={() => onSelectConversation(c.conversationId)}
-                        className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                      >
-                        <MessageSquare className="h-3 w-3 shrink-0" />
-                        <span className="truncate">{c.name || c.conversationId}</span>
-                      </button>
-                      <div className="hidden items-center gap-0.5 group-hover:flex">
-                        <button
-                          type="button"
-                          title="重命名对话"
-                          onClick={() => {
-                            const next = window.prompt('输入新的对话名称', c.name);
-                            if (next && next.trim()) {
-                              void onRenameConversation(c.conversationId, next.trim());
-                            }
-                          }}
-                          className="rounded p-1 hover:bg-slate-700"
-                        >
-                          <Pencil className="h-3 w-3" />
-                        </button>
-                        <button
-                          type="button"
-                          title="删除对话"
-                          onClick={() => void onDeleteConversation(c.conversationId)}
-                          className="rounded p-1 hover:bg-rose-950 hover:text-rose-300"
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        )}
       </div>
     </aside>
   );

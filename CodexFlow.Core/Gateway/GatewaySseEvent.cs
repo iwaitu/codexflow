@@ -35,6 +35,9 @@ public static class GatewaySseEventType
     public const string ToolApprovalRequest = "tool_approval_request";
     public const string ToolApprovalResolved = "tool_approval_resolved";
     public const string ToolOutput = "tool_output";
+    public const string BusinessSkillRunUpdated = "business_skill_run_updated";
+    public const string BusinessSkillApprovalRequested = "business_skill_approval_requested";
+    public const string BusinessSkillApprovalResolved = "business_skill_approval_resolved";
     public const string Error = "error";
     public const string Heartbeat = "heartbeat";
     public const string Done = "done";

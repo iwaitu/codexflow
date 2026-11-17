@@ -16,6 +16,7 @@ export async function callControlPlane<T>(
   method: 'GET' | 'POST' | 'PUT' | 'DELETE',
   path: string,
   body?: unknown,
+  timeoutMs = 15_000,
 ): Promise<ControlPlaneCallResult<T>> {
   if (!creds.baseUrl) {
     return {
@@ -53,7 +54,7 @@ export async function callControlPlane<T>(
         ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
 
     const rawText = await response.text();

@@ -67,14 +67,28 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ language, code }) => {
 
 interface MarkdownRendererProps {
   content: string;
+  allowImages?: boolean;
 }
 
-export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content }) => {
+export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
+  content,
+  allowImages = true,
+}) => {
   return (
     <div className="markdown-body text-sm leading-relaxed text-slate-100">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
+          img({ src, alt }) {
+            if (!allowImages) {
+              return (
+                <span className="italic text-slate-400">
+                  [已禁用远程图片: {alt || src || 'image'}]
+                </span>
+              );
+            }
+            return <img src={src} alt={alt ?? ''} className="max-w-full rounded" />;
+          },
           code({ className, children }) {
             const match = /language-(\w+)/.exec(className || '');
             const codeText = String(children).replace(/\n$/, '');

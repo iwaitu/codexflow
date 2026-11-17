@@ -1667,6 +1667,739 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/plugin-operations/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PluginOperationStatusDto"];
+                        "text/json": components["schemas"]["PluginOperationStatusDto"];
+                        "text/plain": components["schemas"]["PluginOperationStatusDto"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/plugins": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessPluginDto"][];
+                        "text/json": components["schemas"]["BusinessPluginDto"][];
+                        "text/plain": components["schemas"]["BusinessPluginDto"][];
+                    };
+                };
+                /** @description Service Unavailable */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/*+json": components["schemas"]["CreateBusinessPluginRequest"];
+                    "application/json": components["schemas"]["CreateBusinessPluginRequest"];
+                    "text/json": components["schemas"]["CreateBusinessPluginRequest"];
+                };
+            };
+            responses: {
+                /** @description Created */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessPluginDto"];
+                        "text/json": components["schemas"]["BusinessPluginDto"];
+                        "text/plain": components["schemas"]["BusinessPluginDto"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ProblemDetails"];
+                        "text/json": components["schemas"]["ProblemDetails"];
+                        "text/plain": components["schemas"]["ProblemDetails"];
+                    };
+                };
+                /** @description Unprocessable Entity */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/plugins/{id}/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: {
+                    executableOnly?: boolean;
+                    groupTag?: string;
+                    page?: number | string;
+                    pageSize?: number | string;
+                    search?: string;
+                    snapshotId?: string;
+                };
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CapabilityPageResponseDto"];
+                        "text/json": components["schemas"]["CapabilityPageResponseDto"];
+                        "text/plain": components["schemas"]["CapabilityPageResponseDto"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/plugins/{id}/capabilities/detail": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: {
+                    capabilityId?: string;
+                    snapshotId?: string;
+                };
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CapabilityDetailDto"];
+                        "text/json": components["schemas"]["CapabilityDetailDto"];
+                        "text/plain": components["schemas"]["CapabilityDetailDto"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+                /** @description Unprocessable Entity */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/plugins/{id}/capabilities/risk": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/*+json": components["schemas"]["UpdateCapabilityRiskRequest"];
+                    "application/json": components["schemas"]["UpdateCapabilityRiskRequest"];
+                    "text/json": components["schemas"]["UpdateCapabilityRiskRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CapabilitySummaryDto"];
+                        "text/json": components["schemas"]["CapabilitySummaryDto"];
+                        "text/plain": components["schemas"]["CapabilitySummaryDto"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ProblemDetails"];
+                        "text/json": components["schemas"]["ProblemDetails"];
+                        "text/plain": components["schemas"]["ProblemDetails"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+                /** @description Unprocessable Entity */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/plugins/{id}/connection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/*+json": components["schemas"]["UpdatePluginConnectionRequest"];
+                    "application/json": components["schemas"]["UpdatePluginConnectionRequest"];
+                    "text/json": components["schemas"]["UpdatePluginConnectionRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessPluginDto"];
+                        "text/json": components["schemas"]["BusinessPluginDto"];
+                        "text/plain": components["schemas"]["BusinessPluginDto"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ProblemDetails"];
+                        "text/json": components["schemas"]["ProblemDetails"];
+                        "text/plain": components["schemas"]["ProblemDetails"];
+                    };
+                };
+                /** @description Conflict */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+                /** @description Unprocessable Entity */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/plugins/{id}/credentials/{slot}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                    slot: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/*+json": components["schemas"]["SetPluginCredentialRequest"];
+                    "application/json": components["schemas"]["SetPluginCredentialRequest"];
+                    "text/json": components["schemas"]["SetPluginCredentialRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CredentialRefSummaryDto"];
+                        "text/json": components["schemas"]["CredentialRefSummaryDto"];
+                        "text/plain": components["schemas"]["CredentialRefSummaryDto"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ProblemDetails"];
+                        "text/json": components["schemas"]["ProblemDetails"];
+                        "text/plain": components["schemas"]["ProblemDetails"];
+                    };
+                };
+                /** @description Unprocessable Entity */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+                /** @description Service Unavailable */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete: {
+            parameters: {
+                query?: {
+                    unbindIfReferenced?: boolean;
+                };
+                header?: never;
+                path: {
+                    id: string;
+                    slot: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["DeleteCredentialResponseDto"];
+                        "text/json": components["schemas"]["DeleteCredentialResponseDto"];
+                        "text/plain": components["schemas"]["DeleteCredentialResponseDto"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ProblemDetails"];
+                        "text/json": components["schemas"]["ProblemDetails"];
+                        "text/plain": components["schemas"]["ProblemDetails"];
+                    };
+                };
+                /** @description Conflict */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["DeleteCredentialResponseDto"];
+                        "text/json": components["schemas"]["DeleteCredentialResponseDto"];
+                        "text/plain": components["schemas"]["DeleteCredentialResponseDto"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/plugins/{id}/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["DisablePluginResponseDto"];
+                        "text/json": components["schemas"]["DisablePluginResponseDto"];
+                        "text/plain": components["schemas"]["DisablePluginResponseDto"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ProblemDetails"];
+                        "text/json": components["schemas"]["ProblemDetails"];
+                        "text/plain": components["schemas"]["ProblemDetails"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/plugins/{id}/discover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/*+json": components["schemas"]["DiscoverPluginRequest"];
+                    "application/json": components["schemas"]["DiscoverPluginRequest"];
+                    "text/json": components["schemas"]["DiscoverPluginRequest"];
+                };
+            };
+            responses: {
+                /** @description Accepted */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["DiscoverPluginResultDto"];
+                        "text/json": components["schemas"]["DiscoverPluginResultDto"];
+                        "text/plain": components["schemas"]["DiscoverPluginResultDto"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ProblemDetails"];
+                        "text/json": components["schemas"]["ProblemDetails"];
+                        "text/plain": components["schemas"]["ProblemDetails"];
+                    };
+                };
+                /** @description Unprocessable Entity */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/plugins/maintenance/prune": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/*+json": null | components["schemas"]["BusinessSkillRetentionPruneRequest"];
+                    "application/json": null | components["schemas"]["BusinessSkillRetentionPruneRequest"];
+                    "text/json": null | components["schemas"]["BusinessSkillRetentionPruneRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillRetentionPruneResultDto"];
+                        "text/json": components["schemas"]["BusinessSkillRetentionPruneResultDto"];
+                        "text/plain": components["schemas"]["BusinessSkillRetentionPruneResultDto"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ProblemDetails"];
+                        "text/json": components["schemas"]["ProblemDetails"];
+                        "text/plain": components["schemas"]["ProblemDetails"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/settings/execution": {
         parameters: {
             query?: never;
@@ -1915,6 +2648,1040 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/skill-drafts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/*+json": components["schemas"]["CreateSkillDraftRequest"];
+                    "application/json": components["schemas"]["CreateSkillDraftRequest"];
+                    "text/json": components["schemas"]["CreateSkillDraftRequest"];
+                };
+            };
+            responses: {
+                /** @description Created */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SkillDraftDto"];
+                        "text/json": components["schemas"]["SkillDraftDto"];
+                        "text/plain": components["schemas"]["SkillDraftDto"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+                /** @description Unprocessable Entity */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/skill-drafts/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SkillDraftDto"];
+                        "text/json": components["schemas"]["SkillDraftDto"];
+                        "text/plain": components["schemas"]["SkillDraftDto"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+            };
+        };
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/*+json": components["schemas"]["UpdateSkillDraftRequest"];
+                    "application/json": components["schemas"]["UpdateSkillDraftRequest"];
+                    "text/json": components["schemas"]["UpdateSkillDraftRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SkillDraftDto"];
+                        "text/json": components["schemas"]["SkillDraftDto"];
+                        "text/plain": components["schemas"]["SkillDraftDto"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+                /** @description Conflict */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+                /** @description Unprocessable Entity */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/skill-drafts/{id}/generate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/*+json": components["schemas"]["GenerateSkillCandidateRequest"];
+                    "application/json": components["schemas"]["GenerateSkillCandidateRequest"];
+                    "text/json": components["schemas"]["GenerateSkillCandidateRequest"];
+                };
+            };
+            responses: {
+                /** @description Accepted */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["GenerateSkillCandidateResultDto"];
+                        "text/json": components["schemas"]["GenerateSkillCandidateResultDto"];
+                        "text/plain": components["schemas"]["GenerateSkillCandidateResultDto"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ProblemDetails"];
+                        "text/json": components["schemas"]["ProblemDetails"];
+                        "text/plain": components["schemas"]["ProblemDetails"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+                /** @description Unprocessable Entity */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+                /** @description Service Unavailable */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/skill-drafts/{id}/publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/*+json": components["schemas"]["PublishSkillDraftRequest"];
+                    "application/json": components["schemas"]["PublishSkillDraftRequest"];
+                    "text/json": components["schemas"]["PublishSkillDraftRequest"];
+                };
+            };
+            responses: {
+                /** @description Created */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PublishedSkillDto"];
+                        "text/json": components["schemas"]["PublishedSkillDto"];
+                        "text/plain": components["schemas"]["PublishedSkillDto"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ProblemDetails"];
+                        "text/json": components["schemas"]["ProblemDetails"];
+                        "text/plain": components["schemas"]["ProblemDetails"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+                /** @description Conflict */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+                /** @description Unprocessable Entity */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/skill-drafts/{id}/selection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/*+json": components["schemas"]["PutDraftSelectionRequest"];
+                    "application/json": components["schemas"]["PutDraftSelectionRequest"];
+                    "text/json": components["schemas"]["PutDraftSelectionRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SkillDraftDto"];
+                        "text/json": components["schemas"]["SkillDraftDto"];
+                        "text/plain": components["schemas"]["SkillDraftDto"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ProblemDetails"];
+                        "text/json": components["schemas"]["ProblemDetails"];
+                        "text/plain": components["schemas"]["ProblemDetails"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+                /** @description Conflict */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+                /** @description Unprocessable Entity */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/skill-drafts/{id}/test-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/*+json": components["schemas"]["StartSkillRunRequest"];
+                    "application/json": components["schemas"]["StartSkillRunRequest"];
+                    "text/json": components["schemas"]["StartSkillRunRequest"];
+                };
+            };
+            responses: {
+                /** @description Accepted */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SkillRunDto"];
+                        "text/json": components["schemas"]["SkillRunDto"];
+                        "text/plain": components["schemas"]["SkillRunDto"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ProblemDetails"];
+                        "text/json": components["schemas"]["ProblemDetails"];
+                        "text/plain": components["schemas"]["ProblemDetails"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+                /** @description Unprocessable Entity */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/skill-drafts/{id}/validate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SkillDraftDto"];
+                        "text/json": components["schemas"]["SkillDraftDto"];
+                        "text/plain": components["schemas"]["SkillDraftDto"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+                /** @description Unprocessable Entity */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/skill-runs/{runId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    runId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SkillRunDto"];
+                        "text/json": components["schemas"]["SkillRunDto"];
+                        "text/plain": components["schemas"]["SkillRunDto"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/skill-runs/{runId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    runId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SkillRunDto"];
+                        "text/json": components["schemas"]["SkillRunDto"];
+                        "text/plain": components["schemas"]["SkillRunDto"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ProblemDetails"];
+                        "text/json": components["schemas"]["ProblemDetails"];
+                        "text/plain": components["schemas"]["ProblemDetails"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/skills": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PublishedSkillDto"][];
+                        "text/json": components["schemas"]["PublishedSkillDto"][];
+                        "text/plain": components["schemas"]["PublishedSkillDto"][];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/skills/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PublishedSkillDto"];
+                        "text/json": components["schemas"]["PublishedSkillDto"];
+                        "text/plain": components["schemas"]["PublishedSkillDto"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/skills/{id}/activate-version": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/*+json": components["schemas"]["ActivateSkillVersionRequest"];
+                    "application/json": components["schemas"]["ActivateSkillVersionRequest"];
+                    "text/json": components["schemas"]["ActivateSkillVersionRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PublishedSkillDto"];
+                        "text/json": components["schemas"]["PublishedSkillDto"];
+                        "text/plain": components["schemas"]["PublishedSkillDto"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ProblemDetails"];
+                        "text/json": components["schemas"]["ProblemDetails"];
+                        "text/plain": components["schemas"]["ProblemDetails"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+                /** @description Conflict */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+                /** @description Unprocessable Entity */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/skills/{id}/markdown": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: {
+                    version?: number | string;
+                };
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SkillMarkdownPreviewDto"];
+                        "text/json": components["schemas"]["SkillMarkdownPreviewDto"];
+                        "text/plain": components["schemas"]["SkillMarkdownPreviewDto"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/skills/{id}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SkillRunDto"][];
+                        "text/json": components["schemas"]["SkillRunDto"][];
+                        "text/plain": components["schemas"]["SkillRunDto"][];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/*+json": components["schemas"]["StartSkillRunRequest"];
+                    "application/json": components["schemas"]["StartSkillRunRequest"];
+                    "text/json": components["schemas"]["StartSkillRunRequest"];
+                };
+            };
+            responses: {
+                /** @description Accepted */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SkillRunDto"];
+                        "text/json": components["schemas"]["SkillRunDto"];
+                        "text/plain": components["schemas"]["SkillRunDto"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ProblemDetails"];
+                        "text/json": components["schemas"]["ProblemDetails"];
+                        "text/plain": components["schemas"]["ProblemDetails"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+                /** @description Conflict */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+                /** @description Unprocessable Entity */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/json": components["schemas"]["BusinessSkillErrorDto"];
+                        "text/plain": components["schemas"]["BusinessSkillErrorDto"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/system/status": {
         parameters: {
             query?: never;
@@ -1958,6 +3725,10 @@ export type paths = {
 export type webhooks = Record<string, never>;
 export type components = {
     schemas: {
+        ActivateSkillVersionRequest: {
+            /** Format: int32 */
+            version: number | string;
+        };
         BackgroundJobDto: {
             failure?: null | components["schemas"]["BackgroundJobFailureDto"];
             jobId?: string;
@@ -2022,10 +3793,211 @@ export type components = {
         BootstrapRequest: {
             targetSessionId?: null | string;
         };
+        BusinessApprovalRequestDto: {
+            allowedDecisions?: string[];
+            approvalId?: string;
+            /** Format: date-time */
+            createdAtUtc?: string;
+            /** Format: date-time */
+            expiresAtUtc?: string;
+            kind?: string;
+            requestDigest?: string;
+            runId?: string;
+            sessionId?: string;
+            stepId?: string;
+            summary?: components["schemas"]["BusinessApprovalSummaryDto"];
+        };
+        BusinessApprovalRequestPreviewDto: {
+            capabilityId: string;
+            methodOrTool: string;
+            redactedBodyPreview: string;
+            targetPath: string;
+        };
+        BusinessApprovalSummaryDto: {
+            /** Format: int32 */
+            batchCount?: number | string;
+            currency?: null | string;
+            environment?: string;
+            /** Format: double */
+            keyAmount?: null | number | string;
+            plannedMutation?: string;
+            requestPreviews?: components["schemas"]["BusinessApprovalRequestPreviewDto"][];
+            systemName?: string;
+            targetRecordSummary?: string;
+            writeStepUnverified?: boolean;
+        };
+        /** @enum {unknown} */
+        BusinessAuthKind: "None" | "ApiKey" | "Bearer" | "BasicTlsOnly" | "OAuth2AuthCodePkce";
+        BusinessPluginDto: {
+            activeSnapshotId?: null | string;
+            /** Format: int32 */
+            capabilityCount?: number | string;
+            connection?: null | components["schemas"]["PluginConnectionDto"];
+            connectionId?: string;
+            enabled?: boolean;
+            id?: string;
+            /** Format: date-time */
+            lastDiscoveredAtUtc?: null | string;
+            name?: string;
+            sourceType?: components["schemas"]["BusinessPluginSourceType"];
+        };
+        /** @enum {unknown} */
+        BusinessPluginSourceType: "OpenApi" | "Mcp";
+        BusinessSkillErrorDto: {
+            code: string;
+            correlationId: string;
+            fieldErrors: components["schemas"]["BusinessSkillFieldError"][];
+            message: string;
+            retryable: boolean;
+        };
+        BusinessSkillFieldError: {
+            code: string;
+            field: string;
+            message: string;
+        };
+        BusinessSkillRetentionPruneRequest: {
+            /** Format: int32 */
+            diagnosticsRetentionDays?: null | number | string;
+            /** Format: int32 */
+            operationHistoryRetentionDays?: null | number | string;
+            /** Format: int32 */
+            runHistoryRetentionDays?: null | number | string;
+        };
+        BusinessSkillRetentionPruneResultDto: {
+            /** Format: int32 */
+            deletedOperationsCount: number | string;
+            /** Format: int32 */
+            deletedOrphanSnapshotsCount: number | string;
+            /** Format: int32 */
+            deletedTerminalRunsCount: number | string;
+            /** Format: date-time */
+            executedAtUtc: string;
+            /** Format: int32 */
+            retainedOutcomeUnknownRunsCount: number | string;
+            /** Format: int32 */
+            retainedProtectedSnapshotsCount: number | string;
+            /** Format: int32 */
+            trimmedStepDiagnosticsCount: number | string;
+        };
         CancelTurnResponse: {
             cancelled: boolean;
             sessionId: string;
             status: string;
+        };
+        CapabilityDetailDto: {
+            inputSchemaJson?: null | string;
+            invocation?: components["schemas"]["CapabilityInvocationSpecDto"];
+            outputSchemaJson?: null | string;
+            summary?: components["schemas"]["CapabilitySummaryDto"];
+        };
+        /** @enum {unknown} */
+        CapabilityExecutabilityStatus: "Executable" | "NeedsConfiguration" | "Unsupported";
+        CapabilityInvocationSpecDto: {
+            authSchemeRefs?: string[];
+            httpMethod?: null | string;
+            mcpToolName?: null | string;
+            normalizedPath?: null | string;
+            parameters?: components["schemas"]["CapabilityParameterSpecDto"][];
+            requestBodySchemaJson?: null | string;
+            requestContentType?: null | string;
+            responseContentType?: null | string;
+            responseSchemaJson?: null | string;
+            securityAlternatives?: components["schemas"]["CapabilitySecurityRequirementDto"][];
+            selectedServerUrl?: null | string;
+            serverVariableAllowedValues?: {
+                [key: string]: string[];
+            };
+            sourceType?: components["schemas"]["BusinessPluginSourceType"];
+        };
+        CapabilityPageResponseDto: {
+            complete: boolean;
+            /** Format: int32 */
+            executableCount: number | string;
+            /** Format: int32 */
+            filteredCount: number | string;
+            items: components["schemas"]["CapabilitySummaryDto"][];
+            /** Format: int32 */
+            needsConfigurationCount: number | string;
+            /** Format: int32 */
+            page: number | string;
+            /** Format: int32 */
+            pageSize: number | string;
+            pluginId: string;
+            snapshotId: string;
+            /** Format: int32 */
+            totalCount: number | string;
+            /** Format: int32 */
+            unsupportedCount: number | string;
+        };
+        CapabilityParameterSpecDto: {
+            description?: null | string;
+            explode?: null | boolean;
+            location?: string;
+            name?: string;
+            required?: boolean;
+            schemaType?: string;
+            style?: null | string;
+        };
+        /** @enum {unknown} */
+        CapabilityRiskLevel: "Unknown" | "Read" | "Write" | "Destructive";
+        CapabilitySecurityRequirementDto: {
+            schemes: components["schemas"]["CapabilitySecuritySchemeRequirementDto"][];
+        };
+        CapabilitySecuritySchemeRequirementDto: {
+            headerOrParamName: null | string;
+            httpScheme: null | string;
+            inLocation: null | string;
+            schemeId: string;
+            schemeType: string;
+            scopes: string[];
+        };
+        CapabilitySummaryDto: {
+            description?: string;
+            diagnostics?: string[];
+            executability?: components["schemas"]["CapabilityExecutabilityStatus"];
+            groupTag?: string;
+            id?: string;
+            modelAlias?: string;
+            nativeIdentity?: string;
+            risk?: components["schemas"]["CapabilityRiskLevel"];
+            snapshotId?: string;
+            sourceDescriptionMissing?: boolean;
+            suggestedSourceRiskHint?: null | components["schemas"]["CapabilityRiskLevel"];
+            title?: string;
+        };
+        /** @enum {unknown} */
+        CatalogDiffChangeKind: "Added" | "Removed" | "InputChanged" | "OutputChanged" | "TargetOrAuthChanged" | "DescriptionChanged";
+        CatalogDiffDto: {
+            baseSnapshotId: string;
+            entries: components["schemas"]["CatalogDiffEntryDto"][];
+            targetSnapshotId: string;
+            triggersNeedsRevalidation: boolean;
+        };
+        CatalogDiffEntryDto: {
+            capabilityId: string;
+            changeKind: components["schemas"]["CatalogDiffChangeKind"];
+            requiresRevalidation: boolean;
+            summary: string;
+            title: string;
+        };
+        CatalogSnapshotDto: {
+            complete?: boolean;
+            diagnostics?: string[];
+            /** Format: int32 */
+            executableCount?: number | string;
+            /** Format: date-time */
+            fetchedAtUtc?: string;
+            id?: string;
+            /** Format: int32 */
+            needsConfigurationCount?: number | string;
+            pluginId?: string;
+            protocolVersion?: string;
+            schemaHash?: string;
+            sourceHash?: string;
+            /** Format: int32 */
+            totalCapabilities?: number | string;
+            /** Format: int32 */
+            unsupportedCount?: number | string;
         };
         ChatAttachmentDto: {
             contentType?: null | string;
@@ -2058,8 +4030,37 @@ export type components = {
             sessionId?: string;
             taskId?: null | string;
         };
+        CreateBusinessPluginRequest: {
+            endpointPolicy: components["schemas"]["EndpointPolicyDto"];
+            environment: string;
+            name: string;
+            sourceType: components["schemas"]["BusinessPluginSourceType"];
+            sourceUrl: string;
+        };
         CreateConversationRequest: {
             name?: null | string;
+        };
+        CreateSkillDraftRequest: {
+            businessGoal: string;
+            catalogSnapshotId: null | string;
+            name: string;
+            pluginId: string;
+            selectedCapabilityIds?: null | string[];
+        };
+        CredentialRefSummaryDto: {
+            authKind?: components["schemas"]["BusinessAuthKind"];
+            credentialRef?: string;
+            maskedHint?: string;
+            revision?: string;
+            /** Format: date-time */
+            updatedAtUtc?: string;
+        };
+        DeleteCredentialResponseDto: {
+            credentialRef: string;
+            deleted: boolean;
+            referencedPluginIds: string[];
+            /** Format: int32 */
+            remainingReferenceCount: number | string;
         };
         DeletePermissionRuleResponse: {
             removed: boolean;
@@ -2068,6 +4069,28 @@ export type components = {
         DeleteResourceResponse: {
             deleted: boolean;
             id: string;
+        };
+        DisablePluginResponseDto: {
+            /** Format: date-time */
+            disabledAtUtc: null | string;
+            enabled: boolean;
+            pluginId: string;
+        };
+        DiscoverPluginRequest: {
+            clientRequestId: string;
+        };
+        DiscoverPluginResultDto: {
+            diff: null | components["schemas"]["CatalogDiffDto"];
+            operation: components["schemas"]["PluginOperationAcceptedDto"];
+            snapshot: null | components["schemas"]["CatalogSnapshotDto"];
+        };
+        EndpointPolicyDto: {
+            allowedExternalRefOrigins?: string[];
+            allowedOrigin?: string;
+            allowedPathPrefix?: string;
+            allowExternalOpenApiRefs?: boolean;
+            allowPlainHttpForIntranet?: boolean;
+            customCaThumbprint?: null | string;
         };
         ExecutionSettingsDto: {
             backend: string;
@@ -2120,8 +4143,20 @@ export type components = {
             planVersion?: null | string;
             startExecution?: null | boolean;
         };
+        GenerateSkillCandidateRequest: {
+            clientRequestId: string;
+            confirmModelDataScope: boolean;
+            /** @default false */
+            includeSanitizedSamples: boolean;
+        };
+        GenerateSkillCandidateResultDto: {
+            disclosedDataCategories: string[];
+            draft: components["schemas"]["SkillDraftDto"];
+            operation: components["schemas"]["PluginOperationAcceptedDto"];
+        };
         /** Format: binary */
         IFormFile: string;
+        JsonElement: unknown;
         ModelSettingsDto: {
             apiKeyLast4: null | string;
             apiKeySet: boolean;
@@ -2221,6 +4256,47 @@ export type components = {
             taskType: string;
             title: string;
         };
+        PluginConnectionDto: {
+            credentialRevision?: string;
+            documentCredential?: null | components["schemas"]["CredentialRefSummaryDto"];
+            endpointPolicy?: components["schemas"]["EndpointPolicyDto"];
+            environment?: string;
+            executionCredential?: null | components["schemas"]["CredentialRefSummaryDto"];
+            id?: string;
+            isEncryptedTransport?: boolean;
+            /** Format: int32 */
+            revision?: number | string;
+            sourceUrl?: string;
+        };
+        PluginOperationAcceptedDto: {
+            kind: string;
+            operationId: string;
+            reusedFromClientRequestId: boolean;
+            /** Format: int64 */
+            sequence: number | string;
+            status: components["schemas"]["PluginOperationStatus"];
+            /** Format: int32 */
+            version: number | string;
+        };
+        /** @enum {unknown} */
+        PluginOperationStatus: "Queued" | "Running" | "Succeeded" | "Failed" | "Cancelled";
+        PluginOperationStatusDto: {
+            /** Format: date-time */
+            createdAtUtc: string;
+            error: null | components["schemas"]["BusinessSkillErrorDto"];
+            kind: string;
+            operationId: string;
+            resultMessage: null | string;
+            /** Format: int64 */
+            sequence: number | string;
+            snapshotId: null | string;
+            status: components["schemas"]["PluginOperationStatus"];
+            targetId: null | string;
+            /** Format: date-time */
+            updatedAtUtc: string;
+            /** Format: int32 */
+            version: number | string;
+        };
         PreflightIssueDto: {
             component: string;
             message: string;
@@ -2232,6 +4308,37 @@ export type components = {
             status?: null | number | string;
             title?: null | string;
             type?: null | string;
+        };
+        PublishedSkillDto: {
+            /** Format: int32 */
+            activeVersion?: number | string;
+            description?: string;
+            environment?: string;
+            id?: string;
+            name?: string;
+            pluginId?: string;
+            versions?: components["schemas"]["PublishedSkillVersionDto"][];
+        };
+        PublishedSkillVersionDto: {
+            catalogSnapshotId: string;
+            contentHash: string;
+            needsRevalidation: boolean;
+            /** Format: date-time */
+            publishedAtUtc: string;
+            /** Format: int32 */
+            version: number | string;
+            writeStepVerified: boolean;
+        };
+        PublishSkillDraftRequest: {
+            /** Format: int32 */
+            expectedRevision: number | string;
+            releaseNote?: null | string;
+        };
+        PutDraftSelectionRequest: {
+            catalogSnapshotId: string;
+            /** Format: int32 */
+            expectedRevision: number | string;
+            selectedCapabilityIds: string[];
         };
         ResumeJobRequest: {
             payloadJson?: null | string;
@@ -2284,9 +4391,315 @@ export type components = {
             sessionId: string;
             workspacePath: string;
         };
+        SetPluginCredentialRequest: {
+            authKind: components["schemas"]["BusinessAuthKind"];
+            secretPayload: string;
+        };
         SettingsErrorDto: {
             code: string;
             message: string;
+        };
+        SkillAggregationMetric: {
+            function: string;
+            outputField: string;
+            sourceField?: null | string;
+        };
+        SkillBudgetPolicyDto: {
+            /** Format: int32 */
+            maxExternalRequests?: number | string;
+            /** Format: int32 */
+            maxJoinOutputRows?: number | string;
+            /** Format: int32 */
+            maxReadOnlyRetries?: number | string;
+            /** Format: int32 */
+            maxReadRecords?: number | string;
+            /** Format: int32 */
+            maxWriteBatchItems?: number | string;
+            /** Format: int32 */
+            requestTimeoutSeconds?: number | string;
+        };
+        SkillConditionClause: {
+            field: string;
+            operator: string;
+            value: components["schemas"]["SkillValueBinding"];
+        };
+        SkillConditionExpr: {
+            clauses?: components["schemas"]["SkillConditionClause"][];
+            combinator?: string;
+        };
+        SkillConnectionBinding: {
+            connectionId?: string;
+            /** Format: int32 */
+            connectionRevision?: number | string;
+            credentialRevision?: string;
+            environment?: string;
+            selectedServerUrl?: string;
+        };
+        SkillDataPolicyDto: {
+            allowedModelFields?: string[];
+            includeSanitizedSamplesForGeneration?: boolean;
+            redactLogsAndExports?: boolean;
+        };
+        SkillDefinitionV1: {
+            budgets?: components["schemas"]["SkillBudgetPolicyDto"];
+            catalogSnapshotId?: string;
+            connectionBinding?: components["schemas"]["SkillConnectionBinding"];
+            contentHash?: string;
+            dataPolicy?: components["schemas"]["SkillDataPolicyDto"];
+            description?: string;
+            inputs?: components["schemas"]["SkillInputSchemaDto"];
+            name?: string;
+            outputs?: components["schemas"]["SkillOutputSchemaDto"];
+            pluginId?: string;
+            /** Format: int32 */
+            schemaVersion?: number | string;
+            selectedCapabilityIds?: string[];
+            skillId?: string;
+            steps?: components["schemas"]["SkillStepDefinition"][];
+            successCriteria?: components["schemas"]["SkillSuccessCriteriaDto"];
+            usedCapabilityIds?: string[];
+            validationEvidence?: components["schemas"]["SkillValidationEvidenceDto"];
+            /** Format: int32 */
+            version?: number | string;
+        };
+        SkillDraftDto: {
+            businessGoal?: string;
+            candidateDefinition?: null | components["schemas"]["SkillDefinitionV1"];
+            catalogSnapshotId?: string;
+            clarificationQuestions?: string[];
+            id?: string;
+            name?: string;
+            needsRevalidation?: boolean;
+            pluginId?: string;
+            /** Format: int32 */
+            revision?: number | string;
+            selectedCapabilityIds?: string[];
+            /** Format: date-time */
+            updatedAtUtc?: string;
+            validationErrors?: components["schemas"]["BusinessSkillFieldError"][];
+        };
+        /** @enum {unknown} */
+        SkillDuplicateKeyPolicy: "Reject" | "RequirePreAggregation" | "FirstMatchOnly";
+        SkillInputPropertyDto: {
+            defaultValue?: null | components["schemas"]["JsonElement"];
+            description?: null | string;
+            enumValues?: null | string[];
+            format?: null | string;
+            type?: string;
+        };
+        SkillInputSchemaDto: {
+            properties?: {
+                [key: string]: components["schemas"]["SkillInputPropertyDto"];
+            };
+            required?: string[];
+            type?: string;
+        };
+        SkillJoinSpec: {
+            duplicateKeyPolicy?: components["schemas"]["SkillDuplicateKeyPolicy"];
+            keyType?: string;
+            leftKey?: string;
+            missingMatchPolicy?: string;
+            rightFieldsToInclude?: string[];
+            rightKey?: string;
+            rightKeyUniqueExpected?: boolean;
+            targetPrefix?: null | string;
+        };
+        SkillMarkdownPreviewDto: {
+            contentHash: string;
+            markdown: string;
+            skillId: string;
+            /** Format: int32 */
+            version: number | string;
+        };
+        SkillOutputFieldDto: {
+            description?: null | string;
+            name: string;
+            type: string;
+        };
+        SkillOutputSchemaDto: {
+            fields?: components["schemas"]["SkillOutputFieldDto"][];
+            type?: string;
+        };
+        SkillPaginationConfig: {
+            cursorParam?: null | string;
+            hasMorePointer?: null | string;
+            itemsPointer?: string;
+            /** Format: int32 */
+            maxPages?: number | string;
+            mode?: string;
+            nextCursorPointer?: null | string;
+            pageParam?: null | string;
+            /** Format: int32 */
+            pageSize?: number | string;
+            pageSizeParam?: null | string;
+            totalCountPointer?: null | string;
+        };
+        SkillProjectionField: {
+            currencyField?: null | string;
+            dateTimezone?: null | string;
+            outputField: string;
+            sourcePointer: string;
+            /** @default string */
+            valueType: string;
+        };
+        SkillResponseContract: {
+            businessCodePointer?: null | string;
+            createdIdPointer?: null | string;
+            idempotencyKeyTemplate?: null | string;
+            statusCheckCapabilityId?: null | string;
+            successCodeValues?: string[];
+        };
+        SkillRunDto: {
+            catalogSnapshotId?: string;
+            clientRequestId?: string;
+            /** Format: date-time */
+            createdAtUtc?: string;
+            error?: null | components["schemas"]["BusinessSkillErrorDto"];
+            /** Format: int32 */
+            externalRequestCount?: number | string;
+            isTestRun?: boolean;
+            outputPayload?: null | components["schemas"]["JsonElement"];
+            pendingApproval?: null | components["schemas"]["BusinessApprovalRequestDto"];
+            /** Format: int32 */
+            readOnlyRetryCount?: number | string;
+            runId?: string;
+            skillId?: string;
+            /** Format: int32 */
+            skillVersion?: number | string;
+            status?: components["schemas"]["SkillRunStatus"];
+            steps?: components["schemas"]["SkillRunStepDto"][];
+            stopRequested?: boolean;
+            /** Format: date-time */
+            updatedAtUtc?: string;
+        };
+        /** @enum {unknown} */
+        SkillRunStatus: "Queued" | "Running" | "WaitingForApproval" | "Succeeded" | "Failed" | "Cancelled" | "PartialSucceeded" | "OutcomeUnknown";
+        SkillRunStepDto: {
+            /** Format: date-time */
+            completedAtUtc?: null | string;
+            errorCode?: null | string;
+            evidence?: null | string;
+            requestSummary?: null | string;
+            responseSummary?: null | string;
+            /** Format: date-time */
+            startedAtUtc?: string;
+            state?: components["schemas"]["SkillRunStepState"];
+            stepId?: string;
+            stepType?: string;
+        };
+        /** @enum {unknown} */
+        SkillRunStepState: "Prepared" | "Dispatching" | "Succeeded" | "Failed" | "Cancelled" | "OutcomeUnknown";
+        SkillSortSpec: {
+            /** @default false */
+            descending: boolean;
+            field: string;
+        };
+        SkillStepDefinition: components["schemas"]["SkillStepDefinitionSkillToolStep"] | components["schemas"]["SkillStepDefinitionSkillTransformStep"] | components["schemas"]["SkillStepDefinitionSkillBranchStep"] | components["schemas"]["SkillStepDefinitionSkillForeachStep"] | components["schemas"]["SkillStepDefinitionSkillGenerateTextStep"] | components["schemas"]["SkillStepDefinitionSkillApprovalStep"] | components["schemas"]["SkillStepDefinitionSkillOutputStep"];
+        SkillStepDefinitionSkillApprovalStep: {
+            currencyField?: null | string;
+            id?: string;
+            itemsSource?: components["schemas"]["SkillValueBinding"];
+            keyAmountField?: null | string;
+            plannedMutation?: string;
+            targetCapabilityId?: string;
+            targetRecordFields?: string[];
+            title?: null | string;
+            /** @enum {string} */
+            type?: "approval";
+        };
+        SkillStepDefinitionSkillBranchStep: {
+            condition?: components["schemas"]["SkillConditionExpr"];
+            elseStepIds?: string[];
+            id?: string;
+            thenStepIds?: string[];
+            title?: null | string;
+            /** @enum {string} */
+            type?: "branch";
+        };
+        SkillStepDefinitionSkillForeachStep: {
+            bodyStepIds?: string[];
+            id?: string;
+            itemVariable?: string;
+            /** Format: int32 */
+            maxItems?: number | string;
+            sequential?: boolean;
+            source?: components["schemas"]["SkillValueBinding"];
+            title?: null | string;
+            /** @enum {string} */
+            type?: "foreach";
+        };
+        SkillStepDefinitionSkillGenerateTextStep: {
+            allowedInputFields?: string[];
+            id?: string;
+            promptTemplate?: string;
+            source?: components["schemas"]["SkillValueBinding"];
+            title?: null | string;
+            /** @enum {string} */
+            type?: "generateText";
+        };
+        SkillStepDefinitionSkillOutputStep: {
+            id?: string;
+            namedOutputs?: {
+                [key: string]: components["schemas"]["SkillValueBinding"];
+            };
+            source?: components["schemas"]["SkillValueBinding"];
+            title?: null | string;
+            /** @enum {string} */
+            type?: "output";
+        };
+        SkillStepDefinitionSkillToolStep: {
+            arguments?: {
+                [key: string]: components["schemas"]["SkillValueBinding"];
+            };
+            capabilityId?: string;
+            id?: string;
+            pagination?: null | components["schemas"]["SkillPaginationConfig"];
+            responseContract?: null | components["schemas"]["SkillResponseContract"];
+            title?: null | string;
+            /** @enum {string} */
+            type?: "tool";
+        };
+        SkillStepDefinitionSkillTransformStep: {
+            aggregations?: components["schemas"]["SkillAggregationMetric"][];
+            groupByFields?: string[];
+            id?: string;
+            joinSpec?: null | components["schemas"]["SkillJoinSpec"];
+            operation?: components["schemas"]["SkillTransformOperation"];
+            /** Format: int32 */
+            outputLimit?: number | string;
+            predicate?: null | components["schemas"]["SkillConditionExpr"];
+            projections?: components["schemas"]["SkillProjectionField"][];
+            secondarySource?: null | components["schemas"]["SkillValueBinding"];
+            sortBy?: components["schemas"]["SkillSortSpec"][];
+            source?: components["schemas"]["SkillValueBinding"];
+            title?: null | string;
+            /** @enum {string} */
+            type?: "transform";
+        };
+        SkillSuccessCriteriaDto: {
+            failOnPartialData?: boolean;
+            requireCompletePagination?: boolean;
+            requiredSteps?: string[];
+        };
+        /** @enum {unknown} */
+        SkillTransformOperation: "Filter" | "Sort" | "Project" | "Aggregate" | "InnerJoin" | "LeftJoin" | "Lookup";
+        SkillValidationEvidenceDto: {
+            catalogHash?: string;
+            /** Format: int32 */
+            draftRevision?: number | string;
+            readOnlyTestRunEvidenceHash?: null | string;
+            readOnlyTestRunId?: null | string;
+            staticValidationHash?: string;
+            /** Format: date-time */
+            verifiedAtUtc?: null | string;
+            writeStepVerified?: boolean;
+        };
+        SkillValueBinding: {
+            input?: null | string;
+            item?: null | string;
+            literal?: null | components["schemas"]["JsonElement"];
+            pointer?: null | string;
+            step?: null | string;
         };
         SnapshotActiveTurnDto: {
             /** @default false */
@@ -2308,6 +4721,17 @@ export type components = {
             thinkingContent: null | string;
             toolCallResult: null | string;
             truncated: boolean;
+        };
+        StartSkillRunRequest: {
+            /** @default false */
+            allowWriteInTestRun: boolean;
+            clientRequestId: string;
+            inputs: Record<string, never>;
+            /** @default false */
+            isTestRun: boolean;
+            sessionId?: null | string;
+            /** Format: int32 */
+            version: null | number | string;
         };
         SubmitExecutionApprovalRequest: {
             decision: string;
@@ -2337,6 +4761,11 @@ export type components = {
             tokenDeliveryMode: string;
             version: string;
         };
+        UpdateCapabilityRiskRequest: {
+            capabilityId: string;
+            note?: null | string;
+            risk: components["schemas"]["CapabilityRiskLevel"];
+        };
         UpdateConversationRequest: {
             isArchived?: null | boolean;
             name?: null | string;
@@ -2357,8 +4786,22 @@ export type components = {
             /** Format: float */
             topP?: null | number | string;
         };
+        UpdatePluginConnectionRequest: {
+            endpointPolicy: components["schemas"]["EndpointPolicyDto"];
+            environment: string;
+            /** Format: int32 */
+            expectedRevision: number | string;
+            sourceUrl: string;
+        };
         UpdateSessionRequest: {
             isArchived?: null | boolean;
+            name?: null | string;
+        };
+        UpdateSkillDraftRequest: {
+            businessGoal?: null | string;
+            candidateDefinition?: null | components["schemas"]["SkillDefinitionV1"];
+            /** Format: int32 */
+            expectedRevision: number | string;
             name?: null | string;
         };
         UploadedAttachmentDto: {

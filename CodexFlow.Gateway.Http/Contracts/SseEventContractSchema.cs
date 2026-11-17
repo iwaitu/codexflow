@@ -210,7 +210,39 @@ public static class SseEventContractSchema
                     ("toSeq", OptionalInt()),
                     ("previousLastEventId", OptionalInt()),
                     ("oldestAvailableSeq", OptionalInt())),
-                required: ["reason"])
+                required: ["reason"]),
+            [GatewaySseEventType.BusinessSkillRunUpdated] = EventDef(
+                "Business skill run status transition notification.",
+                Props(
+                    ("runId", Str()),
+                    ("skillId", Str()),
+                    ("skillVersion", Int()),
+                    ("status", Str()),
+                    ("stopRequested", Bool()),
+                    ("updatedAtUtc", Str())),
+                required: ["runId", "skillId", "skillVersion", "status", "stopRequested", "updatedAtUtc"]),
+            [GatewaySseEventType.BusinessSkillApprovalRequested] = EventDef(
+                "Interactive approval request before dispatching a business write operation.",
+                Props(
+                    ("approvalId", Str()),
+                    ("requestDigest", Str()),
+                    ("sessionId", Str()),
+                    ("runId", Str()),
+                    ("stepId", Str()),
+                    ("kind", Str()),
+                    ("allowedDecisions", StrArray()),
+                    ("expiresAtUtc", Str())),
+                required: ["approvalId", "requestDigest", "sessionId", "runId", "stepId", "kind", "allowedDecisions", "expiresAtUtc"]),
+            [GatewaySseEventType.BusinessSkillApprovalResolved] = EventDef(
+                "Resolution outcome for a pending business write approval request.",
+                Props(
+                    ("approvalId", Str()),
+                    ("requestDigest", Str()),
+                    ("runId", Str()),
+                    ("decision", Str()),
+                    ("decidedBy", NullableStr()),
+                    ("resolvedAt", Str())),
+                required: ["approvalId", "requestDigest", "runId", "decision", "resolvedAt"])
         };
 
         var root = new Dictionary<string, object>(StringComparer.Ordinal)

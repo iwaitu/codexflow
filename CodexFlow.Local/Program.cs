@@ -89,6 +89,11 @@ if (builder.Environment.IsDevelopment()
     isolatedOverrides["Runtime:QueryRuntime:AuditDirectory"] = layout.DataDirectory ?? layout.StateDirectory;
 }
 
+if (string.IsNullOrWhiteSpace(builder.Configuration["BusinessSkills:CredentialStoreDirectory"]))
+{
+    isolatedOverrides["BusinessSkills:CredentialStoreDirectory"] = Path.Combine(layout.CredentialDirectory, "business-plugins");
+}
+
 if (isolatedOverrides.Count > 0)
 {
     builder.Configuration.AddInMemoryCollection(isolatedOverrides);
@@ -245,6 +250,7 @@ using var parentWatcher = layout.ParentPid is > 0
 await app.StartAsync();
 
 var boundPort = LocalHostRuntime.ResolveBoundPort(app.Services, configuredPort);
+app.Services.GetRequiredService<CodexFlow.Core.BusinessSkills.OutboundTargetPolicyGuard>().RegisterProtectedLocalPort(boundPort);
 instanceGuard.WriteDiscovery(boundPort);
 
 var readyLine = LocalHostRuntime.FormatReadyLine(boundPort, Environment.ProcessId, instanceGuard.InstanceId);

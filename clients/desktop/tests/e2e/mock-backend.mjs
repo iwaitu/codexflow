@@ -502,6 +502,29 @@ process.stdin.on('end', () => {
         return sendJson(200, { success: true, approvalId: 'appr-e2e-1', decision: body.decision, message: 'ok' });
       }
 
+      if (req.method === 'GET' && url.pathname === '/api/plugins') {
+        return sendJson(200, []);
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/skills') {
+        return sendJson(200, []);
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/plugins/maintenance/prune') {
+        if (!isControl) {
+          return sendJson(403, { code: 'forbidden', message: 'Control plane credential required' });
+        }
+        return sendJson(200, {
+          trimmedStepDiagnosticsCount: 0,
+          deletedTerminalRunsCount: 0,
+          deletedOrphanSnapshotsCount: 0,
+          deletedOperationsCount: 0,
+          retainedOutcomeUnknownRunsCount: 0,
+          retainedProtectedSnapshotsCount: 0,
+          executedAtUtc: new Date().toISOString(),
+        });
+      }
+
       return sendJson(404, { code: 'not_found', message: url.pathname });
     });
   });

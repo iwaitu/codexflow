@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Cpu, FileDiff, FolderTree } from 'lucide-react';
+import { BusinessSkillsHub } from './components/business-skills/BusinessSkillsHub';
 import { ChatView } from './components/ChatView';
 import { Composer, type WorkspaceAttachmentRequest } from './components/Composer';
 import { SettingsModal } from './components/SettingsModal';
@@ -21,10 +22,21 @@ export const App: React.FC = () => {
   const queryClient = useQueryClient();
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [creatingConversation, setCreatingConversation] = useState(false);
+  const [primaryView, setPrimaryView] = useState<'chat' | 'business-skills'>('chat');
+  const [expandedSessionIds, setExpandedSessionIds] = useState<string[]>([]);
   const [externalAttachment, setExternalAttachment] = useState<WorkspaceAttachmentRequest | null>(null);
   const sseRef = useRef<SessionSseClient | null>(null);
   const prevRestartCount = useRef<number>(0);
   const wasTurnRunningRef = useRef(false);
+  const pendingCrossSessionIntentRef = useRef<
+    | { sessionId: string; type: 'select'; conversationId: string }
+    | { sessionId: string; type: 'create' }
+    | null
+  >(null);
+  const crossSessionHandlersRef = useRef<{
+    selectConversation: (conversationId: string, targetSessionId?: string) => Promise<void>;
+    createConversation: (targetSessionId?: string) => Promise<void>;
+  } | null>(null);
 
   const {
     connection,
@@ -137,6 +149,45 @@ export const App: React.FC = () => {
     enabled: Boolean(auth && activeSessionId),
   });
 
+  useEffect(() => {
+    if (!activeSessionId) return;
+    setExpandedSessionIds((prev) =>
+      prev.includes(activeSessionId) ? prev : [...prev, activeSessionId],
+    );
+  }, [activeSessionId]);
+
+  const expandedOtherSessionIds = useMemo(
+    () => expandedSessionIds.filter((id) => id && id !== activeSessionId),
+    [expandedSessionIds, activeSessionId],
+  );
+
+  const expandedOtherConversationQueries = useQueries({
+    queries: expandedOtherSessionIds.map((sid) => ({
+      queryKey: ['conversations', instanceKey, auth?.baseUrl, sid],
+      queryFn: () => apiClient.listConversations(auth!, sid),
+      enabled: Boolean(auth && sid),
+    })),
+  });
+
+  const conversationsBySession = useMemo(() => {
+    const map: Record<string, ConversationSummary[]> = {};
+    if (activeSessionId && conversationsQuery.data?.items) {
+      map[activeSessionId] = conversationsQuery.data.items;
+    }
+    expandedOtherSessionIds.forEach((sid, idx) => {
+      const items = expandedOtherConversationQueries[idx]?.data?.items;
+      if (items) {
+        map[sid] = items;
+      }
+    });
+    return map;
+  }, [
+    activeSessionId,
+    conversationsQuery.data?.items,
+    expandedOtherSessionIds,
+    expandedOtherConversationQueries,
+  ]);
+
   const changesQuery = useQuery({
     queryKey: ['workspace-changes', instanceKey, auth?.baseUrl, activeSessionId, workspaceRevision],
     queryFn: () => apiClient.getChanges(auth!, activeSessionId!),
@@ -173,6 +224,23 @@ export const App: React.FC = () => {
 
     void reconcileSession(restarted ? 'backend_restarted' : 'session_selected', {
       onCursorSynced: (eid, epoch) => sseRef.current?.updateCursor(eid, epoch),
+    }).then(() => {
+      const intent = pendingCrossSessionIntentRef.current;
+      if (!intent || intent.sessionId !== activeSessionId) {
+        return;
+      }
+      if (useAppStore.getState().activeSessionId !== activeSessionId) {
+        return;
+      }
+      pendingCrossSessionIntentRef.current = null;
+      if (intent.type === 'select') {
+        void crossSessionHandlersRef.current?.selectConversation(
+          intent.conversationId,
+          intent.sessionId,
+        );
+      } else {
+        void crossSessionHandlersRef.current?.createConversation(intent.sessionId);
+      }
     });
   }, [auth, activeSessionId, connection?.restartCount, reconcileSession]);
 
@@ -357,14 +425,22 @@ export const App: React.FC = () => {
     void queryClient.invalidateQueries({ queryKey: ['sessions'] });
   };
 
-  const handleCreateConversation = async () => {
-    if (!auth || !activeSessionId || isTurnRunning || creatingConversation) return;
+  const handleCreateConversation = async (targetSessionId?: string) => {
+    if (!auth || isTurnRunning || creatingConversation) return;
+    const sid = targetSessionId ?? activeSessionId;
+    if (!sid) return;
+    setPrimaryView('chat');
+    if (sid !== activeSessionId) {
+      pendingCrossSessionIntentRef.current = { sessionId: sid, type: 'create' };
+      setActiveSession(sid);
+      return;
+    }
     setWorkspaceError(null);
     setCreatingConversation(true);
     try {
-      const created = await apiClient.createConversation(auth, activeSessionId);
+      const created = await apiClient.createConversation(auth, sid);
       startNewConversation(created.conversationId);
-      const queryKey = ['conversations', instanceKey, auth.baseUrl, activeSessionId] as const;
+      const queryKey = ['conversations', instanceKey, auth.baseUrl, sid] as const;
       queryClient.setQueryData<{ items: ConversationSummary[]; total: number; page: number; pageSize: number } | undefined>(
         queryKey,
         (prev) => {
@@ -401,9 +477,20 @@ export const App: React.FC = () => {
     void queryClient.invalidateQueries({ queryKey: ['sessions'] });
   };
 
-  const handleSelectConversation = async (conversationId: string) => {
-    if (!auth || !activeSessionId) return;
-    const sid = activeSessionId;
+  const handleSelectConversation = async (conversationId: string, targetSessionId?: string) => {
+    if (!auth) return;
+    const sid = targetSessionId ?? activeSessionId;
+    if (!sid) return;
+    setPrimaryView('chat');
+    if (sid !== activeSessionId) {
+      pendingCrossSessionIntentRef.current = {
+        sessionId: sid,
+        type: 'select',
+        conversationId,
+      };
+      setActiveSession(sid);
+      return;
+    }
     const gen = useAppStore.getState().sessionGeneration;
     setActiveConversation(conversationId);
     const history = await apiClient.getHistory(auth, conversationId);
@@ -417,6 +504,11 @@ export const App: React.FC = () => {
     if (afterCw.activeSessionId === sid && afterCw.sessionGeneration === gen) {
       setContextWindow(cw);
     }
+  };
+
+  crossSessionHandlersRef.current = {
+    selectConversation: handleSelectConversation,
+    createConversation: handleCreateConversation,
   };
 
   const handleVerifyJob = async (jobId: string) => {
@@ -445,13 +537,25 @@ export const App: React.FC = () => {
         <Sidebar
           sessions={sessionsQuery.data?.items ?? []}
           conversations={conversationsQuery.data?.items ?? []}
+          conversationsBySession={conversationsBySession}
+          expandedSessionIds={expandedSessionIds}
+          onToggleExpandSession={(sid) =>
+            setExpandedSessionIds((prev) =>
+              prev.includes(sid) ? prev.filter((id) => id !== sid) : [...prev, sid],
+            )
+          }
           activeSessionId={activeSessionId}
           activeConversationId={activeConversationId}
+          activePrimaryView={primaryView}
+          onSelectPrimaryView={setPrimaryView}
           controlPlaneAvailable={controlPlaneAvailable}
           isTurnRunning={isTurnRunning}
           creatingConversation={creatingConversation}
-          onSelectSession={(sid) => setActiveSession(sid)}
-          onSelectConversation={(cid) => void handleSelectConversation(cid)}
+          onSelectSession={(sid) => {
+            setPrimaryView('chat');
+            setActiveSession(sid);
+          }}
+          onSelectConversation={(cid, sid) => void handleSelectConversation(cid, sid)}
           onCreateConversation={handleCreateConversation}
           onCreateSession={handleCreateSession}
           onOpenFolder={handleOpenFolder}
@@ -486,103 +590,117 @@ export const App: React.FC = () => {
         />
 
         <main className="flex min-w-0 flex-1 flex-col bg-slate-900/40">
-          <div className="flex h-11 shrink-0 items-center justify-between border-b border-slate-800/80 bg-slate-950/60 px-4 text-xs">
-            <div className="flex min-w-0 items-center gap-2">
-              <span className="truncate font-medium text-slate-200">
-                {activeWorkspaceSession?.name || '未选择工作区'}
-              </span>
-              {activeWorkspacePath && (
-                <span className="hidden truncate font-mono text-[11px] text-slate-500 md:inline" title={activeWorkspacePath}>
-                  {activeWorkspacePath}
-                </span>
+          {primaryView === 'business-skills' ? (
+            <BusinessSkillsHub
+              auth={auth}
+              instanceKey={instanceKey}
+              activeSessionId={activeSessionId}
+              controlPlaneAvailable={controlPlaneAvailable}
+              modelConfigured={Boolean(
+                systemStatusQuery.data?.modelConfigured ?? modelSettingsQuery.data?.model,
               )}
-            </div>
-            <div className="flex shrink-0 items-center gap-1.5">
-              <button
-                type="button"
-                disabled={!activeSessionId}
-                onClick={() => toggleInspectorTab('files')}
-                aria-label="工作区文件"
-                className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium disabled:opacity-40 ${
-                  isInspectorOpen && inspectorTab === 'files'
-                    ? 'border-indigo-500/60 bg-indigo-500/20 text-indigo-200'
-                    : 'border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800'
-                }`}
-              >
-                <FolderTree className="h-3.5 w-3.5" />
-                <span>文件</span>
-              </button>
-              <button
-                type="button"
-                disabled={!activeSessionId}
-                onClick={() => toggleInspectorTab('changes')}
-                aria-label="代码变更"
-                className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium disabled:opacity-40 ${
-                  isInspectorOpen && inspectorTab === 'changes'
-                    ? 'border-indigo-500/60 bg-indigo-500/20 text-indigo-200'
-                    : 'border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800'
-                }`}
-              >
-                <FileDiff className="h-3.5 w-3.5" />
-                <span>
-                  变更{changesQuery.data?.files?.length ? ` (${changesQuery.data.files.length})` : ''}
-                </span>
-              </button>
-              <button
-                type="button"
-                disabled={!activeSessionId}
-                onClick={() => toggleInspectorTab('jobs')}
-                aria-label="后台作业"
-                className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium disabled:opacity-40 ${
-                  isInspectorOpen && inspectorTab === 'jobs'
-                    ? 'border-indigo-500/60 bg-indigo-500/20 text-indigo-200'
-                    : 'border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800'
-                }`}
-              >
-                <Cpu className="h-3.5 w-3.5" />
-                <span>作业{jobs.length > 0 ? ` (${jobs.length})` : ''}</span>
-              </button>
-            </div>
-          </div>
+            />
+          ) : (
+            <>
+              <div className="flex h-11 shrink-0 items-center justify-between border-b border-slate-800/80 bg-slate-950/60 px-4 text-xs">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="truncate font-medium text-slate-200">
+                    {activeWorkspaceSession?.name || '未选择工作区'}
+                  </span>
+                  {activeWorkspacePath && (
+                    <span className="hidden truncate font-mono text-[11px] text-slate-500 md:inline" title={activeWorkspacePath}>
+                      {activeWorkspacePath}
+                    </span>
+                  )}
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={!activeSessionId}
+                    onClick={() => toggleInspectorTab('files')}
+                    aria-label="工作区文件"
+                    className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium disabled:opacity-40 ${
+                      isInspectorOpen && inspectorTab === 'files'
+                        ? 'border-indigo-500/60 bg-indigo-500/20 text-indigo-200'
+                        : 'border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800'
+                    }`}
+                  >
+                    <FolderTree className="h-3.5 w-3.5" />
+                    <span>文件</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!activeSessionId}
+                    onClick={() => toggleInspectorTab('changes')}
+                    aria-label="代码变更"
+                    className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium disabled:opacity-40 ${
+                      isInspectorOpen && inspectorTab === 'changes'
+                        ? 'border-indigo-500/60 bg-indigo-500/20 text-indigo-200'
+                        : 'border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800'
+                    }`}
+                  >
+                    <FileDiff className="h-3.5 w-3.5" />
+                    <span>
+                      变更{changesQuery.data?.files?.length ? ` (${changesQuery.data.files.length})` : ''}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!activeSessionId}
+                    onClick={() => toggleInspectorTab('jobs')}
+                    aria-label="后台作业"
+                    className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium disabled:opacity-40 ${
+                      isInspectorOpen && inspectorTab === 'jobs'
+                        ? 'border-indigo-500/60 bg-indigo-500/20 text-indigo-200'
+                        : 'border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800'
+                    }`}
+                  >
+                    <Cpu className="h-3.5 w-3.5" />
+                    <span>作业{jobs.length > 0 ? ` (${jobs.length})` : ''}</span>
+                  </button>
+                </div>
+              </div>
 
-          <ChatView
-            sessionId={activeSessionId}
-            conversationId={activeConversationId}
-            messages={messages}
-            messagesTruncated={messagesTruncated}
-            streamingContent={streamingContent}
-            streamingThinking={streamingThinking}
-            isThinkingStreaming={isThinkingStreaming}
-            isTurnRunning={isTurnRunning}
-            toolCalls={toolCalls}
-            pendingApprovals={pendingApprovals}
-            currentPlan={currentPlan}
-            jobs={jobs}
-            verificationReceipts={verificationReceipts}
-            workerBar={workerBar}
-            executionBackend={systemStatusQuery.data?.executionBackend ?? executionSettingsQuery.data?.backend ?? null}
-            controlPlaneAvailable={controlPlaneAvailable}
-            onApprovalResolved={() => void reconcileApprovals()}
-            onPlanActionSubmitted={() =>
-              void reconcileSession('plan_action', {
-                onCursorSynced: (eid, epoch) => sseRef.current?.updateCursor(eid, epoch),
-              })
-            }
-            onVerifyJob={handleVerifyJob}
-            onSwitchManaged={() => void window.codexflow.switchToManaged()}
-          />
+              <ChatView
+                sessionId={activeSessionId}
+                conversationId={activeConversationId}
+                messages={messages}
+                messagesTruncated={messagesTruncated}
+                streamingContent={streamingContent}
+                streamingThinking={streamingThinking}
+                isThinkingStreaming={isThinkingStreaming}
+                isTurnRunning={isTurnRunning}
+                toolCalls={toolCalls}
+                pendingApprovals={pendingApprovals}
+                currentPlan={currentPlan}
+                jobs={jobs}
+                verificationReceipts={verificationReceipts}
+                workerBar={workerBar}
+                executionBackend={systemStatusQuery.data?.executionBackend ?? executionSettingsQuery.data?.backend ?? null}
+                controlPlaneAvailable={controlPlaneAvailable}
+                onApprovalResolved={() => void reconcileApprovals()}
+                onPlanActionSubmitted={() =>
+                  void reconcileSession('plan_action', {
+                    onCursorSynced: (eid, epoch) => sseRef.current?.updateCursor(eid, epoch),
+                  })
+                }
+                onVerifyJob={handleVerifyJob}
+                onSwitchManaged={() => void window.codexflow.switchToManaged()}
+              />
 
-          <Composer
-            disabled={!auth || !activeSessionId}
-            isTurnRunning={isTurnRunning}
-            conversationMode={conversationMode}
-            turnNotice={turnNotice}
-            workspacePath={activeWorkspacePath}
-            externalAttachment={externalAttachment}
-            onChangeMode={setConversationMode}
-            onSend={handleSend}
-            onCancel={handleCancel}
-          />
+              <Composer
+                disabled={!auth || !activeSessionId}
+                isTurnRunning={isTurnRunning}
+                conversationMode={conversationMode}
+                turnNotice={turnNotice}
+                workspacePath={activeWorkspacePath}
+                externalAttachment={externalAttachment}
+                onChangeMode={setConversationMode}
+                onSend={handleSend}
+                onCancel={handleCancel}
+              />
+            </>
+          )}
         </main>
 
         <WorkspaceInspector

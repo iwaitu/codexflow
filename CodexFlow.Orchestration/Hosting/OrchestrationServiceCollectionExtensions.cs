@@ -262,6 +262,46 @@ public static class OrchestrationServiceCollectionExtensions
             services,
             _ => new WorkspaceRootProvider(Path.Combine(Directory.GetCurrentDirectory(), "workspaces")));
 
+        services.Configure<CodexFlow.Core.BusinessSkills.BusinessSkillsOptions>(
+            configuration.GetSection(CodexFlow.Core.BusinessSkills.BusinessSkillsOptions.SectionName));
+        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<CodexFlow.Core.BusinessSkills.OutboundTargetPolicyGuard>(services);
+        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<CodexFlow.Core.BusinessSkills.OpenApiBusinessPluginAdapter>(services);
+        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<CodexFlow.Core.BusinessSkills.McpBusinessPluginAdapter>(services);
+        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<CodexFlow.Core.BusinessSkills.IBusinessCapabilityExecutor>(
+            services,
+            sp => new CodexFlow.Core.BusinessSkills.BusinessCapabilityExecutor(
+                sp.GetRequiredService<CodexFlow.Core.BusinessSkills.OpenApiBusinessPluginAdapter>(),
+                sp.GetRequiredService<CodexFlow.Core.BusinessSkills.McpBusinessPluginAdapter>(),
+                sp.GetService<Microsoft.Extensions.Logging.ILoggerFactory>()));
+        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<CodexFlow.Core.BusinessSkills.IBusinessCredentialStore>(
+            services,
+            sp => new CodexFlow.Core.BusinessSkills.DpapiBusinessCredentialStore(
+                sp.GetService<Microsoft.Extensions.Options.IOptions<CodexFlow.Core.BusinessSkills.BusinessSkillsOptions>>(),
+                sp.GetService<IConfiguration>()));
+        services.AddScoped<CodexFlow.Orchestration.BusinessSkills.IBusinessPluginControlService,
+            CodexFlow.Orchestration.BusinessSkills.BusinessPluginControlService>();
+        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<
+            CodexFlow.Orchestration.BusinessSkills.IBusinessSkillApprovalCoordinator,
+            CodexFlow.Orchestration.BusinessSkills.BusinessSkillApprovalCoordinator>(services);
+        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<
+            CodexFlow.Core.BusinessSkills.IBusinessSkillGenerator>(
+            services,
+            sp => new CodexFlow.Core.BusinessSkills.StructuredBusinessSkillGenerator(
+                sp.GetService<Microsoft.Extensions.AI.IChatClient>()));
+        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<
+            CodexFlow.Core.BusinessSkills.SkillWorkflowEngine>(
+            services,
+            sp => new CodexFlow.Core.BusinessSkills.SkillWorkflowEngine(
+                sp.GetRequiredService<CodexFlow.Core.BusinessSkills.IBusinessCapabilityExecutor>(),
+                sp.GetService<Microsoft.Extensions.AI.IChatClient>()));
+        services.AddScoped<CodexFlow.Orchestration.BusinessSkills.IBusinessSkillBuilderService,
+            CodexFlow.Orchestration.BusinessSkills.BusinessSkillBuilderService>();
+        services.AddScoped<CodexFlow.Orchestration.BusinessSkills.IBusinessSkillRunService,
+            CodexFlow.Orchestration.BusinessSkills.BusinessSkillRunService>();
+        services.AddScoped<CodexFlow.Orchestration.BusinessSkills.IBusinessSkillRetentionService,
+            CodexFlow.Orchestration.BusinessSkills.BusinessSkillRetentionService>();
+        services.AddHostedService<CodexFlow.Orchestration.BusinessSkills.BusinessSkillRunRecoveryHostedService>();
+
         return services;
     }
 

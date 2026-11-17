@@ -177,6 +177,48 @@ export interface ClassifiedDroppedFile {
   workspaceRelativePath: string | null;
 }
 
+export type BusinessPluginDto = components['schemas']['BusinessPluginDto'];
+export type BusinessPluginSourceType = components['schemas']['BusinessPluginSourceType'];
+export type BusinessAuthKind = components['schemas']['BusinessAuthKind'];
+export type CapabilityRiskLevel = components['schemas']['CapabilityRiskLevel'];
+export type CapabilitySummaryDto = components['schemas']['CapabilitySummaryDto'];
+export type CapabilityDetailDto = components['schemas']['CapabilityDetailDto'];
+export type CapabilityPageResponseDto = components['schemas']['CapabilityPageResponseDto'];
+export type CredentialRefSummaryDto = components['schemas']['CredentialRefSummaryDto'];
+export type DeleteCredentialResponseDto = components['schemas']['DeleteCredentialResponseDto'];
+export type DiscoverPluginResultDto = components['schemas']['DiscoverPluginResultDto'];
+export type CreateBusinessPluginRequest = components['schemas']['CreateBusinessPluginRequest'];
+export type UpdatePluginConnectionRequest = components['schemas']['UpdatePluginConnectionRequest'];
+export type SetPluginCredentialRequest = components['schemas']['SetPluginCredentialRequest'];
+export type UpdateCapabilityRiskRequest = components['schemas']['UpdateCapabilityRiskRequest'];
+export type SkillDraftDto = components['schemas']['SkillDraftDto'];
+export type CreateSkillDraftRequest = components['schemas']['CreateSkillDraftRequest'];
+export type UpdateSkillDraftRequest = components['schemas']['UpdateSkillDraftRequest'];
+export type PutDraftSelectionRequest = components['schemas']['PutDraftSelectionRequest'];
+export type GenerateSkillCandidateRequest = components['schemas']['GenerateSkillCandidateRequest'];
+export type GenerateSkillCandidateResultDto = components['schemas']['GenerateSkillCandidateResultDto'];
+export type PublishSkillDraftRequest = components['schemas']['PublishSkillDraftRequest'];
+export type PublishedSkillDto = components['schemas']['PublishedSkillDto'];
+export type SkillMarkdownPreviewDto = components['schemas']['SkillMarkdownPreviewDto'];
+export type StartSkillRunRequest = components['schemas']['StartSkillRunRequest'];
+export type SkillRunDto = components['schemas']['SkillRunDto'];
+export type DisablePluginResponseDto = components['schemas']['DisablePluginResponseDto'];
+export type BusinessSkillRetentionPruneRequest =
+  components['schemas']['BusinessSkillRetentionPruneRequest'];
+export type BusinessSkillRetentionPruneResultDto =
+  components['schemas']['BusinessSkillRetentionPruneResultDto'];
+export type PluginOperationStatusDto = components['schemas']['PluginOperationStatusDto'];
+export type EndpointPolicyDto = components['schemas']['EndpointPolicyDto'];
+export type SkillDefinitionV1 = components['schemas']['SkillDefinitionV1'];
+export type SkillInputPropertyDto = components['schemas']['SkillInputPropertyDto'];
+export type SkillInputSchemaDto = components['schemas']['SkillInputSchemaDto'];
+export type SkillStepDefinition = components['schemas']['SkillStepDefinition'];
+export type SkillRunStatus = components['schemas']['SkillRunStatus'];
+export type SkillRunStepState = components['schemas']['SkillRunStepState'];
+export type BusinessApprovalRequestDto = components['schemas']['BusinessApprovalRequestDto'];
+
+export type CredentialSlotKind = 'document' | 'execution';
+
 export interface DesktopBridge {
   getBackendConnection(): Promise<BackendConnectionPublicInfo>;
   onBackendConnectionChanged(listener: (info: BackendConnectionPublicInfo) => void): () => void;
@@ -187,6 +229,49 @@ export interface DesktopBridge {
   listPermissionRules(): Promise<ControlPlaneCallResult<PermissionRuleListResult>>;
   deletePermissionRule(ruleId: string): Promise<ControlPlaneCallResult<DeletePermissionRuleResult>>;
   openLocalWorkspace(payload: OpenLocalWorkspacePayload): Promise<ControlPlaneCallResult<OpenLocalWorkspaceResult>>;
+  createBusinessPlugin(payload: CreateBusinessPluginRequest): Promise<ControlPlaneCallResult<BusinessPluginDto>>;
+  updateBusinessPluginConnection(
+    payload: { pluginId: string } & UpdatePluginConnectionRequest,
+  ): Promise<ControlPlaneCallResult<BusinessPluginDto>>;
+  setBusinessPluginCredential(
+    payload: { pluginId: string; slot: CredentialSlotKind } & SetPluginCredentialRequest,
+  ): Promise<ControlPlaneCallResult<CredentialRefSummaryDto>>;
+  deleteBusinessPluginCredential(payload: {
+    pluginId: string;
+    slot: CredentialSlotKind;
+    unbindIfReferenced?: boolean;
+  }): Promise<ControlPlaneCallResult<DeleteCredentialResponseDto>>;
+  disableBusinessPlugin(pluginId: string): Promise<ControlPlaneCallResult<DisablePluginResponseDto>>;
+  discoverBusinessPlugin(payload: {
+    pluginId: string;
+    clientRequestId: string;
+  }): Promise<ControlPlaneCallResult<DiscoverPluginResultDto>>;
+  updateBusinessCapabilityRisk(
+    payload: { pluginId: string } & UpdateCapabilityRiskRequest,
+  ): Promise<ControlPlaneCallResult<CapabilitySummaryDto>>;
+  updateSkillDraftSelection(
+    payload: { draftId: string } & PutDraftSelectionRequest,
+  ): Promise<ControlPlaneCallResult<SkillDraftDto>>;
+  generateSkillDraftCandidate(
+    payload: { draftId: string } & GenerateSkillCandidateRequest,
+  ): Promise<ControlPlaneCallResult<GenerateSkillCandidateResultDto>>;
+  startSkillDraftTestRun(
+    payload: { draftId: string } & StartSkillRunRequest,
+  ): Promise<ControlPlaneCallResult<SkillRunDto>>;
+  publishSkillDraft(
+    payload: { draftId: string } & PublishSkillDraftRequest,
+  ): Promise<ControlPlaneCallResult<PublishedSkillDto>>;
+  activateSkillVersion(payload: {
+    skillId: string;
+    version: number;
+  }): Promise<ControlPlaneCallResult<PublishedSkillDto>>;
+  startPublishedSkillRun(
+    payload: { skillId: string } & StartSkillRunRequest,
+  ): Promise<ControlPlaneCallResult<SkillRunDto>>;
+  cancelBusinessSkillRun(runId: string): Promise<ControlPlaneCallResult<SkillRunDto>>;
+  pruneBusinessSkillRetention(
+    payload?: BusinessSkillRetentionPruneRequest,
+  ): Promise<ControlPlaneCallResult<BusinessSkillRetentionPruneResultDto>>;
   pickFolder(): Promise<string | null>;
   getPathForFile(file: File): string | null;
   classifyDroppedFiles(payload: DroppedFileClassifyInput): Promise<ClassifiedDroppedFile[]>;
@@ -209,6 +294,21 @@ export const IPC_CHANNELS = {
   listPermissionRules: 'codexflow:list-permission-rules',
   deletePermissionRule: 'codexflow:delete-permission-rule',
   openLocalWorkspace: 'codexflow:open-local-workspace',
+  createBusinessPlugin: 'codexflow:create-business-plugin',
+  updateBusinessPluginConnection: 'codexflow:update-business-plugin-connection',
+  setBusinessPluginCredential: 'codexflow:set-business-plugin-credential',
+  deleteBusinessPluginCredential: 'codexflow:delete-business-plugin-credential',
+  disableBusinessPlugin: 'codexflow:disable-business-plugin',
+  discoverBusinessPlugin: 'codexflow:discover-business-plugin',
+  updateBusinessCapabilityRisk: 'codexflow:update-business-capability-risk',
+  updateSkillDraftSelection: 'codexflow:update-skill-draft-selection',
+  generateSkillDraftCandidate: 'codexflow:generate-skill-draft-candidate',
+  startSkillDraftTestRun: 'codexflow:start-skill-draft-test-run',
+  publishSkillDraft: 'codexflow:publish-skill-draft',
+  activateSkillVersion: 'codexflow:activate-skill-version',
+  startPublishedSkillRun: 'codexflow:start-published-skill-run',
+  cancelBusinessSkillRun: 'codexflow:cancel-business-skill-run',
+  pruneBusinessSkillRetention: 'codexflow:prune-business-skill-retention',
   pickFolder: 'codexflow:pick-folder',
   classifyDroppedFiles: 'codexflow:classify-dropped-files',
   pickStandaloneTokenFile: 'codexflow:pick-standalone-token-file',

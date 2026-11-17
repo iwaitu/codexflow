@@ -32,6 +32,9 @@ export const SSE_KNOWN_EVENTS = [
   "error",
   "done",
   "replay_gap",
+  "business_skill_run_updated",
+  "business_skill_approval_requested",
+  "business_skill_approval_resolved",
 ] as const;
 
 export type KnownSseEventName = (typeof SSE_KNOWN_EVENTS)[number];
@@ -262,6 +265,38 @@ export interface SseReplayGapPayload {
   [key: string]: unknown;
 }
 
+export interface SseBusinessSkillRunUpdatedPayload {
+  runId: string;
+  skillId: string;
+  skillVersion: number;
+  status: string;
+  stopRequested: boolean;
+  updatedAtUtc: string;
+  [key: string]: unknown;
+}
+
+export interface SseBusinessSkillApprovalRequestedPayload {
+  approvalId: string;
+  requestDigest: string;
+  sessionId: string;
+  runId: string;
+  stepId: string;
+  kind: string;
+  allowedDecisions: Array<string>;
+  expiresAtUtc: string;
+  [key: string]: unknown;
+}
+
+export interface SseBusinessSkillApprovalResolvedPayload {
+  approvalId: string;
+  requestDigest: string;
+  runId: string;
+  decision: string;
+  decidedBy?: string | null;
+  resolvedAt: string;
+  [key: string]: unknown;
+}
+
 export interface SseEventPayloadMap {
   "heartbeat": SseHeartbeatPayload;
   "content": SseContentPayload;
@@ -290,6 +325,9 @@ export interface SseEventPayloadMap {
   "error": SseErrorPayload;
   "done": SseDonePayload;
   "replay_gap": SseReplayGapPayload;
+  "business_skill_run_updated": SseBusinessSkillRunUpdatedPayload;
+  "business_skill_approval_requested": SseBusinessSkillApprovalRequestedPayload;
+  "business_skill_approval_resolved": SseBusinessSkillApprovalResolvedPayload;
 }
 
 export type KnownSseEvent = {

@@ -1,4 +1,16 @@
 import type { components } from '@shared/contracts/api.generated';
+import type {
+  BusinessPluginDto,
+  CapabilityDetailDto,
+  CapabilityPageResponseDto,
+  CreateSkillDraftRequest,
+  PluginOperationStatusDto,
+  PublishedSkillDto,
+  SkillDraftDto,
+  SkillMarkdownPreviewDto,
+  SkillRunDto,
+  UpdateSkillDraftRequest,
+} from '@shared/ipc';
 
 export type SystemStatusSummary = components['schemas']['SystemStatusSummaryDto'];
 export type ExecutionSettings = components['schemas']['ExecutionSettingsDto'];
@@ -139,7 +151,7 @@ async function parseApiResponse<T>(response: Response, fallbackMessage: string):
 
 async function requestJson<T>(
   auth: ApiAuthContext,
-  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
   path: string,
   body?: unknown,
   signal?: AbortSignal,
@@ -372,5 +384,118 @@ export const apiClient = {
         ...(resumeToken ? { resumeToken } : {}),
       },
     );
+  },
+
+  listBusinessPlugins(auth: ApiAuthContext): Promise<BusinessPluginDto[]> {
+    return requestJson<BusinessPluginDto[]>(auth, 'GET', '/api/plugins');
+  },
+
+  queryPluginCapabilities(
+    auth: ApiAuthContext,
+    pluginId: string,
+    params: {
+      snapshotId?: string;
+      search?: string;
+      groupTag?: string;
+      executableOnly?: boolean;
+      page?: number;
+      pageSize?: number;
+    } = {},
+  ): Promise<CapabilityPageResponseDto> {
+    const qs = new URLSearchParams();
+    if (params.snapshotId) qs.set('snapshotId', params.snapshotId);
+    if (params.search?.trim()) qs.set('search', params.search.trim());
+    if (params.groupTag?.trim()) qs.set('groupTag', params.groupTag.trim());
+    if (params.executableOnly) qs.set('executableOnly', 'true');
+    if (params.page !== undefined) qs.set('page', String(params.page));
+    if (params.pageSize !== undefined) qs.set('pageSize', String(params.pageSize));
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    return requestJson<CapabilityPageResponseDto>(
+      auth,
+      'GET',
+      `/api/plugins/${encodeURIComponent(pluginId)}/capabilities${suffix}`,
+    );
+  },
+
+  getPluginCapabilityDetail(
+    auth: ApiAuthContext,
+    pluginId: string,
+    capabilityId: string,
+    snapshotId?: string,
+  ): Promise<CapabilityDetailDto> {
+    const qs = new URLSearchParams({ capabilityId });
+    if (snapshotId) qs.set('snapshotId', snapshotId);
+    return requestJson<CapabilityDetailDto>(
+      auth,
+      'GET',
+      `/api/plugins/${encodeURIComponent(pluginId)}/capabilities/detail?${qs.toString()}`,
+    );
+  },
+
+  getPluginOperationStatus(auth: ApiAuthContext, operationId: string): Promise<PluginOperationStatusDto> {
+    return requestJson<PluginOperationStatusDto>(
+      auth,
+      'GET',
+      `/api/plugin-operations/${encodeURIComponent(operationId)}`,
+    );
+  },
+
+  createSkillDraft(auth: ApiAuthContext, payload: CreateSkillDraftRequest): Promise<SkillDraftDto> {
+    return requestJson<SkillDraftDto>(auth, 'POST', '/api/skill-drafts', payload);
+  },
+
+  getSkillDraft(auth: ApiAuthContext, draftId: string): Promise<SkillDraftDto> {
+    return requestJson<SkillDraftDto>(auth, 'GET', `/api/skill-drafts/${encodeURIComponent(draftId)}`);
+  },
+
+  updateSkillDraft(
+    auth: ApiAuthContext,
+    draftId: string,
+    payload: UpdateSkillDraftRequest,
+  ): Promise<SkillDraftDto> {
+    return requestJson<SkillDraftDto>(
+      auth,
+      'PUT',
+      `/api/skill-drafts/${encodeURIComponent(draftId)}`,
+      payload,
+    );
+  },
+
+  validateSkillDraft(auth: ApiAuthContext, draftId: string): Promise<SkillDraftDto> {
+    return requestJson<SkillDraftDto>(
+      auth,
+      'POST',
+      `/api/skill-drafts/${encodeURIComponent(draftId)}/validate`,
+      {},
+    );
+  },
+
+  listPublishedSkills(auth: ApiAuthContext): Promise<PublishedSkillDto[]> {
+    return requestJson<PublishedSkillDto[]>(auth, 'GET', '/api/skills');
+  },
+
+  getPublishedSkill(auth: ApiAuthContext, skillId: string): Promise<PublishedSkillDto> {
+    return requestJson<PublishedSkillDto>(auth, 'GET', `/api/skills/${encodeURIComponent(skillId)}`);
+  },
+
+  getPublishedSkillMarkdown(
+    auth: ApiAuthContext,
+    skillId: string,
+    version?: number,
+  ): Promise<SkillMarkdownPreviewDto> {
+    const suffix = version !== undefined ? `?version=${version}` : '';
+    return requestJson<SkillMarkdownPreviewDto>(
+      auth,
+      'GET',
+      `/api/skills/${encodeURIComponent(skillId)}/markdown${suffix}`,
+    );
+  },
+
+  listSkillRuns(auth: ApiAuthContext, skillId: string): Promise<SkillRunDto[]> {
+    return requestJson<SkillRunDto[]>(auth, 'GET', `/api/skills/${encodeURIComponent(skillId)}/runs`);
+  },
+
+  getSkillRun(auth: ApiAuthContext, runId: string): Promise<SkillRunDto> {
+    return requestJson<SkillRunDto>(auth, 'GET', `/api/skill-runs/${encodeURIComponent(runId)}`);
   },
 };

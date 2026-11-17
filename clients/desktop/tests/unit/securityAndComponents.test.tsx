@@ -62,6 +62,21 @@ function installMockBridge(overrides: Partial<DesktopBridge> = {}): DesktopBridg
     restartBackend: vi.fn(),
     openExternal: vi.fn().mockResolvedValue(true),
     showNotification: vi.fn().mockResolvedValue(undefined),
+    createBusinessPlugin: vi.fn().mockResolvedValue({ ok: true, status: 201 }),
+    updateBusinessPluginConnection: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
+    setBusinessPluginCredential: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
+    deleteBusinessPluginCredential: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
+    disableBusinessPlugin: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
+    discoverBusinessPlugin: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
+    updateBusinessCapabilityRisk: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
+    updateSkillDraftSelection: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
+    generateSkillDraftCandidate: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
+    startSkillDraftTestRun: vi.fn().mockResolvedValue({ ok: true, status: 202 }),
+    publishSkillDraft: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
+    activateSkillVersion: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
+    startPublishedSkillRun: vi.fn().mockResolvedValue({ ok: true, status: 202 }),
+    cancelBusinessSkillRun: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
+    pruneBusinessSkillRetention: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
     ...overrides,
   };
   window.codexflow = bridge;
@@ -873,6 +888,101 @@ describe('Security boundary & MVP interactive cards', () => {
 
     expect(screen.getByRole('button', { name: '新建会话' })).toBeDisabled();
     expect(screen.getByText('新会话')).toBeInTheDocument();
+  });
+
+  it('renders workspace-conversation tree with collapse toggle and cross-workspace selection', async () => {
+    const onSelectConv = vi.fn();
+    const sessions = [
+      {
+        sessionId: 'sess-a',
+        name: '默认工作区',
+        workspacePath: 'D:/repo-a',
+        currentStage: 1,
+        isArchived: false,
+        isExternalWorkspace: false,
+        createdUtc: '2026-11-17T00:00:00Z',
+        currentPlanArtifactId: null,
+        activeTaskId: null,
+      },
+      {
+        sessionId: 'sess-b',
+        name: '项目 B',
+        workspacePath: 'D:/repo-b',
+        currentStage: 1,
+        isArchived: false,
+        isExternalWorkspace: false,
+        createdUtc: '2026-11-17T00:00:00Z',
+        currentPlanArtifactId: null,
+        activeTaskId: null,
+      },
+    ];
+
+    render(
+      <Sidebar
+        sessions={sessions}
+        conversations={[]}
+        conversationsBySession={{
+          'sess-a': [
+            {
+              conversationId: 'conv-a1',
+              sessionId: 'sess-a',
+              name: '线程 A1',
+              threadType: 'Chat',
+              isArchived: false,
+              taskId: null,
+              createdUtc: '2026-11-17T00:00:00Z',
+              updatedAtUtc: '2026-11-17T00:00:00Z',
+            },
+          ],
+          'sess-b': [
+            {
+              conversationId: 'conv-b1',
+              sessionId: 'sess-b',
+              name: '线程 B1',
+              threadType: 'Chat',
+              isArchived: false,
+              taskId: null,
+              createdUtc: '2026-11-17T00:00:00Z',
+              updatedAtUtc: '2026-11-17T00:00:00Z',
+            },
+          ],
+        }}
+        activeSessionId="sess-a"
+        activeConversationId="conv-a1"
+        controlPlaneAvailable
+        onSelectSession={vi.fn()}
+        onSelectConversation={onSelectConv}
+        onCreateConversation={vi.fn().mockResolvedValue(undefined)}
+        onCreateSession={vi.fn().mockResolvedValue(undefined)}
+        onOpenFolder={vi.fn().mockResolvedValue(undefined)}
+        onRenameSession={vi.fn().mockResolvedValue(undefined)}
+        onArchiveSession={vi.fn().mockResolvedValue(undefined)}
+        onDeleteSession={vi.fn().mockResolvedValue(undefined)}
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onDeleteConversation={vi.fn().mockResolvedValue(undefined)}
+        onOpenSettings={vi.fn()}
+        workspaceError={null}
+      />,
+    );
+
+    expect(screen.getByText('线程 A1')).toBeInTheDocument();
+    expect(screen.queryByText('线程 B1')).not.toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '展开 项目 B' }));
+    });
+    expect(screen.getByText('线程 B1')).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('线程 B1'));
+    });
+    expect(onSelectConv).toHaveBeenCalledWith('conv-b1', 'sess-b');
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '折叠 默认工作区' }));
+    });
+    expect(screen.queryByText('线程 A1')).not.toBeInTheDocument();
+    expect(screen.getByText('线程 B1')).toBeInTheDocument();
   });
 
   it('parses unified diff and filters WorkspaceChangesPanel by selected file', () => {

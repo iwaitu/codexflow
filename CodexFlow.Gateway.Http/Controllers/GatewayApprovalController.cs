@@ -5,6 +5,7 @@
 using System.Security.Claims;
 using CodexFlow.Application;
 using CodexFlow.Core.Execution.Approval;
+using CodexFlow.Orchestration.BusinessSkills;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -44,7 +45,8 @@ public sealed record PendingApprovalsResponse(
 public sealed class GatewayApprovalController(
     IExecutionApprovalBroker approvalBroker,
     IChatService chatService,
-    IControlPlaneStateProvider? controlPlane = null) : ControllerBase
+    IControlPlaneStateProvider? controlPlane = null,
+    IBusinessSkillApprovalCoordinator? businessApprovalCoordinator = null) : ControllerBase
 {
     /// <summary>
     /// Returns all currently pending execution approval items for the owned session so clients can reconcile
@@ -125,6 +127,16 @@ public sealed class GatewayApprovalController(
                     "Approval request was not found or is not owned by the caller."));
             }
         }
+        else if (businessApprovalCoordinator is not null && businessApprovalCoordinator.HasApproval(approvalId))
+        {
+            var bizOutcome = await businessApprovalCoordinator
+                .TrySubmitDecisionAsync(approvalId, request.RequestDigest, decisionKind, userId, request.Note, ct)
+                .ConfigureAwait(false);
+            if (bizOutcome is not null)
+            {
+                return MapSubmissionResult(approvalId, decisionKind, bizOutcome);
+            }
+        }
 
         var submission = new ExecutionApprovalDecisionSubmission(
             request.RequestDigest,
@@ -133,7 +145,14 @@ public sealed class GatewayApprovalController(
             Note: request.Note);
 
         var outcome = await approvalBroker.SubmitDecisionAsync(approvalId, submission, ct).ConfigureAwait(false);
-        return outcome.Outcome switch
+        return MapSubmissionResult(approvalId, decisionKind, outcome);
+    }
+
+    private IActionResult MapSubmissionResult(
+        string approvalId,
+        ExecutionApprovalDecisionKind decisionKind,
+        ApprovalSubmissionResult outcome)
+        => outcome.Outcome switch
         {
             ApprovalSubmissionOutcome.Resolved => Ok(new SubmitExecutionApprovalResponse(
                 true,
@@ -165,5 +184,4 @@ public sealed class GatewayApprovalController(
                 "approval_not_found",
                 outcome.Message))
         };
-    }
 }

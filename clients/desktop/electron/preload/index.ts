@@ -2,14 +2,24 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import {
   IPC_CHANNELS,
   type BackendConnectionPublicInfo,
+  type BusinessSkillRetentionPruneRequest,
   type ConnectStandalonePayload,
+  type CreateBusinessPluginRequest,
+  type CredentialSlotKind,
   type DesktopBridge,
   type DroppedFileClassifyInput,
+  type GenerateSkillCandidateRequest,
   type OpenLocalWorkspacePayload,
   type PlanChatControlPayload,
+  type PublishSkillDraftRequest,
+  type PutDraftSelectionRequest,
+  type SetPluginCredentialRequest,
+  type StartSkillRunRequest,
   type SubmitToolApprovalPayload,
+  type UpdateCapabilityRiskRequest,
   type UpdateExecutionSettingsPayload,
   type UpdateModelSettingsPayload,
+  type UpdatePluginConnectionRequest,
 } from '../../src/shared/ipc';
 
 const api: DesktopBridge = {
@@ -36,6 +46,36 @@ const api: DesktopBridge = {
     ipcRenderer.invoke(IPC_CHANNELS.deletePermissionRule, ruleId),
   openLocalWorkspace: (payload: OpenLocalWorkspacePayload) =>
     ipcRenderer.invoke(IPC_CHANNELS.openLocalWorkspace, payload),
+  createBusinessPlugin: (payload: CreateBusinessPluginRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.createBusinessPlugin, payload),
+  updateBusinessPluginConnection: (payload: { pluginId: string } & UpdatePluginConnectionRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.updateBusinessPluginConnection, payload),
+  setBusinessPluginCredential: (payload: { pluginId: string; slot: CredentialSlotKind } & SetPluginCredentialRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.setBusinessPluginCredential, payload),
+  deleteBusinessPluginCredential: (payload: { pluginId: string; slot: CredentialSlotKind; unbindIfReferenced?: boolean }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.deleteBusinessPluginCredential, payload),
+  disableBusinessPlugin: (pluginId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.disableBusinessPlugin, pluginId),
+  discoverBusinessPlugin: (payload: { pluginId: string; clientRequestId: string }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.discoverBusinessPlugin, payload),
+  updateBusinessCapabilityRisk: (payload: { pluginId: string } & UpdateCapabilityRiskRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.updateBusinessCapabilityRisk, payload),
+  updateSkillDraftSelection: (payload: { draftId: string } & PutDraftSelectionRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.updateSkillDraftSelection, payload),
+  generateSkillDraftCandidate: (payload: { draftId: string } & GenerateSkillCandidateRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.generateSkillDraftCandidate, payload),
+  startSkillDraftTestRun: (payload: { draftId: string } & StartSkillRunRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.startSkillDraftTestRun, payload),
+  publishSkillDraft: (payload: { draftId: string } & PublishSkillDraftRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.publishSkillDraft, payload),
+  activateSkillVersion: (payload: { skillId: string; version: number }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.activateSkillVersion, payload),
+  startPublishedSkillRun: (payload: { skillId: string } & StartSkillRunRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.startPublishedSkillRun, payload),
+  cancelBusinessSkillRun: (runId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.cancelBusinessSkillRun, runId),
+  pruneBusinessSkillRetention: (payload?: BusinessSkillRetentionPruneRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.pruneBusinessSkillRetention, payload ?? {}),
   pickFolder: () => ipcRenderer.invoke(IPC_CHANNELS.pickFolder),
   getPathForFile: (file: File) => {
     try {

@@ -42,7 +42,10 @@
         "file_tree_updated",
         "error",
         "done",
-        "replay_gap"
+        "replay_gap",
+        "business_skill_run_updated",
+        "business_skill_approval_requested",
+        "business_skill_approval_resolved"
       ]
     },
     "data": {
@@ -421,6 +424,48 @@
         },
         "data": {
           "$ref": "#/$defs/replay_gap"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "business_skill_run_updated"
+        },
+        "data": {
+          "$ref": "#/$defs/business_skill_run_updated"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "business_skill_approval_requested"
+        },
+        "data": {
+          "$ref": "#/$defs/business_skill_approval_requested"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "business_skill_approval_resolved"
+        },
+        "data": {
+          "$ref": "#/$defs/business_skill_approval_resolved"
         }
       },
       "required": [
@@ -1287,6 +1332,118 @@
       },
       "required": [
         "reason"
+      ]
+    },
+    "business_skill_run_updated": {
+      "type": "object",
+      "description": "Business skill run status transition notification.",
+      "additionalProperties": true,
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "skillId": {
+          "type": "string"
+        },
+        "skillVersion": {
+          "type": "integer"
+        },
+        "status": {
+          "type": "string"
+        },
+        "stopRequested": {
+          "type": "boolean"
+        },
+        "updatedAtUtc": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "runId",
+        "skillId",
+        "skillVersion",
+        "status",
+        "stopRequested",
+        "updatedAtUtc"
+      ]
+    },
+    "business_skill_approval_requested": {
+      "type": "object",
+      "description": "Interactive approval request before dispatching a business write operation.",
+      "additionalProperties": true,
+      "properties": {
+        "approvalId": {
+          "type": "string"
+        },
+        "requestDigest": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "stepId": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "allowedDecisions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "expiresAtUtc": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "approvalId",
+        "requestDigest",
+        "sessionId",
+        "runId",
+        "stepId",
+        "kind",
+        "allowedDecisions",
+        "expiresAtUtc"
+      ]
+    },
+    "business_skill_approval_resolved": {
+      "type": "object",
+      "description": "Resolution outcome for a pending business write approval request.",
+      "additionalProperties": true,
+      "properties": {
+        "approvalId": {
+          "type": "string"
+        },
+        "requestDigest": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "decision": {
+          "type": "string"
+        },
+        "decidedBy": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resolvedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "approvalId",
+        "requestDigest",
+        "runId",
+        "decision",
+        "resolvedAt"
       ]
     }
   }

@@ -2,6 +2,7 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+using CodexFlow.Domain.BusinessSkills;
 using CodexFlow.Domain.Chat;
 using CodexFlow.Domain.Jobs;
 using CodexFlow.Domain.Planning;
@@ -28,6 +29,17 @@ public class JobDbContext : DbContext, IJobDbContext
     public DbSet<IvilsonSession> Sessions { get; set; }
     public DbSet<IvilsonConversation> Conversations { get; set; }
     public DbSet<IvilsonChatMessage> ChatMessages { get; set; }
+    public DbSet<BusinessPluginEntity> BusinessPlugins { get; set; }
+    public DbSet<PluginConnectionEntity> PluginConnections { get; set; }
+    public DbSet<BusinessCredentialMetaEntity> BusinessCredentialMetas { get; set; }
+    public DbSet<CatalogSnapshotEntity> CatalogSnapshots { get; set; }
+    public DbSet<CatalogCapabilityEntity> CatalogCapabilities { get; set; }
+    public DbSet<PluginOperationEntity> PluginOperations { get; set; }
+    public DbSet<SkillDraftEntity> SkillDrafts { get; set; }
+    public DbSet<PublishedSkillEntity> PublishedSkills { get; set; }
+    public DbSet<PublishedSkillVersionEntity> PublishedSkillVersions { get; set; }
+    public DbSet<SkillRunEntity> SkillRuns { get; set; }
+    public DbSet<SkillRunStepEntity> SkillRunSteps { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -117,6 +129,158 @@ public static class JobModel
             entity.Property(e => e.ReviewsJson).IsRequired().HasColumnType(jsonColumnType);
             entity.Property(e => e.ApprovalJson).HasColumnType(jsonColumnType);
             entity.Property(e => e.ProjectionJson).HasColumnType(jsonColumnType);
+        });
+
+        builder.Entity<BusinessPluginEntity>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.ConnectionId);
+            entity.HasIndex(e => e.Enabled);
+            entity.Property(e => e.Id).HasColumnType("text");
+            entity.Property(e => e.Name).IsRequired().HasColumnType("text");
+            entity.Property(e => e.SourceType).IsRequired().HasColumnType("text");
+            entity.Property(e => e.ConnectionId).IsRequired().HasColumnType("text");
+            entity.Property(e => e.ActiveSnapshotId).HasColumnType("text");
+        });
+
+        builder.Entity<PluginConnectionEntity>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.PluginId);
+            entity.Property(e => e.Id).HasColumnType("text");
+            entity.Property(e => e.PluginId).IsRequired().HasColumnType("text");
+            entity.Property(e => e.SourceUrl).IsRequired().HasColumnType("text");
+            entity.Property(e => e.Environment).IsRequired().HasColumnType("text");
+            entity.Property(e => e.EndpointPolicyJson).IsRequired().HasColumnType(jsonColumnType);
+            entity.Property(e => e.DocumentCredentialRef).HasColumnType("text");
+            entity.Property(e => e.ExecutionCredentialRef).HasColumnType("text");
+            entity.Property(e => e.Revision).IsConcurrencyToken();
+            entity.Property(e => e.CredentialRevision).IsRequired().HasColumnType("text");
+        });
+
+        builder.Entity<BusinessCredentialMetaEntity>(entity =>
+        {
+            entity.HasKey(e => e.CredentialRef);
+            entity.Property(e => e.CredentialRef).HasColumnType("text");
+            entity.Property(e => e.AuthKind).IsRequired().HasColumnType("text");
+            entity.Property(e => e.MaskedHint).IsRequired().HasColumnType("text");
+            entity.Property(e => e.Revision).IsRequired().HasColumnType("text");
+            entity.Property(e => e.CipherFileName).IsRequired().HasColumnType("text");
+        });
+
+        builder.Entity<CatalogSnapshotEntity>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => new { e.PluginId, e.FetchedAtUtc });
+            entity.Property(e => e.Id).HasColumnType("text");
+            entity.Property(e => e.PluginId).IsRequired().HasColumnType("text");
+            entity.Property(e => e.CredentialRevision).IsRequired().HasColumnType("text");
+            entity.Property(e => e.Environment).IsRequired().HasColumnType("text");
+            entity.Property(e => e.ProtocolVersion).IsRequired().HasColumnType("text");
+            entity.Property(e => e.SourceHash).IsRequired().HasColumnType("text");
+            entity.Property(e => e.SchemaHash).IsRequired().HasColumnType("text");
+            entity.Property(e => e.DiagnosticsJson).IsRequired().HasColumnType(jsonColumnType);
+        });
+
+        builder.Entity<CatalogCapabilityEntity>(entity =>
+        {
+            entity.HasKey(e => new { e.SnapshotId, e.Id });
+            entity.HasIndex(e => new { e.SnapshotId, e.GroupTag });
+            entity.HasIndex(e => new { e.SnapshotId, e.Executability });
+            entity.Property(e => e.SnapshotId).HasColumnType("text");
+            entity.Property(e => e.Id).HasColumnType("text");
+            entity.Property(e => e.NativeIdentity).IsRequired().HasColumnType("text");
+            entity.Property(e => e.ModelAlias).IsRequired().HasColumnType("text");
+            entity.Property(e => e.Title).IsRequired().HasColumnType("text");
+            entity.Property(e => e.Description).IsRequired().HasColumnType("text");
+            entity.Property(e => e.GroupTag).IsRequired().HasColumnType("text");
+            entity.Property(e => e.Risk).IsRequired().HasColumnType("text");
+            entity.Property(e => e.SuggestedSourceRiskHint).HasColumnType("text");
+            entity.Property(e => e.Executability).IsRequired().HasColumnType("text");
+            entity.Property(e => e.DiagnosticsJson).IsRequired().HasColumnType(jsonColumnType);
+            entity.Property(e => e.InputSchemaJson).HasColumnType(jsonColumnType);
+            entity.Property(e => e.OutputSchemaJson).HasColumnType(jsonColumnType);
+            entity.Property(e => e.InvocationJson).IsRequired().HasColumnType(jsonColumnType);
+        });
+
+        builder.Entity<PluginOperationEntity>(entity =>
+        {
+            entity.HasKey(e => e.OperationId);
+            entity.HasIndex(e => new { e.Kind, e.TargetId, e.ClientRequestId }).IsUnique();
+            entity.Property(e => e.OperationId).HasColumnType("text");
+            entity.Property(e => e.Kind).IsRequired().HasColumnType("text");
+            entity.Property(e => e.TargetId).IsRequired().HasColumnType("text");
+            entity.Property(e => e.ClientRequestId).IsRequired().HasColumnType("text");
+            entity.Property(e => e.Status).IsRequired().HasColumnType("text");
+            entity.Property(e => e.SnapshotId).HasColumnType("text");
+            entity.Property(e => e.ResultMessage).HasColumnType("text");
+            entity.Property(e => e.ErrorJson).HasColumnType(jsonColumnType);
+        });
+
+        builder.Entity<SkillDraftEntity>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.PluginId);
+            entity.Property(e => e.Id).HasColumnType("text");
+            entity.Property(e => e.PluginId).IsRequired().HasColumnType("text");
+            entity.Property(e => e.CatalogSnapshotId).IsRequired().HasColumnType("text");
+            entity.Property(e => e.Revision).IsConcurrencyToken();
+            entity.Property(e => e.Name).IsRequired().HasColumnType("text");
+            entity.Property(e => e.BusinessGoal).IsRequired().HasColumnType("text");
+            entity.Property(e => e.SelectedCapabilityIdsJson).IsRequired().HasColumnType(jsonColumnType);
+            entity.Property(e => e.CandidateDefinitionJson).HasColumnType(jsonColumnType);
+            entity.Property(e => e.ClarificationQuestionsJson).IsRequired().HasColumnType(jsonColumnType);
+            entity.Property(e => e.ValidationErrorsJson).IsRequired().HasColumnType(jsonColumnType);
+        });
+
+        builder.Entity<PublishedSkillEntity>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.PluginId);
+            entity.Property(e => e.Id).HasColumnType("text");
+            entity.Property(e => e.Name).IsRequired().HasColumnType("text");
+            entity.Property(e => e.Description).IsRequired().HasColumnType("text");
+            entity.Property(e => e.PluginId).IsRequired().HasColumnType("text");
+            entity.Property(e => e.Environment).IsRequired().HasColumnType("text");
+        });
+
+        builder.Entity<PublishedSkillVersionEntity>(entity =>
+        {
+            entity.HasKey(e => new { e.SkillId, e.Version });
+            entity.HasIndex(e => e.ContentHash);
+            entity.Property(e => e.SkillId).HasColumnType("text");
+            entity.Property(e => e.ContentHash).IsRequired().HasColumnType("text");
+            entity.Property(e => e.CatalogSnapshotId).IsRequired().HasColumnType("text");
+            entity.Property(e => e.DefinitionJson).IsRequired().HasColumnType(jsonColumnType);
+        });
+
+        builder.Entity<SkillRunEntity>(entity =>
+        {
+            entity.HasKey(e => e.RunId);
+            entity.HasIndex(e => new { e.SkillId, e.ClientRequestId }).IsUnique();
+            entity.HasIndex(e => e.Status);
+            entity.Property(e => e.RunId).HasColumnType("text");
+            entity.Property(e => e.SkillId).IsRequired().HasColumnType("text");
+            entity.Property(e => e.ClientRequestId).IsRequired().HasColumnType("text");
+            entity.Property(e => e.Status).IsRequired().HasColumnType("text");
+            entity.Property(e => e.InputsJson).IsRequired().HasColumnType(jsonColumnType);
+            entity.Property(e => e.OutputPayloadJson).HasColumnType(jsonColumnType);
+            entity.Property(e => e.PendingApprovalJson).HasColumnType(jsonColumnType);
+            entity.Property(e => e.ErrorJson).HasColumnType(jsonColumnType);
+        });
+
+        builder.Entity<SkillRunStepEntity>(entity =>
+        {
+            entity.HasKey(e => new { e.RunId, e.Sequence });
+            entity.HasIndex(e => new { e.RunId, e.StepId });
+            entity.Property(e => e.RunId).HasColumnType("text");
+            entity.Property(e => e.StepId).IsRequired().HasColumnType("text");
+            entity.Property(e => e.StepType).IsRequired().HasColumnType("text");
+            entity.Property(e => e.State).IsRequired().HasColumnType("text");
+            entity.Property(e => e.RequestSummary).HasColumnType("text");
+            entity.Property(e => e.ResponseSummary).HasColumnType("text");
+            entity.Property(e => e.Evidence).HasColumnType("text");
+            entity.Property(e => e.ErrorCode).HasColumnType("text");
         });
     }
 }

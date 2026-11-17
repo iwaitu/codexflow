@@ -2,6 +2,7 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+using CodexFlow.Domain.BusinessSkills;
 using CodexFlow.Domain.Chat;
 using CodexFlow.Domain.Jobs;
 using CodexFlow.Domain.Planning;
@@ -26,6 +27,17 @@ public interface IJobDbContext
     DbSet<IvilsonSession> Sessions { get; }
     DbSet<IvilsonConversation> Conversations { get; }
     DbSet<IvilsonChatMessage> ChatMessages { get; }
+    DbSet<BusinessPluginEntity> BusinessPlugins { get; }
+    DbSet<PluginConnectionEntity> PluginConnections { get; }
+    DbSet<BusinessCredentialMetaEntity> BusinessCredentialMetas { get; }
+    DbSet<CatalogSnapshotEntity> CatalogSnapshots { get; }
+    DbSet<CatalogCapabilityEntity> CatalogCapabilities { get; }
+    DbSet<PluginOperationEntity> PluginOperations { get; }
+    DbSet<SkillDraftEntity> SkillDrafts { get; }
+    DbSet<PublishedSkillEntity> PublishedSkills { get; }
+    DbSet<PublishedSkillVersionEntity> PublishedSkillVersions { get; }
+    DbSet<SkillRunEntity> SkillRuns { get; }
+    DbSet<SkillRunStepEntity> SkillRunSteps { get; }
 
     DatabaseFacade Database { get; }
     ChangeTracker ChangeTracker { get; }

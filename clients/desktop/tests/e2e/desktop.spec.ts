@@ -174,6 +174,17 @@ test('Electron MVP cold start, security isolation, permission rule revoke, appro
     await page.getByRole('button', { name: '代码变更' }).click();
     await expect(page.getByText('+# CodexFlow')).toBeVisible({ timeout: 5_000 });
 
+    // 8. Switch to "插件与 Skill" hub & verify tree collapse/expand on sidebar
+    await page.getByRole('button', { name: '插件与 Skill' }).click();
+    await expect(page.getByTestId('business-skills-hub')).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByRole('button', { name: /接入新插件/ })).toBeEnabled();
+    await page.getByRole('button', { name: '工作区对话' }).click();
+    await expect(page.getByText('会话标题已总结').first()).toBeVisible({ timeout: 5_000 });
+    await page.getByRole('button', { name: '折叠 默认工作区' }).click();
+    await expect(page.getByText('会话标题已总结')).toHaveCount(0);
+    await page.getByRole('button', { name: '展开 默认工作区' }).click();
+    await expect(page.getByText('会话标题已总结').first()).toBeVisible({ timeout: 5_000 });
+
     expect(cspErrors).toEqual([]);
     expect(pageErrors).toEqual([]);
   } finally {

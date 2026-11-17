@@ -5,12 +5,21 @@ import {
   IPC_CHANNELS,
   type ClassifiedDroppedFile,
   type ConnectStandalonePayload,
+  type CreateBusinessPluginRequest,
+  type CredentialSlotKind,
   type DroppedFileClassifyInput,
+  type GenerateSkillCandidateRequest,
   type OpenLocalWorkspacePayload,
   type PlanChatControlPayload,
+  type PublishSkillDraftRequest,
+  type PutDraftSelectionRequest,
+  type SetPluginCredentialRequest,
+  type StartSkillRunRequest,
   type SubmitToolApprovalPayload,
+  type UpdateCapabilityRiskRequest,
   type UpdateExecutionSettingsPayload,
   type UpdateModelSettingsPayload,
+  type UpdatePluginConnectionRequest,
 } from '../../src/shared/ipc';
 import { BackendManager } from './backendManager';
 import { callControlPlane } from './controlPlaneProxy';
@@ -185,6 +194,205 @@ function registerIpcHandlers(manager: BackendManager): void {
     assertTrustedIpcSender(event);
     return callControlPlane(manager.getControlPlaneCredentials(), 'POST', '/api/gateway/workspaces', payload);
   });
+
+  ipcMain.handle(IPC_CHANNELS.createBusinessPlugin, async (event, payload: CreateBusinessPluginRequest) => {
+    assertTrustedIpcSender(event);
+    return callControlPlane(manager.getControlPlaneCredentials(), 'POST', '/api/plugins', payload);
+  });
+
+  ipcMain.handle(
+    IPC_CHANNELS.updateBusinessPluginConnection,
+    async (event, payload: { pluginId: string } & UpdatePluginConnectionRequest) => {
+      assertTrustedIpcSender(event);
+      const { pluginId, ...body } = payload;
+      return callControlPlane(
+        manager.getControlPlaneCredentials(),
+        'PUT',
+        `/api/plugins/${encodeURIComponent(pluginId)}/connection`,
+        body,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.setBusinessPluginCredential,
+    async (event, payload: { pluginId: string; slot: CredentialSlotKind } & SetPluginCredentialRequest) => {
+      assertTrustedIpcSender(event);
+      if (payload.slot !== 'document' && payload.slot !== 'execution') {
+        throw new Error('Invalid credential slot');
+      }
+      const { pluginId, slot, ...body } = payload;
+      return callControlPlane(
+        manager.getControlPlaneCredentials(),
+        'PUT',
+        `/api/plugins/${encodeURIComponent(pluginId)}/credentials/${slot}`,
+        body,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.deleteBusinessPluginCredential,
+    async (event, payload: { pluginId: string; slot: CredentialSlotKind; unbindIfReferenced?: boolean }) => {
+      assertTrustedIpcSender(event);
+      if (payload.slot !== 'document' && payload.slot !== 'execution') {
+        throw new Error('Invalid credential slot');
+      }
+      const query = payload.unbindIfReferenced ? '?unbindIfReferenced=true' : '';
+      return callControlPlane(
+        manager.getControlPlaneCredentials(),
+        'DELETE',
+        `/api/plugins/${encodeURIComponent(payload.pluginId)}/credentials/${payload.slot}${query}`,
+      );
+    },
+  );
+
+  ipcMain.handle(IPC_CHANNELS.disableBusinessPlugin, async (event, pluginId: string) => {
+    assertTrustedIpcSender(event);
+    return callControlPlane(
+      manager.getControlPlaneCredentials(),
+      'POST',
+      `/api/plugins/${encodeURIComponent(pluginId)}/disable`,
+      {},
+    );
+  });
+
+  ipcMain.handle(
+    IPC_CHANNELS.discoverBusinessPlugin,
+    async (event, payload: { pluginId: string; clientRequestId: string }) => {
+      assertTrustedIpcSender(event);
+      return callControlPlane(
+        manager.getControlPlaneCredentials(),
+        'POST',
+        `/api/plugins/${encodeURIComponent(payload.pluginId)}/discover`,
+        { clientRequestId: payload.clientRequestId },
+        60_000,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.updateBusinessCapabilityRisk,
+    async (event, payload: { pluginId: string } & UpdateCapabilityRiskRequest) => {
+      assertTrustedIpcSender(event);
+      const { pluginId, ...body } = payload;
+      return callControlPlane(
+        manager.getControlPlaneCredentials(),
+        'PUT',
+        `/api/plugins/${encodeURIComponent(pluginId)}/capabilities/risk`,
+        body,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.updateSkillDraftSelection,
+    async (event, payload: { draftId: string } & PutDraftSelectionRequest) => {
+      assertTrustedIpcSender(event);
+      const { draftId, ...body } = payload;
+      return callControlPlane(
+        manager.getControlPlaneCredentials(),
+        'PUT',
+        `/api/skill-drafts/${encodeURIComponent(draftId)}/selection`,
+        body,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.generateSkillDraftCandidate,
+    async (event, payload: { draftId: string } & GenerateSkillCandidateRequest) => {
+      assertTrustedIpcSender(event);
+      const { draftId, ...body } = payload;
+      return callControlPlane(
+        manager.getControlPlaneCredentials(),
+        'POST',
+        `/api/skill-drafts/${encodeURIComponent(draftId)}/generate`,
+        body,
+        60_000,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.startSkillDraftTestRun,
+    async (event, payload: { draftId: string } & StartSkillRunRequest) => {
+      assertTrustedIpcSender(event);
+      const { draftId, ...body } = payload;
+      return callControlPlane(
+        manager.getControlPlaneCredentials(),
+        'POST',
+        `/api/skill-drafts/${encodeURIComponent(draftId)}/test-runs`,
+        body,
+        30_000,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.publishSkillDraft,
+    async (event, payload: { draftId: string } & PublishSkillDraftRequest) => {
+      assertTrustedIpcSender(event);
+      const { draftId, ...body } = payload;
+      return callControlPlane(
+        manager.getControlPlaneCredentials(),
+        'POST',
+        `/api/skill-drafts/${encodeURIComponent(draftId)}/publish`,
+        body,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.activateSkillVersion,
+    async (event, payload: { skillId: string; version: number }) => {
+      assertTrustedIpcSender(event);
+      return callControlPlane(
+        manager.getControlPlaneCredentials(),
+        'POST',
+        `/api/skills/${encodeURIComponent(payload.skillId)}/activate-version`,
+        { version: payload.version },
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.startPublishedSkillRun,
+    async (event, payload: { skillId: string } & StartSkillRunRequest) => {
+      assertTrustedIpcSender(event);
+      const { skillId, ...body } = payload;
+      return callControlPlane(
+        manager.getControlPlaneCredentials(),
+        'POST',
+        `/api/skills/${encodeURIComponent(skillId)}/runs`,
+        body,
+        30_000,
+      );
+    },
+  );
+
+  ipcMain.handle(IPC_CHANNELS.cancelBusinessSkillRun, async (event, runId: string) => {
+    assertTrustedIpcSender(event);
+    return callControlPlane(
+      manager.getControlPlaneCredentials(),
+      'POST',
+      `/api/skill-runs/${encodeURIComponent(runId)}/cancel`,
+      {},
+    );
+  });
+
+  ipcMain.handle(
+    IPC_CHANNELS.pruneBusinessSkillRetention,
+    async (event, payload: Record<string, unknown> = {}) => {
+      assertTrustedIpcSender(event);
+      return callControlPlane(
+        manager.getControlPlaneCredentials(),
+        'POST',
+        '/api/plugins/maintenance/prune',
+        payload ?? {},
+      );
+    },
+  );
 
   ipcMain.handle(IPC_CHANNELS.pickFolder, async (event) => {
     assertTrustedIpcSender(event);

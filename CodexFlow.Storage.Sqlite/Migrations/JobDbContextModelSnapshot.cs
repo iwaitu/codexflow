@@ -17,6 +17,541 @@ namespace CodexFlow.Storage.Sqlite.Migrations
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.15");
 
+            modelBuilder.Entity("CodexFlow.Domain.BusinessSkills.BusinessCredentialMetaEntity", b =>
+                {
+                    b.Property<string>("CredentialRef")
+                        .HasColumnType("text");
+
+                    b.Property<string>("AuthKind")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("CipherFileName")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("MaskedHint")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Revision")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("CredentialRef");
+
+                    b.ToTable("BusinessCredentialMetas");
+                });
+
+            modelBuilder.Entity("CodexFlow.Domain.BusinessSkills.BusinessPluginEntity", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ActiveSnapshotId")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("ArchivedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ConnectionId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime?>("LastDiscoveredAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("SourceType")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ConnectionId");
+
+                    b.HasIndex("Enabled");
+
+                    b.ToTable("BusinessPlugins");
+                });
+
+            modelBuilder.Entity("CodexFlow.Domain.BusinessSkills.CatalogCapabilityEntity", b =>
+                {
+                    b.Property<string>("SnapshotId")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Id")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Description")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("DiagnosticsJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Executability")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("GroupTag")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("InputSchemaJson")
+                        .HasColumnType("text");
+
+                    b.Property<string>("InvocationJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("ModelAlias")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("NativeIdentity")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("OutputSchemaJson")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Risk")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<bool>("SourceDescriptionMissing")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("SuggestedSourceRiskHint")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("SnapshotId", "Id");
+
+                    b.HasIndex("SnapshotId", "Executability");
+
+                    b.HasIndex("SnapshotId", "GroupTag");
+
+                    b.ToTable("CatalogCapabilities");
+                });
+
+            modelBuilder.Entity("CodexFlow.Domain.BusinessSkills.CatalogSnapshotEntity", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasColumnType("text");
+
+                    b.Property<bool>("Complete")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("ConnectionRevision")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("CredentialRevision")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("DiagnosticsJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Environment")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<int>("ExecutableCount")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("FetchedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("NeedsConfigurationCount")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("PluginId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("ProtocolVersion")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("SchemaHash")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("SourceHash")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<int>("TotalCapabilities")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("UnsupportedCount")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PluginId", "FetchedAtUtc");
+
+                    b.ToTable("CatalogSnapshots");
+                });
+
+            modelBuilder.Entity("CodexFlow.Domain.BusinessSkills.PluginConnectionEntity", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("CredentialRevision")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("DocumentCredentialRef")
+                        .HasColumnType("text");
+
+                    b.Property<string>("EndpointPolicyJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Environment")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("ExecutionCredentialRef")
+                        .HasColumnType("text");
+
+                    b.Property<bool>("IsEncryptedTransport")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("PluginId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<int>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("SourceUrl")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PluginId");
+
+                    b.ToTable("PluginConnections");
+                });
+
+            modelBuilder.Entity("CodexFlow.Domain.BusinessSkills.PluginOperationEntity", b =>
+                {
+                    b.Property<string>("OperationId")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ClientRequestId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ErrorJson")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("ResultMessage")
+                        .HasColumnType("text");
+
+                    b.Property<long>("Sequence")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("SnapshotId")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("TargetId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("OperationId");
+
+                    b.HasIndex("Kind", "TargetId", "ClientRequestId")
+                        .IsUnique();
+
+                    b.ToTable("PluginOperations");
+                });
+
+            modelBuilder.Entity("CodexFlow.Domain.BusinessSkills.PublishedSkillEntity", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasColumnType("text");
+
+                    b.Property<int>("ActiveVersion")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Description")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Environment")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("PluginId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PluginId");
+
+                    b.ToTable("PublishedSkills");
+                });
+
+            modelBuilder.Entity("CodexFlow.Domain.BusinessSkills.PublishedSkillVersionEntity", b =>
+                {
+                    b.Property<string>("SkillId")
+                        .HasColumnType("text");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("CatalogSnapshotId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("ContentHash")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("DefinitionJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<bool>("NeedsRevalidation")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("PublishedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("WriteStepVerified")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("SkillId", "Version");
+
+                    b.HasIndex("ContentHash");
+
+                    b.ToTable("PublishedSkillVersions");
+                });
+
+            modelBuilder.Entity("CodexFlow.Domain.BusinessSkills.SkillDraftEntity", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasColumnType("text");
+
+                    b.Property<string>("BusinessGoal")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("CandidateDefinitionJson")
+                        .HasColumnType("text");
+
+                    b.Property<string>("CatalogSnapshotId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("ClarificationQuestionsJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<bool>("NeedsRevalidation")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("PluginId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<int>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("SelectedCapabilityIdsJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ValidationErrorsJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PluginId");
+
+                    b.ToTable("SkillDrafts");
+                });
+
+            modelBuilder.Entity("CodexFlow.Domain.BusinessSkills.SkillRunEntity", b =>
+                {
+                    b.Property<string>("RunId")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ClientRequestId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ErrorJson")
+                        .HasColumnType("text");
+
+                    b.Property<int>("ExternalRequestCount")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("InputsJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("OutputPayloadJson")
+                        .HasColumnType("text");
+
+                    b.Property<string>("PendingApprovalJson")
+                        .HasColumnType("text");
+
+                    b.Property<int>("ReadOnlyRetryCount")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("SkillId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<int>("SkillVersion")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<bool>("StopRequested")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("RunId");
+
+                    b.HasIndex("Status");
+
+                    b.HasIndex("SkillId", "ClientRequestId")
+                        .IsUnique();
+
+                    b.ToTable("SkillRuns");
+                });
+
+            modelBuilder.Entity("CodexFlow.Domain.BusinessSkills.SkillRunStepEntity", b =>
+                {
+                    b.Property<string>("RunId")
+                        .HasColumnType("text");
+
+                    b.Property<int>("Sequence")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime?>("CompletedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ErrorCode")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Evidence")
+                        .HasColumnType("text");
+
+                    b.Property<string>("RequestSummary")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ResponseSummary")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("StartedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("StepId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("StepType")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("RunId", "Sequence");
+
+                    b.HasIndex("RunId", "StepId");
+
+                    b.ToTable("SkillRunSteps");
+                });
+
             modelBuilder.Entity("CodexFlow.Domain.Chat.IvilsonChatMessage", b =>
                 {
                     b.Property<string>("Id")
