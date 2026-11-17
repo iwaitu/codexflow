@@ -16,6 +16,10 @@ extraResources:
     to: backend
     filter:
       - '**/*'
+  - from: resources/libreoffice
+    to: libreoffice
+    filter:
+      - '**/*'
 
 asar: true
 generateUpdatesFilesForAllChannels: true

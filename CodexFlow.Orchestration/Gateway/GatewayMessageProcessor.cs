@@ -12,13 +12,16 @@ using CodexFlow.Core.Telemetry;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Agents;
 using CodexFlow.Core.Agents.Tools;
+using CodexFlow.Core.Configuration;
 using CodexFlow.Core.Constants;
+using CodexFlow.Core.Documents;
 using CodexFlow.Core.Gateway;
 using CodexFlow.Core.Governance;
 using CodexFlow.Core.Models;
 using CodexFlow.Core.Protocols;
 using CodexFlow.Core.Runtime;
 using CodexFlow.Core.Workers;
+using CodexFlow.Orchestration.Services;
 using CodexFlow.Domain.Chat;
 using CodexFlow.Domain.Jobs;
 using CodexFlow.Logging;
@@ -108,8 +111,6 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         ".class",
         ".db",
         ".dll",
-        ".doc",
-        ".docx",
         ".exe",
         ".gif",
         ".gz",
@@ -119,7 +120,6 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         ".jpg",
         ".mp3",
         ".mp4",
-        ".pdf",
         ".png",
         ".so",
         ".sqlite",
@@ -129,8 +129,6 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         ".webp",
         ".woff",
         ".woff2",
-        ".xls",
-        ".xlsx",
         ".zip"
     };
 
@@ -148,6 +146,9 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
     private readonly IQueryRuntimeEngine? _queryRuntimeEngine;
     private readonly ITokenUsageService? _tokenUsageService;
     private readonly IPlanTaskDispatchService? _planTaskDispatchService;
+    private readonly IConfiguration? _configuration;
+    private readonly IModelSettingsService? _modelSettingsService;
+    private readonly DocumentReaderRouter _documentReaderRouter;
     private readonly ContextCompressionOptions _compressionOptions;
     private readonly OpenSpecExecutionOptions _openSpecExecutionOptions;
     private readonly GatewayRuntimeOptions _gatewayRuntimeOptions;
@@ -190,7 +191,10 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         IQueryRuntimeEngine? queryRuntimeEngine = null,
         ITokenUsageService? tokenUsageService = null,
         IOptions<GatewayRuntimeOptions>? gatewayRuntimeOptions = null,
-        IPlanTaskDispatchService? planTaskDispatchService = null)
+        IPlanTaskDispatchService? planTaskDispatchService = null,
+        IConfiguration? configuration = null,
+        DocumentReaderRouter? documentReaderRouter = null,
+        IModelSettingsService? modelSettingsService = null)
     {
         _dbContext = dbContext;
         _chatService = chatService;
@@ -209,6 +213,9 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         _queryRuntimeEngine = queryRuntimeEngine;
         _tokenUsageService = tokenUsageService;
         _planTaskDispatchService = planTaskDispatchService;
+        _configuration = configuration;
+        _modelSettingsService = modelSettingsService;
+        _documentReaderRouter = documentReaderRouter ?? DocumentReaderRouter.CreateDefault();
         _approvalGate = new GatewayApprovalGate(scopeFactory);
     }
 
@@ -770,7 +777,15 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         await AppendConversationHistoryAsync(chatMessages, message.SessionId, conversationId!, ct);
 
         var userContent = message.Content ?? string.Empty;
-        chatMessages.Add(new ChatMessage(ChatRole.User, userContent));
+        var isMultimodalModel = _modelSettingsService?.Read().SupportsMultimodal
+            ?? ModelSettingsService.IsMultimodalConfigured(_configuration);
+        var visualStore = new TurnVisualAttachmentStore(isMultimodalModel);
+        var modelUserContent = await PrepareModelUserContentWithVisualAttachmentsAsync(
+            userContent,
+            session?.WorkspacePath,
+            visualStore,
+            ct).ConfigureAwait(false);
+        chatMessages.Add(new ChatMessage(ChatRole.User, modelUserContent));
 
         var directApprovalAnswer = await TryHandleDirectPlanApprovalStartAsync(
             message,
@@ -902,6 +917,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             // 5. 工具调用循环流式对话
             try
             {
+                using var visualScope = AmbientTurnVisualAttachmentContext.BeginScope(visualStore);
                 (answer, usedRuntime) = await StreamWithToolLoopAsync(chatMessages, chatOptions, message, session, TrackedEmitAsync, ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -2100,7 +2116,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         if (stageOneTools.TryGetValue("ivilson_read", out var readTool))
         {
             tools.Add(AIFunctionFactory.Create(
-                async (string path, string? mode = null, int? start_line = null, int? end_line = null, int? window_start_line = null, int? window_line_count = null, CancellationToken ct = default) =>
+                async (string path, string? mode = null, int? start_line = null, int? end_line = null, int? start_page = null, int? end_page = null, int? window_start_line = null, int? window_line_count = null, CancellationToken ct = default) =>
                 {
                     var args = new Dictionary<string, object?>
                     {
@@ -2111,6 +2127,8 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                     if (!string.IsNullOrEmpty(mode)) args["mode"] = mode;
                     if (start_line.HasValue) args["start_line"] = start_line.Value;
                     if (end_line.HasValue) args["end_line"] = end_line.Value;
+                    if (start_page.HasValue) args["start_page"] = start_page.Value;
+                    if (end_page.HasValue) args["end_page"] = end_page.Value;
                     if (window_start_line.HasValue) args["window_start_line"] = window_start_line.Value;
                     if (window_line_count.HasValue) args["window_line_count"] = window_line_count.Value;
                     var result = await readTool.ExecuteAsync(args, ct);
@@ -3327,20 +3345,42 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         try
         {
             var fileInfo = new FileInfo(resolvedPath);
-            if (fileInfo.Length > MaxPreviewFileBytes)
+            string fileContent;
+            string previewLanguage;
+
+            if (_documentReaderRouter.CanRead(resolvedPath))
             {
-                return WorkspacePreviewResult.Fail(
-                    $"⛔ 文件 `{requestedPath}` 过大（{FormatFileSize(fileInfo.Length)}），当前预览上限为 {FormatFileSize(MaxPreviewFileBytes)}。");
+                var docResult = await _documentReaderRouter.ReadAsync(
+                    resolvedPath,
+                    new DocumentReadOptions(StartPage: 1, EndPage: 10, ExtractImages: false, MaxOutputChars: (int)MaxPreviewFileBytes),
+                    ct).ConfigureAwait(false);
+                if (!docResult.Success)
+                {
+                    return WorkspacePreviewResult.Fail($"⛔ 解析办公文档 `{requestedPath}` 失败：{docResult.ErrorMessage}");
+                }
+
+                fileContent = docResult.Text;
+                previewLanguage = "markdown";
+            }
+            else
+            {
+                if (fileInfo.Length > MaxPreviewFileBytes)
+                {
+                    return WorkspacePreviewResult.Fail(
+                        $"⛔ 文件 `{requestedPath}` 过大（{FormatFileSize(fileInfo.Length)}），当前预览上限为 {FormatFileSize(MaxPreviewFileBytes)}。");
+                }
+
+                var fileBytes = await File.ReadAllBytesAsync(resolvedPath, ct);
+                if (!IsPreviewableTextFile(resolvedPath, fileBytes))
+                {
+                    return WorkspacePreviewResult.Fail(
+                        $"⛔ 文件 `{requestedPath}` 不是可预览的文本文件。请改用更小的源码或配置文件。");
+                }
+
+                fileContent = DecodePreviewContent(fileBytes);
+                previewLanguage = ResolveLanguageFromPath(resolvedPath);
             }
 
-            var fileBytes = await File.ReadAllBytesAsync(resolvedPath, ct);
-            if (!IsPreviewableTextFile(resolvedPath, fileBytes))
-            {
-                return WorkspacePreviewResult.Fail(
-                    $"⛔ 文件 `{requestedPath}` 不是可预览的文本文件。请改用更小的源码或配置文件。");
-            }
-
-            var fileContent = DecodePreviewContent(fileBytes);
             var previewContent = fileContent;
             int? effectiveStartLine = null;
             int? effectiveEndLine = null;
@@ -3362,7 +3402,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             return WorkspacePreviewResult.CreateSuccess(
                 relativePath,
                 previewContent,
-                ResolveLanguageFromPath(resolvedPath),
+                previewLanguage,
                 effectiveStartLine,
                 effectiveEndLine);
         }
@@ -3375,6 +3415,66 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                 requestedPath);
             return WorkspacePreviewResult.Fail($"⛔ 读取文件 `{requestedPath}` 失败：{ex.Message}");
         }
+    }
+
+    private static async Task<string> PrepareModelUserContentWithVisualAttachmentsAsync(
+        string userContent,
+        string? workspacePath,
+        TurnVisualAttachmentStore visualStore,
+        CancellationToken ct)
+    {
+        var attachments = GatewayAttachmentService.ExtractEmbeddedAttachments(userContent);
+        if (attachments.Count == 0)
+        {
+            return userContent;
+        }
+
+        var imageAttachments = attachments
+            .Where(static a => DocumentFileFormats.IsImageFile(a.Name, a.ContentType))
+            .ToArray();
+        if (imageAttachments.Length == 0)
+        {
+            return userContent;
+        }
+
+        if (!visualStore.IsMultimodalEnabled)
+        {
+            return userContent + "\n\n[系统提示：用户附带了图片文件，但当前模型未启用多模态能力，无法读取图片内容。请明确告知用户当前模型不支持读取图片，并引导其在「设置 -> 模型配置」中切换支持多模态的模型。]";
+        }
+
+        var sb = new StringBuilder(userContent);
+        foreach (var img in imageAttachments)
+        {
+            if (!WorkspaceFileExplorerService.TryResolveWorkspaceRelativePath(
+                    workspacePath,
+                    img.RelativePath,
+                    allowEmpty: false,
+                    out _,
+                    out var fullTarget,
+                    out _,
+                    out _,
+                    out _) || !File.Exists(fullTarget))
+            {
+                continue;
+            }
+
+            var info = new FileInfo(fullTarget);
+            if (info.Length is <= 0 or > 10L * 1024 * 1024)
+            {
+                continue;
+            }
+
+            var bytes = await File.ReadAllBytesAsync(fullTarget, ct).ConfigureAwait(false);
+            var mime = DocumentFileFormats.ResolveImageMimeType(img.Name, img.ContentType);
+            var registered = visualStore.Register(img.Name, mime, bytes);
+            if (registered is not null)
+            {
+                sb.AppendLine();
+                sb.Append(TurnVisualAttachmentStore.FormatMarker(registered));
+            }
+        }
+
+        return sb.ToString();
     }
 
     private static bool IsPreviewableTextFile(string path, byte[] content)

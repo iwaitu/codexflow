@@ -4,6 +4,7 @@
 
 using System.Text;
 using CodexFlow.Core.Abstractions;
+using CodexFlow.Core.Documents;
 
 namespace CodexFlow.Orchestration.Services;
 
@@ -65,10 +66,10 @@ public static class WorkspaceFileExplorerService
 
     private static readonly HashSet<string> KnownBinaryExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".7z", ".avi", ".bin", ".bmp", ".class", ".db", ".dll", ".doc", ".docx",
+        ".7z", ".avi", ".bin", ".bmp", ".class", ".db", ".dll",
         ".dylib", ".exe", ".gif", ".gz", ".ico", ".jar", ".jpeg", ".jpg", ".mp3",
-        ".mp4", ".nupkg", ".pdb", ".pdf", ".png", ".so", ".sqlite", ".tar",
-        ".ttf", ".wav", ".webp", ".woff", ".woff2", ".xls", ".xlsx", ".zip"
+        ".mp4", ".nupkg", ".pdb", ".png", ".so", ".sqlite", ".tar",
+        ".ttf", ".wav", ".webp", ".woff", ".woff2", ".zip"
     };
 
     private static StringComparison PathComparison =>
@@ -127,6 +128,7 @@ public static class WorkspaceFileExplorerService
         string? workspaceRoot,
         string? relativePath,
         int maxBytes = DefaultMaxFileContentBytes,
+        DocumentReaderRouter? documentRouter = null,
         CancellationToken ct = default)
     {
         if (!TryResolveWorkspaceRelativePath(workspaceRoot, relativePath, allowEmpty: false, out _, out var fullTarget, out var normalizedRelative, out var errCode, out var errMsg))
@@ -165,6 +167,31 @@ public static class WorkspaceFileExplorerService
 
         var totalSize = fileInfo.Length;
         var ext = Path.GetExtension(fileInfo.Name);
+        if (DocumentFileFormats.IsOfficeDocument(fileInfo.Name))
+        {
+            var router = documentRouter ?? DocumentReaderRouter.CreateDefault();
+            var docOptions = new DocumentReadOptions(
+                StartPage: 1,
+                EndPage: 10,
+                ExtractImages: false,
+                MaxOutputChars: Math.Clamp(maxBytes, 8 * 1024, 256 * 1024),
+                MaxPagesPerRead: 10);
+            var docResult = await router.ReadAsync(fullTarget, docOptions, ct).ConfigureAwait(false);
+            var previewContent = docResult.Success
+                ? docResult.Text
+                : docResult.ErrorMessage ?? "无法解析该办公文档内容。";
+            return new WorkspaceFileContentResult(
+                true,
+                WorkspaceFileErrorCode.None,
+                null,
+                normalizedRelative,
+                previewContent,
+                totalSize,
+                docResult.Truncated,
+                IsBinary: false,
+                docResult.Success ? "document-markdown" : "document-error");
+        }
+
         if (KnownBinaryExtensions.Contains(ext))
         {
             return new WorkspaceFileContentResult(

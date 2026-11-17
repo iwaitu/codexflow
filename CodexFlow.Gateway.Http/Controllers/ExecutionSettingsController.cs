@@ -7,6 +7,7 @@ using CodexFlow.Core.Configuration;
 using CodexFlow.Core.Execution;
 using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Core.Models;
+using CodexFlow.Core.Services;
 using CodexFlow.Orchestration.Hosting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
@@ -34,7 +35,10 @@ public sealed record ModelSettingsDto(
     float? Temperature,
     float? TopP,
     bool ApiKeySet,
-    string? ApiKeyLast4);
+    string? ApiKeyLast4,
+    bool SupportsMultimodal = false,
+    string? MultimodalProbeStatus = null,
+    string? MultimodalProbeMessage = null);
 
 public sealed record UpdateModelSettingsRequest(
     string? ApiUrl = null,
@@ -43,7 +47,8 @@ public sealed record UpdateModelSettingsRequest(
     int? MaxTokensLength = null,
     float? Temperature = null,
     float? TopP = null,
-    string? ApiKey = null);
+    string? ApiKey = null,
+    bool? SupportsMultimodal = null);
 
 public sealed record PermissionRuleListResponse(
     int Count,
@@ -93,7 +98,8 @@ public sealed class ExecutionSettingsController(
     IModelSettingsService? modelSettingsService = null,
     IHostPreflightService? preflightService = null,
     IConfiguration? configuration = null,
-    ContextCompressionTriggerOptions? contextCompressionTriggerOptions = null) : ControllerBase
+    ContextCompressionTriggerOptions? contextCompressionTriggerOptions = null,
+    IMultimodalCapabilityProbe? multimodalProbe = null) : ControllerBase
 {
     [HttpGet("api/settings/execution")]
     [Authorize(Policy = "ActiveUser")]
@@ -221,7 +227,9 @@ public sealed class ExecutionSettingsController(
     [ProducesResponseType(typeof(SettingsErrorDto), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(SettingsErrorDto), StatusCodes.Status503ServiceUnavailable)]
-    public ActionResult<ModelSettingsDto> UpdateModelSettings([FromBody] UpdateModelSettingsRequest request)
+    public async Task<ActionResult<ModelSettingsDto>> UpdateModelSettings(
+        [FromBody] UpdateModelSettingsRequest request,
+        CancellationToken ct = default)
     {
         if (!ControlPlaneAuthConstants.IsControlPlanePrincipal(User, controlPlane))
         {
@@ -240,6 +248,7 @@ public sealed class ExecutionSettingsController(
 
         try
         {
+            var existingCreds = modelSettingsService.ReadProbeCredentials();
             var updated = modelSettingsService.Update(new ModelSettingsUpdate(
                 ApiUrl: request.ApiUrl,
                 ApiMode: request.ApiMode,
@@ -247,12 +256,40 @@ public sealed class ExecutionSettingsController(
                 MaxTokensLength: request.MaxTokensLength,
                 Temperature: request.Temperature,
                 TopP: request.TopP,
-                ApiKey: request.ApiKey));
+                ApiKey: request.ApiKey,
+                SupportsMultimodal: request.SupportsMultimodal));
 
             // 写盘后立刻同步内存中的上下文窗口上限，避免等待配置文件 FileSystemWatcher 重载期间读到旧阈值。
             if (contextCompressionTriggerOptions is not null && updated.MaxTokensLength is > 0)
             {
                 contextCompressionTriggerOptions.ModelMaxContextTokens = updated.MaxTokensLength.Value;
+            }
+
+            var effectiveApiUrl = request.ApiUrl ?? existingCreds.ApiUrl;
+            var effectiveApiMode = request.ApiMode ?? existingCreds.ApiMode;
+            var effectiveModel = request.Model ?? existingCreds.Model;
+            var effectiveApiKey = request.ApiKey ?? existingCreds.ApiKey;
+
+            if (multimodalProbe is not null
+                && !string.IsNullOrWhiteSpace(effectiveApiUrl)
+                && !string.IsNullOrWhiteSpace(effectiveModel)
+                && !string.IsNullOrWhiteSpace(effectiveApiKey))
+            {
+                var probe = await multimodalProbe
+                    .ProbeAsync(effectiveApiUrl, effectiveApiMode, effectiveModel, effectiveApiKey, ct)
+                    .ConfigureAwait(false);
+
+                updated = modelSettingsService.Update(new ModelSettingsUpdate(
+                    SupportsMultimodal: probe.IsSupported,
+                    MultimodalProbeStatus: probe.Status,
+                    MultimodalProbeMessage: probe.Message));
+            }
+            else if (multimodalProbe is not null)
+            {
+                updated = modelSettingsService.Update(new ModelSettingsUpdate(
+                    SupportsMultimodal: false,
+                    MultimodalProbeStatus: "NotProbed",
+                    MultimodalProbeMessage: "模型地址、API Key 或模型名称不完整，未执行多模态测试。"));
             }
 
             return Ok(ToModelDto(updated));
@@ -331,5 +368,8 @@ public sealed class ExecutionSettingsController(
             view.Temperature,
             view.TopP,
             view.ApiKeySet,
-            view.ApiKeyLast4);
+            view.ApiKeyLast4,
+            view.SupportsMultimodal,
+            view.MultimodalProbeStatus,
+            view.MultimodalProbeMessage);
 }

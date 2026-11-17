@@ -74,6 +74,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     modelSettings?.topP != null ? String(modelSettings.topP) : '',
   );
   const [apiKey, setApiKey] = useState('');
+  const [supportsMultimodal, setSupportsMultimodal] = useState(Boolean(modelSettings?.supportsMultimodal));
 
   const [rules, setRules] = useState<PersistedPermissionRule[]>([]);
   const [riskReasons, setRiskReasons] = useState<string[]>([]);
@@ -93,6 +94,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setTemperature(modelSettings?.temperature != null ? String(modelSettings.temperature) : '');
     setTopP(modelSettings?.topP != null ? String(modelSettings.topP) : '');
     setApiKey('');
+    setSupportsMultimodal(Boolean(modelSettings?.supportsMultimodal));
     setConfirmRelaxOpen(false);
     setNotice(null);
     setError(null);
@@ -177,6 +179,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       temperature,
       topP,
       apiKey,
+      ...(supportsMultimodal !== Boolean(modelSettings?.supportsMultimodal)
+        ? { supportsMultimodal }
+        : {}),
     });
     if (!parsed.ok) {
       setError(parsed.error);
@@ -194,7 +199,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         return;
       }
       setApiKey('');
-      setNotice('模型配置已更新，上下文与模型参数将在后续请求立即生效。');
+      if (typeof res.data?.supportsMultimodal === 'boolean') {
+        setSupportsMultimodal(res.data.supportsMultimodal);
+      }
+      const probeNote = res.data?.multimodalProbeMessage ? ` ${res.data.multimodalProbeMessage}` : '';
+      setNotice(`模型配置已更新，上下文与模型参数将在后续请求立即生效。${probeNote}`);
       onUpdated();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -432,6 +441,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   placeholder="留空则保持当前 Key 不变"
                   className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
                 />
+              </label>
+
+              <label className="flex items-start gap-2 rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+                <input
+                  type="checkbox"
+                  checked={supportsMultimodal}
+                  onChange={(e) => setSupportsMultimodal(e.target.checked)}
+                  className="mt-0.5 h-3.5 w-3.5 rounded border-slate-600 bg-slate-900 text-indigo-500"
+                />
+                <span className="space-y-0.5 text-slate-300">
+                  <span className="block font-medium text-slate-200">支持多模态（图片与扫描版 PDF 识别）</span>
+                  <span className="block text-[11px] text-slate-400">
+                    保存模型配置时会自动使用内置测试图片检测多模态能力；若未勾选但测试通过，将自动启用该选项。
+                  </span>
+                </span>
               </label>
 
               {notice && <div className="text-emerald-300">{notice}</div>}

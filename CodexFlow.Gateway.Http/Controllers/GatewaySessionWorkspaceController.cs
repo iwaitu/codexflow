@@ -8,6 +8,7 @@ using CodexFlow.Application.Jobs;
 using CodexFlow.Application.Jobs.Dtos;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Agents;
+using CodexFlow.Core.Documents;
 using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Core.Gateway;
 using CodexFlow.Core.Models;
@@ -178,7 +179,8 @@ public sealed class GatewaySessionWorkspaceController(
     IExecutionApprovalBroker? approvalBroker = null,
     IJobViewService? jobViewService = null,
     IGitService? gitService = null,
-    IControlPlaneStateProvider? controlPlane = null) : ControllerBase
+    IControlPlaneStateProvider? controlPlane = null,
+    DocumentReaderRouter? documentReaderRouter = null) : ControllerBase
 {
     private const string DefaultWorkspaceName = "默认工作区";
     private const int MaxSnapshotMessageContentChars = 32_768;
@@ -511,7 +513,7 @@ public sealed class GatewaySessionWorkspaceController(
         }
 
         var content = await WorkspaceFileExplorerService
-            .ReadFileContentAsync(session.WorkspacePath, path, ct: ct)
+            .ReadFileContentAsync(session.WorkspacePath, path, documentRouter: documentReaderRouter, ct: ct)
             .ConfigureAwait(false);
         if (!content.Success)
         {

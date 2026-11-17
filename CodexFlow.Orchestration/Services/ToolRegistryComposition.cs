@@ -66,7 +66,10 @@ public static class ToolRegistryComposition
         sp.GetRequiredService<IOptions<CodexFlow.Core.Planning.Artifacts.PlanningOptions>>(),
         // The isolation gate is what lets exec_cmd/exec_code/run_tests/skill run (in the container backend). Without it every
         // execution tool refuses with IsolationNotConfigured, so it must always be passed here.
-        isolationGate: sp.GetService<CodexFlow.Core.Execution.ToolIsolationGate>())
+        isolationGate: sp.GetService<CodexFlow.Core.Execution.ToolIsolationGate>(),
+        documentReaderRouter: sp.GetService<CodexFlow.Core.Documents.DocumentReaderRouter>(),
+        configuration: sp.GetService<IConfiguration>(),
+        modelSettingsService: sp.GetService<CodexFlow.Core.Configuration.IModelSettingsService>())
     {
         RetryJobDetailedFunc = async (jobId, guidance) =>
         {

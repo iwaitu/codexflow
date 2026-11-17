@@ -6,6 +6,7 @@ using System.Security.Claims;
 using CodexFlow.Application;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Configuration;
+using CodexFlow.Core.Documents;
 using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Core.Gateway;
 using CodexFlow.Core.Services;
@@ -48,6 +49,8 @@ public class CodexGatewayController : ControllerBase
     private readonly IWorkspaceRootProvider? _workspaceRootProvider;
     private readonly IControlPlaneStateProvider? _controlPlane;
     private readonly IWorkflowAuditStore? _auditStore;
+    private readonly IConfiguration? _configuration;
+    private readonly IModelSettingsService? _modelSettingsService;
 
     /// <summary>
     /// Initializes the gateway controller.
@@ -63,6 +66,8 @@ public class CodexGatewayController : ControllerBase
     /// <param name="workspaceRootProvider">Optional data-directory workspace root provider.</param>
     /// <param name="controlPlane">Optional control-plane credential posture provider.</param>
     /// <param name="auditStore">Optional workflow audit store.</param>
+    /// <param name="configuration">Optional configuration root for checking active model capabilities.</param>
+    /// <param name="modelSettingsService">Optional model settings service for live multimodal capability lookup.</param>
     public CodexGatewayController(
         ICodexGateway gateway,
         IChatService chatService,
@@ -74,7 +79,9 @@ public class CodexGatewayController : ControllerBase
         IWorkspaceSettingsService? workspaceSettingsService = null,
         IWorkspaceRootProvider? workspaceRootProvider = null,
         IControlPlaneStateProvider? controlPlane = null,
-        IWorkflowAuditStore? auditStore = null)
+        IWorkflowAuditStore? auditStore = null,
+        IConfiguration? configuration = null,
+        IModelSettingsService? modelSettingsService = null)
     {
         _gateway = gateway;
         _chatService = chatService;
@@ -87,6 +94,8 @@ public class CodexGatewayController : ControllerBase
         _workspaceRootProvider = workspaceRootProvider;
         _controlPlane = controlPlane;
         _auditStore = auditStore;
+        _configuration = configuration;
+        _modelSettingsService = modelSettingsService;
     }
 
     /// <summary>
@@ -548,6 +557,19 @@ public class CodexGatewayController : ControllerBase
                         a.IsWorkspaceReference))
                     .ToArray();
                 var validated = GatewayAttachmentService.ValidateChatAttachments(dbSession?.WorkspacePath, inputs);
+                var isMultimodal = _modelSettingsService?.Read().SupportsMultimodal
+                    ?? ModelSettingsService.IsMultimodalConfigured(_configuration);
+                var unsupportedImages = !isMultimodal
+                    ? validated.Where(static a => DocumentFileFormats.IsImageFile(a.Name, a.ContentType)).ToArray()
+                    : [];
+                if (unsupportedImages.Length > 0)
+                {
+                    var names = string.Join("、", unsupportedImages.Select(static a => a.Name));
+                    return BadRequest(new GatewayErrorResponse(
+                        "multimodal_not_supported",
+                        $"当前模型未启用多模态能力，无法读取图片文件（{names}）。请在「设置 -> 模型配置」中配置支持多模态的模型。"));
+                }
+
                 attachmentCount = validated.Count;
                 messageContent = GatewayAttachmentService.FormatUserMessageWithAttachments(request.Message, validated);
             }

@@ -17,6 +17,7 @@ export interface ModelSettingsFormInput {
   temperature?: string;
   topP?: string;
   apiKey: string;
+  supportsMultimodal?: boolean;
 }
 
 export type ParseModelSettingsResult =
@@ -100,6 +101,7 @@ export function parseModelSettingsInput(input: ModelSettingsFormInput): ParseMod
     temperature: parsedTemp.value,
     topP: parsedTopP.value,
     apiKey,
+    ...(input.supportsMultimodal !== undefined ? { supportsMultimodal: input.supportsMultimodal } : {}),
   };
 
   const hasAnyChange = Boolean(
@@ -108,7 +110,8 @@ export function parseModelSettingsInput(input: ModelSettingsFormInput): ParseMod
       apiKey ||
       maxTokensLength !== undefined ||
       parsedTemp.value !== undefined ||
-      parsedTopP.value !== undefined,
+      parsedTopP.value !== undefined ||
+      input.supportsMultimodal !== undefined,
   );
 
   return { ok: true, payload, hasAnyChange };

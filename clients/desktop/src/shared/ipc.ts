@@ -102,6 +102,9 @@ export interface ModelSettingsResult {
   topP: number | null;
   apiKeySet: boolean;
   apiKeyLast4: string | null;
+  supportsMultimodal?: boolean;
+  multimodalProbeStatus?: string | null;
+  multimodalProbeMessage?: string | null;
 }
 
 export interface UpdateModelSettingsPayload {
@@ -112,6 +115,7 @@ export interface UpdateModelSettingsPayload {
   temperature?: number;
   topP?: number;
   apiKey?: string;
+  supportsMultimodal?: boolean;
 }
 
 export type PersistedPermissionRule = components['schemas']['PersistedPermissionRule'];

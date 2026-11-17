@@ -2,6 +2,7 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+using Microsoft.Extensions.Configuration;
 using Newtonsoft.Json.Linq;
 
 namespace CodexFlow.Core.Configuration;
@@ -15,7 +16,10 @@ public sealed record ModelSettingsView(
     float? Temperature,
     float? TopP,
     bool ApiKeySet,
-    string? ApiKeyLast4);
+    string? ApiKeyLast4,
+    bool SupportsMultimodal = false,
+    string? MultimodalProbeStatus = null,
+    string? MultimodalProbeMessage = null);
 
 /// <summary>A change to the model settings. A <see langword="null"/> field is left as it is; the key can only be written.</summary>
 public sealed record ModelSettingsUpdate(
@@ -25,7 +29,17 @@ public sealed record ModelSettingsUpdate(
     int? MaxTokensLength = null,
     float? Temperature = null,
     float? TopP = null,
-    string? ApiKey = null);
+    string? ApiKey = null,
+    bool? SupportsMultimodal = null,
+    string? MultimodalProbeStatus = null,
+    string? MultimodalProbeMessage = null);
+
+/// <summary>Internal credentials snapshot used exclusively by server-side capability probes.</summary>
+public sealed record ModelProbeCredentials(
+    string? ApiUrl,
+    string? ApiMode,
+    string? Model,
+    string? ApiKey);
 
 public interface IModelSettingsService
 {
@@ -37,6 +51,9 @@ public interface IModelSettingsService
     /// the current user only. Throws <see cref="ArgumentException"/> for an invalid value; nothing is written then.
     /// </summary>
     ModelSettingsView Update(ModelSettingsUpdate update);
+
+    /// <summary>Reads full model endpoint credentials for server-side capability probing without exposing secrets over HTTP.</summary>
+    ModelProbeCredentials ReadProbeCredentials() => new(null, null, null, null);
 }
 
 /// <summary>
@@ -58,6 +75,27 @@ public sealed class ModelSettingsService : IModelSettingsService
     public ModelSettingsView Read()
         => GlobalSettingsFileStore.ReadLocked(_path, root => ToView(LoadSection(root)));
 
+    public ModelProbeCredentials ReadProbeCredentials()
+        => GlobalSettingsFileStore.ReadLocked(_path, root =>
+        {
+            var section = LoadSection(root);
+            return new ModelProbeCredentials(
+                ApiUrl: section["ApiUrl"]?.ToString(),
+                ApiMode: section["ApiMode"]?.ToString(),
+                Model: section["Model"]?.ToString(),
+                ApiKey: section["ApiKey"]?.ToString());
+        });
+
+    public static bool IsMultimodalConfigured(IConfiguration? configuration)
+    {
+        if (configuration is null)
+        {
+            return false;
+        }
+
+        return configuration.GetValue<bool>($"{SectionName}:SupportsMultimodal");
+    }
+
     public ModelSettingsView Update(ModelSettingsUpdate update)
     {
         ArgumentNullException.ThrowIfNull(update);
@@ -74,6 +112,9 @@ public sealed class ModelSettingsService : IModelSettingsService
             Set(section, "Temperature", update.Temperature);
             Set(section, "TopP", update.TopP);
             Set(section, "ApiKey", update.ApiKey);
+            Set(section, "SupportsMultimodal", update.SupportsMultimodal);
+            Set(section, "MultimodalProbeStatus", update.MultimodalProbeStatus);
+            Set(section, "MultimodalProbeMessage", update.MultimodalProbeMessage);
 
             root[SectionName] = section;
             return (true, ToView(section));
@@ -145,6 +186,9 @@ public sealed class ModelSettingsService : IModelSettingsService
             Temperature: section["Temperature"]?.Type == JTokenType.Null ? null : (float?)section["Temperature"],
             TopP: section["TopP"]?.Type == JTokenType.Null ? null : (float?)section["TopP"],
             ApiKeySet: !string.IsNullOrEmpty(key),
-            ApiKeyLast4: string.IsNullOrEmpty(key) ? null : (key.Length <= 4 ? new string('*', key.Length) : key[^4..]));
+            ApiKeyLast4: string.IsNullOrEmpty(key) ? null : (key.Length <= 4 ? new string('*', key.Length) : key[^4..]),
+            SupportsMultimodal: section["SupportsMultimodal"]?.Type == JTokenType.Boolean && (bool)section["SupportsMultimodal"]!,
+            MultimodalProbeStatus: section["MultimodalProbeStatus"]?.ToString(),
+            MultimodalProbeMessage: section["MultimodalProbeMessage"]?.ToString());
     }
 }

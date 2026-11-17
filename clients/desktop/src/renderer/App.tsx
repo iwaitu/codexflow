@@ -940,6 +940,7 @@ export const App: React.FC = () => {
                 conversationMode={conversationMode}
                 turnNotice={turnNotice}
                 workspacePath={activeWorkspacePath}
+                supportsMultimodal={Boolean(modelSettingsQuery.data?.supportsMultimodal)}
                 externalAttachment={externalAttachment}
                 onChangeMode={setConversationMode}
                 onSend={handleSend}

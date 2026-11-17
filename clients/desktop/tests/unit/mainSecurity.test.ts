@@ -1,9 +1,13 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { BackendManager, resolveManagedBackendEnvironment } from '../../electron/main/backendManager';
+import {
+  BackendManager,
+  resolveBundledLibreOfficePath,
+  resolveManagedBackendEnvironment,
+} from '../../electron/main/backendManager';
 import { LocalBackendProxy } from '../../electron/main/localBackendProxy';
 import {
   APP_ORIGIN,
@@ -312,5 +316,19 @@ describe('Main-process security boundaries & lifecycle (B1, B3, B4, R3)', () => 
     const checked = await manager.checkForUpdates();
     expect(checked.status).toBe('unavailable');
     expect(manager.quitAndInstall()).toBe(false);
+  });
+
+  it('resolves bundled LibreOffice soffice executable in packaged resources', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'cf-lo-'));
+    try {
+      const programDir = join(tempDir, 'libreoffice', 'program');
+      mkdirSync(programDir, { recursive: true });
+      const winExe = join(programDir, 'soffice.exe');
+      writeFileSync(winExe, 'stub');
+
+      expect(resolveBundledLibreOfficePath(tempDir, true, 'win32')).toBe(winExe);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });

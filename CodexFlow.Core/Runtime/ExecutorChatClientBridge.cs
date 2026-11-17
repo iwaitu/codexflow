@@ -2,6 +2,7 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Models;
@@ -41,8 +42,11 @@ internal sealed class ExecutorChatClientBridge : IChatClient
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(messages);
-        var request = new LLMExecutionRequest(
+        var hydrated = HydrateVisualMessages(
             messages as IReadOnlyList<ChatMessage> ?? messages.ToArray(),
+            AmbientTurnVisualAttachmentContext.Current);
+        var request = new LLMExecutionRequest(
+            hydrated,
             options,
             _scenario,
             _session,
@@ -56,8 +60,11 @@ internal sealed class ExecutorChatClientBridge : IChatClient
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(messages);
-        var request = new LLMExecutionRequest(
+        var hydrated = HydrateVisualMessages(
             messages as IReadOnlyList<ChatMessage> ?? messages.ToArray(),
+            AmbientTurnVisualAttachmentContext.Current);
+        var request = new LLMExecutionRequest(
+            hydrated,
             options,
             _scenario,
             _session,
@@ -66,6 +73,153 @@ internal sealed class ExecutorChatClientBridge : IChatClient
         {
             yield return update;
         }
+    }
+
+    internal static IReadOnlyList<ChatMessage> HydrateVisualMessages(
+        IReadOnlyList<ChatMessage> messages,
+        TurnVisualAttachmentStore? store)
+    {
+        if (messages.Count == 0 || store is null)
+        {
+            return messages;
+        }
+
+        var result = new List<ChatMessage>(messages.Count + 1);
+        for (var i = 0; i < messages.Count; i++)
+        {
+            var msg = messages[i];
+            if (msg.Role != ChatRole.User)
+            {
+                result.Add(msg);
+                continue;
+            }
+
+            result.Add(HydrateUserMessage(msg, store));
+        }
+
+        if (!store.IsMultimodalEnabled)
+        {
+            return result;
+        }
+
+        // Only hydrate images from the latest trailing tool-result round (after the last assistant turn)
+        // so provider APIs that forbid images inside role="tool" receive them in a trailing user message
+        // without re-sending earlier rounds' images.
+        var lastAssistantIndex = -1;
+        for (var i = result.Count - 1; i >= 0; i--)
+        {
+            if (result[i].Role == ChatRole.Assistant)
+            {
+                lastAssistantIndex = i;
+                break;
+            }
+        }
+
+        var trailingToolVisuals = new List<TurnVisualAttachment>();
+        var seenIds = new HashSet<string>(StringComparer.Ordinal);
+        for (var i = lastAssistantIndex + 1; i < result.Count; i++)
+        {
+            var msg = result[i];
+            if (msg.Role != ChatRole.Tool)
+            {
+                continue;
+            }
+
+            foreach (var content in msg.Contents)
+            {
+                if (content is FunctionResultContent fnResult)
+                {
+                    var raw = fnResult.Result?.ToString();
+                    foreach (var item in store.ExtractReferencedAttachments(raw))
+                    {
+                        if (seenIds.Add(item.Id))
+                        {
+                            trailingToolVisuals.Add(item);
+                        }
+                    }
+                }
+            }
+        }
+
+        if (trailingToolVisuals.Count > 0)
+        {
+            var contents = new List<AIContent>(1 + trailingToolVisuals.Count * 2)
+            {
+                new TextContent("[系统附带文档/PDF页面图像 - 请严格依据每张图标注的页码进行识别]")
+            };
+
+            foreach (var item in trailingToolVisuals)
+            {
+                contents.Add(new TextContent(DescribeVisual(item)));
+                contents.Add(new DataContent(item.Bytes, item.MimeType));
+            }
+
+            result.Add(new ChatMessage(ChatRole.User, contents));
+        }
+
+        return result;
+    }
+
+    private static ChatMessage HydrateUserMessage(ChatMessage msg, TurnVisualAttachmentStore store)
+    {
+        var referenced = new List<TurnVisualAttachment>();
+        var newContents = new List<AIContent>(msg.Contents.Count);
+        var hasMarkers = false;
+
+        foreach (var content in msg.Contents)
+        {
+            if (content is TextContent textContent)
+            {
+                var found = store.ExtractReferencedAttachments(textContent.Text);
+                if (found.Count > 0)
+                {
+                    hasMarkers = true;
+                    referenced.AddRange(found);
+                    var cleaned = TurnVisualAttachmentStore.StripMarkers(textContent.Text);
+                    if (!string.IsNullOrEmpty(cleaned))
+                    {
+                        newContents.Add(new TextContent(cleaned));
+                    }
+                    continue;
+                }
+            }
+
+            newContents.Add(content);
+        }
+
+        if (!hasMarkers)
+        {
+            return msg;
+        }
+
+        if (store.IsMultimodalEnabled)
+        {
+            foreach (var item in referenced)
+            {
+                newContents.Add(new TextContent(DescribeVisual(item)));
+                newContents.Add(new DataContent(item.Bytes, item.MimeType));
+            }
+        }
+
+        return new ChatMessage(msg.Role, newContents)
+        {
+            AuthorName = msg.AuthorName,
+            MessageId = msg.MessageId,
+            AdditionalProperties = msg.AdditionalProperties
+        };
+    }
+
+    private static string DescribeVisual(TurnVisualAttachment item)
+    {
+        if (item.PageNumber.HasValue)
+        {
+            var idx = item.ImageIndexOnPage ?? 1;
+            return string.Create(
+                CultureInfo.InvariantCulture,
+                $"[图片信息] 文件: {item.FileName} | 所属页码: 第 {item.PageNumber.Value} 页 | 图片 #{idx}");
+        }
+
+        return $"[用户附带图片] 文件: {item.FileName}";
     }
 
     public object? GetService(Type serviceType, object? serviceKey = null)

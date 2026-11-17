@@ -210,7 +210,12 @@ export const WorkspaceFilesPanel: React.FC<WorkspaceFilesPanelProps> = ({
                 {selectedFile.path}
               </div>
               <div className="text-[10px] text-slate-500">
-                {formatFileSize(Number(selectedFile.sizeBytes ?? 0))} · {selectedFile.encoding}
+                {formatFileSize(Number(selectedFile.sizeBytes ?? 0))} ·{' '}
+                {selectedFile.encoding === 'document-markdown'
+                  ? '办公文档文本预览'
+                  : selectedFile.encoding === 'document-error'
+                    ? '文档解析提示'
+                    : selectedFile.encoding}
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-1">

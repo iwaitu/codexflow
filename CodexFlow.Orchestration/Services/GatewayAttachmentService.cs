@@ -6,6 +6,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using CodexFlow.Core.Execution;
 
 namespace CodexFlow.Orchestration.Services;
@@ -219,8 +220,36 @@ public static class GatewayAttachmentService
             sb.Append(FormatBytes(item.SizeBytes));
             sb.AppendLine(")");
         }
-        sb.Append("以上文件位于当前会话工作区内，请使用 `ivilson_read`、`search_in_files` 或工作区命令按需读取分析。");
+        sb.Append("以上文件位于当前会话工作区内，请使用 `ivilson_read`（支持文本、图片及 docx/doc/xls/xlsx/ppt/pptx/pdf 办公文档，PDF 可传 `start_page`/`end_page` 按页读取）、`search_in_files` 或工作区命令按需读取分析。");
         return sb.ToString();
+    }
+
+    private static readonly Regex EmbeddedAttachmentTagRegex = new(
+        @"<codexflow_attachments>([\s\S]*?)</codexflow_attachments>",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    public static IReadOnlyList<ValidatedChatAttachment> ExtractEmbeddedAttachments(string? messageContent)
+    {
+        if (string.IsNullOrWhiteSpace(messageContent))
+        {
+            return [];
+        }
+
+        var match = EmbeddedAttachmentTagRegex.Match(messageContent);
+        if (!match.Success || string.IsNullOrWhiteSpace(match.Groups[1].Value))
+        {
+            return [];
+        }
+
+        try
+        {
+            var items = JsonSerializer.Deserialize<List<ValidatedChatAttachment>>(match.Groups[1].Value);
+            return items is { Count: > 0 } ? items : [];
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
     }
 
     internal static (string DisplayName, string SafeFileName) SanitizeFileName(string? rawFileName)

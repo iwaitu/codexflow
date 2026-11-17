@@ -8,6 +8,7 @@ export default tseslint.config(
     ignores: [
       'out/**',
       'dist/**',
+      'resources/**',
       'node_modules/**',
       'src/shared/contracts/*.generated.ts',
       'test-results/**',

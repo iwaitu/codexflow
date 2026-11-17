@@ -6764,6 +6764,22 @@
               "null",
               "string"
             ]
+          },
+          "supportsMultimodal": {
+            "type": "boolean",
+            "default": false
+          },
+          "multimodalProbeStatus": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "multimodalProbeMessage": {
+            "type": [
+              "null",
+              "string"
+            ]
           }
         }
       },
@@ -9339,6 +9355,12 @@
             "type": [
               "null",
               "string"
+            ]
+          },
+          "supportsMultimodal": {
+            "type": [
+              "null",
+              "boolean"
             ]
           }
         }

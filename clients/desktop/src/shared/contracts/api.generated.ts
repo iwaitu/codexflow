@@ -4165,6 +4165,10 @@ export type components = {
             /** Format: int32 */
             maxTokensLength: null | number | string;
             model: null | string;
+            multimodalProbeMessage?: null | string;
+            multimodalProbeStatus?: null | string;
+            /** @default false */
+            supportsMultimodal: boolean;
             /** Format: float */
             temperature: null | number | string;
             /** Format: float */
@@ -4781,6 +4785,7 @@ export type components = {
             /** Format: int32 */
             maxTokensLength?: null | number | string;
             model?: null | string;
+            supportsMultimodal?: null | boolean;
             /** Format: float */
             temperature?: null | number | string;
             /** Format: float */

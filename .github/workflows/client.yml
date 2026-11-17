@@ -182,6 +182,11 @@ jobs:
         working-directory: clients/desktop
         run: npm ci
 
+      - name: Prepare bundled LibreOffice (${{ matrix.platform }}-${{ matrix.arch }})
+        shell: bash
+        working-directory: clients/desktop
+        run: node scripts/prepare-libreoffice.mjs --platform "${{ matrix.platform }}" --arch "${{ matrix.arch }}"
+
       - name: Build Electron bundles
         shell: bash
         working-directory: clients/desktop

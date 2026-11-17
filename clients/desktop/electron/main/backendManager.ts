@@ -79,6 +79,45 @@ export function resolveManagedBackendEnvironment(
   return { ...baseEnv };
 }
 
+export function resolveBundledLibreOfficePath(
+  resourcesPath: string,
+  isPackaged: boolean,
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  const roots: string[] = [];
+  if (isPackaged && resourcesPath) {
+    roots.push(join(resourcesPath, 'libreoffice'));
+  }
+  roots.push(resolve(__dirname, '../../../resources/libreoffice'));
+  roots.push(resolve(__dirname, '../../resources/libreoffice'));
+
+  const relativeCandidates =
+    platform === 'win32'
+      ? [
+          join('program', 'soffice.exe'),
+          join('App', 'libreoffice', 'program', 'soffice.exe'),
+          'soffice.exe',
+        ]
+      : platform === 'darwin'
+        ? [
+            join('LibreOffice.app', 'Contents', 'MacOS', 'soffice'),
+            join('program', 'soffice'),
+            'soffice',
+          ]
+        : [join('program', 'soffice'), 'soffice'];
+
+  for (const root of roots) {
+    for (const rel of relativeCandidates) {
+      const candidate = join(root, rel);
+      if (existsSync(candidate)) {
+        return candidate;
+      }
+    }
+  }
+
+  return null;
+}
+
 function isPidAlive(pid: number): boolean {
   if (!Number.isFinite(pid) || pid <= 0) {
     return false;
@@ -507,9 +546,14 @@ export class BackendManager {
 
     this.ensureLogStream();
 
+    const bundledLibreOffice =
+      process.env.CODEXFLOW_LIBREOFFICE_PATH ||
+      resolveBundledLibreOfficePath(this.options.resourcesPath, this.options.isPackaged);
+
     const env: NodeJS.ProcessEnv = {
       ...resolveManagedBackendEnvironment(this.options, process.env),
       ...launch.extraEnv,
+      ...(bundledLibreOffice ? { CODEXFLOW_LIBREOFFICE_PATH: bundledLibreOffice } : {}),
       Local__Port: '0',
       Local__DataDirectory: this.dataDirectory,
       Local__PreflightMode: 'Report',

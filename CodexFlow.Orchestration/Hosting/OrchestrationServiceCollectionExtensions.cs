@@ -43,6 +43,7 @@ public static class OrchestrationServiceCollectionExtensions
             () => vllmConfig.GetReloadToken(),
             sp.GetRequiredService<ILogger<ReloadableChatClient>>()));
         services.AddKeyedSingleton<IChatClient>("VllmAgent", (sp, key) => sp.GetRequiredService<IChatClient>());
+        services.AddSingleton<IMultimodalCapabilityProbe, DefaultMultimodalCapabilityProbe>();
         return services;
     }
 
@@ -110,6 +111,9 @@ public static class OrchestrationServiceCollectionExtensions
             CodexFlow.Core.Planning.Patching.DefaultPlanPatchService>();
         // 注册 Hashline 文件编辑服务
         services.AddHashlineServices(configuration.GetSection("Hashline"));
+        services.AddSingleton<CodexFlow.Core.Documents.ILibreOfficeDocumentConverter, CodexFlow.Core.Documents.LibreOfficeDocumentConverter>();
+        services.AddSingleton(sp => CodexFlow.Core.Documents.DocumentReaderRouter.CreateDefault(
+            sp.GetRequiredService<CodexFlow.Core.Documents.ILibreOfficeDocumentConverter>()));
         // 瑷诲唺 IToolRegistry 宸ュ叿搴?
         services.AddScoped<CodexFlow.Core.Abstractions.IToolRegistry, CodexFlow.Core.Agents.DefaultToolRegistry>();
         services.AddScoped<CodexFlow.Core.Agents.ToolRegistryBootstrapper>(CodexFlow.Services.ToolRegistryComposition.Create);

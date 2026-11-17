@@ -527,6 +527,7 @@ describe('Security boundary & MVP interactive cards', () => {
           topP: 0.95,
           apiKeySet: true,
           apiKeyLast4: '1234',
+          supportsMultimodal: false,
         }}
         controlPlaneAvailable
         onClose={vi.fn()}
@@ -1195,6 +1196,148 @@ describe('Security boundary & MVP interactive cards', () => {
       resumeSpy.mockRestore();
       retrySpy.mockRestore();
       continueSpy.mockRestore();
+    }
+  });
+
+  it('auto-updates multimodal checkbox when SettingsModal save probe returns supportsMultimodal=true', async () => {
+    const updateModel = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      data: {
+        apiUrl: 'http://10.0.30.247:8001/v1',
+        apiMode: 'ChatCompletions',
+        model: 'qwen-vl',
+        maxTokensLength: 128000,
+        temperature: 0.2,
+        topP: 0.9,
+        apiKeySet: true,
+        apiKeyLast4: '1234',
+        supportsMultimodal: true,
+        multimodalProbeStatus: 'Supported',
+        multimodalProbeMessage: '内置测试图片识别成功，已自动启用多模态能力。',
+      },
+    });
+    installMockBridge({ updateModelSettings: updateModel });
+
+    render(
+      <SettingsModal
+        open
+        systemStatus={null}
+        executionSettings={{
+          backend: 'Local',
+          permissionMode: 'Ask',
+          controlPlaneAvailable: true,
+          selfApprovalProtection: true,
+          tokenDeliveryMode: 'Pipe',
+        }}
+        modelSettings={{
+          apiUrl: 'http://10.0.30.247:8001/v1',
+          apiMode: 'ChatCompletions',
+          model: 'qwen-vl',
+          maxTokensLength: 128000,
+          temperature: 0.2,
+          topP: 0.9,
+          apiKeySet: true,
+          apiKeyLast4: '1234',
+          supportsMultimodal: false,
+        }}
+        controlPlaneAvailable
+        onClose={vi.fn()}
+        onUpdated={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByText('模型设置'));
+    const checkbox = screen.getByRole('checkbox') as HTMLInputElement;
+    expect(checkbox.checked).toBe(false);
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('保存模型设置'));
+    });
+
+    expect(checkbox.checked).toBe(true);
+    expect(screen.getByText(/内置测试图片识别成功，已自动启用多模态能力/)).toBeInTheDocument();
+  });
+
+  it('blocks image drops with clear notice when supportsMultimodal is false, and allows office documents', async () => {
+    installMockBridge();
+    const onSend = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <Composer
+        disabled={false}
+        isTurnRunning={false}
+        conversationMode="reuse-master"
+        turnNotice={null}
+        workspacePath="D:/repo"
+        supportsMultimodal={false}
+        onChangeMode={vi.fn()}
+        onSend={onSend}
+        onCancel={vi.fn()}
+      />,
+    );
+
+    const dropzone = screen.getByTestId('composer-dropzone');
+    const imgFile = new File(['pngbytes'], 'photo.png', { type: 'image/png' });
+    const docxFile = new File(['docxbytes'], 'report.docx', {
+      type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    });
+
+    await act(async () => {
+      fireEvent.drop(dropzone, {
+        dataTransfer: {
+          types: ['Files'],
+          files: [imgFile, docxFile],
+        },
+      });
+    });
+
+    expect(screen.getByText(/当前模型未启用多模态能力，无法读取图片“photo\.png”/)).toBeInTheDocument();
+    expect(screen.queryByText('photo.png')).not.toBeInTheDocument();
+    expect(screen.getByText('report.docx')).toBeInTheDocument();
+  });
+
+  it('displays office document preview label in WorkspaceFilesPanel when encoding is document-markdown', async () => {
+    const listSpy = vi.spyOn(apiClient, 'listFiles').mockResolvedValue({
+      sessionId: 'sess-1',
+      path: '',
+      entries: [
+        { name: 'spec.docx', path: 'spec.docx', isDirectory: false, sizeBytes: 4096, lastModifiedUtc: '2026-01-01T00:00:00Z' },
+      ],
+      truncated: false,
+    });
+    const readSpy = vi.spyOn(apiClient, 'readWorkspaceFileContent').mockResolvedValue({
+      sessionId: 'sess-1',
+      path: 'spec.docx',
+      content: '# Spec Heading',
+      sizeBytes: 4096,
+      truncated: false,
+      isBinary: false,
+      encoding: 'document-markdown',
+    });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    try {
+      render(
+        <QueryClientProvider client={qc}>
+          <WorkspaceFilesPanel
+            auth={{ baseUrl: 'http://127.0.0.1:5000', accessToken: 'tok' }}
+            sessionId="sess-1"
+            workspaceRevision={0}
+          />
+        </QueryClientProvider>,
+      );
+
+      await waitFor(() => expect(screen.getByText('spec.docx')).toBeInTheDocument());
+      await act(async () => {
+        fireEvent.click(screen.getByText('spec.docx'));
+      });
+      await waitFor(() => expect(screen.getByTestId('workspace-file-preview')).toBeInTheDocument());
+      expect(screen.getByText(/办公文档文本预览/)).toBeInTheDocument();
+      expect(screen.getByText('# Spec Heading')).toBeInTheDocument();
+    } finally {
+      listSpy.mockRestore();
+      readSpy.mockRestore();
     }
   });
 });

@@ -2,6 +2,7 @@ node_modules/
 out/
 dist/
 resources/backend/
+resources/libreoffice/
 .vite/
 test-results/
 playwright-report/

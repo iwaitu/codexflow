@@ -1,6 +1,6 @@
 {
   "name": "codexflow-desktop",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": true,
   "description": "CodexFlow Electron desktop client MVP",
   "main": "./out/main/index.js",
@@ -11,6 +11,7 @@
     "preview": "electron-vite preview",
     "generate:types": "node scripts/generate-contracts.mjs",
     "set-version": "node scripts/set-version.mjs",
+    "prepare:libreoffice": "node scripts/prepare-libreoffice.mjs",
     "pack:win": "electron-builder --win --x64 --publish never",
     "pack:linux": "electron-builder --linux --x64 --publish never",
     "pack:mac": "electron-builder --mac --arm64 --publish never",

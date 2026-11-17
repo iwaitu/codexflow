@@ -7,6 +7,15 @@ export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 export const MAX_ATTACHMENTS_PER_MESSAGE = 10;
 export const DEFAULT_ATTACHMENT_PROMPT = '请查看并处理以下附带的文件。';
 
+const IMAGE_EXT_RE = /\.(png|jpe?g|webp|gif|bmp)$/i;
+
+export function isImageAttachmentFile(name: string, contentType?: string | null): boolean {
+  if (contentType && contentType.trim().toLowerCase().startsWith('image/')) {
+    return true;
+  }
+  return IMAGE_EXT_RE.test(name.trim());
+}
+
 export interface PendingAttachment {
   id: string;
   name: string;

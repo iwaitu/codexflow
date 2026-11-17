@@ -4,12 +4,15 @@
 
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Agents.Tools;
+using CodexFlow.Core.Configuration;
 using CodexFlow.Core.Constants;
+using CodexFlow.Core.Documents;
 using CodexFlow.Core.Hashline.Models;
 using CodexFlow.Core.LanguageServices;
 using CodexFlow.Core.Planning.Artifacts;
 using CodexFlow.Core.Planning.Patching;
 using CodexFlow.Core.Services;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -67,6 +70,9 @@ public sealed class ToolRegistryBootstrapper
     private readonly Func<WorkerOutputRequest, CancellationToken, Task<WorkerOutputResult>>? _workerOutputFunc;
     private readonly ILoggerFactory _loggerFactory;
     private readonly CodexFlow.Core.Execution.ToolIsolationGate? _isolationGate;
+    private readonly DocumentReaderRouter? _documentReaderRouter;
+    private readonly IConfiguration? _configuration;
+    private readonly IModelSettingsService? _modelSettingsService;
     private readonly ILogger<ToolRegistryBootstrapper> _logger;
 
     public ToolRegistryBootstrapper(
@@ -110,7 +116,10 @@ public sealed class ToolRegistryBootstrapper
         IPlanBlueprintGenerator? planBlueprintGenerator = null,
         IPlanPatchService? planPatchService = null,
         IOptions<PlanningOptions>? planningOptions = null,
-        CodexFlow.Core.Execution.ToolIsolationGate? isolationGate = null)
+        CodexFlow.Core.Execution.ToolIsolationGate? isolationGate = null,
+        DocumentReaderRouter? documentReaderRouter = null,
+        IConfiguration? configuration = null,
+        IModelSettingsService? modelSettingsService = null)
     {
         _gitService = gitService;
         _orchestrator = orchestrator;
@@ -153,6 +162,9 @@ public sealed class ToolRegistryBootstrapper
         _listWorkersFunc = listWorkersFunc;
         _workerOutputFunc = workerOutputFunc;
         _isolationGate = isolationGate;
+        _documentReaderRouter = documentReaderRouter;
+        _configuration = configuration;
+        _modelSettingsService = modelSettingsService;
     }
 
     public void EnsureRegistered(IToolRegistry toolRegistry)
@@ -175,7 +187,13 @@ public sealed class ToolRegistryBootstrapper
         // 文件操作
         toolRegistry.RegisterTool(new ListWorkspaceTool(_loggerFactory.CreateLogger<ListWorkspaceTool>()), ToolLoading.AlwaysOn);
         toolRegistry.RegisterTool(new GlobTool(_loggerFactory.CreateLogger<GlobTool>()), ToolLoading.AlwaysOn);
-        var readFileTool = new ReadFileTool(_loggerFactory.CreateLogger<ReadFileTool>(), _hashlineService, _hashlineOptions);
+        var readFileTool = new ReadFileTool(
+            _loggerFactory.CreateLogger<ReadFileTool>(),
+            _hashlineService,
+            _hashlineOptions,
+            _documentReaderRouter,
+            _configuration,
+            _modelSettingsService);
         toolRegistry.RegisterTool(readFileTool, ToolLoading.AlwaysOn);
         toolRegistry.RegisterTool(new HashlineReadTool(readFileTool), ToolLoading.AlwaysOn);
         toolRegistry.RegisterTool(new WriteFileTool(_loggerFactory.CreateLogger<WriteFileTool>(), _languageServiceRefreshNotifier), ToolLoading.AlwaysOn);

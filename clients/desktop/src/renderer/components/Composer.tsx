@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { FileText, Paperclip, Send, Square, Upload, X } from 'lucide-react';
 import {
   formatFileSize,
+  isImageAttachmentFile,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENTS_PER_MESSAGE,
   type PendingAttachment,
@@ -22,6 +23,7 @@ interface ComposerProps {
   conversationMode: ConversationMode;
   turnNotice: string | null;
   workspacePath?: string | null;
+  supportsMultimodal?: boolean;
   externalAttachment?: WorkspaceAttachmentRequest | null;
   onChangeMode: (mode: ConversationMode) => void;
   onSend: (text: string, attachments?: PendingAttachment[]) => Promise<void>;
@@ -34,6 +36,7 @@ export const Composer: React.FC<ComposerProps> = ({
   conversationMode,
   turnNotice,
   workspacePath = null,
+  supportsMultimodal = false,
   externalAttachment = null,
   onChangeMode,
   onSend,
@@ -55,6 +58,12 @@ export const Composer: React.FC<ComposerProps> = ({
     }
     lastExternalNonceRef.current = externalAttachment.nonce;
     setAttachmentError(null);
+    if (!supportsMultimodal && isImageAttachmentFile(externalAttachment.name)) {
+      setAttachmentError(
+        `当前模型未启用多模态能力，无法读取图片“${externalAttachment.name}”。请在「设置 -> 模型配置」中配置支持多模态的模型。`,
+      );
+      return;
+    }
     setAttachments((prev) => {
       if (prev.some((a) => a.workspaceRelativePath === externalAttachment.workspaceRelativePath)) {
         return prev;
@@ -75,7 +84,7 @@ export const Composer: React.FC<ComposerProps> = ({
         },
       ];
     });
-  }, [externalAttachment]);
+  }, [externalAttachment, supportsMultimodal]);
 
   const addFiles = async (fileList: FileList | File[]) => {
     const incoming = Array.from(fileList);
@@ -127,6 +136,12 @@ export const Composer: React.FC<ComposerProps> = ({
         }
         if (file.size > MAX_ATTACHMENT_BYTES) {
           errors.push(`“${file.name}”超过 ${MAX_ATTACHMENT_BYTES / (1024 * 1024)} MB 上限。`);
+          continue;
+        }
+        if (!supportsMultimodal && isImageAttachmentFile(file.name, file.type)) {
+          errors.push(
+            `当前模型未启用多模态能力，无法读取图片“${file.name}”。请在「设置 -> 模型配置」中配置支持多模态的模型。`,
+          );
           continue;
         }
         if (next.length >= MAX_ATTACHMENTS_PER_MESSAGE) {

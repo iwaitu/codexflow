@@ -33,6 +33,7 @@ export const WelcomeWizardModal: React.FC<WelcomeWizardModalProps> = ({
     String(modelSettings?.maxTokensLength ?? DEFAULT_MAX_CONTEXT_TOKENS),
   );
   const [apiKey, setApiKey] = useState('');
+  const [supportsMultimodal, setSupportsMultimodal] = useState(Boolean(modelSettings?.supportsMultimodal));
   const currentBackend = (systemStatus?.executionBackend as ExecutionBackendKind) || 'Local';
   const currentPermissionMode = (systemStatus?.permissionMode as ExecutionPermissionModeKind) || 'Ask';
   const [backend, setBackend] = useState<ExecutionBackendKind>(currentBackend);
@@ -60,6 +61,7 @@ export const WelcomeWizardModal: React.FC<WelcomeWizardModalProps> = ({
     setModel(modelSettings?.model ?? '');
     setMaxTokensLength(String(modelSettings?.maxTokensLength ?? DEFAULT_MAX_CONTEXT_TOKENS));
     setApiKey('');
+    setSupportsMultimodal(Boolean(modelSettings?.supportsMultimodal));
     setBackend(currentBackend);
     setPermissionMode(currentPermissionMode);
     setConfirmRiskOpen(false);
@@ -73,6 +75,9 @@ export const WelcomeWizardModal: React.FC<WelcomeWizardModalProps> = ({
       model,
       maxTokensLength,
       apiKey,
+      ...(supportsMultimodal !== Boolean(modelSettings?.supportsMultimodal)
+        ? { supportsMultimodal }
+        : {}),
     });
     if (!parsed.ok) {
       setError(parsed.error);
@@ -90,6 +95,9 @@ export const WelcomeWizardModal: React.FC<WelcomeWizardModalProps> = ({
           setError(modelRes.errorMessage || '保存模型设置失败。');
           setSaving(false);
           return;
+        }
+        if (typeof modelRes.data?.supportsMultimodal === 'boolean') {
+          setSupportsMultimodal(modelRes.data.supportsMultimodal);
         }
       }
 
@@ -115,6 +123,9 @@ export const WelcomeWizardModal: React.FC<WelcomeWizardModalProps> = ({
       model,
       maxTokensLength,
       apiKey,
+      ...(supportsMultimodal !== Boolean(modelSettings?.supportsMultimodal)
+        ? { supportsMultimodal }
+        : {}),
     });
     if (!parsed.ok) {
       setError(parsed.error);
@@ -300,6 +311,21 @@ export const WelcomeWizardModal: React.FC<WelcomeWizardModalProps> = ({
                     placeholder="sk-..."
                     className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 focus:border-indigo-500 focus:outline-none"
                   />
+                </label>
+
+                <label className="col-span-2 flex items-start gap-2 rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+                  <input
+                    type="checkbox"
+                    checked={supportsMultimodal}
+                    onChange={(e) => setSupportsMultimodal(e.target.checked)}
+                    className="mt-0.5 h-3.5 w-3.5 rounded border-slate-600 bg-slate-900 text-indigo-500"
+                  />
+                  <span className="space-y-0.5 text-slate-300">
+                    <span className="block font-medium text-slate-200">支持多模态（图片与扫描版 PDF 识别）</span>
+                    <span className="block text-[11px] text-slate-400">
+                      保存时会自动用内置测试图片检测当前模型是否支持视觉输入，检测通过将自动开启。
+                    </span>
+                  </span>
                 </label>
 
                 <label className="block">

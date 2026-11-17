@@ -187,6 +187,7 @@ process.stdin.on('end', () => {
           topP: null,
           apiKeySet: true,
           apiKeyLast4: '1234',
+          supportsMultimodal: false,
         });
       }
 
