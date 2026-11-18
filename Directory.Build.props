@@ -3,7 +3,7 @@
   <!-- Shared by every project. Only the five library projects are packages (each one switches IsPackable on and names itself);
        the host (CodexFlow.Local) and the tests are not. All packages share one version so they always match each other. -->
   <PropertyGroup>
-    <VersionPrefix>0.1.12</VersionPrefix>
+    <VersionPrefix>0.1.13</VersionPrefix>
     <Authors>iwaitu</Authors>
     <Copyright>Copyright (c) 2026 iwaitu</Copyright>
     <PackageLicenseExpression>MPL-2.0</PackageLicenseExpression>

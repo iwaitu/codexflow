@@ -62,7 +62,8 @@ jobs:
 
   publish:
     name: Publish to nuget.org
-    if: vars.NUGET_USER != ''
+    # Do not check vars.NUGET_USER in job-level `if`: job-level `if` runs before `environment: nuget`
+    # is bound, so environment-scoped NUGET_USER variables would evaluate to empty and skip the job.
     needs: [guard, ci]
     runs-on: ubuntu-latest
     environment: nuget
@@ -71,28 +72,44 @@ jobs:
     env:
       NUGET_USER: ${{ vars.NUGET_USER }}
     steps:
+      - name: Check if NUGET_USER is configured
+        id: config
+        run: |
+          if [ -n "$NUGET_USER" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "NUGET_USER is not configured; skipping nuget.org publish."
+          fi
+
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        if: steps.config.outputs.enabled == 'true'
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: steps.config.outputs.enabled == 'true'
         with:
           name: packages
           path: packages
 
       - name: The downloaded packages are the five, from this commit
+        if: steps.config.outputs.enabled == 'true'
         run: python3 -I scripts/ci/check_packages.py --packages packages --props Directory.Build.props --commit "$GITHUB_SHA"
 
       - name: Sign in to nuget.org
         id: login
+        if: steps.config.outputs.enabled == 'true'
         uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
         with:
           user: ${{ vars.NUGET_USER }}
 
       - name: Push the packages
+        if: steps.config.outputs.enabled == 'true'
         env:
           NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
         run: dotnet nuget push "packages/*.nupkg" --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
 
       - name: Wait until all five are visible on nuget.org
+        if: steps.config.outputs.enabled == 'true'
         run: |
           version="$(python3 -I scripts/ci/check_packages.py --print-version --props Directory.Build.props)"
           ids="CodexFlow.Contracts CodexFlow.Core CodexFlow.Orchestration CodexFlow.Gateway.Http CodexFlow.Storage.Sqlite"
