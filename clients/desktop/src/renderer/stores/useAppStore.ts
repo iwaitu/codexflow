@@ -296,6 +296,7 @@ function reduceSseEvent(
       const name = d.name ?? 'tool';
       const key = d.callId || `${name}-${Date.now()}-${get().toolCalls.length}`;
       set((s) => ({
+        isTurnRunning: true,
         toolCalls: [
           ...s.toolCalls,
           {
@@ -323,6 +324,7 @@ function reduceSseEvent(
           : s.toolCalls.findIndex((t) => t.name === d.name && t.status === 'called');
         if (idx === -1) {
           return {
+            isTurnRunning: true,
             toolCalls: [
               ...s.toolCalls,
               {
@@ -341,7 +343,7 @@ function reduceSseEvent(
         const copy = [...s.toolCalls];
         const existing = copy[idx]!;
         copy[idx] = { ...existing, status: 'running' };
-        return { toolCalls: copy };
+        return { isTurnRunning: true, toolCalls: copy };
       });
       return;
     }
@@ -602,6 +604,7 @@ function reduceSseEvent(
           : s.messages,
         streamingContent: '',
         streamingThinking: '',
+        toolCalls: [],
       }));
       if (hadActiveTurn) {
         dispatchDesktopNotification('notify.turnErrorTitle', msg);
@@ -635,6 +638,7 @@ function reduceSseEvent(
           streamingContent: '',
           streamingThinking: '',
           streamingTruncated: false,
+          toolCalls: [],
           turnNotice: d.source === 'cancelled' ? '本回合已取消。' : null,
           workspaceRevision: s.workspaceRevision + 1,
         };

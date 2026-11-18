@@ -148,6 +148,20 @@ const ZH_CN = {
   'palette.cmd.openSettings': '打开设置',
   'palette.cmd.checkUpdates': '检查桌面客户端更新',
   'palette.cmd.restartBackend': '重启托管后端宿主',
+  'palette.cmd.about': '关于 CodexFlow Desktop',
+
+  // About Modal
+  'about.title': '关于 {name}',
+  'about.subtitle': '本地执行、人工审批与可复用业务 Skill 的桌面端 AI 编程工作台',
+  'about.versionLabel': '软件版本',
+  'about.hostVersionLabel': '后端宿主版本',
+  'about.authorLabel': '作者',
+  'about.licenseLabel': '开源协议',
+  'about.projectUrlLabel': '项目地址',
+  'about.openProjectUrl': '在浏览器中打开',
+  'about.copyInfo': '复制版本信息',
+  'about.copied': '已复制',
+  'about.close': '关闭',
 } as const;
 
 export type I18nKey = keyof typeof ZH_CN;
@@ -291,6 +305,19 @@ const EN_US: Record<I18nKey, string> = {
   'palette.cmd.openSettings': 'Open Settings',
   'palette.cmd.checkUpdates': 'Check for Desktop Updates',
   'palette.cmd.restartBackend': 'Restart Managed Backend Host',
+  'palette.cmd.about': 'About CodexFlow Desktop',
+
+  'about.title': 'About {name}',
+  'about.subtitle': 'Desktop AI coding workspace with local execution, human approvals, and reusable business Skills',
+  'about.versionLabel': 'Version',
+  'about.hostVersionLabel': 'Backend Host Version',
+  'about.authorLabel': 'Author',
+  'about.licenseLabel': 'License',
+  'about.projectUrlLabel': 'Project URL',
+  'about.openProjectUrl': 'Open in Browser',
+  'about.copyInfo': 'Copy Version Info',
+  'about.copied': 'Copied',
+  'about.close': 'Close',
 };
 
 export const I18N_DICTIONARIES: Record<DesktopLanguage, Record<I18nKey, string>> = {

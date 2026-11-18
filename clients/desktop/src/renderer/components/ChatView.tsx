@@ -286,9 +286,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
         </div>
       )}
 
-      {(isTurnRunning || streamingContent || streamingThinking || toolCalls.length > 0) && (
+      {(isTurnRunning || streamingContent || streamingThinking) && (
         <div className="mt-3 space-y-3">
-          {toolCalls.length > 0 && (
+          {isTurnRunning && toolCalls.length > 0 && (
             <div className="space-y-2">
               {toolCalls.map((t) => (
                 <ToolCallCard key={t.key} tool={t} />

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Cpu, FileDiff, FolderTree } from 'lucide-react';
 import { BusinessSkillsHub } from './components/business-skills/BusinessSkillsHub';
+import { AboutModal } from './components/AboutModal';
 import { ChatView } from './components/ChatView';
 import { CommandPaletteModal, type CommandPaletteItem } from './components/CommandPaletteModal';
 import { Composer, type WorkspaceAttachmentRequest } from './components/Composer';
@@ -36,6 +37,7 @@ export const App: React.FC = () => {
   const [expandedSessionIds, setExpandedSessionIds] = useState<string[]>([]);
   const [externalAttachment, setExternalAttachment] = useState<WorkspaceAttachmentRequest | null>(null);
   const [isCommandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [isAboutOpen, setAboutOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTabKind>('execution');
   const sseRef = useRef<SessionSseClient | null>(null);
   const prevRestartCount = useRef<number>(0);
@@ -740,6 +742,9 @@ export const App: React.FC = () => {
     newWorkspace: () => void;
     openFolder: () => void;
     openSettings: (tab?: SettingsTabKind) => void;
+    openAbout: () => void;
+    openCommandPalette: () => void;
+    toggleTheme: () => void;
     toggleInspector: (tab: InspectorTab) => void;
     switchView: (view: 'chat' | 'business-skills') => void;
   } | null>(null);
@@ -749,6 +754,9 @@ export const App: React.FC = () => {
     newWorkspace: () => void handleCreateSession(),
     openFolder: () => void handleOpenFolder(),
     openSettings: (tab = 'execution') => openSettingsTab(tab),
+    openAbout: () => setAboutOpen(true),
+    openCommandPalette: () => setCommandPaletteOpen(true),
+    toggleTheme: () => toggleTheme(),
     toggleInspector: (tab) => {
       setPrimaryView('chat');
       toggleInspectorTab(tab);
@@ -772,6 +780,18 @@ export const App: React.FC = () => {
           return;
         case 'open-settings':
           actions.openSettings('execution');
+          return;
+        case 'open-updates':
+          actions.openSettings('preferences');
+          return;
+        case 'open-about':
+          actions.openAbout();
+          return;
+        case 'open-command-palette':
+          actions.openCommandPalette();
+          return;
+        case 'toggle-theme':
+          actions.toggleTheme();
           return;
         case 'toggle-inspector-files':
           actions.toggleInspector('files');
@@ -955,6 +975,13 @@ export const App: React.FC = () => {
         keywords: 'restart host backend 重启后端',
         disabled: connection?.mode !== 'managed',
         onRun: () => void window.codexflow.restartBackend(),
+      },
+      {
+        id: 'about',
+        group: t('palette.group.system'),
+        label: t('palette.cmd.about'),
+        keywords: 'about version author github 关于 版本 作者 项目地址',
+        onRun: () => setAboutOpen(true),
       },
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1284,6 +1311,13 @@ export const App: React.FC = () => {
         open={isCommandPaletteOpen}
         commands={commandPaletteItems}
         onOpenChange={setCommandPaletteOpen}
+      />
+
+      <AboutModal
+        open={isAboutOpen}
+        clientVersion={connection?.clientVersion ?? null}
+        hostVersion={systemStatusQuery.data?.version ?? null}
+        onOpenChange={setAboutOpen}
       />
     </div>
   );

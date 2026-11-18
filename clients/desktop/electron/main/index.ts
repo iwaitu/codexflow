@@ -1,7 +1,8 @@
-import { app, BrowserWindow, dialog, ipcMain, Notification, shell, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, shell, type IpcMainInvokeEvent } from 'electron';
 import { existsSync, lstatSync, realpathSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 import {
+  APP_METADATA,
   IPC_CHANNELS,
   type AppUpdateState,
   type ClassifiedDroppedFile,
@@ -28,6 +29,7 @@ import {
   type UpdateModelSettingsPayload,
   type UpdatePluginConnectionRequest,
 } from '../../src/shared/ipc';
+import { buildApplicationMenuTemplate, buildContextMenuTemplate } from './appMenu';
 import { BackendManager } from './backendManager';
 import { callControlPlane } from './controlPlaneProxy';
 import { LocalBackendProxy } from './localBackendProxy';
@@ -127,9 +129,49 @@ function restoreMainWindow(): void {
 
 function dispatchCommandAction(action: DesktopCommandAction): void {
   if (!mainWindow || mainWindow.isDestroyed()) {
+    restoreMainWindow();
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  if (mainWindow.webContents.isLoading()) {
+    mainWindow.webContents.once('did-finish-load', () => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send(IPC_CHANNELS.commandAction, action);
+      }
+    });
     return;
   }
   mainWindow.webContents.send(IPC_CHANNELS.commandAction, action);
+}
+
+function refreshApplicationMenu(): void {
+  if (typeof app.setAboutPanelOptions === 'function') {
+    app.setAboutPanelOptions({
+      applicationName: APP_METADATA.name,
+      applicationVersion: app.getVersion(),
+      copyright: APP_METADATA.copyright,
+      website: APP_METADATA.projectUrl,
+      authors: [APP_METADATA.author],
+    });
+  }
+
+  const template = buildApplicationMenuTemplate({
+    language: desktopPreferences.language,
+    isDev,
+    onDispatchCommand: (action) => {
+      restoreMainWindow();
+      dispatchCommandAction(action);
+    },
+    onOpenExternal: (url) => {
+      void openSafeExternalUrl(url);
+    },
+    onQuit: () => {
+      isQuitting = true;
+      app.quit();
+    },
+  });
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
 function broadcastUpdateState(state: AppUpdateState): void {
@@ -184,6 +226,20 @@ function createMainWindow(): BrowserWindow {
 
   win.webContents.on('will-attach-webview', (event) => {
     event.preventDefault();
+  });
+
+  win.webContents.on('context-menu', (_event, params) => {
+    const template = buildContextMenuTemplate(params, desktopPreferences.language, {
+      onOpenLink: (url) => {
+        void openSafeExternalUrl(url);
+      },
+      onCopyText: (text) => {
+        clipboard.writeText(text);
+      },
+    });
+    if (template.length > 0) {
+      Menu.buildFromTemplate(template).popup({ window: win });
+    }
   });
 
   win.once('ready-to-show', () => {
@@ -641,6 +697,7 @@ function registerIpcHandlers(manager: BackendManager): void {
       desktopPreferences.minimizeToTrayOnClose = payload.minimizeToTrayOnClose;
     }
     trayManager?.refreshMenu();
+    refreshApplicationMenu();
   });
 
   ipcMain.handle(IPC_CHANNELS.getUpdateState, (event) => {
@@ -738,6 +795,7 @@ if (!singleInstanceLock) {
 
     attachCspHeaderHook(() => proxyOrigin, isDev);
     registerIpcHandlers(backendManager);
+    refreshApplicationMenu();
 
     mainWindow = createMainWindow();
     mainWindow.on('closed', () => {

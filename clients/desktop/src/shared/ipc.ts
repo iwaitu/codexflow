@@ -249,11 +249,24 @@ export interface DesktopNotificationPayload {
   onlyWhenUnfocused?: boolean;
 }
 
+export const APP_METADATA = {
+  name: 'CodexFlow Desktop',
+  author: 'iwaitu',
+  copyright: 'Copyright © 2026 iwaitu',
+  license: 'MPL-2.0',
+  projectUrl: 'https://github.com/iwaitu/codexflow',
+  releasesUrl: 'https://github.com/iwaitu/codexflow/releases',
+} as const;
+
 export type DesktopCommandAction =
   | 'new-conversation'
   | 'new-workspace'
   | 'open-folder'
   | 'open-settings'
+  | 'open-updates'
+  | 'open-about'
+  | 'open-command-palette'
+  | 'toggle-theme'
   | 'toggle-inspector-files'
   | 'toggle-inspector-changes'
   | 'toggle-inspector-jobs'
