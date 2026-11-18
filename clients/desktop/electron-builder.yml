@@ -9,7 +9,8 @@ directories:
 files:
   - out/**/*
   - package.json
-  - '!node_modules/**/*'
+  # Main-process dependencies are externalized by electron-vite. Keep the
+  # production node_modules that electron-builder includes automatically.
 
 extraResources:
   - from: resources/backend
