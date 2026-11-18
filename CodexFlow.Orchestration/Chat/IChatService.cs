@@ -24,6 +24,10 @@ namespace CodexFlow.Application
 
         // Session Management
         Task<string> CreateSession(string userId, string name);
+        Task<string> CreateSession(string userId, string name, CodexFlow.Core.Models.SessionWorkMode workMode)
+            => CreateSession(userId, name);
+        Task<(string sessionId, bool created, string workspacePath)> GetOrCreateDailyAssistantWorkspace(string userId)
+            => GetOrCreateDefaultWorkspace(userId);
         Task<PageOf<IvilsonSession>> GetSessions(string userId, int page, int pageSize);
         Task<PageOf<IvilsonSession>> GetSessionsPaged(string userId, int page, int pageSize, bool includeArchived = false);
         Task<(string SessionId, string WorkspaceName, bool Created)> CreateOrOpenExternalWorkspaceSession(string userId, string canonicalWorkspacePath, string? name = null);

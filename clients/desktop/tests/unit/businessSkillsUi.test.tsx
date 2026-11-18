@@ -10,6 +10,7 @@ import type {
   SkillRunDto,
 } from '../../src/shared/ipc';
 import { ApiError, apiClient } from '../../src/renderer/lib/apiClient';
+import { isBusinessSkillsDisabledError } from '../../src/renderer/components/business-skills/businessSkillHelpers';
 import { BusinessSkillsHub } from '../../src/renderer/components/business-skills/BusinessSkillsHub';
 import { PluginCatalogPanel } from '../../src/renderer/components/business-skills/PluginCatalogPanel';
 import { SkillBuilderWizard } from '../../src/renderer/components/business-skills/SkillBuilderWizard';
@@ -32,6 +33,8 @@ function installMockBridge(overrides: Partial<DesktopBridge> = {}): DesktopBridg
     } satisfies BackendConnectionPublicInfo),
     onBackendConnectionChanged: vi.fn().mockReturnValue(() => {}),
     approveToolExecution: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
+    getApprovalScript: vi.fn().mockResolvedValue({ ok: false, status: 404 }),
+    setSessionPlanMode: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
     submitPlanChatAction: vi.fn().mockResolvedValue({ ok: true, status: 202 }),
     updateExecutionSettings: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
     updateModelSettings: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
@@ -573,5 +576,12 @@ describe('Built-in Enterprise Plugin & Skill Builder UI', () => {
       decision: 'allow_once',
       note: undefined,
     });
+  });
+
+  it('does not misclassify 503 ConnectionUnavailable as BusinessSkills:Enabled=false', () => {
+    const connErr = new ApiError(503, 'ConnectionUnavailable', '后端暂不可连接');
+    const disabledErr = new ApiError(503, 'FeatureDisabled', 'BusinessSkills:Enabled=false 未开启');
+    expect(isBusinessSkillsDisabledError(connErr)).toBe(false);
+    expect(isBusinessSkillsDisabledError(disabledErr)).toBe(true);
   });
 });

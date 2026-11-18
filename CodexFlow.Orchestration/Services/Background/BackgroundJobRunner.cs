@@ -1765,6 +1765,7 @@ namespace CodexFlow.Services.Background
                 IReadOnlyList<ICodexTool> BuildAvailableCodexTools(bool includeDeferred = false)
                     => ReadOnlyWorkerDependencyBriefing.FilterTools(workerDefinitions
                         .FilterAvailableTools(workerType, (includeDeferred ? toolRegistry.GetAvailableTools(workerSession, true) : toolRegistry.GetAvailableTools(workerSession)))
+                        .Where(static t => !string.Equals(t.Name, "run_shell", StringComparison.OrdinalIgnoreCase))
                         .ToList(), fetchedUpgrades);
 
                 IReadOnlyList<AIFunction> BuildAvailableTools()
@@ -1808,6 +1809,8 @@ namespace CodexFlow.Services.Background
                     AvailableCodexToolsProvider = () => BuildAvailableCodexTools(),
                     WorkerContext = runtimeContext,
                     RequiredToolContract = runtimeContext.RequiredToolContract,
+                    ApprovalOwnerKind = CodexFlow.Core.Execution.Approval.ApprovalOwnerKind.BackgroundJob,
+                    ApprovalOwnerId = $"{job.JobId}:{job.Attempt}",
                     AdapterHints = new AdapterHints(
                         EnableEmptyResponseRecovery: true,
                         EnableMalformedProtocolRecovery: true,
@@ -1917,6 +1920,7 @@ namespace CodexFlow.Services.Background
                 IReadOnlyList<ICodexTool> BuildAvailableCodexTools(bool includeDeferred = false)
                     => workerDefinitions
                         .FilterAvailableTools(WorkerType.Verify, (includeDeferred ? toolRegistry.GetAvailableTools(workerSession, true) : toolRegistry.GetAvailableTools(workerSession)))
+                        .Where(static t => !string.Equals(t.Name, "run_shell", StringComparison.OrdinalIgnoreCase))
                         .ToList();
 
                 IReadOnlyList<AIFunction> BuildAvailableTools()
@@ -1966,6 +1970,8 @@ namespace CodexFlow.Services.Background
                     AvailableCodexToolsProvider = () => BuildAvailableCodexTools(),
                     WorkerContext = runtimeContext,
                     RequiredToolContract = runtimeContext.RequiredToolContract,
+                    ApprovalOwnerKind = CodexFlow.Core.Execution.Approval.ApprovalOwnerKind.BackgroundJob,
+                    ApprovalOwnerId = $"{job.JobId}:{job.Attempt}",
                     Options = chatOptions,
                     AdapterHints = new AdapterHints(
                         EnableEmptyResponseRecovery: true,
@@ -2515,6 +2521,7 @@ namespace CodexFlow.Services.Background
                     IReadOnlyList<ICodexTool> BuildAvailableCodexTools(bool includeDeferred = false)
                         => workerDefinitions
                             .FilterAvailableTools(WorkerType.Forge, (includeDeferred ? toolRegistry.GetAvailableTools(workerSession, true) : toolRegistry.GetAvailableTools(workerSession)))
+                            .Where(static t => !string.Equals(t.Name, "run_shell", StringComparison.OrdinalIgnoreCase))
                             .ToList();
 
                     IReadOnlyList<AIFunction> BuildAvailableTools()
@@ -2607,6 +2614,8 @@ namespace CodexFlow.Services.Background
                         AvailableCodexToolsProvider = () => BuildAvailableCodexTools(),
                         WorkerContext = runtimeContext,
                         RequiredToolContract = runtimeContext.RequiredToolContract,
+                        ApprovalOwnerKind = CodexFlow.Core.Execution.Approval.ApprovalOwnerKind.BackgroundJob,
+                        ApprovalOwnerId = $"{job.JobId}:{job.Attempt}",
                         AdapterHints = new AdapterHints(
                             EnableEmptyResponseRecovery: true,
                             EnableMalformedProtocolRecovery: true,

@@ -40,6 +40,11 @@ public sealed class IncompleteVerificationStopRuntimeHook : IRuntimeHook
     {
         ArgumentNullException.ThrowIfNull(context);
 
+        if (IsDailyOrPlanModeTurn(context.Request))
+        {
+            return BeforeStopHookResult.None;
+        }
+
         // Whether audit suppression really happened is read from the project files, not from the worker's account of it. Only a worker that
         // can change files and is not just answering a question needs the lookup.
         var files = SuppressionEvidence.Unknown;
@@ -93,6 +98,7 @@ public sealed class IncompleteVerificationStopRuntimeHook : IRuntimeHook
     {
 
         if (!context.Request.EnableTools ||
+            IsDailyOrPlanModeTurn(context.Request) ||
             string.IsNullOrWhiteSpace(context.LastAssistantMessage))
         {
             return ValueTask.FromResult(BeforeStopHookResult.None);
@@ -212,6 +218,12 @@ public sealed class IncompleteVerificationStopRuntimeHook : IRuntimeHook
         => new(
             "failed_verification",
             "the latest run of " + string.Join(", ", ledger.FailedVerifications.Where(static verification => !verification.EnvironmentLimit).Select(static verification => verification.Summary).Distinct()) + " did not exit cleanly");
+
+    private static bool IsDailyOrPlanModeTurn(QueryRuntimeRequest request)
+        => request.SessionPolicy?.WorkMode == Models.SessionWorkMode.Daily ||
+           request.SessionPolicy?.PlanModeActive == true ||
+           request.Session?.WorkMode == Models.SessionWorkMode.Daily ||
+           request.Session?.PlanModeActive == true;
 
     private static bool IsAdvisoryCoordinatorTurn(BeforeStopContext context)
         => context.Request.EntryPoint == QueryLoopEntryPoint.GatewayMessageProcessor &&

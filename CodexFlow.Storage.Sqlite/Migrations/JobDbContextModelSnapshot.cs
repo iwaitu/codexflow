@@ -682,9 +682,31 @@ namespace CodexFlow.Storage.Sqlite.Migrations
                     b.Property<DateTime?>("LastCompressedAt")
                         .HasColumnType("TEXT");
 
+                    b.Property<int>("ModeVersion")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasDefaultValue(1);
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasColumnType("TEXT");
+
+                    b.Property<bool>("PlanModeActive")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasDefaultValue(false);
+
+                    b.Property<DateTime?>("PlanModeChangedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("PlanModeChangedBy")
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("PlanModeVersion")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasDefaultValue(1);
 
                     b.Property<string>("ProjectUrl")
                         .HasColumnType("TEXT");
@@ -692,6 +714,11 @@ namespace CodexFlow.Storage.Sqlite.Migrations
                     b.Property<string>("UserId")
                         .IsRequired()
                         .HasColumnType("TEXT");
+
+                    b.Property<int>("WorkMode")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasDefaultValue(0);
 
                     b.Property<string>("WorkspacePath")
                         .IsRequired()

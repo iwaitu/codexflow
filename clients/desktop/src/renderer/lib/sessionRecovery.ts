@@ -49,6 +49,13 @@ export interface UiPendingApproval {
   executesWorkspaceCode: boolean;
   trustedOriginVerified: boolean;
   selfApprovalProtection?: boolean;
+  origin?: string | null;
+  policyVersion?: number | null;
+  wrapperSha256?: string | null;
+  exportScopeSha256?: string | null;
+  timeoutSeconds?: number | null;
+  imageDigest?: string | null;
+  shellKind?: string | null;
 }
 
 export interface WorkerBarState {
@@ -57,6 +64,14 @@ export interface WorkerBarState {
 }
 
 export function normalizeApprovalFromRest(item: PendingApprovalItem): UiPendingApproval {
+  const extra = item as PendingApprovalItem & {
+    policyVersion?: number | null;
+    wrapperSha256?: string | null;
+    exportScopeSha256?: string | null;
+    timeoutSeconds?: number | null;
+    imageDigest?: string | null;
+    shellKind?: string | null;
+  };
   return {
     approvalId: item.approvalId,
     requestDigest: item.requestDigest,
@@ -77,6 +92,13 @@ export function normalizeApprovalFromRest(item: PendingApprovalItem): UiPendingA
     allowedDecisions: [...(item.allowedDecisions ?? [])],
     executesWorkspaceCode: item.executesWorkspaceCode,
     trustedOriginVerified: Boolean((item as { trustedOriginVerified?: boolean }).trustedOriginVerified ?? false),
+    origin: item.origin ?? null,
+    policyVersion: extra.policyVersion ?? null,
+    wrapperSha256: extra.wrapperSha256 ?? null,
+    exportScopeSha256: extra.exportScopeSha256 ?? null,
+    timeoutSeconds: extra.timeoutSeconds ?? null,
+    imageDigest: extra.imageDigest ?? null,
+    shellKind: item.shell ?? extra.shellKind ?? null,
   };
 }
 
@@ -102,6 +124,13 @@ export function normalizeApprovalFromSse(payload: SseToolApprovalRequestPayload)
     executesWorkspaceCode: payload.executesWorkspaceCode,
     trustedOriginVerified: payload.trustedOriginVerified,
     selfApprovalProtection: payload.selfApprovalProtection,
+    origin: payload.origin ?? null,
+    policyVersion: payload.policyVersion ?? null,
+    wrapperSha256: payload.wrapperSha256 ?? null,
+    exportScopeSha256: payload.exportScopeSha256 ?? null,
+    timeoutSeconds: payload.timeoutSeconds ?? null,
+    imageDigest: payload.imageDigest ?? null,
+    shellKind: payload.shellKind ?? null,
   };
 }
 

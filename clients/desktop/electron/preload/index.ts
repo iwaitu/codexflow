@@ -17,6 +17,7 @@ import {
   type PlanChatControlPayload,
   type PublishSkillDraftRequest,
   type PutDraftSelectionRequest,
+  type SetPlanModePayload,
   type SetPluginCredentialRequest,
   type StartSkillRunRequest,
   type SubmitToolApprovalPayload,
@@ -39,6 +40,10 @@ const api: DesktopBridge = {
   },
   approveToolExecution: (payload: SubmitToolApprovalPayload) =>
     ipcRenderer.invoke(IPC_CHANNELS.approveToolExecution, payload),
+  getApprovalScript: (approvalId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.getApprovalScript, approvalId),
+  setSessionPlanMode: (payload: SetPlanModePayload) =>
+    ipcRenderer.invoke(IPC_CHANNELS.setSessionPlanMode, payload),
   submitPlanChatAction: (payload: PlanChatControlPayload) =>
     ipcRenderer.invoke(IPC_CHANNELS.submitPlanChatAction, payload),
   updateExecutionSettings: (payload: UpdateExecutionSettingsPayload) =>

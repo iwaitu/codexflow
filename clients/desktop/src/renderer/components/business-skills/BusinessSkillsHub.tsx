@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Blocks,
@@ -35,6 +35,11 @@ export const BusinessSkillsHub: React.FC<BusinessSkillsHubProps> = ({
   modelConfigured,
 }) => {
   const [activeTab, setActiveTab] = useState<HubTab>('plugins');
+  const [visitedTabs, setVisitedTabs] = useState<Record<HubTab, boolean>>({
+    plugins: true,
+    skills: false,
+    wizard: false,
+  });
   const [plugins, setPlugins] = useState<BusinessPluginDto[]>([]);
   const [skills, setSkills] = useState<PublishedSkillDto[]>([]);
   const [featureDisabled, setFeatureDisabled] = useState(false);
@@ -42,9 +47,20 @@ export const BusinessSkillsHub: React.FC<BusinessSkillsHubProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [wizardPluginId, setWizardPluginId] = useState<string | null>(null);
   const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
+  const loadRequestSeqRef = useRef(0);
+
+  const switchTab = useCallback((nextTab: HubTab) => {
+    setActiveTab(nextTab);
+    setVisitedTabs((prev) => (prev[nextTab] ? prev : { ...prev, [nextTab]: true }));
+  }, []);
 
   const loadAll = useCallback(async () => {
-    if (!auth) return;
+    if (!auth) {
+      setPlugins([]);
+      setSkills([]);
+      return;
+    }
+    const reqSeq = ++loadRequestSeqRef.current;
     setLoading(true);
     setError(null);
     try {
@@ -52,10 +68,12 @@ export const BusinessSkillsHub: React.FC<BusinessSkillsHubProps> = ({
         apiClient.listBusinessPlugins(auth),
         apiClient.listPublishedSkills(auth),
       ]);
+      if (reqSeq !== loadRequestSeqRef.current) return;
       setPlugins(pluginList);
       setSkills(skillList);
       setFeatureDisabled(false);
     } catch (err) {
+      if (reqSeq !== loadRequestSeqRef.current) return;
       if (isBusinessSkillsDisabledError(err)) {
         setFeatureDisabled(true);
         setPlugins([]);
@@ -64,24 +82,36 @@ export const BusinessSkillsHub: React.FC<BusinessSkillsHubProps> = ({
         setError(formatBusinessSkillError(err, '加载企业插件与 Skill 数据失败'));
       }
     } finally {
-      setLoading(false);
+      if (reqSeq === loadRequestSeqRef.current) {
+        setLoading(false);
+      }
     }
   }, [auth]);
 
   useEffect(() => {
+    setPlugins([]);
+    setSkills([]);
     void loadAll();
   }, [loadAll, instanceKey]);
 
   const refreshPlugins = useCallback(async () => {
     if (!auth) return;
-    const list = await apiClient.listBusinessPlugins(auth);
-    setPlugins(list);
+    try {
+      const list = await apiClient.listBusinessPlugins(auth);
+      setPlugins(list);
+    } catch (err) {
+      setError(`插件列表刷新失败：${formatBusinessSkillError(err, '请点击刷新重试')}`);
+    }
   }, [auth]);
 
   const refreshSkills = useCallback(async () => {
     if (!auth) return;
-    const list = await apiClient.listPublishedSkills(auth);
-    setSkills(list);
+    try {
+      const list = await apiClient.listPublishedSkills(auth);
+      setSkills(list);
+    } catch (err) {
+      setError(`Skill 列表刷新失败：${formatBusinessSkillError(err, '请点击刷新重试')}`);
+    }
   }, [auth]);
 
   return (
@@ -144,16 +174,24 @@ export const BusinessSkillsHub: React.FC<BusinessSkillsHubProps> = ({
           </div>
         ) : (
           <>
+            {!auth && (
+              <div className="rounded-lg border border-amber-500/40 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
+                后端服务尚未就绪，连接恢复后会自动加载插件与 Skill 列表。
+              </div>
+            )}
+
             {error && (
-              <div className="rounded-lg border border-rose-500/40 bg-rose-950/30 px-3 py-2 text-xs text-rose-200">
+              <div role="alert" className="rounded-lg border border-rose-500/40 bg-rose-950/30 px-3 py-2 text-xs text-rose-200">
                 {error}
               </div>
             )}
 
-            <div className="flex flex-wrap gap-2 border-b border-slate-800 pb-3">
+            <div role="tablist" aria-label="业务技能功能导航" className="flex flex-wrap gap-2 border-b border-slate-800 pb-3">
               <button
                 type="button"
-                onClick={() => setActiveTab('plugins')}
+                role="tab"
+                aria-selected={activeTab === 'plugins'}
+                onClick={() => switchTab('plugins')}
                 className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium ${
                   activeTab === 'plugins'
                     ? 'bg-indigo-600 text-white'
@@ -165,7 +203,9 @@ export const BusinessSkillsHub: React.FC<BusinessSkillsHubProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => setActiveTab('skills')}
+                role="tab"
+                aria-selected={activeTab === 'skills'}
+                onClick={() => switchTab('skills')}
                 className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium ${
                   activeTab === 'skills'
                     ? 'bg-indigo-600 text-white'
@@ -177,7 +217,9 @@ export const BusinessSkillsHub: React.FC<BusinessSkillsHubProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => setActiveTab('wizard')}
+                role="tab"
+                aria-selected={activeTab === 'wizard'}
+                onClick={() => switchTab('wizard')}
                 className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium ${
                   activeTab === 'wizard'
                     ? 'bg-indigo-600 text-white'
@@ -189,45 +231,51 @@ export const BusinessSkillsHub: React.FC<BusinessSkillsHubProps> = ({
               </button>
             </div>
 
-            {activeTab === 'plugins' && (
-              <PluginCatalogPanel
-                auth={auth}
-                plugins={plugins}
-                controlPlaneAvailable={controlPlaneAvailable}
-                onRefreshPlugins={refreshPlugins}
-                onStartWizardForPlugin={(pluginId) => {
-                  setWizardPluginId(pluginId);
-                  setActiveTab('wizard');
-                }}
-              />
+            {visitedTabs.plugins && (
+              <div className={activeTab === 'plugins' ? '' : 'hidden'}>
+                <PluginCatalogPanel
+                  auth={auth}
+                  plugins={plugins}
+                  controlPlaneAvailable={controlPlaneAvailable}
+                  onRefreshPlugins={refreshPlugins}
+                  onStartWizardForPlugin={(pluginId) => {
+                    setWizardPluginId(pluginId);
+                    switchTab('wizard');
+                  }}
+                />
+              </div>
             )}
 
-            {activeTab === 'skills' && (
-              <PublishedSkillsPanel
-                auth={auth}
-                skills={skills}
-                initialSelectedSkillId={selectedSkillId}
-                activeSessionId={activeSessionId}
-                controlPlaneAvailable={controlPlaneAvailable}
-                onRefreshSkills={refreshSkills}
-              />
+            {visitedTabs.skills && (
+              <div className={activeTab === 'skills' ? '' : 'hidden'}>
+                <PublishedSkillsPanel
+                  auth={auth}
+                  skills={skills}
+                  initialSelectedSkillId={selectedSkillId}
+                  activeSessionId={activeSessionId}
+                  controlPlaneAvailable={controlPlaneAvailable}
+                  onRefreshSkills={refreshSkills}
+                />
+              </div>
             )}
 
-            {activeTab === 'wizard' && (
-              <SkillBuilderWizard
-                auth={auth}
-                plugins={plugins}
-                initialPluginId={wizardPluginId}
-                activeSessionId={activeSessionId}
-                controlPlaneAvailable={controlPlaneAvailable}
-                modelConfigured={modelConfigured}
-                onRefreshPlugins={refreshPlugins}
-                onPublished={async (published) => {
-                  await refreshSkills();
-                  setSelectedSkillId(published.id ?? null);
-                  setActiveTab('skills');
-                }}
-              />
+            {visitedTabs.wizard && (
+              <div className={activeTab === 'wizard' ? '' : 'hidden'}>
+                <SkillBuilderWizard
+                  auth={auth}
+                  plugins={plugins}
+                  initialPluginId={wizardPluginId}
+                  activeSessionId={activeSessionId}
+                  controlPlaneAvailable={controlPlaneAvailable}
+                  modelConfigured={modelConfigured}
+                  onRefreshPlugins={refreshPlugins}
+                  onPublished={async (published) => {
+                    await refreshSkills();
+                    setSelectedSkillId(published.id ?? null);
+                    switchTab('skills');
+                  }}
+                />
+              </div>
             )}
           </>
         )}

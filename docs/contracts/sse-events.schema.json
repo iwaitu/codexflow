@@ -45,7 +45,9 @@
         "replay_gap",
         "business_skill_run_updated",
         "business_skill_approval_requested",
-        "business_skill_approval_resolved"
+        "business_skill_approval_resolved",
+        "plan_mode_changed",
+        "plan_mode_exit_requested"
       ]
     },
     "data": {
@@ -472,6 +474,34 @@
         "event",
         "data"
       ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "plan_mode_changed"
+        },
+        "data": {
+          "$ref": "#/$defs/plan_mode_changed"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "plan_mode_exit_requested"
+        },
+        "data": {
+          "$ref": "#/$defs/plan_mode_exit_requested"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
     }
   ],
   "$defs": {
@@ -771,6 +801,72 @@
         },
         "selfApprovalProtection": {
           "type": "boolean"
+        },
+        "origin": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "policyVersion": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "wrapperSha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "exportScopeSha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timeoutSeconds": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "imageDigest": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "shellKind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "shell": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scriptPreview": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scriptLength": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "backendNotice": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -1444,6 +1540,98 @@
         "runId",
         "decision",
         "resolvedAt"
+      ]
+    },
+    "plan_mode_changed": {
+      "type": "object",
+      "description": "Notification emitted when session Plan Mode is entered or exited.",
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "plan_mode_changed"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "workMode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "modeVersion": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "planModeActive": {
+          "type": "boolean"
+        },
+        "planModeVersion": {
+          "type": "integer"
+        },
+        "changedBy": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "changedAtUtc": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "objective": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "sessionId",
+        "planModeActive",
+        "planModeVersion"
+      ]
+    },
+    "plan_mode_exit_requested": {
+      "type": "object",
+      "description": "Model requested exit from Plan Mode; requires explicit user confirmation on control plane.",
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "plan_mode_exit_requested"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "planModeVersion": {
+          "type": "integer"
+        },
+        "planSummary": {
+          "type": "string"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "sessionId",
+        "planModeVersion",
+        "planSummary"
       ]
     }
   }

@@ -93,8 +93,10 @@ public class ToolSurfaceSnapshotTests
             "apply_patch",
             "fetch_webpage",
             "ivilson_smart_patch",
+            "list_authorized_directory",
             "openspec_create_checkpoint",
             "openspec_revert_changes",
+            "run_shell",
             "save_project_summary",
             "user_learn_preference",
             "web_search"

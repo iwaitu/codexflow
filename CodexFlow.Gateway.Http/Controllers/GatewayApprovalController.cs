@@ -81,6 +81,49 @@ public sealed class GatewayApprovalController(
     }
 
     /// <summary>
+    /// Returns the full script snapshot and SHA-256 hash for a pending script execution approval.
+    /// Requires control-plane credentials and session ownership so the UI can verify script fidelity
+    /// independently from SSE preview events.
+    /// </summary>
+    [HttpGet("approvals/{approvalId}/script")]
+    [Authorize(Policy = ControlPlaneAuthConstants.ControlPlanePolicy)]
+    public async Task<ActionResult<PendingApprovalScriptSnapshot>> GetPendingApprovalScript(
+        [FromRoute] string approvalId,
+        CancellationToken ct = default)
+    {
+        _ = ct;
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrEmpty(userId))
+        {
+            return Unauthorized();
+        }
+
+        if (!ControlPlaneAuthConstants.IsControlPlanePrincipal(User, controlPlane))
+        {
+            return Forbid();
+        }
+
+        var existingItem = approvalBroker.GetPendingApprovalById(approvalId);
+        if (existingItem is null)
+        {
+            return NotFound(new ExecutionApprovalErrorResponse(false, "approval_not_found", "Approval request was not found or has expired."));
+        }
+
+        var session = await chatService.GetSession(existingItem.SessionId).ConfigureAwait(false);
+        if (session is null || !string.Equals(session.UserId, userId, StringComparison.Ordinal))
+        {
+            return NotFound(new ExecutionApprovalErrorResponse(false, "approval_not_found", "Approval request was not found or is not owned by the caller."));
+        }
+
+        if (!approvalBroker.TryGetPendingApprovalScript(approvalId, session.Id, out var scriptSnapshot) || scriptSnapshot is null)
+        {
+            return NotFound(new ExecutionApprovalErrorResponse(false, "approval_script_not_found", "Full script snapshot is not available for this approval."));
+        }
+
+        return Ok(scriptSnapshot);
+    }
+
+    /// <summary>
     /// Submits an authorization decision for a pending execution approval item. Requires a control-plane credential;
     /// normal access tokens receive <c>403 Forbidden</c>.
     /// </summary>

@@ -111,6 +111,44 @@ public sealed class MultimodalSettingsAndAttachmentTests : IDisposable
     }
 
     [Fact]
+    public async Task SaveModelSettings_PreservesManualSupportsMultimodal_WhenProbeIsInconclusive()
+    {
+        var globalSettings = Path.Combine(_root, "global-inconclusive", "appsettings.json");
+        var probe = new StubMultimodalProbe(new MultimodalProbeResult(
+            IsSupported: false,
+            Status: "ProbeFailed",
+            Message: "模型未返回有效文本响应，暂未开启多模态。"));
+
+        await using var host = await P3TestHost.StartAsync(
+            _root,
+            globalSettings,
+            ExecutionBackend.Local,
+            ExecutionPermissionMode.Ask,
+            configureServices: (services, _) => services.AddSingleton<IMultimodalCapabilityProbe>(probe));
+
+        using var controlClient = host.CreateControlClient();
+        using var normalClient = host.CreateNormalClient();
+
+        var putResp = await controlClient.PutAsJsonAsync("/api/settings/model", new UpdateModelSettingsRequest(
+            ApiUrl: "https://vision.example.local/v1",
+            ApiMode: "ChatCompletions",
+            Model: "qwen3.8-27b-fp8",
+            ApiKey: "test-key-vision-1234",
+            SupportsMultimodal: true));
+
+        Assert.Equal(HttpStatusCode.OK, putResp.StatusCode);
+        var updated = await putResp.Content.ReadFromJsonAsync<ModelSettingsDto>();
+        Assert.NotNull(updated);
+        Assert.True(updated!.SupportsMultimodal);
+        Assert.Equal("ProbeFailed", updated.MultimodalProbeStatus);
+        Assert.Contains("已保留你手动开启的多模态设置", updated.MultimodalProbeMessage, StringComparison.Ordinal);
+
+        var fetched = await normalClient.GetFromJsonAsync<ModelSettingsDto>("/api/settings/model");
+        Assert.NotNull(fetched);
+        Assert.True(fetched!.SupportsMultimodal);
+    }
+
+    [Fact]
     public async Task GatewayChat_RejectsImageAttachmentWhenNonMultimodal_ButAcceptsOfficeDocument()
     {
         var globalSettings = Path.Combine(_root, "global-chat", "appsettings.json");

@@ -40,12 +40,13 @@ public class CodexSessionManager
     private readonly ILogger<CodexSessionManager> _logger;
     private readonly ISessionCompressionStore? _compressionStore;
     private readonly ContextCompressionTriggerOptions _compressionTriggerOptions;
+    private readonly ISessionPolicyResolver? _policyResolver;
 
     public CodexSessionManager(
         ISessionStore sessionStore,
         IMemoryService memoryService,
         ILogger<CodexSessionManager> logger)
-        : this(sessionStore, memoryService, logger, null, null)
+        : this(sessionStore, memoryService, logger, null, null, null)
     {
     }
 
@@ -54,13 +55,15 @@ public class CodexSessionManager
         IMemoryService memoryService,
         ILogger<CodexSessionManager> logger,
         ISessionCompressionStore? compressionStore = null,
-        ContextCompressionTriggerOptions? compressionTriggerOptions = null)
+        ContextCompressionTriggerOptions? compressionTriggerOptions = null,
+        ISessionPolicyResolver? policyResolver = null)
     {
         _sessionStore = sessionStore;
         _memoryService = memoryService;
         _logger = logger;
         _compressionStore = compressionStore;
         _compressionTriggerOptions = compressionTriggerOptions ?? new ContextCompressionTriggerOptions();
+        _policyResolver = policyResolver;
     }
 
     public Task<CodexSession> GetOrCreateSessionAsync(string sessionId, string userId = "", string workspacePath = "", string projectUrl = "")
@@ -82,7 +85,27 @@ public class CodexSessionManager
                 CurrentStage = 1
             };
 
-            // Redis miss: try to hydrate compression state from PG projection
+            // Redis miss: try to hydrate compression state and authoritative policy from DB projection
+            if (_policyResolver != null)
+            {
+                try
+                {
+                    var policy = await _policyResolver.ResolveRequiredAsync(sessionId).ConfigureAwait(false);
+                    session.WorkMode = policy.WorkMode;
+                    session.ModeVersion = policy.ModeVersion;
+                    session.PlanModeActive = policy.PlanModeActive;
+                    session.PlanModeVersion = policy.PlanModeVersion;
+                    session.PlanModeChangedAtUtc = policy.PlanModeChangedAtUtc;
+                    session.PlanModeChangedBy = policy.PlanModeChangedBy;
+                    session.Metadata[CodexFlow.Core.Agents.Tools.EnterPlanModeTool.ActiveMetadataKey] =
+                        policy.PlanModeActive ? bool.TrueString : bool.FalseString;
+                }
+                catch (InvalidOperationException)
+                {
+                    // Synthetic unit tests may create an in-memory session before persisting a DB row.
+                }
+            }
+
             if (_compressionStore != null)
             {
                 var compression = await _compressionStore.LoadAsync(sessionId).ConfigureAwait(false);

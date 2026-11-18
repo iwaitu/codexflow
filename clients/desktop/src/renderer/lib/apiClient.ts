@@ -59,6 +59,19 @@ export interface SessionBootstrapResponse {
   created: boolean;
   workspacePath: string;
   isDefault: boolean;
+  workMode?: 'Development' | 'Daily' | string;
+  modeVersion?: number;
+  planModeActive?: boolean;
+  planModeVersion?: number;
+}
+
+export type SessionWorkMode = 'Development' | 'Daily';
+
+export interface PlanModeExitRequestState {
+  sessionId: string;
+  planModeVersion: number;
+  planSummary: string;
+  reason?: string | null;
 }
 
 export interface VerificationReceipt {
@@ -188,6 +201,10 @@ export const apiClient = {
     });
   },
 
+  getOrCreateDailyAssistant(auth: ApiAuthContext): Promise<SessionBootstrapResponse> {
+    return requestJson<SessionBootstrapResponse>(auth, 'POST', '/api/gateway/session/daily-assistant');
+  },
+
   listSessions(auth: ApiAuthContext, page = 1, pageSize = 50, includeArchived = false): Promise<PagedSessions> {
     return requestJson<PagedSessions>(
       auth,
@@ -196,8 +213,22 @@ export const apiClient = {
     );
   },
 
-  createSession(auth: ApiAuthContext, name: string): Promise<{ sessionId: string }> {
-    return requestJson<{ sessionId: string }>(auth, 'POST', `/api/gateway/session?name=${encodeURIComponent(name)}`);
+  createSession(
+    auth: ApiAuthContext,
+    name: string,
+    workMode?: 'development' | 'daily',
+  ): Promise<{ sessionId: string; workMode?: string; modeVersion?: number; planModeActive?: boolean; planModeVersion?: number }> {
+    const suffix = workMode ? `&workMode=${encodeURIComponent(workMode)}` : '';
+    return requestJson(auth, 'POST', `/api/gateway/session?name=${encodeURIComponent(name)}${suffix}`);
+  },
+
+  enterPlanMode(auth: ApiAuthContext, sessionId: string, reason?: string): Promise<components['schemas']['PlanModeResponse']> {
+    return requestJson<components['schemas']['PlanModeResponse']>(
+      auth,
+      'POST',
+      `/api/gateway/session/${encodeURIComponent(sessionId)}/plan-mode`,
+      { active: true, reason },
+    );
   },
 
   updateSession(auth: ApiAuthContext, sessionId: string, body: { name?: string; isArchived?: boolean }): Promise<SessionSummary> {

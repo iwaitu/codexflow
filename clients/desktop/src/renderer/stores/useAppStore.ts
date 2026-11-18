@@ -4,9 +4,11 @@ import type { ParsedSseEvent } from '@shared/contracts/sse.generated';
 import {
   apiClient,
   type BackgroundJob,
+  type PlanModeExitRequestState,
   type SessionContextWindow,
   type SessionPlan,
   type SessionSnapshot,
+  type SessionWorkMode,
   type VerificationReceipt,
 } from '../lib/apiClient';
 import {
@@ -78,6 +80,11 @@ export interface AppState {
   activeSessionId: string | null;
   activeConversationId: string | null;
   conversationMode: ConversationMode;
+  activeWorkMode: SessionWorkMode;
+  activeModeVersion: number;
+  planModeActive: boolean;
+  planModeVersion: number;
+  planModeExitRequest: PlanModeExitRequestState | null;
   latestTitleUpdate: ConversationTitleUpdate | null;
 
   messages: UiMessage[];
@@ -129,6 +136,13 @@ export interface AppState {
   setContextWindow: (cw: SessionContextWindow | null) => void;
   setJobs: (jobs: BackgroundJob[]) => void;
   setPlan: (plan: SessionPlan | null) => void;
+  setSessionPolicyState: (policy: {
+    workMode?: SessionWorkMode;
+    modeVersion?: number;
+    planModeActive?: boolean;
+    planModeVersion?: number;
+  }) => void;
+  dismissPlanModeExitRequest: () => void;
   clearTurnVisuals: () => void;
 }
 
@@ -474,6 +488,54 @@ function reduceSseEvent(
       return;
     }
 
+    case 'plan_mode_changed': {
+      const d = evtData as {
+        sessionId?: string;
+        workMode?: string;
+        modeVersion?: number;
+        planModeActive?: boolean;
+        planModeVersion?: number;
+      };
+      const curSid = get().activeSessionId;
+      if (d.sessionId && curSid && d.sessionId !== curSid) {
+        return;
+      }
+      set((s) => {
+        const nextActive = typeof d.planModeActive === 'boolean' ? d.planModeActive : s.planModeActive;
+        const nextVersion = typeof d.planModeVersion === 'number' ? d.planModeVersion : s.planModeVersion;
+        return {
+          activeWorkMode: d.workMode === 'Daily' ? 'Daily' : d.workMode === 'Development' ? 'Development' : s.activeWorkMode,
+          activeModeVersion: typeof d.modeVersion === 'number' ? d.modeVersion : s.activeModeVersion,
+          planModeActive: nextActive,
+          planModeVersion: nextVersion,
+          planModeExitRequest: nextActive ? s.planModeExitRequest : null,
+        };
+      });
+      return;
+    }
+
+    case 'plan_mode_exit_requested': {
+      const d = evtData as {
+        sessionId?: string;
+        planModeVersion?: number;
+        planSummary?: string;
+        reason?: string | null;
+      };
+      const curSid = get().activeSessionId;
+      if (d.sessionId && curSid && d.sessionId !== curSid) {
+        return;
+      }
+      set({
+        planModeExitRequest: {
+          sessionId: d.sessionId || curSid || '',
+          planModeVersion: Number(d.planModeVersion ?? get().planModeVersion),
+          planSummary: String(d.planSummary ?? ''),
+          reason: d.reason ?? null,
+        },
+      });
+      return;
+    }
+
     case 'worker_started':
       set({ workerBar: { status: 'started', message: String(evtData.content ?? evtData.text ?? '后台 Worker 正在执行...') } });
       refreshTurnMetadataAfterFinish(get, set, true);
@@ -608,6 +670,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   activeSessionId: null,
   activeConversationId: null,
   conversationMode: 'reuse-master',
+  activeWorkMode: 'Development',
+  activeModeVersion: 1,
+  planModeActive: false,
+  planModeVersion: 1,
+  planModeExitRequest: null,
   latestTitleUpdate: null,
 
   messages: [],
@@ -691,6 +758,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         asOfEventId: 0,
         channelEpoch: null,
         turnNotice: null,
+        activeWorkMode: 'Development',
+        activeModeVersion: 1,
+        planModeActive: false,
+        planModeVersion: 1,
+        planModeExitRequest: null,
       }));
       return;
     }
@@ -741,6 +813,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       channelEpoch: null,
       turnNotice: null,
       latestTitleUpdate: null,
+      activeWorkMode: 'Development',
+      activeModeVersion: 1,
+      planModeActive: false,
+      planModeVersion: 1,
+      planModeExitRequest: null,
     }));
   },
 
@@ -820,7 +897,11 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   applySnapshot: (snapshot) => {
     const recovered = buildRecoveredSessionState(snapshot);
-    set({
+    const snapWorkMode: SessionWorkMode = snapshot.session?.workMode === 'Daily' ? 'Daily' : 'Development';
+    const snapModeVersion = Number(snapshot.session?.modeVersion ?? 1);
+    const snapPlanActive = Boolean(snapshot.session?.planModeActive);
+    const snapPlanVersion = Number(snapshot.session?.planModeVersion ?? 1);
+    set((s) => ({
       asOfEventId: recovered.asOfEventId,
       channelEpoch: recovered.channelEpoch,
       activeConversationId: recovered.activeConversationId,
@@ -834,7 +915,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       currentPlan: recovered.currentPlan,
       toolCalls: recovered.toolCalls,
       jobs: snapshot.jobs ?? [],
-    });
+      activeWorkMode: snapWorkMode,
+      activeModeVersion: snapModeVersion,
+      planModeActive: snapPlanActive,
+      planModeVersion: snapPlanVersion,
+      planModeExitRequest: snapPlanActive ? s.planModeExitRequest : null,
+    }));
   },
 
   reconcileSession: async (_reason, options) => {
@@ -991,6 +1077,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   setContextWindow: (contextWindow) => set({ contextWindow }),
   setJobs: (jobs) => set({ jobs }),
   setPlan: (currentPlan) => set({ currentPlan }),
+  setSessionPolicyState: (policy) =>
+    set((s) => ({
+      activeWorkMode: policy.workMode ?? s.activeWorkMode,
+      activeModeVersion: policy.modeVersion ?? s.activeModeVersion,
+      planModeActive: policy.planModeActive ?? s.planModeActive,
+      planModeVersion: policy.planModeVersion ?? s.planModeVersion,
+      planModeExitRequest: policy.planModeActive === false ? null : s.planModeExitRequest,
+    })),
+  dismissPlanModeExitRequest: () => set({ planModeExitRequest: null }),
   clearTurnVisuals: () =>
     set({
       streamingContent: '',

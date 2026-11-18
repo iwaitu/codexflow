@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { AlertTriangle, Download, RefreshCw, Trash2, X } from 'lucide-react';
 import type {
@@ -81,9 +81,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const wasOpenRef = useRef(false);
 
   useEffect(() => {
-    if (!open) return;
+    const justOpened = open && !wasOpenRef.current;
+    wasOpenRef.current = open;
+    if (!justOpened) return;
     setTab(initialTab);
     setBackend(currentBackend);
     setPermissionMode(currentMode);
@@ -307,7 +310,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rose-400" />
                   <div>
                     <strong>高风险提示：</strong>
-                    `FullAuto` 等于信任模型执行白名单内任意命令；在 Local 后端下将以你的用户权限无隔离运行。
+                    `FullAuto` 等于信任模型自动放行研发白名单内命令；在 Local 后端下将以你的用户权限无隔离运行。注：日常模式下的 `run_shell` 始终强制逐次询问 (`allow_once`)，不继承此自动放行。
                   </div>
                 </div>
               )}
@@ -453,8 +456,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <span className="space-y-0.5 text-slate-300">
                   <span className="block font-medium text-slate-200">支持多模态（图片与扫描版 PDF 识别）</span>
                   <span className="block text-[11px] text-slate-400">
-                    保存模型配置时会自动使用内置测试图片检测多模态能力；若未勾选但测试通过，将自动启用该选项。
+                    保存模型配置时会自动使用内置测试图片检测多模态能力；若未勾选但测试通过，将自动启用；若探测超时或未明确拒绝，将保留你的手动勾选。
                   </span>
+                  {modelSettings?.multimodalProbeMessage && (
+                    <span
+                      className={`block text-[11px] ${
+                        modelSettings.multimodalProbeStatus === 'Supported'
+                          ? 'text-emerald-300'
+                          : modelSettings.multimodalProbeStatus === 'Unsupported'
+                            ? 'text-rose-300'
+                            : 'text-amber-300'
+                      }`}
+                    >
+                      最近探测：{modelSettings.multimodalProbeMessage}
+                    </span>
+                  )}
                 </span>
               </label>
 
@@ -572,6 +588,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     >
                       {t('settings.languageEn')}
                     </button>
+                  </div>
+                  <div className="mt-1.5 text-[11px] text-slate-400">
+                    {language === 'en-US'
+                      ? 'English currently covers navigation, status bar, and core settings; chat cards and Business Skills remain in Chinese.'
+                      : '英文模式目前优先覆盖导航、状态栏与核心设置面板，业务技能与审批详单持续完善中。'}
                   </div>
                 </div>
               </div>

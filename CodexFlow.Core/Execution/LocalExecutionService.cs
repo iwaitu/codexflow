@@ -713,6 +713,7 @@ internal sealed class LocalExecutionSession : IIsolatedExecutionSession
 
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _sessionCts.Token);
         var sw = System.Diagnostics.Stopwatch.StartNew();
+        var utf8NoBom = request.ForceUtf8Encoding ? new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false) : null;
         var result = await _service.RunProcessAsync(
             new HostProcessInvocation(resolved.Executable, resolved.Args)
             {
@@ -720,10 +721,14 @@ internal sealed class LocalExecutionSession : IIsolatedExecutionSession
                 Environment = env,
                 ClearEnvironment = true,
                 StdInText = request.StdIn,
+                StandardInputEncoding = utf8NoBom,
+                StandardOutputEncoding = utf8NoBom,
+                StandardErrorEncoding = utf8NoBom,
                 OnStdoutLine = line => request.OnOutput?.Invoke(new CommandOutputLine("stdout", line)),
                 OnStderrLine = line => request.OnOutput?.Invoke(new CommandOutputLine("stderr", line)),
                 Timeout = timeout,
-                MaxCaptureBytes = _context.Limits.MaxOutputBytes
+                MaxCaptureBytes = _context.Limits.MaxOutputBytes,
+                IsolateProcessGroup = request.IsolateProcessGroup
             },
             linked.Token).ConfigureAwait(false);
         sw.Stop();
@@ -762,7 +767,8 @@ internal sealed class LocalExecutionSession : IIsolatedExecutionSession
             result.Stderr,
             result.Truncated,
             sw.Elapsed,
-            evidence);
+            evidence,
+            result.OrphanedProcessesCleaned);
     }
 
     public async Task<IsolatedExportResult> ExportScopedChangesAsync(CancellationToken ct)

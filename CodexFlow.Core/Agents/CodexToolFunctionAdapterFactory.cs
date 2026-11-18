@@ -58,6 +58,10 @@ public static class CodexToolFunctionAdapterFactory
             "search_in_files"       => CreateForSearchInFiles(tool, description),
             "exec_code"             => CreateForExecCode(tool, description),
             "run_command" or "exec_cmd" => CreateForRunCommand(tool, description),
+            "run_shell"             => CreateForRunShell(tool, description),
+            "list_authorized_directory" => CreateForListAuthorizedDirectory(tool, description),
+            "enter_plan_mode"       => CreateForEnterPlanMode(tool, description),
+            "exit_plan_mode"        => CreateForExitPlanMode(tool, description),
             "search_file_index"     => CreateForSearchFileIndex(tool, description),
             "run_tests"             => CreateForRunTests(tool, description),
             "analyze_project"       => CreateForAnalyzeProject(tool, description),
@@ -357,6 +361,63 @@ public static class CodexToolFunctionAdapterFactory
                 return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
             },
             new AIFunctionFactoryOptions { Name = "exec_cmd", Description = description });
+
+    private static AIFunction CreateForRunShell(ICodexTool tool, string description) =>
+        AIFunctionFactory.Create(
+            async (string script, string? shell = null, string? cwd = null, int? timeout_seconds = null,
+                   CancellationToken ct = default) =>
+            {
+                var args = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["script"] = script
+                };
+                if (!string.IsNullOrWhiteSpace(shell)) args["shell"] = shell;
+                if (!string.IsNullOrWhiteSpace(cwd)) args["cwd"] = cwd;
+                if (timeout_seconds.HasValue) args["timeout_seconds"] = timeout_seconds.Value;
+                return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
+            },
+            new AIFunctionFactoryOptions { Name = "run_shell", Description = description });
+
+    private static AIFunction CreateForListAuthorizedDirectory(ICodexTool tool, string description) =>
+        AIFunctionFactory.Create(
+            async (string? path = null, string? extension = null, int? recent_days = null,
+                   int? limit = null, int? cursor = null,
+                   string? session_id = null, string? workspace_path = null, string? project_root = null,
+                   CancellationToken ct = default) =>
+            {
+                var args = CreateArgs(session_id, workspace_path, project_root);
+                if (!string.IsNullOrWhiteSpace(path)) args["path"] = path;
+                if (!string.IsNullOrWhiteSpace(extension)) args["extension"] = extension;
+                if (recent_days.HasValue) args["recent_days"] = recent_days.Value;
+                if (limit.HasValue) args["limit"] = limit.Value;
+                if (cursor.HasValue) args["cursor"] = cursor.Value;
+                return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
+            },
+            new AIFunctionFactoryOptions { Name = "list_authorized_directory", Description = description });
+
+    private static AIFunction CreateForEnterPlanMode(ICodexTool tool, string description) =>
+        AIFunctionFactory.Create(
+            async (string? reason = null, string? objective = null, CancellationToken ct = default) =>
+            {
+                var args = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+                if (!string.IsNullOrWhiteSpace(reason)) args["reason"] = reason;
+                if (!string.IsNullOrWhiteSpace(objective)) args["objective"] = objective;
+                return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
+            },
+            new AIFunctionFactoryOptions { Name = "enter_plan_mode", Description = description });
+
+    private static AIFunction CreateForExitPlanMode(ICodexTool tool, string description) =>
+        AIFunctionFactory.Create(
+            async (string plan_summary, string? reason = null, CancellationToken ct = default) =>
+            {
+                var args = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["plan_summary"] = plan_summary
+                };
+                if (!string.IsNullOrWhiteSpace(reason)) args["reason"] = reason;
+                return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
+            },
+            new AIFunctionFactoryOptions { Name = "exit_plan_mode", Description = description });
 
     private static AIFunction CreateForSearchFileIndex(ICodexTool tool, string description) =>
         AIFunctionFactory.Create(

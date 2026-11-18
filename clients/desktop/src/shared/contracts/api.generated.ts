@@ -43,6 +43,45 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/gateway/approvals/{approvalId}/script": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    approvalId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PendingApprovalScriptSnapshot"];
+                        "text/json": components["schemas"]["PendingApprovalScriptSnapshot"];
+                        "text/plain": components["schemas"]["PendingApprovalScriptSnapshot"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/gateway/artifacts/verify": {
         parameters: {
             query?: never;
@@ -270,6 +309,7 @@ export type paths = {
             parameters: {
                 query?: {
                     name?: string;
+                    workMode?: string;
                 };
                 header?: never;
                 path?: never;
@@ -915,6 +955,95 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/gateway/session/{sessionId}/plan-mode": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    sessionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/*+json": components["schemas"]["UpdatePlanModeRequest"];
+                    "application/json": components["schemas"]["UpdatePlanModeRequest"];
+                    "text/json": components["schemas"]["UpdatePlanModeRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PlanModeResponse"];
+                        "text/json": components["schemas"]["PlanModeResponse"];
+                        "text/plain": components["schemas"]["PlanModeResponse"];
+                    };
+                };
+                /** @description Bad Request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["GatewayErrorResponse"];
+                        "text/json": components["schemas"]["GatewayErrorResponse"];
+                        "text/plain": components["schemas"]["GatewayErrorResponse"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ProblemDetails"];
+                        "text/json": components["schemas"]["ProblemDetails"];
+                        "text/plain": components["schemas"]["ProblemDetails"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["GatewayErrorResponse"];
+                        "text/json": components["schemas"]["GatewayErrorResponse"];
+                        "text/plain": components["schemas"]["GatewayErrorResponse"];
+                    };
+                };
+                /** @description Conflict */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["GatewayErrorResponse"];
+                        "text/json": components["schemas"]["GatewayErrorResponse"];
+                        "text/plain": components["schemas"]["GatewayErrorResponse"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/gateway/session/{sessionId}/snapshot": {
         parameters: {
             query?: never;
@@ -1032,6 +1161,43 @@ export type paths = {
                         [name: string]: unknown;
                     };
                     content?: never;
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/gateway/session/daily-assistant": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SessionBootstrapResponse"];
+                        "text/json": components["schemas"]["SessionBootstrapResponse"];
+                        "text/plain": components["schemas"]["SessionBootstrapResponse"];
+                    };
                 };
             };
         };
@@ -4208,6 +4374,7 @@ export type components = {
             approvalId: string;
             argv: string[];
             backend: string;
+            backendNotice?: null | string;
             codeSha256: null | string;
             /** Format: date-time */
             createdAtUtc: string;
@@ -4220,13 +4387,30 @@ export type components = {
             inputsManifestSha256: null | string;
             interpreterChain: string[];
             network: string;
+            origin?: null | string;
             reason: string;
             requestDigest: string;
+            /** Format: int32 */
+            scriptLength?: null | number | string;
+            scriptPreview?: null | string;
             scriptSha256: null | string;
             sessionId: string;
+            shell?: null | string;
             stdinSha256: null | string;
             tool: string;
             workspaceCodeWarning: null | string;
+        };
+        PendingApprovalScriptSnapshot: {
+            approvalId: string;
+            /** Format: date-time */
+            expiresAtUtc: string;
+            requestDigest: string;
+            /** Format: int32 */
+            scriptLength: number | string;
+            scriptSha256: string;
+            scriptText: string;
+            sessionId: string;
+            shell: null | string;
         };
         PendingApprovalsResponse: {
             controlPlaneAvailable: boolean;
@@ -4250,6 +4434,18 @@ export type components = {
             note?: null | string;
             sessionAgnosticDigest: string;
             toolName: string;
+        };
+        PlanModeResponse: {
+            /** Format: int32 */
+            modeVersion: number | string;
+            planModeActive: boolean;
+            /** Format: date-time */
+            planModeChangedAtUtc: null | string;
+            planModeChangedBy: null | string;
+            /** Format: int32 */
+            planModeVersion: number | string;
+            sessionId: string;
+            workMode: string;
         };
         PlanTaskItemDto: {
             dependencies: string[];
@@ -4348,6 +4544,19 @@ export type components = {
             payloadJson?: null | string;
             resumeToken?: null | string;
         };
+        SessionBootstrapResponse: {
+            created?: boolean;
+            isDefault?: boolean;
+            /** Format: int32 */
+            modeVersion?: number | string;
+            planModeActive?: boolean;
+            /** Format: int32 */
+            planModeVersion?: number | string;
+            sessionId?: string;
+            workMode?: string;
+            workspaceName?: string;
+            workspacePath?: string;
+        };
         SessionPlanDto: {
             goal: string;
             hostRefusal: null | string;
@@ -4391,8 +4600,22 @@ export type components = {
             currentStage: number | string;
             isArchived: boolean;
             isExternalWorkspace: boolean;
+            /**
+             * Format: int32
+             * @default 1
+             */
+            modeVersion: number | string;
             name: string;
+            /** @default false */
+            planModeActive: boolean;
+            /**
+             * Format: int32
+             * @default 1
+             */
+            planModeVersion: number | string;
             sessionId: string;
+            /** @default Development */
+            workMode: string;
             workspacePath: string;
         };
         SetPluginCredentialRequest: {
@@ -4791,6 +5014,13 @@ export type components = {
             /** Format: float */
             topP?: null | number | string;
         };
+        UpdatePlanModeRequest: {
+            active: boolean;
+            /** Format: int32 */
+            expectedPlanModeVersion?: null | number | string;
+            objective?: null | string;
+            reason?: null | string;
+        };
         UpdatePluginConnectionRequest: {
             endpointPolicy: components["schemas"]["EndpointPolicyDto"];
             environment: string;
@@ -4800,7 +5030,9 @@ export type components = {
         };
         UpdateSessionRequest: {
             isArchived?: null | boolean;
+            mode?: null | string;
             name?: null | string;
+            workMode?: null | string;
         };
         UpdateSkillDraftRequest: {
             businessGoal?: null | string;

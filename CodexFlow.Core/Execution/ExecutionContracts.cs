@@ -54,6 +54,7 @@ public static class ExecutionReasonCodes
     public const string ApprovalUnavailable = "approval_unavailable";
     public const string ApprovalExpired = "ApprovalExpired";
     public const string ApprovalInvalidated = "ApprovalInvalidated";
+    public const string PlanModeActive = "plan_mode_active";
 }
 
 public sealed record ExecutionDecision(ExecutionDecisionKind Kind, string ReasonCode, string Message)
@@ -177,6 +178,14 @@ public sealed record ExportScope
     }
 }
 
+public enum ExecutionOrigin
+{
+    Unspecified = 0,
+    DevWorker = 1,
+    DailyChat = 2,
+    BusinessSkill = 3
+}
+
 /// <summary>
 /// Host-created execution context. It is never populated from model arguments.
 /// </summary>
@@ -194,11 +203,29 @@ public sealed record TrustedExecutionContext
     public DateTimeOffset? Deadline { get; init; }
     public ExecutionResourceLimits Limits { get; init; } = new();
     public ExecutionNetworkPolicy Network { get; init; } = ExecutionNetworkPolicy.Denied;
+    public ExecutionOrigin Origin { get; init; } = ExecutionOrigin.Unspecified;
+    public string? TurnId { get; init; }
+    public string? InvocationId { get; init; }
+    public IReadOnlySet<string>? GrantedTools { get; init; }
+    public DateTimeOffset? NotAfter { get; init; }
+    public bool TrustedOriginVerified { get; init; }
+    public int PolicyVersion { get; init; }
 
     public ExecutionDecision Validate()
     {
-        if (string.IsNullOrWhiteSpace(UserId) || string.IsNullOrWhiteSpace(SessionId) || string.IsNullOrWhiteSpace(JobId) ||
-            string.IsNullOrWhiteSpace(TaskId) || string.IsNullOrWhiteSpace(AttemptId))
+        if (string.IsNullOrWhiteSpace(UserId) || string.IsNullOrWhiteSpace(SessionId))
+        {
+            return ExecutionDecision.Deny(ExecutionReasonCodes.InvalidTrustedContext, "user/session must be set by the host.");
+        }
+
+        if (Origin == ExecutionOrigin.DailyChat)
+        {
+            if (string.IsNullOrWhiteSpace(TurnId) || string.IsNullOrWhiteSpace(InvocationId))
+            {
+                return ExecutionDecision.Deny(ExecutionReasonCodes.InvalidTrustedContext, "DailyChat context must specify TurnId and InvocationId.");
+            }
+        }
+        else if (string.IsNullOrWhiteSpace(JobId) || string.IsNullOrWhiteSpace(TaskId) || string.IsNullOrWhiteSpace(AttemptId))
         {
             return ExecutionDecision.Deny(ExecutionReasonCodes.InvalidTrustedContext, "user/session/job/task/attempt must all be set by the host.");
         }
@@ -208,7 +235,13 @@ public sealed record TrustedExecutionContext
             return ExecutionDecision.Deny(ExecutionReasonCodes.InvalidTrustedContext, "WorkspaceRoot must be a trusted absolute path.");
         }
 
-        if (Deadline is { } d && d <= DateTimeOffset.UtcNow)
+        var now = DateTimeOffset.UtcNow;
+        if (NotAfter is { } na && na <= now)
+        {
+            return ExecutionDecision.Deny(ExecutionReasonCodes.Timeout, "Invocation context already expired.");
+        }
+
+        if (Deadline is { } d && d <= now)
         {
             return ExecutionDecision.Deny(ExecutionReasonCodes.Timeout, "Execution deadline already passed.");
         }
@@ -330,7 +363,9 @@ public sealed record IsolatedCommandRequest(
     IReadOnlyDictionary<string, string>? Env = null,
     Action<CommandOutputLine>? OnOutput = null,
     IReadOnlyDictionary<string, string?>? TrustedMinimalEnv = null,
-    bool PreResolvedExecutable = false);
+    bool PreResolvedExecutable = false,
+    bool ForceUtf8Encoding = false,
+    bool IsolateProcessGroup = false);
 
 public sealed record IsolatedCommandResult(
     ExecutionDecision Decision,
@@ -340,7 +375,8 @@ public sealed record IsolatedCommandResult(
     string Stderr,
     bool Truncated,
     TimeSpan Elapsed,
-    string Evidence)
+    string Evidence,
+    int OrphanedProcessesCleaned = 0)
 {
     public static IsolatedCommandResult Refused(ExecutionDecision decision)
     {

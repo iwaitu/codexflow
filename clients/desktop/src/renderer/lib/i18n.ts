@@ -20,7 +20,7 @@ const ZH_CN = {
 
   // Sidebar
   'sidebar.workspaces': '工作区',
-  'sidebar.newWorkspace': '新建工作区',
+  'sidebar.newWorkspace': '新建日常对话',
   'sidebar.openFolder': '打开本地目录',
   'sidebar.emptyWorkspaces': '暂无工作区，点击右上角打开目录或新建。',
   'sidebar.emptyConversations': '暂无会话，点击工作区右侧「+」新建或直接发送消息。',
@@ -36,7 +36,7 @@ const ZH_CN = {
   'sidebar.deleteConversation': '删除对话',
 
   // Composer & Chat
-  'composer.placeholder': '输入指令或问题（Enter 发送，Shift+Enter 换行，可拖拽文件附加）...',
+  'composer.placeholder': '输入任务或指令（可粘贴截图、拖拽文件或输入 / 使用命令）',
   'composer.send': '发送',
   'composer.stop': '停止',
   'composer.modeContinue': '继续当前线程',
@@ -168,7 +168,7 @@ const EN_US: Record<I18nKey, string> = {
   'workspace.newSessionDefaultName': 'Workspace {time}',
 
   'sidebar.workspaces': 'Workspaces',
-  'sidebar.newWorkspace': 'New Workspace',
+  'sidebar.newWorkspace': 'New Daily Chat',
   'sidebar.openFolder': 'Open Local Folder',
   'sidebar.emptyWorkspaces': 'No workspaces yet. Open a folder or create one above.',
   'sidebar.emptyConversations': 'No conversations yet. Click "+" or send a message directly.',
@@ -183,7 +183,7 @@ const EN_US: Record<I18nKey, string> = {
   'sidebar.renameConversationPrompt': 'Enter new conversation name',
   'sidebar.deleteConversation': 'Delete Conversation',
 
-  'composer.placeholder': 'Enter a prompt or command (Enter to send, Shift+Enter for newline, drop files to attach)...',
+  'composer.placeholder': 'Ask anything, paste images, drop files, or type / for commands',
   'composer.send': 'Send',
   'composer.stop': 'Stop',
   'composer.modeContinue': 'Continue Thread',

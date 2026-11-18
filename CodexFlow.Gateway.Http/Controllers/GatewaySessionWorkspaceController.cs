@@ -31,11 +31,32 @@ public sealed record SessionSummaryDto(
     bool IsExternalWorkspace,
     DateTime CreatedUtc,
     string? CurrentPlanArtifactId,
-    string? ActiveTaskId);
+    string? ActiveTaskId,
+    string WorkMode = nameof(CodexFlow.Core.Models.SessionWorkMode.Development),
+    int ModeVersion = 1,
+    bool PlanModeActive = false,
+    int PlanModeVersion = 1);
 
 public sealed record UpdateSessionRequest(
     string? Name = null,
-    bool? IsArchived = null);
+    bool? IsArchived = null,
+    string? WorkMode = null,
+    string? Mode = null);
+
+public sealed record UpdatePlanModeRequest(
+    bool Active,
+    int? ExpectedPlanModeVersion = null,
+    string? Reason = null,
+    string? Objective = null);
+
+public sealed record PlanModeResponse(
+    string SessionId,
+    string WorkMode,
+    int ModeVersion,
+    bool PlanModeActive,
+    int PlanModeVersion,
+    DateTime? PlanModeChangedAtUtc,
+    string? PlanModeChangedBy);
 
 public sealed record ConversationSummaryDto(
     string ConversationId,
@@ -183,7 +204,12 @@ public sealed class GatewaySessionWorkspaceController(
     DocumentReaderRouter? documentReaderRouter = null) : ControllerBase
 {
     private const string DefaultWorkspaceName = "默认工作区";
+    private const string DailyAssistantWorkspaceName = "日常助手";
     private const int MaxSnapshotMessageContentChars = 32_768;
+
+    private static bool IsReservedWorkspaceName(string? name)
+        => string.Equals(name?.Trim(), DefaultWorkspaceName, StringComparison.Ordinal)
+        || string.Equals(name?.Trim(), DailyAssistantWorkspaceName, StringComparison.Ordinal);
 
     [HttpGet("sessions")]
     [ProducesResponseType(typeof(PagedResponseDto<SessionSummaryDto>), StatusCodes.Status200OK)]
@@ -215,7 +241,17 @@ public sealed class GatewaySessionWorkspaceController(
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrEmpty(userId)) return Unauthorized();
 
-        if (request is null || (request.Name is null && request.IsArchived is null))
+        if (request is null)
+        {
+            return BadRequest(new GatewayErrorResponse("invalid_request", "Request body is required."));
+        }
+
+        if (request.WorkMode is not null || request.Mode is not null)
+        {
+            return BadRequest(new GatewayErrorResponse("mode_immutable", "Session workMode is immutable after creation; start a new /daily or /dev session instead."));
+        }
+
+        if (request.Name is null && request.IsArchived is null)
         {
             return BadRequest(new GatewayErrorResponse("invalid_request", "At least one field (name or isArchived) must be specified."));
         }
@@ -226,7 +262,7 @@ public sealed class GatewaySessionWorkspaceController(
             return NotFound(new GatewayErrorResponse("session_not_found", "Session not found."));
         }
 
-        if (string.Equals(existing.Name, DefaultWorkspaceName, StringComparison.Ordinal))
+        if (IsReservedWorkspaceName(existing.Name))
         {
             return BadRequest(new GatewayErrorResponse("default_workspace_protected", "The default workspace cannot be renamed or archived."));
         }
@@ -239,7 +275,7 @@ public sealed class GatewaySessionWorkspaceController(
                 return BadRequest(new GatewayErrorResponse("invalid_name", "Session name cannot be empty."));
             }
 
-            if (string.Equals(request.Name.Trim(), DefaultWorkspaceName, StringComparison.Ordinal))
+            if (IsReservedWorkspaceName(request.Name))
             {
                 return BadRequest(new GatewayErrorResponse("reserved_name", "The default workspace name is reserved."));
             }
@@ -253,6 +289,77 @@ public sealed class GatewaySessionWorkspaceController(
         }
 
         return Ok(ToSessionDto(updated));
+    }
+
+    [HttpPost("session/{sessionId}/plan-mode")]
+    [ProducesResponseType(typeof(PlanModeResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> UpdatePlanMode(
+        [FromRoute] string sessionId,
+        [FromBody] UpdatePlanModeRequest request,
+        [FromServices] CodexFlow.Orchestration.Chat.SessionPolicyResolver? policyResolver = null,
+        CancellationToken ct = default)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrEmpty(userId)) return Unauthorized();
+
+        if (request is null)
+        {
+            return BadRequest(new GatewayErrorResponse("invalid_request", "Request body is required."));
+        }
+
+        // Exiting Plan Mode is a trust-boundary transition and ALWAYS requires control-plane credentials + CAS version.
+        if (!request.Active)
+        {
+            if (!ControlPlaneAuthConstants.IsControlPlanePrincipal(User, controlPlane))
+            {
+                return Forbid();
+            }
+
+            if (!request.ExpectedPlanModeVersion.HasValue)
+            {
+                return BadRequest(new GatewayErrorResponse("expected_version_required", "expectedPlanModeVersion is required when exiting Plan Mode."));
+            }
+        }
+
+        var resolver = policyResolver ?? HttpContext?.RequestServices.GetService<CodexFlow.Orchestration.Chat.SessionPolicyResolver>();
+        if (resolver is null)
+        {
+            return StatusCode(503, new GatewayErrorResponse("policy_resolver_unavailable", "Session policy resolver is not configured."));
+        }
+
+        var transition = await resolver.SetPlanModeAsync(
+            sessionId,
+            userId,
+            request.Active,
+            request.ExpectedPlanModeVersion,
+            changedBy: request.Active ? "user_slash_or_ui" : "user_control_plane",
+            reason: request.Reason,
+            objective: request.Objective,
+            messageId: null,
+            ct: ct).ConfigureAwait(false);
+
+        return transition.Outcome switch
+        {
+            CodexFlow.Orchestration.Chat.PlanModeTransitionOutcome.Updated
+            or CodexFlow.Orchestration.Chat.PlanModeTransitionOutcome.NoOp when transition.Policy is not null =>
+                Ok(new PlanModeResponse(
+                    sessionId,
+                    transition.Policy.WorkMode.ToString(),
+                    transition.Policy.ModeVersion,
+                    transition.Policy.PlanModeActive,
+                    transition.Policy.PlanModeVersion,
+                    transition.Policy.PlanModeChangedAtUtc,
+                    transition.Policy.PlanModeChangedBy)),
+            CodexFlow.Orchestration.Chat.PlanModeTransitionOutcome.VersionConflict =>
+                Conflict(new GatewayErrorResponse("plan_mode_version_conflict", transition.Message)),
+            CodexFlow.Orchestration.Chat.PlanModeTransitionOutcome.NotFound =>
+                NotFound(new GatewayErrorResponse("session_not_found", transition.Message)),
+            _ => BadRequest(new GatewayErrorResponse("plan_mode_transition_failed", transition.Message))
+        };
     }
 
     [HttpDelete("session/{sessionId}")]
@@ -273,7 +380,7 @@ public sealed class GatewaySessionWorkspaceController(
             return NotFound(new GatewayErrorResponse("session_not_found", "Session not found."));
         }
 
-        if (string.Equals(existing.Name, DefaultWorkspaceName, StringComparison.Ordinal))
+        if (IsReservedWorkspaceName(existing.Name))
         {
             return BadRequest(new GatewayErrorResponse("default_workspace_protected", "The default workspace cannot be deleted."));
         }
@@ -906,7 +1013,11 @@ public sealed class GatewaySessionWorkspaceController(
             s.IsExternalWorkspace,
             s.Created,
             s.CurrentPlanArtifactId,
-            s.ActiveTaskId);
+            s.ActiveTaskId,
+            s.WorkMode.ToString(),
+            Math.Max(1, s.ModeVersion),
+            s.PlanModeActive,
+            Math.Max(1, s.PlanModeVersion));
 
     private static ConversationSummaryDto ToConversationDto(IvilsonConversation c)
         => new(

@@ -73,6 +73,8 @@ public sealed class ToolRegistryBootstrapper
     private readonly DocumentReaderRouter? _documentReaderRouter;
     private readonly IConfiguration? _configuration;
     private readonly IModelSettingsService? _modelSettingsService;
+    private readonly IPlanModeHostBridge? _planModeHostBridge;
+    private readonly IWorkspaceSettingsService? _workspaceSettingsService;
     private readonly ILogger<ToolRegistryBootstrapper> _logger;
 
     public ToolRegistryBootstrapper(
@@ -119,7 +121,9 @@ public sealed class ToolRegistryBootstrapper
         CodexFlow.Core.Execution.ToolIsolationGate? isolationGate = null,
         DocumentReaderRouter? documentReaderRouter = null,
         IConfiguration? configuration = null,
-        IModelSettingsService? modelSettingsService = null)
+        IModelSettingsService? modelSettingsService = null,
+        IPlanModeHostBridge? planModeHostBridge = null,
+        IWorkspaceSettingsService? workspaceSettingsService = null)
     {
         _gitService = gitService;
         _orchestrator = orchestrator;
@@ -165,6 +169,8 @@ public sealed class ToolRegistryBootstrapper
         _documentReaderRouter = documentReaderRouter;
         _configuration = configuration;
         _modelSettingsService = modelSettingsService;
+        _planModeHostBridge = planModeHostBridge;
+        _workspaceSettingsService = workspaceSettingsService;
     }
 
     public void EnsureRegistered(IToolRegistry toolRegistry)
@@ -206,6 +212,8 @@ public sealed class ToolRegistryBootstrapper
         // 执行与命令
         toolRegistry.RegisterTool(new ExecCodeTool(_loggerFactory.CreateLogger<ExecCodeTool>(), _isolationGate), ToolLoading.AlwaysOn);
         toolRegistry.RegisterTool(new RunCommandTool(_loggerFactory.CreateLogger<RunCommandTool>(), null, _isolationGate), ToolLoading.AlwaysOn);
+        toolRegistry.RegisterTool(new RunShellTool(_loggerFactory.CreateLogger<RunShellTool>(), _isolationGate), ToolLoading.Deferred);
+        toolRegistry.RegisterTool(new ListAuthorizedDirectoryTool(_configuration, _workspaceSettingsService), ToolLoading.Deferred);
 
         // 搜索、分析与测试
         toolRegistry.RegisterTool(_searchFileIndexTool, ToolLoading.AlwaysOn);
@@ -333,8 +341,8 @@ public sealed class ToolRegistryBootstrapper
                 _loggerFactory.CreateLogger<WorkerOutputTool>()), ToolLoading.AlwaysOn);
         }
         toolRegistry.RegisterTool(new AskUserQuestionTool(), ToolLoading.AlwaysOn);
-        toolRegistry.RegisterTool(new EnterPlanModeTool(_sessionManager), ToolLoading.AlwaysOn);
-        toolRegistry.RegisterTool(new ExitPlanModeTool(_sessionManager), ToolLoading.AlwaysOn);
+        toolRegistry.RegisterTool(new EnterPlanModeTool(_sessionManager, _planModeHostBridge), ToolLoading.AlwaysOn);
+        toolRegistry.RegisterTool(new ExitPlanModeTool(_sessionManager, _planModeHostBridge), ToolLoading.AlwaysOn);
         if (_planArtifactStore != null &&
             _planFileService != null &&
             _planApprovalService != null &&

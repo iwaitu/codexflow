@@ -26,8 +26,13 @@ export const App: React.FC = () => {
   const { t } = useI18n();
   const { toggleTheme, toggleLanguage, syncHostPreferences } = usePreferencesStore();
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [bootstrapState, setBootstrapState] = useState<'idle' | 'loading' | 'error'>('idle');
+  const [bootstrapError, setBootstrapError] = useState<string | null>(null);
+  const [retryBootstrapTick, setRetryBootstrapTick] = useState(0);
+  const [cancellingTurn, setCancellingTurn] = useState(false);
   const [creatingConversation, setCreatingConversation] = useState(false);
   const [primaryView, setPrimaryView] = useState<'chat' | 'business-skills'>('chat');
+  const [businessHubMounted, setBusinessHubMounted] = useState(false);
   const [expandedSessionIds, setExpandedSessionIds] = useState<string[]>([]);
   const [externalAttachment, setExternalAttachment] = useState<WorkspaceAttachmentRequest | null>(null);
   const [isCommandPaletteOpen, setCommandPaletteOpen] = useState(false);
@@ -51,7 +56,10 @@ export const App: React.FC = () => {
     activeSessionId,
     activeConversationId,
     instanceKey,
-    conversationMode,
+    activeWorkMode,
+    planModeActive,
+    planModeVersion,
+    planModeExitRequest,
     latestTitleUpdate,
     messages,
     messagesTruncated,
@@ -78,7 +86,6 @@ export const App: React.FC = () => {
     setActiveSession,
     setActiveConversation,
     startNewConversation,
-    setConversationMode,
     setTurnNotice,
     setSettingsOpen,
     setWizardOpen,
@@ -92,6 +99,8 @@ export const App: React.FC = () => {
     setVerificationReceipt,
     setContextWindow,
     setJobs,
+    setSessionPolicyState,
+    dismissPlanModeExitRequest,
   } = useAppStore();
 
   useEffect(() => {
@@ -202,8 +211,14 @@ export const App: React.FC = () => {
   const changesQuery = useQuery({
     queryKey: ['workspace-changes', instanceKey, auth?.baseUrl, activeSessionId, workspaceRevision],
     queryFn: () => apiClient.getChanges(auth!, activeSessionId!),
-    enabled: Boolean(auth && activeSessionId),
+    enabled: Boolean(auth && activeSessionId && activeWorkMode !== 'Daily'),
   });
+
+  useEffect(() => {
+    if (activeWorkMode === 'Daily' && inspectorTab !== 'files') {
+      setInspectorTab('files');
+    }
+  }, [activeWorkMode, inspectorTab, setInspectorTab]);
 
   useEffect(() => {
     if (systemStatusQuery.data && !systemStatusQuery.data.modelConfigured && !wizardDismissed) {
@@ -213,18 +228,39 @@ export const App: React.FC = () => {
 
   // Bootstrap default workspace session once backend is ready
   useEffect(() => {
-    if (!auth || activeSessionId) return;
+    if (!auth || activeSessionId) {
+      setBootstrapState('idle');
+      setBootstrapError(null);
+      return;
+    }
     let cancelled = false;
-    void apiClient.bootstrapSession(auth).then((res) => {
-      if (!cancelled) {
-        setActiveSession(res.sessionId);
-        void queryClient.invalidateQueries({ queryKey: ['sessions'] });
-      }
-    });
+    setBootstrapState('loading');
+    setBootstrapError(null);
+    void apiClient
+      .bootstrapSession(auth)
+      .then((res) => {
+        if (!cancelled) {
+          setBootstrapState('idle');
+          setActiveSession(res.sessionId);
+          setSessionPolicyState({
+            workMode: res.workMode === 'Daily' ? 'Daily' : 'Development',
+            modeVersion: Number(res.modeVersion ?? 1),
+            planModeActive: Boolean(res.planModeActive),
+            planModeVersion: Number(res.planModeVersion ?? 1),
+          });
+          void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setBootstrapState('error');
+          setBootstrapError(error instanceof Error ? error.message : String(error));
+        }
+      });
     return () => {
       cancelled = true;
     };
-  }, [auth, activeSessionId, setActiveSession, queryClient]);
+  }, [auth, activeSessionId, retryBootstrapTick, setActiveSession, setSessionPolicyState, queryClient]);
 
   // Reconcile snapshot on initial session load or backend restart
   useEffect(() => {
@@ -353,6 +389,12 @@ export const App: React.FC = () => {
     return sessionsQuery.data.items.find((s) => s.sessionId === activeSessionId) ?? null;
   }, [activeSessionId, sessionsQuery.data]);
 
+  const activeConversationName = useMemo(() => {
+    if (!activeConversationId || !activeSessionId) return null;
+    const list = conversationsBySession[activeSessionId] ?? conversationsQuery.data?.items ?? [];
+    return list.find((c) => c.conversationId === activeConversationId)?.name ?? null;
+  }, [activeConversationId, activeSessionId, conversationsBySession, conversationsQuery.data]);
+
   const activeWorkspacePath = activeWorkspaceSession?.workspacePath ?? null;
 
   const toggleInspectorTab = (tab: InspectorTab) => {
@@ -406,7 +448,7 @@ export const App: React.FC = () => {
         sessionId: activeSessionId,
         message: text,
         conversationId: activeConversationId ?? undefined,
-        conversationMode,
+        conversationMode: activeConversationId ? 'continue-current' : 'reuse-master',
         attachments: resolvedAttachments.length > 0 ? resolvedAttachments : undefined,
       });
       void queryClient.invalidateQueries({ queryKey: ['conversations', instanceKey, auth.baseUrl, activeSessionId] });
@@ -424,16 +466,154 @@ export const App: React.FC = () => {
   };
 
   const handleCancel = async () => {
-    if (!auth || !activeSessionId) return;
-    await apiClient.cancelTurn(auth, activeSessionId);
+    if (!auth || !activeSessionId || cancellingTurn) return;
+    setCancellingTurn(true);
+    try {
+      await apiClient.cancelTurn(auth, activeSessionId);
+    } catch (error) {
+      setTurnNotice(`停止请求失败：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setCancellingTurn(false);
+    }
   };
 
-  const handleCreateSession = async () => {
-    if (!auth) return;
+  const handleCreateSession = async (
+    workMode: 'daily' | 'development' = 'daily',
+    summary?: string,
+  ) => {
+    if (!auth) {
+      const msg = '后端服务尚未就绪，无法创建新会话。';
+      setWorkspaceError(msg);
+      setTurnNotice(msg);
+      return;
+    }
     setWorkspaceError(null);
-    const created = await apiClient.createSession(auth, `工作区 ${new Date().toLocaleTimeString()}`);
-    setActiveSession(created.sessionId);
-    void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+    try {
+      const labelPrefix = workMode === 'daily' ? '日常对话' : '开发工作区';
+      const created = await apiClient.createSession(
+        auth,
+        `${labelPrefix} ${new Date().toLocaleTimeString()}`,
+        workMode,
+      );
+      const nextWorkMode = created.workMode === 'Daily' ? 'Daily' : workMode === 'daily' ? 'Daily' : 'Development';
+      setPrimaryView('chat');
+      setActiveSession(created.sessionId);
+      setSessionPolicyState({
+        workMode: nextWorkMode,
+        modeVersion: Number(created.modeVersion ?? 1),
+        planModeActive: Boolean(created.planModeActive),
+        planModeVersion: Number(created.planModeVersion ?? 1),
+      });
+      setTurnNotice(
+        summary
+          ? `已创建新 ${nextWorkMode === 'Daily' ? '日常模式' : '开发模式'} 会话，摘要参考：${summary}`
+          : `已新建并切换到 ${nextWorkMode === 'Daily' ? '日常模式' : '开发模式'} 会话。`,
+      );
+      void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      setWorkspaceError(`新建会话失败：${msg}`);
+      setTurnNotice(`新建会话失败：${msg}`);
+    }
+  };
+
+  const handleOpenDailyAssistant = async () => {
+    if (!auth) {
+      const msg = '后端服务尚未就绪，无法打开日常助手。';
+      setWorkspaceError(msg);
+      setTurnNotice(msg);
+      return;
+    }
+    setWorkspaceError(null);
+    try {
+      const res = await apiClient.getOrCreateDailyAssistant(auth);
+      const nextWorkMode = res.workMode === 'Daily' ? 'Daily' : 'Development';
+      const isSameSession = res.sessionId === useAppStore.getState().activeSessionId;
+      setPrimaryView('chat');
+      if (!isSameSession) {
+        setActiveSession(res.sessionId);
+      }
+      setSessionPolicyState({
+        workMode: nextWorkMode,
+        modeVersion: Number(res.modeVersion ?? 1),
+        planModeActive: Boolean(res.planModeActive),
+        planModeVersion: Number(res.planModeVersion ?? 1),
+      });
+      setTurnNotice(
+        isSameSession
+          ? '当前已在「日常助手」（日常模式）工作空间。'
+          : '已切换到「日常助手」（日常模式）：支持文档整理与受控 Shell 审批。',
+      );
+      void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      setWorkspaceError(`打开日常助手失败：${msg}`);
+      setTurnNotice(`打开日常助手失败：${msg}`);
+    }
+  };
+
+  const handleEnterPlanMode = async () => {
+    if (!auth || !activeSessionId) return;
+    try {
+      const res = await apiClient.enterPlanMode(auth, activeSessionId, 'user_slash_command');
+      setSessionPolicyState({
+        workMode: res.workMode === 'Daily' ? 'Daily' : 'Development',
+        modeVersion: Number(res.modeVersion ?? 1),
+        planModeActive: res.planModeActive,
+        planModeVersion: Number(res.planModeVersion ?? 1),
+      });
+      setTurnNotice('已进入只读 Plan Mode（输入 /plan off 可退出）。');
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      setTurnNotice(`进入 Plan Mode 失败：${msg}`);
+    }
+  };
+
+  const handleExitPlanMode = async () => {
+    if (!activeSessionId) return;
+    const res = await window.codexflow.setSessionPlanMode({
+      sessionId: activeSessionId,
+      active: false,
+      expectedPlanModeVersion: planModeVersion,
+      reason: 'user_confirmed_exit',
+    });
+    if (res.ok && res.data) {
+      setSessionPolicyState({
+        workMode: res.data.workMode === 'Daily' ? 'Daily' : 'Development',
+        modeVersion: Number(res.data.modeVersion ?? 1),
+        planModeActive: res.data.planModeActive,
+        planModeVersion: Number(res.data.planModeVersion ?? 1),
+      });
+      setTurnNotice('已退出 Plan Mode，工具权限已恢复。');
+      return;
+    }
+    if (res.status === 409) {
+      await reconcileSession('plan_mode_version_conflict', {
+        onCursorSynced: (eid, epoch) => sseRef.current?.updateCursor(eid, epoch),
+      });
+      setTurnNotice('Plan Mode 版本状态已变更，已自动同步最新状态，请再次确认。');
+      return;
+    }
+    setTurnNotice(res.errorMessage || `无法退出 Plan Mode (${res.status})`);
+  };
+
+  const handleSlashCommand = async (action: {
+    kind: 'plan-on' | 'plan-off' | 'daily' | 'dev';
+    argument?: string;
+  }) => {
+    if (action.kind === 'plan-on') {
+      await handleEnterPlanMode();
+      return;
+    }
+    if (action.kind === 'plan-off') {
+      await handleExitPlanMode();
+      return;
+    }
+    if (action.kind === 'daily') {
+      await handleCreateSession('daily', action.argument);
+      return;
+    }
+    await handleCreateSession('development', action.argument);
   };
 
   const handleCreateConversation = async (targetSessionId?: string) => {
@@ -504,16 +684,20 @@ export const App: React.FC = () => {
     }
     const gen = useAppStore.getState().sessionGeneration;
     setActiveConversation(conversationId);
-    const history = await apiClient.getHistory(auth, conversationId);
-    const cur = useAppStore.getState();
-    if (cur.activeSessionId !== sid || cur.sessionGeneration !== gen || cur.activeConversationId !== conversationId) {
-      return;
-    }
-    useAppStore.setState({ messages: history, messagesTruncated: false });
-    const cw = await apiClient.getContextWindow(auth, sid).catch(() => null);
-    const afterCw = useAppStore.getState();
-    if (afterCw.activeSessionId === sid && afterCw.sessionGeneration === gen) {
-      setContextWindow(cw);
+    try {
+      const history = await apiClient.getHistory(auth, conversationId);
+      const cur = useAppStore.getState();
+      if (cur.activeSessionId !== sid || cur.sessionGeneration !== gen || cur.activeConversationId !== conversationId) {
+        return;
+      }
+      useAppStore.setState({ messages: history, messagesTruncated: false });
+      const cw = await apiClient.getContextWindow(auth, sid).catch(() => null);
+      const afterCw = useAppStore.getState();
+      if (afterCw.activeSessionId === sid && afterCw.sessionGeneration === gen) {
+        setContextWindow(cw);
+      }
+    } catch (error) {
+      setTurnNotice(`加载历史对话失败：${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
@@ -526,16 +710,20 @@ export const App: React.FC = () => {
     if (!auth || !activeSessionId) return;
     const sid = activeSessionId;
     const gen = useAppStore.getState().sessionGeneration;
-    const receipt = await apiClient.verifyArtifact(auth, sid, jobId);
-    const cur = useAppStore.getState();
-    if (cur.activeSessionId !== sid || cur.sessionGeneration !== gen) {
-      return;
-    }
-    setVerificationReceipt(jobId, receipt);
-    const updatedJobs = await apiClient.listJobs(auth, sid);
-    const afterJobs = useAppStore.getState();
-    if (afterJobs.activeSessionId === sid && afterJobs.sessionGeneration === gen) {
-      setJobs(updatedJobs);
+    try {
+      const receipt = await apiClient.verifyArtifact(auth, sid, jobId);
+      const cur = useAppStore.getState();
+      if (cur.activeSessionId !== sid || cur.sessionGeneration !== gen) {
+        return;
+      }
+      setVerificationReceipt(jobId, receipt);
+      const updatedJobs = await apiClient.listJobs(auth, sid);
+      const afterJobs = useAppStore.getState();
+      if (afterJobs.activeSessionId === sid && afterJobs.sessionGeneration === gen) {
+        setJobs(updatedJobs);
+      }
+    } catch (error) {
+      setTurnNotice(`触发验收失败：${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
@@ -789,7 +977,10 @@ export const App: React.FC = () => {
           activeSessionId={activeSessionId}
           activeConversationId={activeConversationId}
           activePrimaryView={primaryView}
-          onSelectPrimaryView={setPrimaryView}
+          onSelectPrimaryView={(view) => {
+            if (view === 'business-skills') setBusinessHubMounted(true);
+            setPrimaryView(view);
+          }}
           controlPlaneAvailable={controlPlaneAvailable}
           isTurnRunning={isTurnRunning}
           creatingConversation={creatingConversation}
@@ -799,57 +990,111 @@ export const App: React.FC = () => {
           }}
           onSelectConversation={(cid, sid) => void handleSelectConversation(cid, sid)}
           onCreateConversation={handleCreateConversation}
-          onCreateSession={handleCreateSession}
+          onCreateSession={() => handleCreateSession('daily')}
+          onOpenDailyAssistant={handleOpenDailyAssistant}
           onOpenFolder={handleOpenFolder}
           onRenameSession={async (sid, name) => {
             if (!auth) return;
-            await apiClient.updateSession(auth, sid, { name });
-            void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+            setWorkspaceError(null);
+            try {
+              await apiClient.updateSession(auth, sid, { name });
+              void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+            } catch (error) {
+              setWorkspaceError(`重命名失败：${error instanceof Error ? error.message : String(error)}`);
+              throw error;
+            }
           }}
           onArchiveSession={async (sid) => {
             if (!auth) return;
-            await apiClient.updateSession(auth, sid, { isArchived: true });
-            void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+            setWorkspaceError(null);
+            try {
+              await apiClient.updateSession(auth, sid, { isArchived: true });
+              if (activeSessionId === sid) setActiveSession(null);
+              void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+            } catch (error) {
+              setWorkspaceError(`归档失败：${error instanceof Error ? error.message : String(error)}`);
+              throw error;
+            }
           }}
           onDeleteSession={async (sid) => {
             if (!auth) return;
-            await apiClient.deleteSession(auth, sid);
-            if (activeSessionId === sid) setActiveSession(null);
-            void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+            setWorkspaceError(null);
+            try {
+              await apiClient.deleteSession(auth, sid);
+              if (activeSessionId === sid) setActiveSession(null);
+              void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+            } catch (error) {
+              setWorkspaceError(`删除失败：${error instanceof Error ? error.message : String(error)}`);
+              throw error;
+            }
           }}
           onRenameConversation={async (cid, name) => {
             if (!auth) return;
-            await apiClient.updateConversation(auth, cid, { name });
-            void queryClient.invalidateQueries({ queryKey: ['conversations'] });
+            setWorkspaceError(null);
+            try {
+              await apiClient.updateConversation(auth, cid, { name });
+              void queryClient.invalidateQueries({ queryKey: ['conversations'] });
+            } catch (error) {
+              setWorkspaceError(`重命名对话失败：${error instanceof Error ? error.message : String(error)}`);
+              throw error;
+            }
           }}
           onDeleteConversation={async (cid) => {
             if (!auth) return;
-            await apiClient.deleteConversation(auth, cid);
-            void queryClient.invalidateQueries({ queryKey: ['conversations'] });
+            setWorkspaceError(null);
+            try {
+              await apiClient.deleteConversation(auth, cid);
+              if (activeConversationId === cid) setActiveConversation(null);
+              void queryClient.invalidateQueries({ queryKey: ['conversations'] });
+            } catch (error) {
+              setWorkspaceError(`删除对话失败：${error instanceof Error ? error.message : String(error)}`);
+              throw error;
+            }
           }}
           onOpenSettings={() => openSettingsTab('execution')}
           workspaceError={workspaceError}
         />
 
         <main className="flex min-w-0 flex-1 flex-col bg-slate-900/40">
-          {primaryView === 'business-skills' ? (
-            <BusinessSkillsHub
-              auth={auth}
-              instanceKey={instanceKey}
-              activeSessionId={activeSessionId}
-              controlPlaneAvailable={controlPlaneAvailable}
-              modelConfigured={Boolean(
-                systemStatusQuery.data?.modelConfigured ?? modelSettingsQuery.data?.model,
-              )}
-            />
-          ) : (
-            <>
+          {(primaryView === 'business-skills' || businessHubMounted) && (
+            <div className={primaryView === 'business-skills' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
+              <BusinessSkillsHub
+                auth={auth}
+                instanceKey={instanceKey}
+                activeSessionId={activeSessionId}
+                controlPlaneAvailable={controlPlaneAvailable}
+                modelConfigured={Boolean(
+                  systemStatusQuery.data?.modelConfigured ?? modelSettingsQuery.data?.model,
+                )}
+              />
+            </div>
+          )}
+          <div className={primaryView === 'business-skills' ? 'hidden' : 'flex min-h-0 flex-1 flex-col'}>
               <div className="flex h-11 shrink-0 items-center justify-between border-b border-slate-800/80 bg-slate-950/60 px-4 text-xs">
                 <div className="flex min-w-0 items-center gap-2">
                   <span className="truncate font-medium text-slate-200">
                     {activeWorkspaceSession?.name || t('workspace.unselected')}
                   </span>
-                  {activeWorkspacePath && (
+                  {activeConversationName && (
+                    <span className="truncate text-slate-400" title={activeConversationName}>
+                      / {activeConversationName}
+                    </span>
+                  )}
+                  <span
+                    className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                      activeWorkMode === 'Daily'
+                        ? 'bg-emerald-500/15 text-emerald-300'
+                        : 'bg-indigo-500/15 text-indigo-300'
+                    }`}
+                  >
+                    {activeWorkMode === 'Daily' ? '日常模式' : '开发模式'}
+                  </span>
+                  {planModeActive && (
+                    <span className="shrink-0 rounded border border-amber-500/40 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-200">
+                      Plan Mode
+                    </span>
+                  )}
+                  {activeWorkspacePath && !(activeWorkMode === 'Daily' && !activeWorkspaceSession?.isExternalWorkspace) && (
                     <span className="hidden truncate font-mono text-[11px] text-slate-500 md:inline" title={activeWorkspacePath}>
                       {activeWorkspacePath}
                     </span>
@@ -870,40 +1115,44 @@ export const App: React.FC = () => {
                     <FolderTree className="h-3.5 w-3.5" />
                     <span>{t('workspace.files')}</span>
                   </button>
-                  <button
-                    type="button"
-                    disabled={!activeSessionId}
-                    onClick={() => toggleInspectorTab('changes')}
-                    aria-label={t('workspace.changesAria')}
-                    className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium disabled:opacity-40 ${
-                      isInspectorOpen && inspectorTab === 'changes'
-                        ? 'border-indigo-500/60 bg-indigo-500/20 text-indigo-200'
-                        : 'border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800'
-                    }`}
-                  >
-                    <FileDiff className="h-3.5 w-3.5" />
-                    <span>
-                      {t('workspace.changes')}
-                      {changesQuery.data?.files?.length ? ` (${changesQuery.data.files.length})` : ''}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    disabled={!activeSessionId}
-                    onClick={() => toggleInspectorTab('jobs')}
-                    aria-label={t('workspace.jobsAria')}
-                    className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium disabled:opacity-40 ${
-                      isInspectorOpen && inspectorTab === 'jobs'
-                        ? 'border-indigo-500/60 bg-indigo-500/20 text-indigo-200'
-                        : 'border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800'
-                    }`}
-                  >
-                    <Cpu className="h-3.5 w-3.5" />
-                    <span>
-                      {t('workspace.jobs')}
-                      {jobs.length > 0 ? ` (${jobs.length})` : ''}
-                    </span>
-                  </button>
+                  {activeWorkMode !== 'Daily' && (
+                    <>
+                      <button
+                        type="button"
+                        disabled={!activeSessionId}
+                        onClick={() => toggleInspectorTab('changes')}
+                        aria-label={t('workspace.changesAria')}
+                        className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium disabled:opacity-40 ${
+                          isInspectorOpen && inspectorTab === 'changes'
+                            ? 'border-indigo-500/60 bg-indigo-500/20 text-indigo-200'
+                            : 'border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800'
+                        }`}
+                      >
+                        <FileDiff className="h-3.5 w-3.5" />
+                        <span>
+                          {t('workspace.changes')}
+                          {changesQuery.data?.files?.length ? ` (${changesQuery.data.files.length})` : ''}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!activeSessionId}
+                        onClick={() => toggleInspectorTab('jobs')}
+                        aria-label={t('workspace.jobsAria')}
+                        className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium disabled:opacity-40 ${
+                          isInspectorOpen && inspectorTab === 'jobs'
+                            ? 'border-indigo-500/60 bg-indigo-500/20 text-indigo-200'
+                            : 'border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800'
+                        }`}
+                      >
+                        <Cpu className="h-3.5 w-3.5" />
+                        <span>
+                          {t('workspace.jobs')}
+                          {jobs.length > 0 ? ` (${jobs.length})` : ''}
+                        </span>
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
 
@@ -924,30 +1173,52 @@ export const App: React.FC = () => {
                 workerBar={workerBar}
                 executionBackend={systemStatusQuery.data?.executionBackend ?? executionSettingsQuery.data?.backend ?? null}
                 controlPlaneAvailable={controlPlaneAvailable}
+                workMode={activeWorkMode}
+                planModeActive={planModeActive}
+                planModeExitRequest={planModeExitRequest}
+                bootstrapState={bootstrapState}
+                bootstrapError={bootstrapError}
+                sseState={sseState}
+                onRetryBootstrap={() => setRetryBootstrapTick((n) => n + 1)}
+                onOpenDailyAssistant={handleOpenDailyAssistant}
+                onCreateDailySession={() => handleCreateSession('daily')}
+                onOpenFolder={handleOpenFolder}
                 onApprovalResolved={() => void reconcileApprovals()}
                 onPlanActionSubmitted={() =>
                   void reconcileSession('plan_action', {
                     onCursorSynced: (eid, epoch) => sseRef.current?.updateCursor(eid, epoch),
                   })
                 }
+                onConfirmExitPlanMode={handleExitPlanMode}
+                onDismissPlanModeExitRequest={dismissPlanModeExitRequest}
                 onVerifyJob={handleVerifyJob}
                 onSwitchManaged={() => void window.codexflow.switchToManaged()}
               />
 
               <Composer
                 disabled={!auth || !activeSessionId}
+                disabledReason={
+                  !auth
+                    ? '后端服务连接中或未就绪，请等待连接恢复...'
+                    : !activeSessionId
+                      ? '请先在左侧选择工作区，或点击「日常助手」「打开本地目录」开始对话...'
+                      : undefined
+                }
                 isTurnRunning={isTurnRunning}
-                conversationMode={conversationMode}
+                cancelling={cancellingTurn}
                 turnNotice={turnNotice}
                 workspacePath={activeWorkspacePath}
                 supportsMultimodal={Boolean(modelSettingsQuery.data?.supportsMultimodal)}
                 externalAttachment={externalAttachment}
-                onChangeMode={setConversationMode}
+                workMode={activeWorkMode}
+                planModeActive={planModeActive}
+                controlPlaneAvailable={controlPlaneAvailable}
                 onSend={handleSend}
                 onCancel={handleCancel}
+                onSlashCommand={handleSlashCommand}
+                onOpenDailyAssistant={handleOpenDailyAssistant}
               />
-            </>
-          )}
+          </div>
         </main>
 
         <WorkspaceInspector

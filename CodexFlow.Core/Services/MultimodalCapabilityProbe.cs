@@ -32,7 +32,7 @@ public interface IMultimodalCapabilityProbe
 public sealed class DefaultMultimodalCapabilityProbe : IMultimodalCapabilityProbe
 {
     private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(5);
-    private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(25);
 
     // 64x64 solid red PNG satisfies minimum image dimension thresholds (e.g. >= 28px for Qwen-VL/vLLM).
     private static readonly byte[] BuiltInTestPng = CreateSolidPng(64, 64, r: 220, g: 38, b: 38);
@@ -92,7 +92,7 @@ public sealed class DefaultMultimodalCapabilityProbe : IMultimodalCapabilityProb
 
             var options = new ChatOptions
             {
-                MaxOutputTokens = 32,
+                MaxOutputTokens = 512,
                 Temperature = 0f
             };
 

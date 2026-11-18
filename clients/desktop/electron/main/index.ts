@@ -19,6 +19,7 @@ import {
   type PlanChatControlPayload,
   type PublishSkillDraftRequest,
   type PutDraftSelectionRequest,
+  type SetPlanModePayload,
   type SetPluginCredentialRequest,
   type StartSkillRunRequest,
   type SubmitToolApprovalPayload,
@@ -231,6 +232,30 @@ function registerIpcHandlers(manager: BackendManager): void {
         requestDigest: payload.requestDigest,
         decision: payload.decision,
         note: payload.note,
+      },
+    );
+  });
+
+  ipcMain.handle(IPC_CHANNELS.getApprovalScript, async (event, approvalId: string) => {
+    assertTrustedIpcSender(event);
+    return callControlPlane(
+      manager.getControlPlaneCredentials(),
+      'GET',
+      `/api/gateway/approvals/${encodeURIComponent(approvalId)}/script`,
+    );
+  });
+
+  ipcMain.handle(IPC_CHANNELS.setSessionPlanMode, async (event, payload: SetPlanModePayload) => {
+    assertTrustedIpcSender(event);
+    return callControlPlane(
+      manager.getControlPlaneCredentials(),
+      'POST',
+      `/api/gateway/session/${encodeURIComponent(payload.sessionId)}/plan-mode`,
+      {
+        active: payload.active,
+        expectedPlanModeVersion: payload.expectedPlanModeVersion,
+        reason: payload.reason,
+        objective: payload.objective,
       },
     );
   });

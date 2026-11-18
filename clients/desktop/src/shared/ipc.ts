@@ -56,6 +56,17 @@ export interface SubmitToolApprovalResult {
   message: string;
 }
 
+export type PendingApprovalScriptSnapshot = components['schemas']['PendingApprovalScriptSnapshot'];
+export type PlanModeResult = components['schemas']['PlanModeResponse'];
+
+export interface SetPlanModePayload {
+  sessionId: string;
+  active: boolean;
+  expectedPlanModeVersion?: number;
+  reason?: string;
+  objective?: string;
+}
+
 export interface StructuredPlanActionPayload {
   action: 'approve' | 'reject' | 'execute' | 'stop' | 'planOnly';
   planArtifactId?: string;
@@ -271,6 +282,8 @@ export interface DesktopBridge {
   getBackendConnection(): Promise<BackendConnectionPublicInfo>;
   onBackendConnectionChanged(listener: (info: BackendConnectionPublicInfo) => void): () => void;
   approveToolExecution(payload: SubmitToolApprovalPayload): Promise<ControlPlaneCallResult<SubmitToolApprovalResult>>;
+  getApprovalScript(approvalId: string): Promise<ControlPlaneCallResult<PendingApprovalScriptSnapshot>>;
+  setSessionPlanMode(payload: SetPlanModePayload): Promise<ControlPlaneCallResult<PlanModeResult>>;
   submitPlanChatAction(payload: PlanChatControlPayload): Promise<ControlPlaneCallResult<PlanChatAcceptedResult>>;
   updateExecutionSettings(payload: UpdateExecutionSettingsPayload): Promise<ControlPlaneCallResult<ExecutionSettingsResult>>;
   updateModelSettings(payload: UpdateModelSettingsPayload): Promise<ControlPlaneCallResult<ModelSettingsResult>>;
@@ -343,6 +356,8 @@ export const IPC_CHANNELS = {
   getBackendConnection: 'codexflow:get-backend-connection',
   backendConnectionChanged: 'codexflow:backend-connection-changed',
   approveToolExecution: 'codexflow:approve-tool-execution',
+  getApprovalScript: 'codexflow:get-approval-script',
+  setSessionPlanMode: 'codexflow:set-session-plan-mode',
   submitPlanChatAction: 'codexflow:submit-plan-chat-action',
   updateExecutionSettings: 'codexflow:update-execution-settings',
   updateModelSettings: 'codexflow:update-model-settings',

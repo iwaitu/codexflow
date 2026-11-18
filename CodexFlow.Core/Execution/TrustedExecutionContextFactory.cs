@@ -64,6 +64,46 @@ public static class TrustedExecutionContextFactory
             Scope = scope,
             ScopeHash = ComputeScopeHash(scope),
             Limits = limits ?? new ExecutionResourceLimits(),
+            Deadline = deadline,
+            Origin = ExecutionOrigin.DevWorker,
+            TrustedOriginVerified = true
+        };
+    }
+
+    /// <summary>Creates a single-invocation DailyChat execution context bound strictly to the granted tools.</summary>
+    public static TrustedExecutionContext ForDailyInvocation(
+        string userId,
+        string sessionId,
+        string turnId,
+        string invocationId,
+        string workspaceRoot,
+        ExportScope scope,
+        IReadOnlySet<string> grantedTools,
+        int policyVersion,
+        ExecutionResourceLimits? limits = null,
+        DateTimeOffset? notAfter = null,
+        DateTimeOffset? deadline = null)
+    {
+        ArgumentNullException.ThrowIfNull(scope);
+        ArgumentNullException.ThrowIfNull(grantedTools);
+        return new TrustedExecutionContext
+        {
+            UserId = userId,
+            SessionId = sessionId,
+            JobId = string.Empty,
+            TaskId = string.Empty,
+            AttemptId = string.Empty,
+            TurnId = turnId,
+            InvocationId = invocationId,
+            WorkspaceRoot = workspaceRoot,
+            Scope = scope,
+            ScopeHash = ComputeScopeHash(scope),
+            Limits = limits ?? new ExecutionResourceLimits(),
+            Origin = ExecutionOrigin.DailyChat,
+            GrantedTools = new HashSet<string>(grantedTools, StringComparer.OrdinalIgnoreCase),
+            PolicyVersion = policyVersion,
+            TrustedOriginVerified = true,
+            NotAfter = notAfter ?? DateTimeOffset.UtcNow.AddMinutes(30),
             Deadline = deadline
         };
     }

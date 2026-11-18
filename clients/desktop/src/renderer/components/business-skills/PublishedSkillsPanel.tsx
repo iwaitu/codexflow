@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -49,19 +49,23 @@ export const PublishedSkillsPanel: React.FC<PublishedSkillsPanelProps> = ({
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const appliedInitialSkillIdRef = useRef<string | null>(null);
+  const detailReqSeqRef = useRef(0);
 
   useEffect(() => {
-    if (initialSelectedSkillId) {
+    if (initialSelectedSkillId && initialSelectedSkillId !== appliedInitialSkillIdRef.current) {
+      appliedInitialSkillIdRef.current = initialSelectedSkillId;
       setSelectedSkillId(initialSelectedSkillId);
-    } else if (
-      skills.length > 0 &&
-      (!selectedSkillId || !skills.some((s) => s.id === selectedSkillId))
-    ) {
-      setSelectedSkillId(skills[0]?.id ?? null);
-    } else if (skills.length === 0) {
-      setSelectedSkillId(null);
     }
-  }, [initialSelectedSkillId, skills, selectedSkillId]);
+  }, [initialSelectedSkillId]);
+
+  useEffect(() => {
+    if (skills.length === 0) {
+      setSelectedSkillId(null);
+    } else if (!selectedSkillId || !skills.some((s) => s.id === selectedSkillId)) {
+      setSelectedSkillId(skills[0]?.id ?? null);
+    }
+  }, [skills, selectedSkillId]);
 
   const selectedSkill = skills.find((s) => s.id === selectedSkillId) ?? null;
 
@@ -72,6 +76,7 @@ export const PublishedSkillsPanel: React.FC<PublishedSkillsPanelProps> = ({
       setSelectedVersion(undefined);
     }
     setActiveRun(null);
+    setInputsJson('{}');
     setNotice(null);
     setError(null);
   }, [selectedSkillId, selectedSkill?.activeVersion]);
@@ -82,20 +87,23 @@ export const PublishedSkillsPanel: React.FC<PublishedSkillsPanelProps> = ({
       setRuns([]);
       return;
     }
+    const seq = ++detailReqSeqRef.current;
     try {
       const [md, runList] = await Promise.all([
         apiClient.getPublishedSkillMarkdown(auth, selectedSkillId, selectedVersion),
         apiClient.listSkillRuns(auth, selectedSkillId),
       ]);
+      if (seq !== detailReqSeqRef.current) return;
       setMarkdownPreview(md);
       setRuns(runList);
-      if (runList.length > 0 && !activeRun) {
-        setActiveRun(runList[0] ?? null);
-      }
+      setActiveRun((prev) =>
+        prev && runList.some((r) => r.runId === prev.runId) ? prev : (runList[0] ?? null),
+      );
     } catch (err) {
+      if (seq !== detailReqSeqRef.current) return;
       setError(formatBusinessSkillError(err, '加载 Skill 详情失败'));
     }
-  }, [auth, selectedSkillId, selectedVersion, activeRun]);
+  }, [auth, selectedSkillId, selectedVersion]);
 
   useEffect(() => {
     void loadSkillDetail();

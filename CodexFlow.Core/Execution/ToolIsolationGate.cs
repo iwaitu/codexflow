@@ -2,6 +2,7 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+using System.Collections.Concurrent;
 using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Core.Gateway;
 using CodexFlow.Core.Models;
@@ -9,6 +10,33 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
 namespace CodexFlow.Core.Execution;
+
+public static class AmbientSessionPolicyContext
+{
+    private static readonly AsyncLocal<SessionPolicySnapshot?> Slot = new();
+
+    public static SessionPolicySnapshot? Current => Slot.Value;
+
+    public static IDisposable BeginScope(SessionPolicySnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        var prev = Slot.Value;
+        Slot.Value = snapshot;
+        return new Restore(prev);
+    }
+
+    private sealed class Restore(SessionPolicySnapshot? previous) : IDisposable
+    {
+        private int _done;
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _done, 1) == 0)
+            {
+                Slot.Value = previous;
+            }
+        }
+    }
+}
 
 /// <summary>
 /// Shared gate for tools that execute untrusted code. The trusted context comes only from the host-bound accessor;
@@ -24,6 +52,7 @@ public sealed class ToolIsolationGate(
     IServiceProvider? serviceProvider = null)
 {
     private readonly ITrustedExecutionContextAccessor _accessor = accessor ?? new TrustedExecutionContextAccessor();
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _consumedInvocations = new(StringComparer.Ordinal);
 
     public IsolationOptions Options { get; } = options ?? new IsolationOptions();
 
@@ -44,6 +73,13 @@ public sealed class ToolIsolationGate(
     {
         context = null!;
         backend = null!;
+
+        if (AmbientSessionPolicyContext.Current is { PlanModeActive: true })
+        {
+            return Refuse(toolName, ExecutionDecision.Deny(
+                ExecutionReasonCodes.PlanModeActive,
+                "Plan Mode is active (read-only). Exit Plan Mode via user confirmation before executing tools with side effects."));
+        }
 
         var capabilityDecision = ToolCapabilityCatalog.Evaluate(toolName, capability);
         if (!capabilityDecision.IsAllowed)
@@ -70,6 +106,30 @@ public sealed class ToolIsolationGate(
             return Refuse(toolName, valid);
         }
 
+        if (current.GrantedTools is not null && !current.GrantedTools.Contains(toolName))
+        {
+            return Refuse(toolName, ExecutionDecision.Deny(
+                ExecutionReasonCodes.PermissionDenied,
+                $"Tool '{toolName}' is not granted in this execution context."));
+        }
+
+        if (string.Equals(toolName, "run_shell", StringComparison.OrdinalIgnoreCase))
+        {
+            if (current.Origin != ExecutionOrigin.DailyChat || !current.TrustedOriginVerified)
+            {
+                return Refuse(toolName, ExecutionDecision.Deny(
+                    ExecutionReasonCodes.PermissionDenied,
+                    $"run_shell requires a verified DailyChat origin (got '{current.Origin}')."));
+            }
+
+            if (string.IsNullOrWhiteSpace(current.InvocationId) || !TryConsumeInvocation(current.InvocationId))
+            {
+                return Refuse(toolName, ExecutionDecision.Deny(
+                    ExecutionReasonCodes.InvalidOperation,
+                    "DailyChat invocation identifier is missing or was already consumed."));
+            }
+        }
+
         if (service is null)
         {
             return Refuse(toolName, ExecutionDecision.Unavailable(
@@ -89,6 +149,23 @@ public sealed class ToolIsolationGate(
         return null;
     }
 
+    private bool TryConsumeInvocation(string invocationId)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (_consumedInvocations.Count > 4096)
+        {
+            foreach (var (key, expiresAt) in _consumedInvocations)
+            {
+                if (expiresAt <= now)
+                {
+                    _consumedInvocations.TryRemove(key, out _);
+                }
+            }
+        }
+
+        return _consumedInvocations.TryAdd(invocationId, now.AddHours(1));
+    }
+
     public async Task<(CodexToolResult? Refusal, ExecutionAuthorizationResult Authorization)> AuthorizeBeforeExecutionAsync(
         string toolName,
         TrustedExecutionContext context,
@@ -103,7 +180,17 @@ public sealed class ToolIsolationGate(
         Func<bool>? verifyStagedArtifactsUnchanged = null,
         Func<(string? ScriptSha256, string? InputsManifestSha256)>? refreshArtifactHashes = null,
         Func<ExecutionBackend, (IReadOnlyList<string> FullArgv, string? StdIn, IReadOnlyDictionary<string, string>? EnvOverrides)?>? resolveArgvForBackend = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        bool preResolvedTrustedExecutable = false,
+        string? wrapperSha256 = null,
+        int timeoutSeconds = 0,
+        string? imageDigest = null,
+        string? shellKind = null,
+        string? scriptText = null,
+        string? scriptPreview = null,
+        int? scriptLength = null,
+        string? backendNotice = null,
+        bool allowBackendSwitchRebuild = true)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(backend);
@@ -118,6 +205,14 @@ public sealed class ToolIsolationGate(
         var activeBackend = backend.ActiveBackend;
         if (ApprovalBroker is null)
         {
+            if (string.Equals(toolName, "run_shell", StringComparison.OrdinalIgnoreCase))
+            {
+                var deny = ExecutionDecision.Unavailable(
+                    ExecutionReasonCodes.ApprovalUnavailable,
+                    "run_shell requires an active execution approval broker (fail-closed).");
+                return (Refuse(toolName, deny), new ExecutionAuthorizationResult(deny, [], string.Empty, ApprovedBackend: activeBackend));
+            }
+
             return (null, new ExecutionAuthorizationResult(
                 ExecutionDecision.Allow(),
                 fullArgv.Skip(1).ToArray(),
@@ -129,6 +224,12 @@ public sealed class ToolIsolationGate(
         ExecutionAuthorizationContext? BuildAuthContextForBackend(ExecutionBackend targetBackend, bool refreshHashes, out string? errorReason)
         {
             errorReason = null;
+            if (!allowBackendSwitchRebuild && targetBackend != activeBackend)
+            {
+                errorReason = $"Execution backend changed from '{activeBackend}' to '{targetBackend}' during approval.";
+                return null;
+            }
+
             var effectiveFullArgv = fullArgv;
             var effectiveStdIn = stdIn;
             var effectiveEnv = environmentOverrides;
@@ -162,7 +263,11 @@ public sealed class ToolIsolationGate(
             IReadOnlyList<string> interpreterChain = [cmd];
             var trustedOrigin = false;
 
-            if (targetBackend == ExecutionBackend.Local)
+            if (preResolvedTrustedExecutable)
+            {
+                trustedOrigin = context.TrustedOriginVerified;
+            }
+            else if (targetBackend == ExecutionBackend.Local)
             {
                 var trustedPaths = ExecutionOptions?.CurrentValue.TrustedExecutablePaths?.ToArray() ?? [];
                 var rawPath = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
@@ -204,11 +309,22 @@ public sealed class ToolIsolationGate(
                 ? Array.Empty<KeyValuePair<string, string>>()
                 : effectiveEnv.OrderBy(static kv => kv.Key, StringComparer.Ordinal).ToArray();
 
+            var ownerKind = context.Origin == ExecutionOrigin.DailyChat
+                ? ApprovalOwnerKind.GatewayTurn
+                : (string.IsNullOrWhiteSpace(context.JobId) ? ApprovalOwnerKind.Unspecified : ApprovalOwnerKind.BackgroundJob);
+            var ownerId = context.Origin == ExecutionOrigin.DailyChat
+                ? context.TurnId
+                : context.AttemptId;
+            var turnId = context.Origin == ExecutionOrigin.DailyChat
+                ? $"daily:{context.TurnId}:{context.InvocationId}"
+                : $"{context.JobId}:{context.TaskId}:{context.AttemptId}";
+            var scopeHash = context.ScopeHash ?? TrustedExecutionContextFactory.ComputeScopeHash(context.Scope);
+
             var req = new ExecutionRequest
             {
                 SessionId = context.SessionId,
                 JobId = context.JobId,
-                TurnId = $"{context.JobId}:{context.TaskId}:{context.AttemptId}",
+                TurnId = turnId,
                 WorkspaceRoot = Path.GetFullPath(context.WorkspaceRoot),
                 ToolName = toolName,
                 Executable = resolvedExecutable,
@@ -223,7 +339,20 @@ public sealed class ToolIsolationGate(
                 Backend = targetBackend,
                 Network = targetBackend == ExecutionBackend.Local ? ExecutionNetworkMode.Host.ToString() : context.Network.Mode.ToString(),
                 Filesystem = targetBackend == ExecutionBackend.Local ? "unrestricted" : "container",
-                TrustedOriginVerified = trustedOrigin
+                TrustedOriginVerified = trustedOrigin,
+                Origin = context.Origin,
+                PolicyVersion = context.PolicyVersion,
+                WrapperSha256 = wrapperSha256,
+                ExportScopeSha256 = scopeHash,
+                TimeoutSeconds = timeoutSeconds,
+                ImageDigest = imageDigest,
+                ShellKind = shellKind,
+                ScriptText = scriptText,
+                ScriptPreview = scriptPreview,
+                ScriptLength = scriptLength,
+                BackendNotice = backendNotice,
+                OwnerKind = ownerKind,
+                OwnerId = ownerId
             };
 
             return new ExecutionAuthorizationContext(

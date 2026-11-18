@@ -96,7 +96,18 @@ public static class SseEventContractSchema
                     ("allowedDecisions", StrArray()),
                     ("executesWorkspaceCode", Bool()),
                     ("trustedOriginVerified", Bool()),
-                    ("selfApprovalProtection", Bool())),
+                    ("selfApprovalProtection", Bool()),
+                    ("origin", OptionalStr()),
+                    ("policyVersion", OptionalInt()),
+                    ("wrapperSha256", OptionalStr()),
+                    ("exportScopeSha256", OptionalStr()),
+                    ("timeoutSeconds", OptionalInt()),
+                    ("imageDigest", OptionalStr()),
+                    ("shellKind", OptionalStr()),
+                    ("shell", OptionalStr()),
+                    ("scriptPreview", OptionalStr()),
+                    ("scriptLength", OptionalInt()),
+                    ("backendNotice", OptionalStr())),
                 required:
                 [
                     "approvalId", "requestDigest", "sessionId", "tool", "executable", "interpreterChain",
@@ -242,7 +253,30 @@ public static class SseEventContractSchema
                     ("decision", Str()),
                     ("decidedBy", NullableStr()),
                     ("resolvedAt", Str())),
-                required: ["approvalId", "requestDigest", "runId", "decision", "resolvedAt"])
+                required: ["approvalId", "requestDigest", "runId", "decision", "resolvedAt"]),
+            [GatewaySseEventType.PlanModeChanged] = EventDef(
+                "Notification emitted when session Plan Mode is entered or exited.",
+                Props(
+                    ("type", Const(GatewaySseEventType.PlanModeChanged)),
+                    ("sessionId", Str()),
+                    ("workMode", OptionalStr()),
+                    ("modeVersion", OptionalInt()),
+                    ("planModeActive", Bool()),
+                    ("planModeVersion", Int()),
+                    ("changedBy", NullableStr()),
+                    ("changedAtUtc", NullableStr()),
+                    ("reason", NullableStr()),
+                    ("objective", NullableStr())),
+                required: ["sessionId", "planModeActive", "planModeVersion"]),
+            [GatewaySseEventType.PlanModeExitRequested] = EventDef(
+                "Model requested exit from Plan Mode; requires explicit user confirmation on control plane.",
+                Props(
+                    ("type", Const(GatewaySseEventType.PlanModeExitRequested)),
+                    ("sessionId", Str()),
+                    ("planModeVersion", Int()),
+                    ("planSummary", Str()),
+                    ("reason", NullableStr())),
+                required: ["sessionId", "planModeVersion", "planSummary"])
         };
 
         var root = new Dictionary<string, object>(StringComparer.Ordinal)

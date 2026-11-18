@@ -28,4 +28,9 @@ public sealed class GatewayRuntimeOptions
     /// Optional skills directory. When omitted, Gateway resolves the bundled or source skills directory.
     /// </summary>
     public string? SkillDirectoryPath { get; set; }
+
+    /// <summary>
+    /// Enables <c>run_shell</c> exposure in Daily work mode when control plane / container conditions are satisfied.
+    /// </summary>
+    public bool EnableDailyShell { get; set; } = true;
 }

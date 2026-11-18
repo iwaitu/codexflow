@@ -40,6 +40,10 @@ function makeBaseSnapshot(overrides: Partial<SessionSnapshot> = {}): SessionSnap
       createdUtc: '2026-11-16T00:00:00Z',
       currentPlanArtifactId: null,
       activeTaskId: null,
+      workMode: 'Development',
+      modeVersion: 1,
+      planModeActive: false,
+      planModeVersion: 1,
     },
     messages: [
       {

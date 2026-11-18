@@ -140,7 +140,11 @@ public class CodexGatewayController : ControllerBase
                         WorkspaceName = targetSession.Name,
                         Created = false,
                         WorkspacePath = targetSession.WorkspacePath ?? string.Empty,
-                        IsDefault = targetSession.Name == "默认工作区"
+                        IsDefault = targetSession.Name == "默认工作区",
+                        WorkMode = targetSession.WorkMode.ToString(),
+                        ModeVersion = Math.Max(1, targetSession.ModeVersion),
+                        PlanModeActive = targetSession.PlanModeActive,
+                        PlanModeVersion = Math.Max(1, targetSession.PlanModeVersion)
                     });
                 }
 
@@ -150,6 +154,7 @@ public class CodexGatewayController : ControllerBase
 
             // 没有传入 targetSessionId 或验证失败，返回/创建默认工作区
             var (sessionId, created, workspacePath) = await _chatService.GetOrCreateDefaultWorkspace(userId);
+            var defaultDbSession = await _chatService.GetSession(sessionId);
 
             // Pre-warm Redis session for the new or existing default workspace
             await _sessionManager.GetOrCreateSessionAsync(sessionId, userId, workspacePath, (Uri?)null);
@@ -173,7 +178,11 @@ public class CodexGatewayController : ControllerBase
                 WorkspaceName = "默认工作区",
                 Created = created,
                 WorkspacePath = workspacePath,
-                IsDefault = true
+                IsDefault = true,
+                WorkMode = (defaultDbSession?.WorkMode ?? CodexFlow.Core.Models.SessionWorkMode.Development).ToString(),
+                ModeVersion = Math.Max(1, defaultDbSession?.ModeVersion ?? 1),
+                PlanModeActive = defaultDbSession?.PlanModeActive ?? false,
+                PlanModeVersion = Math.Max(1, defaultDbSession?.PlanModeVersion ?? 1)
             });
         }
         catch (Exception ex)
@@ -228,7 +237,8 @@ public class CodexGatewayController : ControllerBase
         }
 
         if (!string.IsNullOrWhiteSpace(request.Name)
-            && string.Equals(request.Name.Trim(), "默认工作区", StringComparison.Ordinal))
+            && (string.Equals(request.Name.Trim(), "默认工作区", StringComparison.Ordinal) ||
+                string.Equals(request.Name.Trim(), "日常助手", StringComparison.Ordinal)))
         {
             return BadRequest(new GatewayErrorResponse("reserved_name", "The default workspace name is reserved."));
         }
@@ -248,10 +258,20 @@ public class CodexGatewayController : ControllerBase
         }
 
         var addedToAllowedRoots = _workspaceSettingsService.AddAllowedLocalRepositoryRoot(decision.CanonicalPath);
-        var (sessionId, workspaceName, created) = await _chatService.CreateOrOpenExternalWorkspaceSession(
-            userId,
-            decision.CanonicalPath,
-            request.Name).ConfigureAwait(false);
+        string sessionId;
+        string workspaceName;
+        bool created;
+        try
+        {
+            (sessionId, workspaceName, created) = await _chatService.CreateOrOpenExternalWorkspaceSession(
+                userId,
+                decision.CanonicalPath,
+                request.Name).ConfigureAwait(false);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Conflict(new GatewayErrorResponse("daily_external_workspace_forbidden", ex.Message));
+        }
 
         await _sessionManager.GetOrCreateSessionAsync(sessionId, userId, decision.CanonicalPath, (Uri?)null).ConfigureAwait(false);
         if (created && _workspaceVectorStoreService is not null)
@@ -312,25 +332,98 @@ public class CodexGatewayController : ControllerBase
     }
 
     /// <summary>
+    /// Gets or creates the dedicated protected Daily Assistant workspace for quick desktop access.
+    /// </summary>
+    [HttpPost("session/daily-assistant")]
+    [ProducesResponseType(typeof(SessionBootstrapResponse), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetOrCreateDailyAssistantSession(CancellationToken ct = default)
+    {
+        _ = ct;
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrEmpty(userId)) return Unauthorized();
+
+        var (sessionId, created, workspacePath) = await _chatService.GetOrCreateDailyAssistantWorkspace(userId).ConfigureAwait(false);
+        var dbSession = await _chatService.GetSession(sessionId).ConfigureAwait(false);
+        await _sessionManager.GetOrCreateSessionAsync(sessionId, userId, workspacePath, (Uri?)null).ConfigureAwait(false);
+
+        return Ok(new SessionBootstrapResponse
+        {
+            SessionId = sessionId,
+            WorkspaceName = "日常助手",
+            Created = created,
+            WorkspacePath = workspacePath,
+            IsDefault = false,
+            WorkMode = (dbSession?.WorkMode ?? CodexFlow.Core.Models.SessionWorkMode.Daily).ToString(),
+            ModeVersion = Math.Max(1, dbSession?.ModeVersion ?? 1),
+            PlanModeActive = dbSession?.PlanModeActive ?? false,
+            PlanModeVersion = Math.Max(1, dbSession?.PlanModeVersion ?? 1)
+        });
+    }
+
+    /// <summary>
     /// Creates a new workspace session for the current user.
     /// </summary>
     /// <param name="name">Workspace name.</param>
+    /// <param name="workMode">Optional immutable work mode (<c>development</c> or <c>daily</c>; defaults to <c>development</c>).</param>
     /// <param name="ct">Cancellation token.</param>
-    /// <returns>The new session identifier.</returns>
+    /// <returns>The new session identifier and policy snapshot.</returns>
     [HttpPost("session")]
-    public async Task<IActionResult> CreateSession([FromQuery] string name = "New Workspace", CancellationToken ct = default)
+    public async Task<IActionResult> CreateSession(
+        [FromQuery] string name = "New Workspace",
+        [FromQuery] string? workMode = null,
+        CancellationToken ct = default)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrEmpty(userId)) return Unauthorized();
 
-        var sessionId = await _chatService.CreateSession(userId, name);
+        if (!TryParseWorkMode(workMode, out var parsedWorkMode))
+        {
+            return BadRequest(new GatewayErrorResponse("invalid_work_mode", "workMode must be 'development' or 'daily'."));
+        }
+
+        string sessionId;
+        try
+        {
+            sessionId = await _chatService.CreateSession(userId, name, parsedWorkMode).ConfigureAwait(false);
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new GatewayErrorResponse("reserved_name", ex.Message));
+        }
+
         if (_workspaceVectorStoreService != null)
         {
             _logger.LogInformation("[Gateway] Ensuring workspace vector collection after session creation. SessionId={SessionId}", sessionId);
             await _workspaceVectorStoreService.EnsureCollectionAsync(sessionId);
         }
 
-        return Ok(new { sessionId });
+        return Ok(new
+        {
+            sessionId,
+            workMode = parsedWorkMode.ToString()
+        });
+    }
+
+    private static bool TryParseWorkMode(string? raw, out CodexFlow.Core.Models.SessionWorkMode mode)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            mode = CodexFlow.Core.Models.SessionWorkMode.Development;
+            return true;
+        }
+
+        switch (raw.Trim().ToLowerInvariant())
+        {
+            case "development" or "dev":
+                mode = CodexFlow.Core.Models.SessionWorkMode.Development;
+                return true;
+            case "daily":
+                mode = CodexFlow.Core.Models.SessionWorkMode.Daily;
+                return true;
+            default:
+                mode = default;
+                return false;
+        }
     }
 
     /// <summary>
@@ -1038,6 +1131,14 @@ public class SessionBootstrapResponse
     public string WorkspacePath { get; set; } = string.Empty;
     /// <summary>Whether the resolved workspace is the user's default workspace.</summary>
     public bool IsDefault { get; set; }
+    /// <summary>Immutable work mode of this session (<c>Development</c> or <c>Daily</c>).</summary>
+    public string WorkMode { get; set; } = nameof(CodexFlow.Core.Models.SessionWorkMode.Development);
+    /// <summary>Monotonic work mode policy version.</summary>
+    public int ModeVersion { get; set; } = 1;
+    /// <summary>Whether read-only Plan Mode is currently active on this session.</summary>
+    public bool PlanModeActive { get; set; }
+    /// <summary>Monotonic Plan Mode state version used for optimistic CAS transitions.</summary>
+    public int PlanModeVersion { get; set; } = 1;
 }
 
 /// <summary>

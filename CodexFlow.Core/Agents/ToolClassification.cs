@@ -18,7 +18,8 @@ public static class ToolClassification
             return false;
         }
 
-        return toolName.Contains("write_file", StringComparison.OrdinalIgnoreCase)
+        return toolName.Equals("run_shell", StringComparison.OrdinalIgnoreCase)
+            || toolName.Contains("write_file", StringComparison.OrdinalIgnoreCase)
             || toolName.Contains("apply_patch", StringComparison.OrdinalIgnoreCase)
             || toolName.Contains("ivilson_write", StringComparison.OrdinalIgnoreCase)
             || toolName.Contains("hs_write", StringComparison.OrdinalIgnoreCase)

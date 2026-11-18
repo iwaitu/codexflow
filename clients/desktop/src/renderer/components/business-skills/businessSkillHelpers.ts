@@ -17,10 +17,10 @@ export function isBusinessSkillsDisabledError(error: unknown): boolean {
   if (error instanceof ApiError) {
     return (
       error.status === 503 &&
+      error.code !== 'ConnectionUnavailable' &&
       (error.message.includes('BusinessSkills:Enabled') ||
         error.code.toLowerCase().includes('feature') ||
-        error.code === 'ConnectionUnavailable' ||
-        error.message.includes('未开启'))
+        error.message.includes('功能开关'))
     );
   }
   if (error instanceof Error) {

@@ -164,6 +164,9 @@ public static class OrchestrationServiceCollectionExtensions
             return options;
         });
         services.AddScoped<IProjectMemoryService, ProjectMemoryService>();
+        services.AddScoped<CodexFlow.Orchestration.Chat.SessionPolicyResolver>();
+        services.AddScoped<CodexFlow.Core.Models.ISessionPolicyResolver>(sp => sp.GetRequiredService<CodexFlow.Orchestration.Chat.SessionPolicyResolver>());
+        services.AddScoped<CodexFlow.Core.Agents.Tools.IPlanModeHostBridge>(sp => sp.GetRequiredService<CodexFlow.Orchestration.Chat.SessionPolicyResolver>());
         services.AddScoped<CodexSessionManager>();
         // Phase 4/5/6: Memory governance services
         services.AddScoped<CodexFlow.Core.Abstractions.IFactGuardService, CodexFlow.Core.Services.DefaultFactGuardService>();

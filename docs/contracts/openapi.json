@@ -3177,6 +3177,35 @@
         }
       }
     },
+    "/api/gateway/session/daily-assistant": {
+      "post": {
+        "tags": [
+          "CodexGateway"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionBootstrapResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionBootstrapResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionBootstrapResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/gateway/session": {
       "post": {
         "tags": [
@@ -3189,6 +3218,13 @@
             "schema": {
               "type": "string",
               "default": "New Workspace"
+            }
+          },
+          {
+            "name": "workMode",
+            "in": "query",
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -3831,6 +3867,45 @@
         }
       }
     },
+    "/api/gateway/approvals/{approvalId}/script": {
+      "get": {
+        "tags": [
+          "GatewayApproval"
+        ],
+        "parameters": [
+          {
+            "name": "approvalId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/PendingApprovalScriptSnapshot"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PendingApprovalScriptSnapshot"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PendingApprovalScriptSnapshot"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/gateway/approvals/{approvalId}": {
       "post": {
         "tags": [
@@ -4125,6 +4200,145 @@
           },
           "404": {
             "description": "Not Found",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/gateway/session/{sessionId}/plan-mode": {
+      "post": {
+        "tags": [
+          "GatewaySessionWorkspace"
+        ],
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdatePlanModeRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdatePlanModeRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdatePlanModeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanModeResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanModeResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanModeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
             "content": {
               "text/plain": {
                 "schema": {
@@ -7023,6 +7237,87 @@
           "expiresAtUtc": {
             "type": "string",
             "format": "date-time"
+          },
+          "scriptPreview": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "scriptLength": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "shell": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "backendNotice": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "origin": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
+      "PendingApprovalScriptSnapshot": {
+        "required": [
+          "approvalId",
+          "sessionId",
+          "requestDigest",
+          "scriptSha256",
+          "shell",
+          "scriptText",
+          "scriptLength",
+          "expiresAtUtc"
+        ],
+        "type": "object",
+        "properties": {
+          "approvalId": {
+            "type": "string"
+          },
+          "sessionId": {
+            "type": "string"
+          },
+          "requestDigest": {
+            "type": "string"
+          },
+          "scriptSha256": {
+            "type": "string"
+          },
+          "shell": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "scriptText": {
+            "type": "string"
+          },
+          "scriptLength": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "expiresAtUtc": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },
@@ -7118,6 +7413,58 @@
             "format": "date-time"
           },
           "note": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
+      "PlanModeResponse": {
+        "required": [
+          "sessionId",
+          "workMode",
+          "modeVersion",
+          "planModeActive",
+          "planModeVersion",
+          "planModeChangedAtUtc",
+          "planModeChangedBy"
+        ],
+        "type": "object",
+        "properties": {
+          "sessionId": {
+            "type": "string"
+          },
+          "workMode": {
+            "type": "string"
+          },
+          "modeVersion": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "planModeActive": {
+            "type": "boolean"
+          },
+          "planModeVersion": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "planModeChangedAtUtc": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "date-time"
+          },
+          "planModeChangedBy": {
             "type": [
               "null",
               "string"
@@ -7536,6 +7883,48 @@
           }
         }
       },
+      "SessionBootstrapResponse": {
+        "type": "object",
+        "properties": {
+          "sessionId": {
+            "type": "string"
+          },
+          "workspaceName": {
+            "type": "string"
+          },
+          "created": {
+            "type": "boolean"
+          },
+          "workspacePath": {
+            "type": "string"
+          },
+          "isDefault": {
+            "type": "boolean"
+          },
+          "workMode": {
+            "type": "string"
+          },
+          "modeVersion": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "planModeActive": {
+            "type": "boolean"
+          },
+          "planModeVersion": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          }
+        }
+      },
       "SessionPlanDto": {
         "required": [
           "planArtifactId",
@@ -7751,6 +8140,32 @@
               "null",
               "string"
             ]
+          },
+          "workMode": {
+            "type": "string",
+            "default": "Development"
+          },
+          "modeVersion": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32",
+            "default": 1
+          },
+          "planModeActive": {
+            "type": "boolean",
+            "default": false
+          },
+          "planModeVersion": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32",
+            "default": 1
           }
         }
       },
@@ -9365,6 +9780,38 @@
           }
         }
       },
+      "UpdatePlanModeRequest": {
+        "required": [
+          "active"
+        ],
+        "type": "object",
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "expectedPlanModeVersion": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "reason": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "objective": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
       "UpdatePluginConnectionRequest": {
         "required": [
           "expectedRevision",
@@ -9406,6 +9853,18 @@
             "type": [
               "null",
               "boolean"
+            ]
+          },
+          "workMode": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "mode": {
+            "type": [
+              "null",
+              "string"
             ]
           }
         }

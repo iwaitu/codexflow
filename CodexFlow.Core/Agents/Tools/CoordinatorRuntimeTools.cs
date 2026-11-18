@@ -340,7 +340,46 @@ public sealed class AskUserQuestionTool : ICodexTool
     }
 }
 
-public sealed class EnterPlanModeTool(CodexSessionManager? sessionManager = null) : ICodexTool
+public interface IPlanModeHostBridge
+{
+    Task<(bool Success, int PlanModeVersion, string? Error)> EnterPlanModeAsync(
+        string sessionId,
+        string? reason,
+        string? objective,
+        CancellationToken ct = default);
+
+    Task<int> GetCurrentPlanModeVersionAsync(string sessionId, CancellationToken ct = default);
+}
+
+public static class AmbientPlanToolContext
+{
+    private static readonly AsyncLocal<string?> TrustedSessionIdSlot = new();
+
+    public static string? TrustedSessionId => TrustedSessionIdSlot.Value;
+
+    public static IDisposable BeginScope(string sessionId)
+    {
+        var prev = TrustedSessionIdSlot.Value;
+        TrustedSessionIdSlot.Value = sessionId;
+        return new Restore(prev);
+    }
+
+    private sealed class Restore(string? previous) : IDisposable
+    {
+        private int _done;
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _done, 1) == 0)
+            {
+                TrustedSessionIdSlot.Value = previous;
+            }
+        }
+    }
+}
+
+public sealed class EnterPlanModeTool(
+    CodexSessionManager? sessionManager = null,
+    IPlanModeHostBridge? hostBridge = null) : ICodexTool
 {
     public const string ActiveMetadataKey = "PlanModeActive";
     public const string ObjectiveMetadataKey = "PlanModeObjective";
@@ -351,7 +390,7 @@ public sealed class EnterPlanModeTool(CodexSessionManager? sessionManager = null
     public const string PlanSummaryMetadataKey = "PlanModeSummary";
 
     public string Name => "enter_plan_mode";
-    public string Description => "进入计划模式，声明本轮只规划和请求确认，不直接改代码。参数：session_id(可选), reason(可选), objective(可选)。传入 session_id 时会写入 session metadata。";
+    public string Description => "进入只读计划模式，声明本轮只规划和请求确认，不直接写入文件或执行命令。参数：reason(可选), objective(可选)。";
     public ToolCategory Category => ToolCategory.System;
     public ToolExecutionMetadata Metadata => new(false, false, false, ToolInterruptBehavior.CancelSafe, 4_096);
     public IReadOnlyList<int> AllowedStages => [1, 2, 3];
@@ -360,14 +399,44 @@ public sealed class EnterPlanModeTool(CodexSessionManager? sessionManager = null
     {
         ArgumentNullException.ThrowIfNull(arguments);
 
-        var sessionId = arguments.GetValueOrDefault("session_id")?.ToString();
+        var requestedSessionId = arguments.GetValueOrDefault("session_id")?.ToString();
+        var trustedSessionId = AmbientPlanToolContext.TrustedSessionId;
+        if (!string.IsNullOrWhiteSpace(trustedSessionId) &&
+            !string.IsNullOrWhiteSpace(requestedSessionId) &&
+            !string.Equals(requestedSessionId.Trim(), trustedSessionId, StringComparison.Ordinal))
+        {
+            return CodexToolResult.Error("[plan_mode_session_mismatch] Model-supplied session_id does not match the host-bound session.");
+        }
+
+        var sessionId = !string.IsNullOrWhiteSpace(trustedSessionId) ? trustedSessionId : requestedSessionId;
         var reason = arguments.GetValueOrDefault("reason")?.ToString();
         var objective = arguments.GetValueOrDefault("objective")?.ToString();
         var enteredAtUtc = DateTime.UtcNow;
+        var planModeVersion = 1;
 
-        if (sessionManager != null && !string.IsNullOrWhiteSpace(sessionId))
+        if (hostBridge != null)
+        {
+            if (string.IsNullOrWhiteSpace(sessionId))
+            {
+                return CodexToolResult.Error("Missing host-bound session context for enter_plan_mode.");
+            }
+
+            var persisted = await hostBridge.EnterPlanModeAsync(sessionId, reason, objective, ct).ConfigureAwait(false);
+            if (!persisted.Success)
+            {
+                return CodexToolResult.Error(persisted.Error ?? "Failed to enter plan mode.");
+            }
+
+            planModeVersion = persisted.PlanModeVersion;
+        }
+        else if (sessionManager != null && !string.IsNullOrWhiteSpace(sessionId))
         {
             var session = await sessionManager.GetOrCreateSessionAsync(sessionId, string.Empty, string.Empty, (Uri?)null).ConfigureAwait(false);
+            session.PlanModeActive = true;
+            session.PlanModeVersion = Math.Max(1, session.PlanModeVersion + 1);
+            session.PlanModeChangedAtUtc = enteredAtUtc;
+            session.PlanModeChangedBy = "model_enter";
+            planModeVersion = session.PlanModeVersion;
             session.Metadata[ActiveMetadataKey] = bool.TrueString;
             session.Metadata[EnteredAtMetadataKey] = enteredAtUtc.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
             session.Metadata.Remove(ExitedAtMetadataKey);
@@ -391,6 +460,7 @@ public sealed class EnterPlanModeTool(CodexSessionManager? sessionManager = null
                 ui_event = "plan_mode_changed",
                 contract_version = 1,
                 active = true,
+                plan_mode_version = planModeVersion,
                 session_id = sessionId,
                 reason,
                 objective,
@@ -400,10 +470,12 @@ public sealed class EnterPlanModeTool(CodexSessionManager? sessionManager = null
     }
 }
 
-public sealed class ExitPlanModeTool(CodexSessionManager? sessionManager = null) : ICodexTool
+public sealed class ExitPlanModeTool(
+    CodexSessionManager? sessionManager = null,
+    IPlanModeHostBridge? hostBridge = null) : ICodexTool
 {
     public string Name => "exit_plan_mode";
-    public string Description => "退出计划模式并提交计划审批结果。参数：approved(必填), session_id(可选), plan_summary(可选), reason(可选)。传入 session_id 时会写入 session metadata。";
+    public string Description => "提交只读规划阶段的方案摘要，请求用户在控制面批准并退出计划模式（工具本身不会直接解除只读限制）。参数：plan_summary(必填), reason(可选)。";
     public ToolCategory Category => ToolCategory.System;
     public ToolExecutionMetadata Metadata => new(false, false, false, ToolInterruptBehavior.CancelSafe, 8_192);
     public IReadOnlyList<int> AllowedStages => [1, 2, 3];
@@ -412,27 +484,37 @@ public sealed class ExitPlanModeTool(CodexSessionManager? sessionManager = null)
     {
         ArgumentNullException.ThrowIfNull(arguments);
 
-        var approved = ReadBoolean(arguments.GetValueOrDefault("approved"));
-        if (!approved.HasValue)
+        var requestedSessionId = arguments.GetValueOrDefault("session_id")?.ToString();
+        var trustedSessionId = AmbientPlanToolContext.TrustedSessionId;
+        if (!string.IsNullOrWhiteSpace(trustedSessionId) &&
+            !string.IsNullOrWhiteSpace(requestedSessionId) &&
+            !string.Equals(requestedSessionId.Trim(), trustedSessionId, StringComparison.Ordinal))
         {
-            return CodexToolResult.Error("缺少必填参数 approved。");
+            return CodexToolResult.Error("[plan_mode_session_mismatch] Model-supplied session_id does not match the host-bound session.");
         }
 
-        var sessionId = arguments.GetValueOrDefault("session_id")?.ToString();
+        var sessionId = !string.IsNullOrWhiteSpace(trustedSessionId) ? trustedSessionId : requestedSessionId;
         var planSummary = arguments.GetValueOrDefault("plan_summary")?.ToString();
         var reason = arguments.GetValueOrDefault("reason")?.ToString();
-        var exitedAtUtc = DateTime.UtcNow;
-
-        if (sessionManager != null && !string.IsNullOrWhiteSpace(sessionId))
+        var ignoredApprovedArg = arguments.ContainsKey("approved");
+        if (string.IsNullOrWhiteSpace(planSummary))
         {
+            return CodexToolResult.Error("缺少必填参数 plan_summary。请总结待用户确认的执行方案。");
+        }
+
+        var requestedAtUtc = DateTime.UtcNow;
+        var planModeVersion = 1;
+
+        if (hostBridge != null && !string.IsNullOrWhiteSpace(sessionId))
+        {
+            planModeVersion = await hostBridge.GetCurrentPlanModeVersionAsync(sessionId, ct).ConfigureAwait(false);
+        }
+        else if (sessionManager != null && !string.IsNullOrWhiteSpace(sessionId))
+        {
+            // Never clear PlanModeActive here: only user confirmation on the control plane can unlock writes/execution.
             var session = await sessionManager.GetOrCreateSessionAsync(sessionId, string.Empty, string.Empty, (Uri?)null).ConfigureAwait(false);
-            session.Metadata[EnterPlanModeTool.ActiveMetadataKey] = bool.FalseString;
-            session.Metadata[EnterPlanModeTool.ApprovedMetadataKey] = approved.Value.ToString();
-            session.Metadata[EnterPlanModeTool.ExitedAtMetadataKey] = exitedAtUtc.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
-            if (!string.IsNullOrWhiteSpace(planSummary))
-            {
-                session.Metadata[EnterPlanModeTool.PlanSummaryMetadataKey] = planSummary.Trim();
-            }
+            planModeVersion = Math.Max(1, session.PlanModeVersion);
+            session.Metadata[EnterPlanModeTool.PlanSummaryMetadataKey] = planSummary.Trim();
             if (!string.IsNullOrWhiteSpace(reason))
             {
                 session.Metadata[EnterPlanModeTool.ReasonMetadataKey] = reason.Trim();
@@ -440,36 +522,29 @@ public sealed class ExitPlanModeTool(CodexSessionManager? sessionManager = null)
             await sessionManager.UpdateSessionAsync(session).ConfigureAwait(false);
         }
 
-        var output = approved.Value ? "PLAN_MODE_APPROVED" : "PLAN_MODE_REJECTED";
-        if (!string.IsNullOrWhiteSpace(planSummary))
+        var output = $"PLAN_MODE_EXIT_REQUESTED (awaiting user approval on control plane; read-only Plan Mode remains active){Environment.NewLine}{planSummary.Trim()}";
+        if (ignoredApprovedArg)
         {
-            output += Environment.NewLine + planSummary.Trim();
+            output += $"{Environment.NewLine}[audit] model-supplied 'approved' argument was ignored.";
         }
 
         return CodexToolResult.Succeeded(
             output,
             metadata: new
             {
-                kind = "plan_mode",
-                ui_event = "plan_mode_changed",
+                kind = "plan_mode_exit_requested",
+                ui_event = "plan_mode_exit_requested",
                 contract_version = 1,
-                active = false,
-                approved = approved.Value,
+                active = true,
+                plan_mode_version = planModeVersion,
+                ignored_approved_arg = ignoredApprovedArg,
                 session_id = sessionId,
-                planSummary,
+                planSummary = planSummary.Trim(),
                 reason,
-                exited_at_utc = exitedAtUtc
+                requested_at_utc = requestedAtUtc
             },
-            summary: approved.Value ? "plan approved" : "plan rejected");
+            summary: "plan mode exit requested (awaiting user confirmation)");
     }
-
-    private static bool? ReadBoolean(object? raw)
-        => raw switch
-        {
-            bool value => value,
-            string text when bool.TryParse(text, out var parsed) => parsed,
-            _ => null
-        };
 }
 
 public sealed class SyntheticOutputTool : ICodexTool

@@ -269,6 +269,15 @@ public static class JobModel
             entity.Property(e => e.ErrorJson).HasColumnType(jsonColumnType);
         });
 
+        builder.Entity<IvilsonSession>(entity =>
+        {
+            entity.Property(e => e.WorkMode).HasDefaultValue(CodexFlow.Core.Models.SessionWorkMode.Development);
+            entity.Property(e => e.ModeVersion).HasDefaultValue(1);
+            entity.Property(e => e.PlanModeActive).HasDefaultValue(false);
+            entity.Property(e => e.PlanModeVersion).HasDefaultValue(1);
+            entity.Property(e => e.PlanModeChangedBy).HasMaxLength(64);
+        });
+
         builder.Entity<SkillRunStepEntity>(entity =>
         {
             entity.HasKey(e => new { e.RunId, e.Sequence });

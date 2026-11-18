@@ -1,7 +1,51 @@
-import React, { useState } from 'react';
-import { AlertTriangle, ShieldAlert, Terminal } from 'lucide-react';
-import type { ApprovalDecisionWire } from '@shared/ipc';
+import React, { useEffect, useMemo, useState } from 'react';
+import { AlertTriangle, Check, Clock, Copy, RefreshCw, ShieldAlert, Terminal } from 'lucide-react';
+import type { ApprovalDecisionWire, PendingApprovalScriptSnapshot } from '@shared/ipc';
 import type { UiPendingApproval } from '../lib/sessionRecovery';
+
+async function sha256HexUtf8(text: string): Promise<string> {
+  const bytes = new TextEncoder().encode(text);
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+function hasSuspiciousControlCharacters(text: string): boolean {
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    if ((code < 32 && code !== 9 && code !== 10 && code !== 13) || code === 127) {
+      return true;
+    }
+    // 检测 Unicode 双向控制字符（BiDi Trojan Source）与零宽字符
+    if (
+      code === 0x061c ||
+      (code >= 0x200b && code <= 0x200f) ||
+      (code >= 0x202a && code <= 0x202e) ||
+      (code >= 0x2066 && code <= 0x2069) ||
+      code === 0xfeff
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function formatRemainingTime(expiresAtUtc: string | undefined, nowMs: number): { label: string; expired: boolean } | null {
+  if (!expiresAtUtc) return null;
+  const targetMs = Date.parse(expiresAtUtc);
+  if (Number.isNaN(targetMs)) return null;
+  const diffSec = Math.floor((targetMs - nowMs) / 1000);
+  if (diffSec <= 0) {
+    return { label: '审批已过期', expired: true };
+  }
+  const mins = Math.floor(diffSec / 60);
+  const secs = diffSec % 60;
+  return {
+    label: `剩余 ${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`,
+    expired: false,
+  };
+}
 
 interface ToolApprovalCardProps {
   approval: UiPendingApproval;
@@ -25,6 +69,89 @@ export const ToolApprovalCard: React.FC<ToolApprovalCardProps> = ({
 }) => {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [scriptSnapshot, setScriptSnapshot] = useState<PendingApprovalScriptSnapshot | null>(null);
+  const [scriptVerifyState, setScriptVerifyState] = useState<'none' | 'loading' | 'verified' | 'mismatch' | 'error'>(
+    approval.scriptSha256 ? 'loading' : 'none',
+  );
+  const [scriptError, setScriptError] = useState<string | null>(null);
+  const [scriptExpanded, setScriptExpanded] = useState(false);
+  const [copiedScript, setCopiedScript] = useState(false);
+  const [scriptRetryTick, setScriptRetryTick] = useState(0);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  const requiresScriptVerification = Boolean(approval.scriptSha256);
+  const isDailyShell = approval.tool === 'run_shell';
+  const remaining = useMemo(
+    () => formatRemainingTime(approval.expiresAtUtc, nowMs),
+    [approval.expiresAtUtc, nowMs],
+  );
+
+  useEffect(() => {
+    if (!approval.expiresAtUtc) return undefined;
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [approval.expiresAtUtc]);
+
+  useEffect(() => {
+    if (!approval.scriptSha256) {
+      setScriptVerifyState('none');
+      setScriptSnapshot(null);
+      setScriptError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setScriptVerifyState('loading');
+    setScriptError(null);
+
+    void window.codexflow
+      .getApprovalScript(approval.approvalId)
+      .then(async (res) => {
+        if (cancelled) return;
+        if (!res.ok || !res.data) {
+          setScriptVerifyState('error');
+          setScriptError(res.errorMessage || `无法获取完整脚本快照 (${res.status})`);
+          return;
+        }
+        const snap = res.data;
+        setScriptSnapshot(snap);
+        if (snap.requestDigest !== approval.requestDigest) {
+          setScriptVerifyState('mismatch');
+          setScriptError('脚本快照与审批请求摘要不匹配，已禁止批准。');
+          return;
+        }
+        try {
+          const actualSha = await sha256HexUtf8(snap.scriptText);
+          if (cancelled) return;
+          if (actualSha.toLowerCase() !== approval.scriptSha256?.toLowerCase()) {
+            setScriptVerifyState('mismatch');
+            setScriptError('脚本内容 SHA-256 校验失败，可能已被篡改，已禁止批准。');
+            return;
+          }
+          setScriptVerifyState('verified');
+        } catch {
+          if (!cancelled) {
+            setScriptVerifyState('error');
+            setScriptError('浏览器 WebCrypto SHA-256 不可用，无法校验脚本完整性。');
+          }
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setScriptVerifyState('error');
+          setScriptError(err instanceof Error ? err.message : String(err));
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [approval.approvalId, approval.requestDigest, approval.scriptSha256, scriptRetryTick]);
+
+  const suspiciousControlChars = useMemo(
+    () => (scriptSnapshot ? hasSuspiciousControlCharacters(scriptSnapshot.scriptText) : false),
+    [scriptSnapshot],
+  );
 
   // Defensively withhold long-term allow decisions when workspace code execution is involved,
   // regardless of backend filtering.
@@ -39,21 +166,26 @@ export const ToolApprovalCard: React.FC<ToolApprovalCardProps> = ({
   const handleDecision = async (decision: ApprovalDecisionWire) => {
     setSubmitting(true);
     setError(null);
-    const res = await window.codexflow.approveToolExecution({
-      approvalId: approval.approvalId,
-      requestDigest: approval.requestDigest,
-      decision,
-    });
-    setSubmitting(false);
-    if (res.ok) {
-      onResolved(approval.approvalId);
-      return;
+    try {
+      const res = await window.codexflow.approveToolExecution({
+        approvalId: approval.approvalId,
+        requestDigest: approval.requestDigest,
+        decision,
+      });
+      if (res.ok) {
+        onResolved(approval.approvalId);
+        return;
+      }
+      setError(
+        res.status === 409 && res.expectedRequestDigest
+          ? `请求摘要已变化 (${res.errorMessage})，请重新核对后操作。`
+          : res.errorMessage || `审批失败 (${res.status})`,
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSubmitting(false);
     }
-    setError(
-      res.status === 409 && res.expectedRequestDigest
-        ? `请求摘要已变化 (${res.errorMessage})，请重新核对后操作。`
-        : res.errorMessage || `审批失败 (${res.status})`,
-    );
   };
 
   return (
@@ -69,9 +201,21 @@ export const ToolApprovalCard: React.FC<ToolApprovalCardProps> = ({
             {approval.backend}
           </span>
         </div>
-        <span className="font-mono text-[11px] text-slate-400">
-          摘要 {approval.requestDigest.slice(0, 12)}…
-        </span>
+        <div className="flex items-center gap-2">
+          {remaining && (
+            <span
+              className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[11px] ${
+                remaining.expired ? 'bg-rose-500/20 text-rose-300' : 'bg-slate-800/80 text-slate-300'
+              }`}
+            >
+              <Clock className="h-3 w-3" />
+              {remaining.label}
+            </span>
+          )}
+          <span className="font-mono text-[11px] text-slate-400">
+            摘要 {approval.requestDigest.slice(0, 12)}…
+          </span>
+        </div>
       </div>
 
       {isLocal && (
@@ -87,7 +231,11 @@ export const ToolApprovalCard: React.FC<ToolApprovalCardProps> = ({
         <div className="mt-2 flex items-start gap-2 rounded-lg border border-rose-500/30 bg-rose-500/10 p-2 text-rose-200">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rose-400" />
           <div>
-            此命令为解释器/包管理器/构建工具，批准后<strong>会读取并执行工作区内的项目代码</strong>（仅限允许一次）。
+            {isDailyShell ? (
+              <>此操作为本机 Shell 脚本执行，请逐行审阅下方完整脚本内容（仅限<strong>允许一次</strong>）。</>
+            ) : (
+              <>此命令为解释器/包管理器/构建工具，批准后<strong>会读取并执行工作区内的项目代码</strong>（仅限允许一次）。</>
+            )}
           </div>
         </div>
       )}
@@ -148,19 +296,116 @@ export const ToolApprovalCard: React.FC<ToolApprovalCardProps> = ({
 
       {error && <div className="mt-2 text-xs text-rose-300">{error}</div>}
 
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        {(['allow_once', 'allow_session', 'allow_always', 'deny'] as ApprovalDecisionWire[]).map((decision) => {
-          if (!allowed.has(decision)) {
-            return null;
-          }
-          const isDeny = decision === 'deny';
-          const isOnce = decision === 'allow_once';
-          return (
-            <button
-              key={decision}
-              type="button"
-              disabled={submitting || !controlPlaneAvailable}
-              onClick={() => void handleDecision(decision)}
+        {isLocal && approval.tool === 'run_shell' && (
+          <div className="mt-2 rounded-lg border border-sky-500/30 bg-sky-500/10 p-2 text-sky-200">
+            日常脚本沙箱说明：Local 模式下 <code>HOME/USERPROFILE</code> 指向临时目录；仅工作区 <code>outputs/</code> 下的产物会持久化保留并可导出。
+          </div>
+        )}
+
+        {requiresScriptVerification && (
+          <div className="mt-3 rounded-lg border border-slate-700 bg-slate-950/90 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-[11px] font-medium text-slate-200">
+                <span>待审批完整脚本</span>
+                {approval.shellKind && (
+                  <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-indigo-300">
+                    {approval.shellKind}
+                  </span>
+                )}
+                {scriptVerifyState === 'verified' && (
+                  <span
+                    data-testid="script-sha-verified"
+                    className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] text-emerald-300"
+                  >
+                    SHA-256 已校验
+                  </span>
+                )}
+                {scriptVerifyState === 'loading' && (
+                  <span className="text-[10px] text-amber-300">正在拉取并校验脚本…</span>
+                )}
+              </div>
+
+              {scriptSnapshot && (
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void navigator.clipboard?.writeText(scriptSnapshot.scriptText).then(() => {
+                        setCopiedScript(true);
+                        setTimeout(() => setCopiedScript(false), 1500);
+                      });
+                    }}
+                    className="inline-flex items-center gap-1 rounded border border-slate-700 px-2 py-0.5 text-[10px] text-slate-300 hover:bg-slate-800"
+                  >
+                    {copiedScript ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+                    <span>{copiedScript ? '已复制' : '复制脚本'}</span>
+                  </button>
+                  {scriptSnapshot.scriptText.split('\n').length > 10 && (
+                    <button
+                      type="button"
+                      onClick={() => setScriptExpanded((prev) => !prev)}
+                      className="rounded border border-slate-700 px-2 py-0.5 text-[10px] text-slate-300 hover:bg-slate-800"
+                    >
+                      {scriptExpanded ? '收起' : '展开全部'}
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {suspiciousControlChars && (
+              <div className="mt-2 rounded border border-rose-500/40 bg-rose-500/10 px-2 py-1 text-[11px] text-rose-200">
+                警告：脚本包含不可见或控制字符（例如 ANSI 转义序列），请仔细核对后再决定是否允许。
+              </div>
+            )}
+
+            {scriptError && (
+              <div
+                data-testid="script-verify-error"
+                className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-rose-300"
+              >
+                <span>{scriptError}</span>
+                {scriptVerifyState === 'error' && (
+                  <button
+                    type="button"
+                    onClick={() => setScriptRetryTick((t) => t + 1)}
+                    className="inline-flex items-center gap-1 rounded border border-rose-500/40 bg-rose-500/15 px-2 py-0.5 text-[10px] font-medium text-rose-200 hover:bg-rose-500/25"
+                  >
+                    <RefreshCw className="h-3 w-3" />
+                    重试拉取脚本
+                  </button>
+                )}
+              </div>
+            )}
+
+            {scriptSnapshot && (
+              <pre
+                data-testid="approval-script-preview"
+                className={`mt-2 overflow-x-auto whitespace-pre-wrap break-all rounded border border-slate-800 bg-slate-900 p-2 font-mono text-[11px] text-slate-100 ${
+                  scriptExpanded ? 'max-h-[420px] overflow-y-auto' : 'max-h-48 overflow-y-auto'
+                }`}
+              >
+                {scriptSnapshot.scriptText}
+              </pre>
+            )}
+          </div>
+        )}
+
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          {(['allow_once', 'allow_session', 'allow_always', 'deny'] as ApprovalDecisionWire[]).map((decision) => {
+            if (!allowed.has(decision)) {
+              return null;
+            }
+            const isDeny = decision === 'deny';
+            const isOnce = decision === 'allow_once';
+            const allowDisabled =
+              !isDeny && requiresScriptVerification && scriptVerifyState !== 'verified';
+            return (
+              <button
+                key={decision}
+                type="button"
+                disabled={submitting || !controlPlaneAvailable || allowDisabled}
+                onClick={() => void handleDecision(decision)}
               className={
                 isDeny
                   ? 'rounded-lg border border-rose-500/40 bg-rose-500/15 px-3 py-1.5 font-medium text-rose-200 hover:bg-rose-500/25 disabled:opacity-40'
@@ -175,7 +420,9 @@ export const ToolApprovalCard: React.FC<ToolApprovalCardProps> = ({
         })}
         {!allowed.has('allow_always') && (
           <span className="text-[11px] text-slate-400">
-            注：该命令不提供“始终允许”（避免信任项目内任意代码）
+            {isDailyShell
+              ? '注：日常模式 Shell 指令强制单次授权，不提供“始终允许”'
+              : '注：该命令不提供“始终允许”（避免信任项目内任意代码）'}
           </span>
         )}
       </div>

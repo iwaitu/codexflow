@@ -40,7 +40,7 @@ public static class ToolCapabilityCatalog
         }
 
         Add(ToolCapability.ExecuteUntrustedCode,
-            "exec_cmd", "run_command", "exec_code", "run_tests", "skill");
+            "exec_cmd", "run_command", "exec_code", "run_tests", "skill", "run_shell");
 
         Add(ToolCapability.WorkspaceWrite,
             "write_file", "edit_file", "delete_file", "create_directory", "apply_patch", "ApplyPatchTool",
@@ -58,7 +58,8 @@ public static class ToolCapabilityCatalog
             "enter_plan_mode", "exit_plan_mode", "user_learn_preference", "list_mcp_resources", "read_mcp_resource",
             "create_session_plan", "generate_dev_plan", "plan_patch_resolve", "request_plan_approval", "approve_plan",
             "reject_plan", "project_plan_to_tasks", "cron_create", "cron_delete", "cron_list", "monitor",
-            "remote_trigger", "push_notification", "workflow", "synthetic_output", "report_task_status");
+            "remote_trigger", "push_notification", "workflow", "synthetic_output", "report_task_status",
+            "list_authorized_directory");
 
         return t;
     }

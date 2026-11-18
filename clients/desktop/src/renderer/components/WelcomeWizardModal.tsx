@@ -264,11 +264,35 @@ export const WelcomeWizardModal: React.FC<WelcomeWizardModalProps> = ({
 
               <div className="grid grid-cols-2 gap-3">
                 <label className="col-span-2 block">
-                  <span className="mb-1 block text-slate-300">模型接口地址 (ApiUrl)</span>
+                  <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-slate-300">模型接口地址 (ApiUrl)</span>
+                    <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setApiUrl('https://api.openai.com/v1');
+                          setApiMode('ChatCompletions');
+                        }}
+                        className="rounded border border-slate-700 bg-slate-800/80 px-2 py-0.5 text-slate-300 hover:bg-slate-700"
+                      >
+                        OpenAI 兼容
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setApiUrl('http://127.0.0.1:11434/v1');
+                          setApiMode('ChatCompletions');
+                        }}
+                        className="rounded border border-slate-700 bg-slate-800/80 px-2 py-0.5 text-slate-300 hover:bg-slate-700"
+                      >
+                        本地 Ollama / vLLM
+                      </button>
+                    </div>
+                  </div>
                   <input
                     value={apiUrl}
                     onChange={(e) => setApiUrl(e.target.value)}
-                    placeholder="https://your-model-host/v1/{1}"
+                    placeholder="例如 https://api.openai.com/v1 或 http://127.0.0.1:11434/v1"
                     className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 focus:border-indigo-500 focus:outline-none"
                   />
                 </label>
@@ -323,7 +347,7 @@ export const WelcomeWizardModal: React.FC<WelcomeWizardModalProps> = ({
                   <span className="space-y-0.5 text-slate-300">
                     <span className="block font-medium text-slate-200">支持多模态（图片与扫描版 PDF 识别）</span>
                     <span className="block text-[11px] text-slate-400">
-                      保存时会自动用内置测试图片检测当前模型是否支持视觉输入，检测通过将自动开启。
+                      保存时会自动用内置测试图片检测多模态能力；检测通过将自动开启，若探测未明确拒绝将保留你的手动勾选。
                     </span>
                   </span>
                 </label>
@@ -485,37 +509,6 @@ export const WelcomeWizardModal: React.FC<WelcomeWizardModalProps> = ({
                   </button>
                 </div>
               </div>
-
-              {confirmRiskOpen && (
-                <div
-                  data-testid="wizard-risk-confirm"
-                  className="rounded-xl border border-amber-500/50 bg-amber-950/30 p-3 text-amber-100"
-                >
-                  <div className="font-semibold">确认放宽执行或隔离策略？</div>
-                  <ul className="mt-1 list-disc space-y-0.5 pl-4 text-amber-200/90">
-                    {riskReasons.map((reason) => (
-                      <li key={reason}>{reason}</li>
-                    ))}
-                  </ul>
-                  <div className="mt-2 flex gap-2">
-                    <button
-                      type="button"
-                      disabled={saving}
-                      onClick={() => void executeSaveManaged()}
-                      className="rounded-lg bg-amber-600 px-3 py-1 font-medium text-white hover:bg-amber-500"
-                    >
-                      确认放宽并保存
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setConfirmRiskOpen(false)}
-                      className="rounded-lg border border-slate-700 px-3 py-1 text-slate-300 hover:bg-slate-800"
-                    >
-                      取消
-                    </button>
-                  </div>
-                </div>
-              )}
 
               {error && <div className="text-rose-300">{error}</div>}
 

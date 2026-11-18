@@ -99,7 +99,7 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
             ct.ThrowIfCancellationRequested();
 
             var opts = _options.CurrentValue;
-            var modeSnapshot = opts.PermissionMode;
+            var rawModeSnapshot = opts.PermissionMode;
             var backendSnapshot = opts.Backend;
 
             if (cycle > 0 || activeCtx.Request.Backend != backendSnapshot)
@@ -129,6 +129,7 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
             }
 
             var request = activeCtx.Request;
+            var modeSnapshot = EffectivePermissionModeForRequest(request, rawModeSnapshot);
 
             if (modeSnapshot == ExecutionPermissionMode.Deny)
             {
@@ -161,15 +162,18 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
 
             // Check single-use pre-approval granted while a background job was suspended in WaitingUser.
             // Bound to (SessionId, JobId, RequestDigest, ApprovedBackend, ExpiresAtUtc).
-            var ticketKey = (request.SessionId, request.JobId, requestDigest);
-            if (_resumedOnceAllowances.TryRemove(ticketKey, out var onceTicket))
+            if (!string.IsNullOrWhiteSpace(request.JobId))
             {
-                if (onceTicket.IsValidFor(backendSnapshot, DateTimeOffset.UtcNow) &&
-                    onceTicket.TryConsumeOnce() &&
-                    VerifyArtifactsOrInvalidate(activeCtx))
+                var ticketKey = (request.SessionId, request.JobId, requestDigest);
+                if (_resumedOnceAllowances.TryRemove(ticketKey, out var onceTicket))
                 {
-                    await RecordAuditAsync(request, "allowed_by_resumed_once_grant", onceTicket.DecidedBy, onceTicket.Note, ct).ConfigureAwait(false);
-                    return Allowed(request, backendSnapshot, "allowed (allow_once resumed)");
+                    if (onceTicket.IsValidFor(backendSnapshot, DateTimeOffset.UtcNow) &&
+                        onceTicket.TryConsumeOnce() &&
+                        VerifyArtifactsOrInvalidate(activeCtx))
+                    {
+                        await RecordAuditAsync(request, "allowed_by_resumed_once_grant", onceTicket.DecidedBy, onceTicket.Note, ct).ConfigureAwait(false);
+                        return Allowed(request, backendSnapshot, "allowed (allow_once resumed)");
+                    }
                 }
             }
 
@@ -275,6 +279,10 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
                 ? now.Add(opts.ApprovalTimeout > TimeSpan.Zero ? opts.ApprovalTimeout : TimeSpan.FromHours(24))
                 : now.Add(waitTimeout);
 
+            var warningText = !string.IsNullOrWhiteSpace(request.BackendNotice)
+                ? request.BackendNotice
+                : (request.ExecutesWorkspaceCode ? WorkspaceCodeWarningText : null);
+
             var item = new PendingApprovalItem(
                 ApprovalId: approvalId,
                 RequestDigest: requestDigest,
@@ -293,10 +301,15 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
                 Filesystem: request.Filesystem,
                 Reason: askReason,
                 ExecutesWorkspaceCode: request.ExecutesWorkspaceCode,
-                WorkspaceCodeWarning: request.ExecutesWorkspaceCode ? WorkspaceCodeWarningText : null,
+                WorkspaceCodeWarning: warningText,
                 AllowedDecisions: allowedDecisions.Select(ToWireDecision).ToArray(),
                 CreatedAtUtc: now,
-                ExpiresAtUtc: itemExpiresAt);
+                ExpiresAtUtc: itemExpiresAt,
+                ScriptPreview: request.ScriptPreview,
+                ScriptLength: request.ScriptLength,
+                Shell: request.ShellKind,
+                BackendNotice: request.BackendNotice,
+                Origin: request.Origin == ExecutionOrigin.Unspecified ? null : request.Origin.ToString());
 
             var entry = new PendingApprovalEntry(item, request, allowedDecisions, backendSnapshot, modeSnapshot);
 
@@ -312,7 +325,8 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
             entry.AttachConfigWatcher(_options.OnChange((updated, optionName) =>
             {
                 _ = optionName;
-                if (updated.Backend != backendSnapshot || updated.PermissionMode != modeSnapshot)
+                var updatedEffectiveMode = EffectivePermissionModeForRequest(request, updated.PermissionMode);
+                if (updated.Backend != backendSnapshot || updatedEffectiveMode != modeSnapshot)
                 {
                     if (entry.InvalidateForConfigChangeAndCheckShouldTerminate())
                     {
@@ -362,7 +376,12 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
                 executesWorkspaceCode = item.ExecutesWorkspaceCode,
                 workspaceCodeWarning = item.WorkspaceCodeWarning,
                 allowedDecisions = item.AllowedDecisions,
-                expiresAt = item.ExpiresAtUtc
+                expiresAt = item.ExpiresAtUtc,
+                scriptPreview = item.ScriptPreview,
+                scriptLength = item.ScriptLength,
+                shell = item.Shell,
+                backendNotice = item.BackendNotice,
+                origin = item.Origin
             }, ct).ConfigureAwait(false);
 
             if (shouldSuspendUnsubscribedJob && waitTimeout <= TimeSpan.Zero)
@@ -447,7 +466,8 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
 
             // Re-verify active backend & permission mode have not drifted right after resolution!
             var postResolveOpts = _options.CurrentValue;
-            if (postResolveOpts.Backend != backendSnapshot || postResolveOpts.PermissionMode != modeSnapshot)
+            var postResolveEffectiveMode = EffectivePermissionModeForRequest(request, postResolveOpts.PermissionMode);
+            if (postResolveOpts.Backend != backendSnapshot || postResolveEffectiveMode != modeSnapshot)
             {
                 await PublishResolvedSseAsync(item, "invalidated", "Execution configuration changed before launch; re-evaluating.", ct).ConfigureAwait(false);
                 continue;
@@ -522,16 +542,16 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
                 "Approval request has expired.");
         }
 
-        // Reject submission if active execution backend OR permission mode drifted since this request was created (B5 / B3).
+        // Reject submission if active execution backend OR effective permission mode drifted since this request was created (B5 / B3).
         var currentOpts = _options.CurrentValue;
-        if (currentOpts.Backend != entry.BackendSnapshot || currentOpts.PermissionMode != entry.ModeSnapshot)
+        if (!entry.MatchesExecutionConfig(currentOpts))
         {
             entry.InvalidateForConfigChange();
             _pending.TryRemove(approvalId, out _);
             await EnqueueSystemTerminationAndTryOnceAsync(approvalId, entry, "Approval invalidated due to configuration change.").ConfigureAwait(false);
             return new ApprovalSubmissionResult(
                 ApprovalSubmissionOutcome.AlreadyResolvedOrExpired,
-                $"Execution configuration changed from '{entry.BackendSnapshot}/{entry.ModeSnapshot}' to '{currentOpts.Backend}/{currentOpts.PermissionMode}'; approval invalidated.",
+                $"Execution configuration changed from '{entry.BackendSnapshot}/{entry.ModeSnapshot}' to '{currentOpts.Backend}/{EffectivePermissionModeForRequest(entry.Request, currentOpts.PermissionMode)}'; approval invalidated.",
                 entry.Item);
         }
 
@@ -846,6 +866,60 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
             string.Equals(e.Item.SessionId, sessionId, StringComparison.Ordinal) &&
             e.Item.ExpiresAtUtc > now &&
             e.IsStillAwaitingUser);
+    }
+
+    public void CancelOwnerApprovals(string sessionId, ApprovalOwnerKind ownerKind, string ownerId, string reason = "Owner turn cancelled.")
+    {
+        if (string.IsNullOrWhiteSpace(sessionId) || ownerKind == ApprovalOwnerKind.Unspecified || string.IsNullOrWhiteSpace(ownerId))
+        {
+            return;
+        }
+
+        foreach (var (id, entry) in _pending)
+        {
+            if (string.Equals(entry.Item.SessionId, sessionId, StringComparison.Ordinal) &&
+                entry.Request.OwnerKind == ownerKind &&
+                string.Equals(entry.Request.OwnerId, ownerId, StringComparison.Ordinal))
+            {
+                entry.CancelByCaller(reason);
+                if (_pending.TryRemove(id, out _))
+                {
+                    EnqueueSystemTermination(id, entry, reason);
+                }
+            }
+        }
+    }
+
+    public bool TryGetPendingApprovalScript(string approvalId, string sessionId, out PendingApprovalScriptSnapshot? snapshot)
+    {
+        snapshot = null;
+        if (string.IsNullOrWhiteSpace(approvalId) ||
+            string.IsNullOrWhiteSpace(sessionId) ||
+            !_pending.TryGetValue(approvalId, out var entry))
+        {
+            return false;
+        }
+
+        if (!string.Equals(entry.Item.SessionId, sessionId, StringComparison.Ordinal) ||
+            entry.Item.ExpiresAtUtc <= DateTimeOffset.UtcNow ||
+            !entry.IsStillAwaitingUser ||
+            entry.Request.ScriptText is null)
+        {
+            return false;
+        }
+
+        var text = entry.Request.ScriptText;
+        var hash = entry.Request.ScriptSha256 ?? ExecutionRequest.Sha256Text(text);
+        snapshot = new PendingApprovalScriptSnapshot(
+            entry.Item.ApprovalId,
+            entry.Item.SessionId,
+            entry.Item.RequestDigest,
+            hash,
+            entry.Request.ShellKind,
+            text,
+            entry.Request.ScriptLength ?? text.Length,
+            entry.Item.ExpiresAtUtc);
+        return true;
     }
 
     public void CancelSessionApprovals(string sessionId, string reason = "Session or turn cancelled.")
@@ -1229,6 +1303,16 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
         }
     }
 
+    private static bool IsRunShellTool(string? toolName)
+        => string.Equals(toolName, "run_shell", StringComparison.OrdinalIgnoreCase);
+
+    private static ExecutionPermissionMode EffectivePermissionModeForRequest(
+        ExecutionRequest request,
+        ExecutionPermissionMode globalMode)
+        => IsRunShellTool(request.ToolName) && globalMode == ExecutionPermissionMode.FullAuto
+            ? ExecutionPermissionMode.Ask
+            : globalMode;
+
     private static bool VerifyArtifactsOrInvalidate(ExecutionAuthorizationContext ctx)
         => ctx.VerifyStagedArtifactsUnchanged is null || ctx.VerifyStagedArtifactsUnchanged();
 
@@ -1312,6 +1396,9 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
                 outcome,
                 decidedBy,
                 selfApprovalProtection = selfProtection,
+                origin = request.Origin.ToString(),
+                policyVersion = request.PolicyVersion,
+                shell = request.ShellKind,
                 note
             });
 
@@ -1401,6 +1488,9 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
         public ExecutionBackend BackendSnapshot { get; } = backendSnapshot;
         public ExecutionPermissionMode ModeSnapshot { get; } = modeSnapshot;
         public TaskCompletionSource<PendingResolution> Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public bool MatchesExecutionConfig(ExecutionOptions live)
+            => live.Backend == BackendSnapshot && EffectivePermissionModeForRequest(Request, live.PermissionMode) == ModeSnapshot;
 
         public void AttachConfigWatcher(IDisposable? watcher)
         {
@@ -1539,12 +1629,12 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
                 }
 
                 var live = optionsMonitor.CurrentValue;
-                if (live.Backend != BackendSnapshot || live.PermissionMode != ModeSnapshot)
+                if (!MatchesExecutionConfig(live))
                 {
                     _invalidated = true;
                     _suspendedJobResolved = true;
                     Completion.TrySetResult(new PendingResolution(PendingResolutionState.InvalidatedByConfigChange));
-                    failureReason = $"Execution configuration changed from '{BackendSnapshot}/{ModeSnapshot}' to '{live.Backend}/{live.PermissionMode}'; approval invalidated.";
+                    failureReason = $"Execution configuration changed from '{BackendSnapshot}/{ModeSnapshot}' to '{live.Backend}/{EffectivePermissionModeForRequest(Request, live.PermissionMode)}'; approval invalidated.";
                     return ForegroundResolutionRoute.TerminalFailure;
                 }
 
@@ -1607,7 +1697,7 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
             lock (_suspendLock)
             {
                 var live = optionsMonitor.CurrentValue;
-                if (_invalidated || live.Backend != BackendSnapshot || live.PermissionMode != ModeSnapshot)
+                if (_invalidated || !MatchesExecutionConfig(live))
                 {
                     _invalidated = true;
                     _suspendedToJob = false;
@@ -1655,7 +1745,7 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
                 }
 
                 var live = optionsMonitor.CurrentValue;
-                if (live.Backend != BackendSnapshot || live.PermissionMode != ModeSnapshot)
+                if (!MatchesExecutionConfig(live))
                 {
                     _invalidated = true;
                     _suspendedJobResolved = true;
@@ -1707,11 +1797,11 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
                 }
 
                 var live = optionsMonitor.CurrentValue;
-                if (live.Backend != BackendSnapshot || live.PermissionMode != ModeSnapshot)
+                if (!MatchesExecutionConfig(live))
                 {
                     _invalidated = true;
                     _suspendedJobResolved = true;
-                    reason = $"Execution configuration changed from '{BackendSnapshot}/{ModeSnapshot}' to '{live.Backend}/{live.PermissionMode}'.";
+                    reason = $"Execution configuration changed from '{BackendSnapshot}/{ModeSnapshot}' to '{live.Backend}/{EffectivePermissionModeForRequest(Request, live.PermissionMode)}'.";
                     return true;
                 }
 
@@ -1752,12 +1842,12 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
                 }
 
                 var live = optionsMonitor.CurrentValue;
-                if (live.Backend != BackendSnapshot || live.PermissionMode != ModeSnapshot)
+                if (!MatchesExecutionConfig(live))
                 {
                     _invalidated = true;
                     _suspendedJobResolved = true;
                     requiresSystemTermination = true;
-                    failureReason = $"Execution configuration changed from '{BackendSnapshot}/{ModeSnapshot}' to '{live.Backend}/{live.PermissionMode}'; suspended approval invalidated.";
+                    failureReason = $"Execution configuration changed from '{BackendSnapshot}/{ModeSnapshot}' to '{live.Backend}/{EffectivePermissionModeForRequest(Request, live.PermissionMode)}'; suspended approval invalidated.";
                     return false;
                 }
 
@@ -1818,11 +1908,11 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
                 }
 
                 var live = optionsMonitor.CurrentValue;
-                if (live.Backend != BackendSnapshot || live.PermissionMode != ModeSnapshot)
+                if (!MatchesExecutionConfig(live))
                 {
                     _invalidated = true;
                     _suspendedJobResolved = true;
-                    terminalReason = $"Execution configuration changed from '{BackendSnapshot}/{ModeSnapshot}' to '{live.Backend}/{live.PermissionMode}'.";
+                    terminalReason = $"Execution configuration changed from '{BackendSnapshot}/{ModeSnapshot}' to '{live.Backend}/{EffectivePermissionModeForRequest(Request, live.PermissionMode)}'.";
                     return true;
                 }
 

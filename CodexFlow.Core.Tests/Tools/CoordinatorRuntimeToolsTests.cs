@@ -107,19 +107,20 @@ public class CoordinatorRuntimeToolsTests
         Assert.Equal(bool.TrueString, session.Metadata[EnterPlanModeTool.ActiveMetadataKey]);
         Assert.Equal("review coordinator plan", session.Metadata[EnterPlanModeTool.ObjectiveMetadataKey]);
 
-        var missingApproval = await exit.ExecuteAsync([]);
-        Assert.Equal(ToolResultStatus.Failed, missingApproval.Status);
+        var missingSummary = await exit.ExecuteAsync(new Dictionary<string, object?> { ["session_id"] = "session-plan" });
+        Assert.Equal(ToolResultStatus.Failed, missingSummary.Status);
 
-        var approved = await exit.ExecuteAsync(new Dictionary<string, object?>
+        // Even if an attacker or model passes approved=true, ExitPlanModeTool NEVER clears PlanModeActive (V1/V5 fix).
+        var exitRequested = await exit.ExecuteAsync(new Dictionary<string, object?>
         {
             ["session_id"] = "session-plan",
             ["approved"] = true,
             ["plan_summary"] = "Spawn forge, then verify."
         });
-        Assert.Equal(ToolResultStatus.Success, approved.Status);
-        Assert.Contains("PLAN_MODE_APPROVED", approved.Output, StringComparison.Ordinal);
-        Assert.Equal(bool.FalseString, session.Metadata[EnterPlanModeTool.ActiveMetadataKey]);
-        Assert.Equal(bool.TrueString, session.Metadata[EnterPlanModeTool.ApprovedMetadataKey]);
+        Assert.Equal(ToolResultStatus.Success, exitRequested.Status);
+        Assert.Contains("PLAN_MODE_EXIT_REQUESTED", exitRequested.Output, StringComparison.Ordinal);
+        Assert.True(session.PlanModeActive);
+        Assert.Equal(bool.TrueString, session.Metadata[EnterPlanModeTool.ActiveMetadataKey]);
         Assert.Equal("Spawn forge, then verify.", session.Metadata[EnterPlanModeTool.PlanSummaryMetadataKey]);
     }
 

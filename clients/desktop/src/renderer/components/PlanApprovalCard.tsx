@@ -11,6 +11,7 @@ interface PlanApprovalCardProps {
   executionBackend: string | null;
   controlPlaneAvailable: boolean;
   onSubmitted: () => void;
+  onRequestSwitchManaged?: () => void;
 }
 
 export const PlanApprovalCard: React.FC<PlanApprovalCardProps> = ({
@@ -20,6 +21,7 @@ export const PlanApprovalCard: React.FC<PlanApprovalCardProps> = ({
   executionBackend,
   controlPlaneAvailable,
   onSubmitted,
+  onRequestSwitchManaged,
 }) => {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -150,6 +152,20 @@ export const PlanApprovalCard: React.FC<PlanApprovalCardProps> = ({
               <Play className="h-3.5 w-3.5" />
               开始执行
             </button>
+          )}
+          {!controlPlaneAvailable && (
+            <div className="mt-1 flex w-full flex-wrap items-center gap-2 rounded-lg border border-amber-500/30 bg-slate-950/60 px-2.5 py-1.5 text-[11px] text-amber-200">
+              <span>当前处于只读连接（无控制面），无法批准或执行开发计划。</span>
+              {onRequestSwitchManaged && (
+                <button
+                  type="button"
+                  onClick={onRequestSwitchManaged}
+                  className="rounded border border-amber-400/40 bg-amber-500/20 px-2 py-0.5 font-medium text-amber-100 hover:bg-amber-500/30"
+                >
+                  切换为托管模式
+                </button>
+              )}
+            </div>
           )}
         </div>
       )}

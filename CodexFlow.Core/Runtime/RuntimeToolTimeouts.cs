@@ -15,11 +15,18 @@ internal static class RuntimeToolTimeouts
     private static readonly TimeSpan EngineDefault = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan Planning = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan BuildOrTest = TimeSpan.FromMinutes(10);
+    // run_shell: 10m approval wait + up to 10m script run + 5m cleanup/staging margin.
+    private static readonly TimeSpan DailyShell = TimeSpan.FromMinutes(25);
 
     public static TimeSpan For(string? toolName)
     {
         if (string.IsNullOrWhiteSpace(toolName)) return EngineDefault;
         if (PlanningToolNames.IsPlanCreationTool(toolName)) return Planning;
-        return toolName.ToLowerInvariant() is "run_tests" or "exec_cmd" or "run_command" ? BuildOrTest : EngineDefault;
+        return toolName.ToLowerInvariant() switch
+        {
+            "run_shell" => DailyShell,
+            "run_tests" or "exec_cmd" or "run_command" => BuildOrTest,
+            _ => EngineDefault
+        };
     }
 }

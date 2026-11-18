@@ -69,7 +69,9 @@ public static class ToolRegistryComposition
         isolationGate: sp.GetService<CodexFlow.Core.Execution.ToolIsolationGate>(),
         documentReaderRouter: sp.GetService<CodexFlow.Core.Documents.DocumentReaderRouter>(),
         configuration: sp.GetService<IConfiguration>(),
-        modelSettingsService: sp.GetService<CodexFlow.Core.Configuration.IModelSettingsService>())
+        modelSettingsService: sp.GetService<CodexFlow.Core.Configuration.IModelSettingsService>(),
+        planModeHostBridge: sp.GetService<CodexFlow.Core.Agents.Tools.IPlanModeHostBridge>(),
+        workspaceSettingsService: sp.GetService<CodexFlow.Core.Configuration.IWorkspaceSettingsService>())
     {
         RetryJobDetailedFunc = async (jobId, guidance) =>
         {

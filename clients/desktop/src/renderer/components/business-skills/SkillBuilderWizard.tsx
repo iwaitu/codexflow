@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -108,9 +108,11 @@ export const SkillBuilderWizard: React.FC<SkillBuilderWizardProps> = ({
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const appliedInitialPluginIdRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (initialPluginId) {
+    if (initialPluginId && initialPluginId !== appliedInitialPluginIdRef.current) {
+      appliedInitialPluginIdRef.current = initialPluginId;
       setSelectedPluginId(initialPluginId);
     } else if (!selectedPluginId && plugins[0]?.id) {
       setSelectedPluginId(plugins[0].id);
@@ -466,7 +468,11 @@ export const SkillBuilderWizard: React.FC<SkillBuilderWizardProps> = ({
         return;
       }
       setNotice(`已发布不可变版本 v${res.data.activeVersion}！`);
-      await onPublished(res.data);
+      try {
+        await onPublished(res.data);
+      } catch (refreshErr) {
+        setError(`已发布成功，但跳转或刷新列表失败：${formatBusinessSkillError(refreshErr)}`);
+      }
     } catch (err) {
       setError(formatBusinessSkillError(err, '发布 Skill 失败'));
     } finally {
@@ -535,7 +541,11 @@ export const SkillBuilderWizard: React.FC<SkillBuilderWizardProps> = ({
               aria-label="选择业务插件"
               value={selectedPluginId}
               onChange={(e) => {
-                setSelectedPluginId(e.target.value);
+                const nextId = e.target.value;
+                if (draft && !window.confirm('切换业务插件将清空当前未发布草稿，确认继续吗？')) {
+                  return;
+                }
+                setSelectedPluginId(nextId);
                 setSnapshotId('');
                 setDraft(null);
                 setSelectedCapIds([]);

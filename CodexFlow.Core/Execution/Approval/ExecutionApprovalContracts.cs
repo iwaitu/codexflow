@@ -18,6 +18,23 @@ public enum ExecutionApprovalDecisionKind
     AllowAlways = 3
 }
 
+public enum ApprovalOwnerKind
+{
+    Unspecified = 0,
+    GatewayTurn = 1,
+    BackgroundJob = 2
+}
+
+public sealed record PendingApprovalScriptSnapshot(
+    string ApprovalId,
+    string SessionId,
+    string RequestDigest,
+    string ScriptSha256,
+    string? Shell,
+    string ScriptText,
+    int ScriptLength,
+    DateTimeOffset ExpiresAtUtc);
+
 /// <summary>
 /// Deeply immutable snapshot of an untrusted-code execution request bound to a cryptographic SHA-256 digest.
 /// </summary>
@@ -79,6 +96,19 @@ public sealed record ExecutionRequest
     public required string Network { get; init; }
     public required string Filesystem { get; init; }
     public bool TrustedOriginVerified { get; init; }
+    public ExecutionOrigin Origin { get; init; } = ExecutionOrigin.Unspecified;
+    public int PolicyVersion { get; init; }
+    public string? WrapperSha256 { get; init; }
+    public string? ExportScopeSha256 { get; init; }
+    public int TimeoutSeconds { get; init; }
+    public string? ImageDigest { get; init; }
+    public string? ShellKind { get; init; }
+    public string? ScriptText { get; init; }
+    public string? ScriptPreview { get; init; }
+    public int? ScriptLength { get; init; }
+    public string? BackendNotice { get; init; }
+    public ApprovalOwnerKind OwnerKind { get; init; } = ApprovalOwnerKind.Unspecified;
+    public string? OwnerId { get; init; }
 
     public bool ExecutesWorkspaceCode => !IsVerifiedNonCodeCommand(Executable, Argv);
 
@@ -89,6 +119,12 @@ public sealed record ExecutionRequest
             ExecutionApprovalDecisionKind.Deny,
             ExecutionApprovalDecisionKind.AllowOnce
         };
+
+        // Guard: run_shell executes arbitrary shell scripts and must NEVER be granted reusable allow_session or allow_always.
+        if (ToolName.Equals("run_shell", StringComparison.OrdinalIgnoreCase))
+        {
+            return list;
+        }
 
         var isSelfContainedSnippetOrSkill = ToolName.Equals("exec_code", StringComparison.OrdinalIgnoreCase) ||
                                             ToolName.Equals("skill", StringComparison.OrdinalIgnoreCase);
@@ -143,7 +179,14 @@ public sealed record ExecutionRequest
             envDelta = orderedEnv,
             backend = Backend.ToString(),
             network = Network,
-            filesystem = Filesystem
+            filesystem = Filesystem,
+            origin = Origin.ToString(),
+            policyVersion = PolicyVersion,
+            wrapperSha256 = WrapperSha256,
+            exportScopeSha256 = ExportScopeSha256,
+            timeoutSeconds = TimeoutSeconds,
+            imageDigest = ImageDigest,
+            shellKind = ShellKind
         };
 
         var utf8 = JsonSerializer.SerializeToUtf8Bytes(canonical, CanonicalJsonOptions);
@@ -274,7 +317,12 @@ public sealed record PendingApprovalItem(
     string? WorkspaceCodeWarning,
     IReadOnlyList<string> AllowedDecisions,
     DateTimeOffset CreatedAtUtc,
-    DateTimeOffset ExpiresAtUtc);
+    DateTimeOffset ExpiresAtUtc,
+    string? ScriptPreview = null,
+    int? ScriptLength = null,
+    string? Shell = null,
+    string? BackendNotice = null,
+    string? Origin = null);
 
 public sealed record ExecutionApprovalDecisionSubmission(
     string RequestDigest,
@@ -486,6 +534,15 @@ public interface IExecutionApprovalBroker
     int GetPendingApprovalCount(string sessionId);
 
     void CancelSessionApprovals(string sessionId, string reason = "Session or turn cancelled.");
+
+    void CancelOwnerApprovals(string sessionId, ApprovalOwnerKind ownerKind, string ownerId, string reason = "Owner turn cancelled.")
+        => CancelSessionApprovals(sessionId, reason);
+
+    bool TryGetPendingApprovalScript(string approvalId, string sessionId, out PendingApprovalScriptSnapshot? snapshot)
+    {
+        snapshot = null;
+        return false;
+    }
 
     void ClearSessionAuthorizations(string sessionId);
 }

@@ -356,8 +356,17 @@ namespace CodexFlow.Application
             };
         }
 
-        public async Task<string> CreateSession(string userId, string name)
+        public Task<string> CreateSession(string userId, string name)
+            => CreateSession(userId, name, CodexFlow.Core.Models.SessionWorkMode.Development);
+
+        public async Task<string> CreateSession(string userId, string name, CodexFlow.Core.Models.SessionWorkMode workMode)
         {
+            if (string.Equals(name?.Trim(), "默认工作区", StringComparison.Ordinal) ||
+                string.Equals(name?.Trim(), "日常助手", StringComparison.Ordinal))
+            {
+                throw new ArgumentException("Reserved workspace name cannot be created via generic session creation.", nameof(name));
+            }
+
             var baseDir = ResolveManagedWorkspacesRoot();
             if (!Directory.Exists(baseDir)) Directory.CreateDirectory(baseDir);
             var workspacePath = Path.Combine(baseDir, userId, Guid.NewGuid().ToString("N"));
@@ -366,8 +375,12 @@ namespace CodexFlow.Application
             var session = new IvilsonSession
             {
                 UserId = userId,
-                Name = name,
-                WorkspacePath = workspacePath
+                Name = string.IsNullOrWhiteSpace(name) ? (workMode == CodexFlow.Core.Models.SessionWorkMode.Daily ? "日常对话" : "New Workspace") : name.Trim(),
+                WorkspacePath = workspacePath,
+                WorkMode = workMode,
+                ModeVersion = 1,
+                PlanModeActive = false,
+                PlanModeVersion = 1
             };
             _db.Sessions.Add(session);
             await _db.SaveChangesAsync();
@@ -385,7 +398,8 @@ namespace CodexFlow.Application
             var normalized = Path.TrimEndingDirectorySeparator(Path.GetFullPath(canonicalWorkspacePath));
             var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
             if (!string.IsNullOrWhiteSpace(name)
-                && string.Equals(name.Trim(), "默认工作区", StringComparison.Ordinal))
+                && (string.Equals(name.Trim(), "默认工作区", StringComparison.Ordinal) ||
+                    string.Equals(name.Trim(), "日常助手", StringComparison.Ordinal)))
             {
                 throw new ArgumentException("The default workspace name is reserved.", nameof(name));
             }
@@ -404,6 +418,11 @@ namespace CodexFlow.Application
 
             if (existing is not null)
             {
+                if (existing.WorkMode == CodexFlow.Core.Models.SessionWorkMode.Daily)
+                {
+                    throw new InvalidOperationException("Daily work mode session cannot bind an external workspace.");
+                }
+
                 var isDefaultWorkspace = string.Equals(existing.Name, "默认工作区", StringComparison.Ordinal) && !existing.IsExternalWorkspace;
                 if (!isDefaultWorkspace && !string.IsNullOrWhiteSpace(name) && !string.Equals(existing.Name, name.Trim(), StringComparison.Ordinal))
                 {
@@ -681,8 +700,12 @@ namespace CodexFlow.Application
 
             if (session != null)
             {
-                // 保护默认工作区，不允许删除
-                if (session.Name == "默认工作区") return;
+                // 保护默认工作区与日常助手默认工作空间，不允许删除
+                if (session.Name == "默认工作区" ||
+                    (session.Name == "日常助手" && session.WorkMode == CodexFlow.Core.Models.SessionWorkMode.Daily && !session.IsExternalWorkspace))
+                {
+                    return;
+                }
 
                 _db.ChatMessages.RemoveRange(session.Conversations.SelectMany(c => c.ChatMessages));
                 _db.Conversations.RemoveRange(session.Conversations);
@@ -865,6 +888,49 @@ namespace CodexFlow.Application
             await _db.SaveChangesAsync();
 
             _logger.LogInformation("[ChatService] GetOrCreateDefaultWorkspace: 创建新默认工作区 SessionId={SessionId}, UserId={UserId}, WorkspacePath={WorkspacePath}", session.Id, userId, workspacePath);
+            return (session.Id, true, workspacePath);
+        }
+
+        /// <summary>
+        /// 获取或创建“日常助手”默认托管工作空间会话（WorkMode = Daily）。
+        /// </summary>
+        public async Task<(string sessionId, bool created, string workspacePath)> GetOrCreateDailyAssistantWorkspace(string userId)
+        {
+            var existingSession = await _db.Sessions
+                .Where(s => s.UserId == userId &&
+                            s.Name == "日常助手" &&
+                            s.WorkMode == CodexFlow.Core.Models.SessionWorkMode.Daily &&
+                            !s.IsExternalWorkspace &&
+                            !s.IsArchived)
+                .OrderByDescending(s => s.Created)
+                .FirstOrDefaultAsync();
+
+            if (existingSession != null)
+            {
+                EnsureWorkspaceDirectoryExists(existingSession.WorkspacePath);
+                return (existingSession.Id, false, existingSession.WorkspacePath);
+            }
+
+            var baseDir = ResolveManagedWorkspacesRoot();
+            if (!Directory.Exists(baseDir)) Directory.CreateDirectory(baseDir);
+            var workspacePath = Path.Combine(baseDir, userId, Guid.NewGuid().ToString("N"));
+            EnsureWorkspaceDirectoryExists(workspacePath);
+
+            var session = new IvilsonSession
+            {
+                UserId = userId,
+                Name = "日常助手",
+                WorkspacePath = workspacePath,
+                WorkMode = CodexFlow.Core.Models.SessionWorkMode.Daily,
+                ModeVersion = 1,
+                PlanModeActive = false,
+                PlanModeVersion = 1,
+                IsExternalWorkspace = false
+            };
+            _db.Sessions.Add(session);
+            await _db.SaveChangesAsync();
+
+            _logger.LogInformation("[ChatService] GetOrCreateDailyAssistantWorkspace: 创建新日常助手工作空间 SessionId={SessionId}, UserId={UserId}", session.Id, userId);
             return (session.Id, true, workspacePath);
         }
 

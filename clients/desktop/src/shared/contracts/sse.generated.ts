@@ -35,6 +35,8 @@ export const SSE_KNOWN_EVENTS = [
   "business_skill_run_updated",
   "business_skill_approval_requested",
   "business_skill_approval_resolved",
+  "plan_mode_changed",
+  "plan_mode_exit_requested",
 ] as const;
 
 export type KnownSseEventName = (typeof SSE_KNOWN_EVENTS)[number];
@@ -121,6 +123,17 @@ export interface SseToolApprovalRequestPayload {
   executesWorkspaceCode: boolean;
   trustedOriginVerified: boolean;
   selfApprovalProtection: boolean;
+  origin?: string | null;
+  policyVersion?: number | null;
+  wrapperSha256?: string | null;
+  exportScopeSha256?: string | null;
+  timeoutSeconds?: number | null;
+  imageDigest?: string | null;
+  shellKind?: string | null;
+  shell?: string | null;
+  scriptPreview?: string | null;
+  scriptLength?: number | null;
+  backendNotice?: string | null;
   [key: string]: unknown;
 }
 
@@ -297,6 +310,29 @@ export interface SseBusinessSkillApprovalResolvedPayload {
   [key: string]: unknown;
 }
 
+export interface SsePlanModeChangedPayload {
+  type?: "plan_mode_changed";
+  sessionId: string;
+  workMode?: string | null;
+  modeVersion?: number | null;
+  planModeActive: boolean;
+  planModeVersion: number;
+  changedBy?: string | null;
+  changedAtUtc?: string | null;
+  reason?: string | null;
+  objective?: string | null;
+  [key: string]: unknown;
+}
+
+export interface SsePlanModeExitRequestedPayload {
+  type?: "plan_mode_exit_requested";
+  sessionId: string;
+  planModeVersion: number;
+  planSummary: string;
+  reason?: string | null;
+  [key: string]: unknown;
+}
+
 export interface SseEventPayloadMap {
   "heartbeat": SseHeartbeatPayload;
   "content": SseContentPayload;
@@ -328,6 +364,8 @@ export interface SseEventPayloadMap {
   "business_skill_run_updated": SseBusinessSkillRunUpdatedPayload;
   "business_skill_approval_requested": SseBusinessSkillApprovalRequestedPayload;
   "business_skill_approval_resolved": SseBusinessSkillApprovalResolvedPayload;
+  "plan_mode_changed": SsePlanModeChangedPayload;
+  "plan_mode_exit_requested": SsePlanModeExitRequestedPayload;
 }
 
 export type KnownSseEvent = {

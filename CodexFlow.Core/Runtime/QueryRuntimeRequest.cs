@@ -6,6 +6,7 @@ using CodexFlow.Core.Models;
 using CodexFlow.Core.Telemetry;
 using CodexFlow.Core.Workers;
 using CodexFlow.Core.Abstractions;
+using CodexFlow.Core.Execution.Approval;
 using Microsoft.Extensions.AI;
 
 namespace CodexFlow.Core.Runtime;
@@ -102,6 +103,15 @@ public sealed record QueryRuntimeRequest
     /// 未满足时，runtime stop hook 会阻止无工具候选结束并触发恢复轮。
     /// </summary>
     public RequiredToolExecutionContract? RequiredToolContract { get; init; }
+
+    /// <summary>Authoritative session policy snapshot frozen at turn start.</summary>
+    public SessionPolicySnapshot? SessionPolicy { get; init; }
+
+    /// <summary>Approval ownership kind used for targeted cancellation without cancelling sibling owners in the same session.</summary>
+    public ApprovalOwnerKind ApprovalOwnerKind { get; init; } = ApprovalOwnerKind.Unspecified;
+
+    /// <summary>Approval ownership identifier (TurnId for GatewayTurn, AttemptId for BackgroundJob).</summary>
+    public string? ApprovalOwnerId { get; init; }
 }
 
 /// <summary>

@@ -15,6 +15,8 @@ using CodexFlow.Core.Agents.Tools;
 using CodexFlow.Core.Configuration;
 using CodexFlow.Core.Constants;
 using CodexFlow.Core.Documents;
+using CodexFlow.Core.Execution;
+using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Core.Gateway;
 using CodexFlow.Core.Governance;
 using CodexFlow.Core.Models;
@@ -52,6 +54,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
     // The gateway rebuilds its tools every round, so what a run may spend on searching is kept per message, not per tool instance.
     private const int GatewayToolSearchBudget = 3;
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<GatewayMessage, CodexFlow.Core.Agents.Tools.ToolCallBudget> ToolSearchBudgets = new();
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<GatewayMessage, TurnPolicyBox> TurnPolicies = new();
     // How many times the dependency check has refused the plan of this message: the second refusal ends the model's attempts.
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<GatewayMessage, System.Runtime.CompilerServices.StrongBox<int>> PlanRefusals = new();
     private static readonly string[] GatewayDefaultDailyToolNames =
@@ -60,6 +63,34 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         "fetch_webpage",
         "glob",
         "user_learn_preference"
+    ];
+
+    // Explicit positive allowlist for Daily work mode (WorkMode == Daily).
+    // Development tools (workers, apply_patch, exec_cmd, create_session_plan, ui_show_diff, start_next_task) are never present.
+    private static readonly string[] DailyAlwaysOnToolNames =
+    [
+        "web_search",
+        "fetch_webpage",
+        "glob",
+        "ivilson_read",
+        "ivilson_ls",
+        "search_in_files",
+        "list_authorized_directory",
+        "user_learn_preference",
+        "ask_user_question",
+        "enter_plan_mode",
+        "exit_plan_mode"
+    ];
+
+    private static readonly string[] DailyDeferredAllowedToolNames =
+    [
+        "cron_create",
+        "cron_delete",
+        "cron_list",
+        "list_mcp_resources",
+        "read_mcp_resource",
+        "zip_directory",
+        "download_artifact"
     ];
 
     private static readonly string[] GatewayDeferredToolNames =
@@ -148,6 +179,10 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
     private readonly IPlanTaskDispatchService? _planTaskDispatchService;
     private readonly IConfiguration? _configuration;
     private readonly IModelSettingsService? _modelSettingsService;
+    private readonly ISessionPolicyResolver? _sessionPolicyResolver;
+    private readonly ITrustedExecutionContextAccessor? _trustedExecutionContextAccessor;
+    private readonly IControlPlaneStateProvider? _controlPlaneStateProvider;
+    private readonly IOptionsMonitor<ExecutionOptions>? _executionOptions;
     private readonly DocumentReaderRouter _documentReaderRouter;
     private readonly ContextCompressionOptions _compressionOptions;
     private readonly OpenSpecExecutionOptions _openSpecExecutionOptions;
@@ -194,7 +229,11 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         IPlanTaskDispatchService? planTaskDispatchService = null,
         IConfiguration? configuration = null,
         DocumentReaderRouter? documentReaderRouter = null,
-        IModelSettingsService? modelSettingsService = null)
+        IModelSettingsService? modelSettingsService = null,
+        ISessionPolicyResolver? sessionPolicyResolver = null,
+        ITrustedExecutionContextAccessor? trustedExecutionContextAccessor = null,
+        IControlPlaneStateProvider? controlPlaneStateProvider = null,
+        IOptionsMonitor<ExecutionOptions>? executionOptions = null)
     {
         _dbContext = dbContext;
         _chatService = chatService;
@@ -215,6 +254,10 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         _planTaskDispatchService = planTaskDispatchService;
         _configuration = configuration;
         _modelSettingsService = modelSettingsService;
+        _sessionPolicyResolver = sessionPolicyResolver;
+        _trustedExecutionContextAccessor = trustedExecutionContextAccessor;
+        _controlPlaneStateProvider = controlPlaneStateProvider;
+        _executionOptions = executionOptions;
         _documentReaderRouter = documentReaderRouter ?? DocumentReaderRouter.CreateDefault();
         _approvalGate = new GatewayApprovalGate(scopeFactory);
     }
@@ -703,6 +746,10 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             });
 
         var session = await EnsureSessionContextAsync(message, ct);
+        var turnPolicy = await ResolveAuthoritativeTurnPolicyAsync(message, session, ct);
+        TurnPolicies.AddOrUpdate(message, new TurnPolicyBox(turnPolicy));
+        using var policyScope = AmbientSessionPolicyContext.BeginScope(turnPolicy);
+        using var planToolScope = AmbientPlanToolContext.BeginScope(message.SessionId);
 
         // 1. 统一复用主会话定位逻辑，避免同一 Session 的连续消息被拆成多个 Conversation。
         var requestedConversationId = message.ConversationId;
@@ -756,15 +803,18 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
 
         var gatewayTools = BuildGatewayTools(message, session, emit);
         var systemPrompt = BuildSystemPromptWithPlan(message, session, fullContext, gatewayTools);
-        systemPrompt = await AppendDependencyRiskBriefingAsync(
-            systemPrompt,
-            ToolPathResolver.ResolveProjectRoot(session?.WorkspacePath, null, session?.ProjectUrl, session?.Metadata),
-            planExists: session?.Plan is { Count: > 0 },
-            isUserTurn: message.Source == GatewayMessageSource.UserChat,
-            message.UserId,
-            message.SessionId,
-            ResolveDependencyRiskBriefingProvider(),
-            ct).ConfigureAwait(false);
+        if (turnPolicy.WorkMode != SessionWorkMode.Daily)
+        {
+            systemPrompt = await AppendDependencyRiskBriefingAsync(
+                systemPrompt,
+                ToolPathResolver.ResolveProjectRoot(session?.WorkspacePath, null, session?.ProjectUrl, session?.Metadata),
+                planExists: session?.Plan is { Count: > 0 },
+                isUserTurn: message.Source == GatewayMessageSource.UserChat,
+                message.UserId,
+                message.SessionId,
+                ResolveDependencyRiskBriefingProvider(),
+                ct).ConfigureAwait(false);
+        }
         var intentConfirmationNote = BuildGatewayIntentConfirmationNote(message);
         if (intentConfirmationNote != null)
         {
@@ -787,12 +837,14 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             ct).ConfigureAwait(false);
         chatMessages.Add(new ChatMessage(ChatRole.User, modelUserContent));
 
-        var directApprovalAnswer = await TryHandleDirectPlanApprovalStartAsync(
-            message,
-            session,
-            workspacePath: session?.WorkspacePath ?? string.Empty,
-            emit,
-            ct).ConfigureAwait(false);
+        var directApprovalAnswer = turnPolicy.WorkMode == SessionWorkMode.Daily || turnPolicy.PlanModeActive
+            ? null
+            : await TryHandleDirectPlanApprovalStartAsync(
+                message,
+                session,
+                workspacePath: session?.WorkspacePath ?? string.Empty,
+                emit,
+                ct).ConfigureAwait(false);
 
         string answer;
         bool usedRuntime;
@@ -912,7 +964,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         else
         {
             // 4. 注册工具：让 AI 决定是否继续规划、启动 worker 或推进当前任务
-            var chatOptions = CreateGatewayChatOptions(gatewayTools);
+            var chatOptions = CreateGatewayChatOptions(message, session, emit);
 
             // 5. 工具调用循环流式对话
             try
@@ -1096,10 +1148,14 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             message.SessionId,
             message.UserId,
             normalizedWorkspacePath,
-            repoUri);
+            dbSession.WorkMode == SessionWorkMode.Daily && repoUri?.IsFile == true ? null : repoUri);
 
+        ApplyAuthoritativeSessionPolicy(session, dbSession);
         SanitizeStoredLocalRepositoryBindings(session, normalizedWorkspacePath);
-        await BindSessionToExistingLocalRepositoryAsync(session, repoUrl, normalizedWorkspacePath, ct);
+        if (dbSession.WorkMode != SessionWorkMode.Daily)
+        {
+            await BindSessionToExistingLocalRepositoryAsync(session, repoUrl, normalizedWorkspacePath, ct);
+        }
         session.Metadata["GitPushConsentOnce"] = message.Meta.ApproveGitPush ? "true" : "false";
         await _sessionManager.UpdateSessionAsync(session);
 
@@ -1181,7 +1237,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             """));
 
         // 5. 调用 LLM 生成 AI 的回复，允许其在需要时继续调用固定工具集
-        var chatOptions = CreateGatewayChatOptions(gatewayTools);
+        var chatOptions = CreateGatewayChatOptions(message, session, emit);
         var (answer, usedRuntime) = await StreamWithToolLoopAsync(
             messages,
             chatOptions,
@@ -1280,7 +1336,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             {CodexFlow.Core.Protocols.UntrustedText.Wrap("worker-notification", message.Content)}
             """));
 
-        var chatOptions = CreateGatewayChatOptions(gatewayTools);
+        var chatOptions = CreateGatewayChatOptions(message, session, emit);
         var (answer, usedRuntime) = await StreamWithToolLoopAsync(
             messages,
             chatOptions,
@@ -1558,8 +1614,21 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         string? fullContext = null,
         IReadOnlyList<AIFunction>? gatewayTools = null)
     {
+        var policy = ResolveEffectivePolicy(message, session);
+        if (policy.WorkMode == SessionWorkMode.Daily)
+        {
+            return BuildDailySystemPrompt(message, session, policy, fullContext, gatewayTools);
+        }
+
         var sb = new System.Text.StringBuilder();
         sb.AppendLine("你是 CodexFlow 的 AI 编程助手。根据用户请求提供帮助。");
+        if (policy.PlanModeActive)
+        {
+            sb.AppendLine();
+            sb.AppendLine("# Plan Mode（只读规划模式，已激活）");
+            sb.AppendLine("- 当前处于严格只读的规划模式：禁止修改工作区代码/文件、禁止执行 shell/构建/测试命令、禁止派发或操作后台 Worker/任务，也禁止批准或投产计划。");
+            sb.AppendLine("- 你可以使用只读检索/分析工具与正式计划草拟工具；当你准备好请用户确认退出只读规划模式时，调用 `exit_plan_mode`，由用户在前端控制面确认退出（模型自身不能直接关闭 Plan Mode）。");
+        }
         var projectRoot = ToolPathResolver.ResolveProjectRoot(
             session?.WorkspacePath,
             null,
@@ -1964,6 +2033,55 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         GatewayMessage message, CodexSession? session, Func<GatewaySseEvent, ValueTask> emit)
         => BuildGatewayToolCatalog(message, session, emit, includeDeferred: false);
 
+    private string BuildDailySystemPrompt(
+        GatewayMessage message,
+        CodexSession? session,
+        SessionPolicySnapshot policy,
+        string? fullContext,
+        IReadOnlyList<AIFunction>? gatewayTools)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("你是 CodexFlow 的日常助手（Daily 模式），帮助用户处理日常办公文档、数据整理、信息检索与受控自动化脚本执行。");
+        if (policy.PlanModeActive)
+        {
+            sb.AppendLine();
+            sb.AppendLine("# Plan Mode（只读规划模式，已激活）");
+            sb.AppendLine("- 当前处于严格只读模式：`run_shell` 及所有有副作用的操作均已禁用，只能检索信息、只读检查工作区或授权目录、讨论方案。");
+            sb.AppendLine("- 需要退出只读模式执行操作时，请调用 `exit_plan_mode` 发起退出请求，由用户确认退出。");
+        }
+
+        if (!string.IsNullOrWhiteSpace(session?.WorkspacePath))
+        {
+            sb.AppendLine();
+            sb.AppendLine($"# 日常工作区路径: {session.WorkspacePath}");
+            sb.AppendLine("- 用户上传的附件默认位于工作区 `.codexflow-attachments/` 目录；可生成的交付产物请写入 `outputs/` 目录以便长期保留和导出。");
+        }
+
+        if (!string.IsNullOrWhiteSpace(fullContext))
+        {
+            sb.AppendLine();
+            sb.AppendLine("# 会话上下文");
+            sb.AppendLine(fullContext);
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("## 日常模式工具使用边界");
+        sb.AppendLine("- 不要编造目录结构、文件内容或命令执行结果；仅陈述工具实际返回的信息。");
+        sb.AppendLine("- 只读检查文件或目录元数据优先使用 `list_authorized_directory`、`ivilson_ls`、`ivilson_read`、`glob`、`search_in_files`。");
+        if (!policy.PlanModeActive && CanExposeRunShell(message, policy))
+        {
+            sb.AppendLine("- 需要通过脚本批量整理数据、转换格式或执行命令时，使用 `run_shell`；每次执行都会向用户展示完整脚本并请求单次审批。");
+            sb.AppendLine("- `run_shell` 在 Local 模式下 `HOME`/`USERPROFILE` 会指向临时隔离目录，只有写入 `outputs/` 下的文件会被持久化导出；Docker 模式下无网络且无法访问宿主机桌面软件。");
+        }
+        else if (!policy.PlanModeActive)
+        {
+            sb.AppendLine("- 当前环境未开启交互式审批或 `run_shell` 已禁用，请使用只读检索与分析工具完成回答，或说明运行环境限制。");
+        }
+
+        sb.AppendLine("- 需要展示工作区文本/数据文件给用户预览时，可使用 `ui_show_file`。");
+        return AppendGatewayToolCatalog(sb.ToString(), gatewayTools);
+    }
+
     private List<AIFunction> BuildGatewayToolCatalog(
         GatewayMessage message,
         CodexSession? session,
@@ -1971,6 +2089,12 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         bool includeDeferred = false)
     {
         _toolRegistryBootstrapper.EnsureRegistered(_toolRegistry);
+
+        var policy = ResolveEffectivePolicy(message, session);
+        if (policy.WorkMode == SessionWorkMode.Daily)
+        {
+            return BuildDailyGatewayToolCatalog(message, session, policy, emit, includeDeferred);
+        }
 
         var tools = new List<AIFunction>();
         var workspacePath = session?.WorkspacePath ?? string.Empty;
@@ -2218,51 +2342,57 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                 Description = "将当前工作区中的代码文件直接展示到前端预览区。参数: path(必填，相对工作区路径), start_line(可选，1-based), end_line(可选，1-based)。仅在需要向用户指出关键改动时使用，优先展示 1 到 2 个最相关文件，不要滥用。"
             }));
 
-        tools.Add(AIFunctionFactory.Create(
-            async (string path, CancellationToken ct = default) =>
-            {
-                var preview = await LoadWorkspacePreviewAsync(
-                    message.SessionId,
-                    message.UserId,
-                    workspacePath,
-                    projectRoot,
-                    path,
-                    startLine: null,
-                    endLine: null,
-                    ct);
-
-                if (!preview.Success)
+        // In Plan Mode (read-only), ui_show_diff and start_next_task are omitted immediately.
+        if (!policy.PlanModeActive)
+        {
+            tools.Add(AIFunctionFactory.Create(
+                async (string path, CancellationToken ct = default) =>
                 {
-                    return preview.Message;
-                }
+                    var preview = await LoadWorkspacePreviewAsync(
+                        message.SessionId,
+                        message.UserId,
+                        workspacePath,
+                        projectRoot,
+                        path,
+                        startLine: null,
+                        endLine: null,
+                        ct);
 
-                var previewSent = await TryEmitCodePreviewAsync(
-                    message.UserId,
-                    message.SessionId,
-                    preview.RelativePath!,
-                    preview.Content!,
-                    preview.Language!,
-                    showDiff: true,
-                    ct);
+                    if (!preview.Success)
+                    {
+                        return preview.Message;
+                    }
 
-                return previewSent
-                    ? $"✅ 已在前端预览区展示文件 `{preview.RelativePath}` 的 diff 视图。"
-                    : $"⚠️ 文件 `{preview.RelativePath}` 已解析，但当前无法推送 diff 预览到前端。";
-            },
-            new AIFunctionFactoryOptions
-            {
-                Name = "ui_show_diff",
-                Description = "将当前工作区中的代码文件直接展示到前端 diff 预览区。参数: path(必填，相对工作区路径)。适合向用户突出修改前后差异；优先展示最相关的 1 到 2 个文件。"
-            }));
+                    var previewSent = await TryEmitCodePreviewAsync(
+                        message.UserId,
+                        message.SessionId,
+                        preview.RelativePath!,
+                        preview.Content!,
+                        preview.Language!,
+                        showDiff: true,
+                        ct);
+
+                    return previewSent
+                        ? $"✅ 已在前端预览区展示文件 `{preview.RelativePath}` 的 diff 视图。"
+                        : $"⚠️ 文件 `{preview.RelativePath}` 已解析，但当前无法推送 diff 预览到前端。";
+                },
+                new AIFunctionFactoryOptions
+                {
+                    Name = "ui_show_diff",
+                    Description = "将当前工作区中的代码文件直接展示到前端 diff 预览区。参数: path(必填，相对工作区路径)。适合向用户突出修改前后差异；优先展示最相关的 1 到 2 个文件。"
+                }));
+        }
 
         var nextTask = FindNextActionableTask(session?.Plan);
         var currentStage = ResolveGatewayToolStage(session, message);
         var planCount = session?.Plan.Count ?? 0;
         var activeTaskId = session?.ActiveTaskId;
 
-        tools.Add(AIFunctionFactory.Create(
-            async (CancellationToken ct) =>
-            {
+        if (!policy.PlanModeActive)
+        {
+            tools.Add(AIFunctionFactory.Create(
+                async (CancellationToken ct) =>
+                {
                 var startGate = await _approvalGate.EvaluateDispatchAsync(message, session, ct).ConfigureAwait(false);
                 if (!startGate.IsAllowed)
                 {
@@ -2493,6 +2623,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                     ? $"按计划顺序启动下一个待执行任务。当前待执行：[{nextTask.Id}] {nextTask.Title}。无需传入参数，工具自动按顺序派发并选择对应 worker。"
                     : "按计划顺序启动下一个待执行任务。无需传入参数，工具会自动读取当前会话计划并按顺序派发。"
             }));
+        }
 
         if (stageOneTools.TryGetValue("spawn_worker", out var spawnWorkerTool))
         {
@@ -2623,6 +2754,17 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             : BuildGatewayToolLookup(message, session, includeDeferred: true, emit);
         AddGatewayToolsByName(tools, defaultDailyLookup, GatewayDefaultDailyToolNames);
         AddGatewayToolsByName(tools, stageOneTools, GatewayDeferredToolNames);
+
+        if (policy.PlanModeActive)
+        {
+            tools = tools
+                .Where(t => PlanSafeToolPolicy.IsToolNameAllowed(t.Name, policy.WorkMode))
+                .ToList();
+        }
+        else
+        {
+            tools.RemoveAll(static t => string.Equals(t.Name, "run_shell", StringComparison.OrdinalIgnoreCase));
+        }
 
         FullTextAuditLogger.Log(
             _logger,
@@ -2886,9 +3028,10 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         Func<GatewaySseEvent, ValueTask>? emit = null)
     {
         var merged = new Dictionary<string, ICodexTool>(StringComparer.OrdinalIgnoreCase);
+        var policy = ResolveEffectivePolicy(message, session);
         var currentStage = ResolveGatewayToolStage(session, message);
 
-        var stageProbe = CreateGatewayStageProbe(message, session, currentStage);
+        var stageProbe = CreateGatewayStageProbe(message, session, currentStage, policy);
 
         // Gateway tool exposure must honor the same stage and session-mode filters as workers.
         // GetActiveTools() bypasses AllowedStages and can leak write tools into planning rounds.
@@ -2898,9 +3041,12 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             merged[tool.Name] = tool;
         }
 
-        if (currentStage >= 3 && !string.IsNullOrWhiteSpace(ResolveAuthorizedRepositoryUrl(message)))
+        if (policy.WorkMode == SessionWorkMode.Development &&
+            !policy.PlanModeActive &&
+            currentStage >= 3 &&
+            !string.IsNullOrWhiteSpace(ResolveAuthorizedRepositoryUrl(message)))
         {
-            var cloneStageProbe = CreateGatewayStageProbe(message, session, 1);
+            var cloneStageProbe = CreateGatewayStageProbe(message, session, 1, policy);
             var cloneTool = ((includeDeferred ? _toolRegistry.GetAvailableTools(cloneStageProbe, true) : _toolRegistry.GetAvailableTools(cloneStageProbe)) ?? Enumerable.Empty<ICodexTool>())
                 .FirstOrDefault(static tool => string.Equals(tool.Name, "git_clone", StringComparison.OrdinalIgnoreCase));
             if (cloneTool != null)
@@ -2909,6 +3055,21 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             }
         }
 
+        if (policy.WorkMode != SessionWorkMode.Daily || !CanExposeRunShell(message, policy))
+        {
+            merged.Remove("run_shell");
+        }
+        else if (merged.TryGetValue("run_shell", out var rawRunShellTool) && rawRunShellTool is not DailyShellInvocationTool)
+        {
+            merged["run_shell"] = new DailyShellInvocationTool(
+                rawRunShellTool,
+                message,
+                session,
+                () => ResolveEffectivePolicy(message, session),
+                _trustedExecutionContextAccessor!);
+        }
+
+        WrapPlanModeTools(merged, message, session, emit);
         GuardPlanStateTools(merged, message, session, emit);
         return merged;
     }
@@ -2978,15 +3139,23 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
     private static CodexSession CreateGatewayStageProbe(
         GatewayMessage message,
         CodexSession? session,
-        int stage)
+        int stage,
+        SessionPolicySnapshot? policy = null)
     {
+        var effectivePolicy = policy ?? SessionPolicySnapshot.FromSession(session);
         var probe = new CodexSession
         {
             Id = message.SessionId,
             UserId = message.UserId,
             WorkspacePath = session?.WorkspacePath ?? string.Empty,
             ProjectUrl = session?.ProjectUrl,
-            CurrentStage = stage
+            CurrentStage = stage,
+            WorkMode = effectivePolicy.WorkMode,
+            ModeVersion = effectivePolicy.ModeVersion,
+            PlanModeActive = effectivePolicy.PlanModeActive,
+            PlanModeVersion = effectivePolicy.PlanModeVersion,
+            PlanModeChangedAtUtc = effectivePolicy.PlanModeChangedAtUtc,
+            PlanModeChangedBy = effectivePolicy.PlanModeChangedBy
         };
 
         foreach (var kv in session?.Metadata ?? new Dictionary<string, string>())
@@ -3017,15 +3186,172 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         }
     }
 
+    private List<AIFunction> BuildDailyGatewayToolCatalog(
+        GatewayMessage message,
+        CodexSession? session,
+        SessionPolicySnapshot policy,
+        Func<GatewaySseEvent, ValueTask> emit,
+        bool includeDeferred)
+    {
+        var tools = new List<AIFunction>();
+        var workspacePath = session?.WorkspacePath ?? string.Empty;
+        var stageOneLookup = BuildGatewayToolLookup(message, session, includeDeferred, emit);
+        var fullDailyLookup = includeDeferred
+            ? stageOneLookup
+            : BuildGatewayToolLookup(message, session, includeDeferred: true, emit);
+
+        if (stageOneLookup.TryGetValue("tool_search", out var toolSearchTool))
+        {
+            var scopedToolSearch = new CodexFlow.Core.Agents.Tools.ToolSearchMetaTool(
+                _toolRegistry,
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<CodexFlow.Core.Agents.Tools.ToolSearchMetaTool>.Instance,
+                new CodexFlow.Core.Agents.Tools.ToolSearchScope(
+                    () => BuildGatewayTools(message, session, emit).Select(static tool => tool.Name).ToArray(),
+                    Budget: ToolSearchBudgets.GetValue(message, static _ => new CodexFlow.Core.Agents.Tools.ToolCallBudget(GatewayToolSearchBudget))));
+            tools.Add(AIFunctionFactory.Create(
+                async (string query, CancellationToken ct) =>
+                {
+                    var args = new Dictionary<string, object?> { ["query"] = query };
+                    var result = await scopedToolSearch.ExecuteAsync(args, ct);
+                    return WrapCodexToolResult(result);
+                },
+                new AIFunctionFactoryOptions { Name = "tool_search", Description = toolSearchTool.Description }));
+        }
+
+        tools.Add(AIFunctionFactory.Create(
+            async (string path, int? start_line = null, int? end_line = null, CancellationToken ct = default) =>
+            {
+                var preview = await LoadWorkspacePreviewAsync(
+                    message.SessionId,
+                    message.UserId,
+                    workspacePath,
+                    workspacePath,
+                    path,
+                    start_line,
+                    end_line,
+                    ct);
+
+                if (!preview.Success)
+                {
+                    return preview.Message;
+                }
+
+                var previewSent = await TryEmitCodePreviewAsync(
+                    message.UserId,
+                    message.SessionId,
+                    preview.RelativePath!,
+                    preview.Content!,
+                    preview.Language!,
+                    showDiff: false,
+                    ct);
+
+                if (!previewSent)
+                {
+                    return $"⚠️ 文件 `{preview.RelativePath}` 已解析，但当前无法推送到前端预览区。";
+                }
+
+                var rangeText = preview.StartLine.HasValue && preview.EndLine.HasValue
+                    ? $"（第 {preview.StartLine}-{preview.EndLine} 行）"
+                    : string.Empty;
+                return $"✅ 已在前端预览区展示文件 `{preview.RelativePath}`{rangeText}。";
+            },
+            new AIFunctionFactoryOptions
+            {
+                Name = "ui_show_file",
+                Description = "将当前工作区中的文本或数据文件展示到前端预览区。参数: path(必填，相对工作区路径), start_line(可选，1-based), end_line(可选，1-based)。"
+            }));
+
+        var wrappedLookup = WrapDailyWorkspaceTools(fullDailyLookup, message.SessionId, workspacePath);
+        AddGatewayToolsByName(tools, wrappedLookup, DailyAlwaysOnToolNames);
+
+        var wrappedDeferredLookup = includeDeferred
+            ? wrappedLookup
+            : WrapDailyWorkspaceTools(stageOneLookup, message.SessionId, workspacePath);
+        AddGatewayToolsByName(tools, wrappedDeferredLookup, DailyDeferredAllowedToolNames);
+
+        if (!policy.PlanModeActive &&
+            CanExposeRunShell(message, policy) &&
+            wrappedLookup.TryGetValue("run_shell", out var runShellTool) &&
+            !tools.Any(static t => string.Equals(t.Name, "run_shell", StringComparison.OrdinalIgnoreCase)))
+        {
+            tools.Add(CodexToolFunctionAdapterFactory.CreateAIFunction(runShellTool));
+        }
+
+        if (policy.PlanModeActive)
+        {
+            tools = tools
+                .Where(static t => PlanSafeToolPolicy.IsToolNameAllowed(t.Name, SessionWorkMode.Daily))
+                .ToList();
+        }
+
+        FullTextAuditLogger.Log(
+            _logger,
+            "gateway_daily_tools_exposed",
+            message.SessionId,
+            session?.CurrentStage ?? 1,
+            0,
+            new
+            {
+                messageId = message.MessageId,
+                workspacePath,
+                planModeActive = policy.PlanModeActive,
+                runShellExposed = tools.Any(static t => string.Equals(t.Name, "run_shell", StringComparison.OrdinalIgnoreCase)),
+                tools = tools.Select(static t => t.Name).OrderBy(static n => n).ToArray()
+            });
+
+        return tools;
+    }
+
     private IReadOnlyList<ICodexTool> BuildGatewayRuntimeCodexTools(
         GatewayMessage message,
         CodexSession? session,
         Func<GatewaySseEvent, ValueTask>? emit = null)
     {
+        var policy = ResolveEffectivePolicy(message, session);
         var toolLookup = BuildGatewayToolLookup(message, session, includeDeferred: false, emit);
         var defaultDailyLookup = BuildGatewayToolLookup(message, session, includeDeferred: true, emit);
         var tools = new List<ICodexTool>();
         var addedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        if (policy.WorkMode == SessionWorkMode.Daily)
+        {
+            var workspacePath = session?.WorkspacePath ?? string.Empty;
+            var wrappedFull = WrapDailyWorkspaceTools(defaultDailyLookup, message.SessionId, workspacePath);
+            var wrappedActivated = WrapDailyWorkspaceTools(toolLookup, message.SessionId, workspacePath);
+
+            foreach (var toolName in DailyAlwaysOnToolNames.Append("tool_search"))
+            {
+                if (wrappedFull.TryGetValue(toolName, out var tool) && addedNames.Add(toolName))
+                {
+                    tools.Add(tool);
+                }
+            }
+
+            foreach (var toolName in DailyDeferredAllowedToolNames)
+            {
+                if (wrappedActivated.TryGetValue(toolName, out var tool) && addedNames.Add(toolName))
+                {
+                    tools.Add(tool);
+                }
+            }
+
+            if (!policy.PlanModeActive &&
+                CanExposeRunShell(message, policy) &&
+                wrappedFull.TryGetValue("run_shell", out var runShellTool) &&
+                addedNames.Add("run_shell"))
+            {
+                tools.Add(runShellTool);
+            }
+
+            if (policy.PlanModeActive)
+            {
+                tools = tools
+                    .Where(static t => PlanSafeToolPolicy.IsToolNameAllowed(t.Name, SessionWorkMode.Daily))
+                    .ToList();
+            }
+
+            return tools;
+        }
 
         foreach (var toolName in GatewayDefaultDailyToolNames)
         {
@@ -3048,6 +3374,11 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         var intent = GatewayIntentResolver.Resolve(message);
         foreach (var toolName in runtimeToolNames)
         {
+            if (string.Equals(toolName, "run_shell", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
             if ((toolName == "approve_plan" && !intent.AuthorizesApproval) ||
                 (toolName == "reject_plan" && !intent.AuthorizesRejection))
             {
@@ -3060,6 +3391,13 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             }
         }
 
+        if (policy.PlanModeActive)
+        {
+            tools = tools
+                .Where(t => PlanSafeToolPolicy.IsToolNameAllowed(t.Name, policy.WorkMode))
+                .ToList();
+        }
+
         return tools;
     }
 
@@ -3068,14 +3406,19 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         CodexSession? session,
         Func<GatewaySseEvent, ValueTask> emit)
     {
+        var policy = ResolveEffectivePolicy(message, session);
         var tools = BuildGatewayTools(message, session, emit);
-        return CreateGatewayChatOptions(tools);
+        return CreateGatewayChatOptions(tools, policy);
     }
 
-    private ChatOptions? CreateGatewayChatOptions(IReadOnlyList<AIFunction> tools)
+    private ChatOptions? CreateGatewayChatOptions(IReadOnlyList<AIFunction> tools, SessionPolicySnapshot? policy = null)
     {
-        var skillDirectoryPath = ResolveGatewaySkillDirectoryPath();
-        if (tools.Count == 0 && !_gatewayRuntimeOptions.EnableSkills)
+        var effectivePolicy = policy ?? AmbientSessionPolicyContext.Current ?? SessionPolicySnapshot.Default;
+        var enableSkills = effectivePolicy.WorkMode == SessionWorkMode.Development
+            && !effectivePolicy.PlanModeActive
+            && _gatewayRuntimeOptions.EnableSkills;
+        var skillDirectoryPath = enableSkills ? ResolveGatewaySkillDirectoryPath() : null;
+        if (tools.Count == 0 && !enableSkills)
         {
             return null;
         }
@@ -3084,7 +3427,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         {
             Tools = tools.Count > 0 ? tools.Cast<AITool>().ToList() : null,
             EnableLegacyToolCallTextFallback = true,
-            EnableSkills = _gatewayRuntimeOptions.EnableSkills,
+            EnableSkills = enableSkills,
             SkillDirectoryPath = skillDirectoryPath
         };
     }
@@ -5331,6 +5674,12 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             QueryRuntimeDynamicContextRequest context,
             CancellationToken dynamicCt)
         {
+            var currentPolicy = ResolveEffectivePolicy(gatewayMessage, runtimeToolSession);
+            if (currentPolicy.WorkMode == SessionWorkMode.Daily || currentPolicy.PlanModeActive)
+            {
+                return null;
+            }
+
             var latestSession = await _sessionManager.GetOrCreateSessionAsync(
                 gatewayMessage.SessionId,
                 gatewayMessage.UserId ?? string.Empty,
@@ -5451,6 +5800,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             EnableToolDeduplication: true);
 
         // 构建 QueryRuntimeRequest
+        var runtimePolicy = ResolveEffectivePolicy(gatewayMessage, llmSession);
         var runtimeRequest = new QueryRuntimeRequest
         {
             SessionId = gatewayMessage.SessionId,
@@ -5459,6 +5809,9 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             Options = runtimeOptions,
             Scenario = MemoryInjectionScenario.Chat,
             Session = llmSession,
+            SessionPolicy = runtimePolicy,
+            ApprovalOwnerKind = ApprovalOwnerKind.GatewayTurn,
+            ApprovalOwnerId = gatewayMessage.MessageId,
             MaxRounds = maxToolRounds + 1,
             EnableTools = toolsEnabled,
             AvailableTools = runtimeTools,
@@ -5466,12 +5819,15 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                 ? BuildGatewayToolCatalog(gatewayMessage, runtimeToolSession, emit, includeDeferred: true)
                 : Array.Empty<AIFunction>(),
             AvailableToolsProvider = runtimeToolsProvider,
-            RequiredToolContract = toolsEnabled
+            RequiredToolContract = toolsEnabled && !runtimePolicy.PlanModeActive && runtimePolicy.WorkMode == SessionWorkMode.Development
                 ? BuildExplicitPlanToolContract(gatewayMessage.Content) ?? BuildRepositoryFetchToolContract(gatewayMessage.Content, llmSession.WorkspacePath)
                 : null,
             AvailableCodexTools = runtimeCodexTools,
             AvailableCodexToolsProvider = runtimeCodexToolsProvider,
             DynamicContextProvider = toolsEnabled ? ResolveDynamicGatewayContextAsync : null,
+            InterventionHook = runtimePolicy.WorkMode == SessionWorkMode.Daily
+                ? new DailyGatewayInterventionHook(gatewayMessage, () => ResolveEffectivePolicy(gatewayMessage, runtimeToolSession))
+                : null,
             ConversationCapture = BuildRuntimeConversationCapture(gatewayMessage),
             AdapterHints = hints,
             PromptMetadata = new PromptMetadata(
@@ -5553,6 +5909,13 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             target.CurrentStage = source.CurrentStage;
         }
 
+        target.WorkMode = source.WorkMode;
+        target.ModeVersion = Math.Max(target.ModeVersion, source.ModeVersion);
+        target.PlanModeActive = source.PlanModeActive;
+        target.PlanModeVersion = Math.Max(target.PlanModeVersion, source.PlanModeVersion);
+        target.PlanModeChangedAtUtc ??= source.PlanModeChangedAtUtc;
+        target.PlanModeChangedBy ??= source.PlanModeChangedBy;
+
         if (string.IsNullOrWhiteSpace(target.ActiveTaskId) &&
             !string.IsNullOrWhiteSpace(source.ActiveTaskId))
         {
@@ -5614,6 +5977,12 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             ProjectUrl = source.ProjectUrl,
             ProjectSummary = source.ProjectSummary,
             CurrentStage = source.CurrentStage,
+            WorkMode = source.WorkMode,
+            ModeVersion = source.ModeVersion,
+            PlanModeActive = source.PlanModeActive,
+            PlanModeVersion = source.PlanModeVersion,
+            PlanModeChangedAtUtc = source.PlanModeChangedAtUtc,
+            PlanModeChangedBy = source.PlanModeChangedBy,
             ActiveTaskId = source.ActiveTaskId,
             PlanVersion = source.PlanVersion,
             PlanGeneratedAtUtc = source.PlanGeneratedAtUtc,
@@ -5859,6 +6228,394 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         string? Summary,
         string? Result,
         string? WaitingReason);
+
+    #endregion
+
+    #region WorkMode & PlanMode Helpers
+
+    private sealed class TurnPolicyBox(SessionPolicySnapshot initial)
+    {
+        public SessionPolicySnapshot Value { get; set; } = initial;
+    }
+
+    private static void ApplyAuthoritativeSessionPolicy(CodexSession target, IvilsonSession dbSession)
+    {
+        target.WorkMode = dbSession.WorkMode;
+        target.ModeVersion = Math.Max(1, dbSession.ModeVersion);
+        target.PlanModeActive = dbSession.PlanModeActive;
+        target.PlanModeVersion = Math.Max(1, dbSession.PlanModeVersion);
+        target.PlanModeChangedAtUtc = dbSession.PlanModeChangedAtUtc;
+        target.PlanModeChangedBy = dbSession.PlanModeChangedBy;
+    }
+
+    private async Task<SessionPolicySnapshot> ResolveAuthoritativeTurnPolicyAsync(
+        GatewayMessage message,
+        CodexSession session,
+        CancellationToken ct)
+    {
+        SessionPolicySnapshot policy;
+        if (_sessionPolicyResolver is not null)
+        {
+            policy = await _sessionPolicyResolver.ResolveRequiredAsync(message.SessionId, ct).ConfigureAwait(false);
+        }
+        else
+        {
+            policy = SessionPolicySnapshot.FromSession(session);
+        }
+
+        // Legacy PlanModeActive metadata may tighten (true) when PlanPermissionModeEnabled is active,
+        // but can never relax SQL PlanModeActive = true.
+        if (!policy.PlanModeActive && LegacyMetadataPlanModeActive(session))
+        {
+            policy = policy with { PlanModeActive = true };
+        }
+
+        session.WorkMode = policy.WorkMode;
+        session.ModeVersion = policy.ModeVersion;
+        session.PlanModeActive = policy.PlanModeActive;
+        session.PlanModeVersion = policy.PlanModeVersion;
+        session.PlanModeChangedAtUtc = policy.PlanModeChangedAtUtc;
+        session.PlanModeChangedBy = policy.PlanModeChangedBy;
+        return policy;
+    }
+
+    private SessionPolicySnapshot ResolveEffectivePolicy(GatewayMessage message, CodexSession? session)
+    {
+        if (TurnPolicies.TryGetValue(message, out var box))
+        {
+            return box.Value;
+        }
+
+        if (AmbientSessionPolicyContext.Current is { } ambient)
+        {
+            return ambient;
+        }
+
+        var snapshot = SessionPolicySnapshot.FromSession(session);
+        if (!snapshot.PlanModeActive && session is not null && LegacyMetadataPlanModeActive(session))
+        {
+            snapshot = snapshot with { PlanModeActive = true };
+        }
+
+        return snapshot;
+    }
+
+    private bool LegacyMetadataPlanModeActive(CodexSession? session)
+    {
+        if (session is null ||
+            !session.Metadata.TryGetValue(EnterPlanModeTool.ActiveMetadataKey, out var raw) ||
+            !bool.TryParse(raw, out var active) ||
+            !active)
+        {
+            return false;
+        }
+
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var planningOpts = scope.ServiceProvider.GetService<IOptions<CodexFlow.Core.Planning.Artifacts.PlanningOptions>>();
+            return planningOpts?.Value?.PlanPermissionModeEnabled ?? false;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private bool CanExposeRunShell(GatewayMessage message, SessionPolicySnapshot policy)
+    {
+        if (policy.WorkMode != SessionWorkMode.Daily ||
+            policy.PlanModeActive ||
+            message.Source != GatewayMessageSource.UserChat ||
+            !_gatewayRuntimeOptions.EnableDailyShell ||
+            _trustedExecutionContextAccessor is null)
+        {
+            return false;
+        }
+
+        var backend = _executionOptions?.CurrentValue.Backend ?? ExecutionBackend.Local;
+        if (backend == ExecutionBackend.Docker)
+        {
+            return true;
+        }
+
+        return _controlPlaneStateProvider?.IsControlPlaneAvailable ?? false;
+    }
+
+    private static void WrapPlanModeTools(
+        Dictionary<string, ICodexTool> lookup,
+        GatewayMessage message,
+        CodexSession? session,
+        Func<GatewaySseEvent, ValueTask>? emit)
+    {
+        if (lookup.TryGetValue("enter_plan_mode", out var enterTool) && enterTool is not PlanModeHostToolDecorator)
+        {
+            lookup["enter_plan_mode"] = new PlanModeHostToolDecorator(
+                enterTool,
+                isEnter: true,
+                message,
+                session,
+                emit: null);
+        }
+
+        if (lookup.TryGetValue("exit_plan_mode", out var exitTool) && exitTool is not PlanModeHostToolDecorator)
+        {
+            lookup["exit_plan_mode"] = new PlanModeHostToolDecorator(
+                exitTool,
+                isEnter: false,
+                message,
+                session,
+                emit);
+        }
+    }
+
+    private static Dictionary<string, ICodexTool> WrapDailyWorkspaceTools(
+        IReadOnlyDictionary<string, ICodexTool> source,
+        string sessionId,
+        string workspacePath)
+    {
+        var result = new Dictionary<string, ICodexTool>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, tool) in source)
+        {
+            if (tool is WorkspaceBoundDailyTool ||
+                string.Equals(key, "run_shell", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(key, "enter_plan_mode", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(key, "exit_plan_mode", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(key, "tool_search", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(key, "web_search", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(key, "fetch_webpage", StringComparison.OrdinalIgnoreCase))
+            {
+                result[key] = tool;
+            }
+            else
+            {
+                result[key] = new WorkspaceBoundDailyTool(tool, sessionId, workspacePath);
+            }
+        }
+
+        return result;
+    }
+
+    private sealed class WorkspaceBoundDailyTool(
+        ICodexTool inner,
+        string sessionId,
+        string workspacePath) : ICodexTool
+    {
+        public string Name => inner.Name;
+        public string Description => inner.Description;
+        public ToolCategory Category => inner.Category;
+        public ToolCapability Capability => inner.Capability;
+        public ToolExecutionMetadata Metadata => inner.Metadata;
+        public IReadOnlyList<int> AllowedStages => inner.AllowedStages;
+
+        public Task<CodexToolResult> ExecuteAsync(Dictionary<string, object?> arguments, CancellationToken ct = default)
+        {
+            ArgumentNullException.ThrowIfNull(arguments);
+            var copy = new Dictionary<string, object?>(arguments, StringComparer.OrdinalIgnoreCase)
+            {
+                ["session_id"] = sessionId,
+                ["workspace_path"] = workspacePath,
+                ["project_root"] = workspacePath
+            };
+            return inner.ExecuteAsync(copy, ct);
+        }
+    }
+
+    private sealed class PlanModeHostToolDecorator(
+        ICodexTool inner,
+        bool isEnter,
+        GatewayMessage message,
+        CodexSession? session,
+        Func<GatewaySseEvent, ValueTask>? emit) : ICodexTool
+    {
+        public string Name => inner.Name;
+        public string Description => inner.Description;
+        public ToolCategory Category => inner.Category;
+        public ToolCapability Capability => inner.Capability;
+        public ToolExecutionMetadata Metadata => inner.Metadata;
+        public IReadOnlyList<int> AllowedStages => inner.AllowedStages;
+
+        public async Task<CodexToolResult> ExecuteAsync(Dictionary<string, object?> arguments, CancellationToken ct = default)
+        {
+            ArgumentNullException.ThrowIfNull(arguments);
+            var copy = new Dictionary<string, object?>(arguments, StringComparer.OrdinalIgnoreCase)
+            {
+                ["session_id"] = message.SessionId
+            };
+
+            using var planScope = AmbientPlanToolContext.BeginScope(message.SessionId);
+            var result = await inner.ExecuteAsync(copy, ct).ConfigureAwait(false);
+            if (result.Status != ToolResultStatus.Success)
+            {
+                return result;
+            }
+
+            if (isEnter)
+            {
+                var version = result.Metadata?.GetType().GetProperty("plan_mode_version")?.GetValue(result.Metadata) as int?;
+                if (TurnPolicies.TryGetValue(message, out var box))
+                {
+                    box.Value = box.Value with
+                    {
+                        PlanModeActive = true,
+                        PlanModeVersion = version ?? Math.Max(1, box.Value.PlanModeVersion + 1),
+                        PlanModeChangedAtUtc = DateTime.UtcNow,
+                        PlanModeChangedBy = "model_enter"
+                    };
+                }
+
+                if (session is not null)
+                {
+                    session.PlanModeActive = true;
+                    if (version.HasValue)
+                    {
+                        session.PlanModeVersion = version.Value;
+                    }
+                }
+            }
+            else if (emit is not null)
+            {
+                var planModeVersion = result.Metadata?.GetType().GetProperty("plan_mode_version")?.GetValue(result.Metadata) as int?
+                    ?? session?.PlanModeVersion
+                    ?? 1;
+                var planSummary = result.Metadata?.GetType().GetProperty("plan_summary")?.GetValue(result.Metadata)?.ToString() ?? string.Empty;
+                var reason = result.Metadata?.GetType().GetProperty("reason")?.GetValue(result.Metadata)?.ToString();
+
+                await emit(new GatewaySseEvent
+                {
+                    Type = GatewaySseEventType.PlanModeExitRequested,
+                    Payload = new
+                    {
+                        type = "plan_mode_exit_requested",
+                        sessionId = message.SessionId,
+                        planModeVersion,
+                        planSummary,
+                        reason
+                    }
+                }).ConfigureAwait(false);
+            }
+
+            return result;
+        }
+    }
+
+    private sealed class DailyShellInvocationTool(
+        ICodexTool inner,
+        GatewayMessage message,
+        CodexSession? session,
+        Func<SessionPolicySnapshot> resolvePolicy,
+        ITrustedExecutionContextAccessor accessor) : ICodexTool
+    {
+        private static readonly HashSet<string> GrantedRunShell = new(StringComparer.OrdinalIgnoreCase) { "run_shell" };
+        private static readonly ExportScope DailyOutputsScope = ExportScope.From(
+            files: null,
+            directories: ["outputs"],
+            fileNames: null,
+            disallowedDirectories: [".git", ".codexflow", ".codexflow-attachments"]);
+
+        public string Name => inner.Name;
+        public string Description => inner.Description;
+        public ToolCategory Category => inner.Category;
+        public ToolCapability Capability => inner.Capability;
+        public ToolExecutionMetadata Metadata => inner.Metadata;
+        public IReadOnlyList<int> AllowedStages => inner.AllowedStages;
+
+        public Task<CodexToolResult> ExecuteAsync(Dictionary<string, object?> arguments, CancellationToken ct = default)
+        {
+            var policy = resolvePolicy();
+            if (policy.WorkMode != SessionWorkMode.Daily ||
+                policy.PlanModeActive ||
+                message.Source != GatewayMessageSource.UserChat)
+            {
+                return Task.FromResult(ToolIsolationGate.Refuse(
+                    Name,
+                    ExecutionDecision.Deny(
+                        policy.PlanModeActive ? ExecutionReasonCodes.PlanModeActive : ExecutionReasonCodes.PermissionDenied,
+                        "run_shell is only permitted in Daily user chat turns when Plan Mode is inactive.")));
+            }
+
+            var workspaceRoot = NormalizeWorkspaceRoot(session?.WorkspacePath);
+            if (string.IsNullOrWhiteSpace(workspaceRoot))
+            {
+                return Task.FromResult(ToolIsolationGate.Refuse(
+                    Name,
+                    ExecutionDecision.Deny(
+                        ExecutionReasonCodes.InvalidRequest,
+                        "Daily session workspace is not initialized.")));
+            }
+
+            var trustedContext = TrustedExecutionContextFactory.ForDailyInvocation(
+                message.UserId,
+                message.SessionId,
+                message.MessageId,
+                Guid.NewGuid().ToString("N"),
+                workspaceRoot,
+                DailyOutputsScope,
+                GrantedRunShell,
+                policy.ModeVersion);
+
+            using var scope = accessor.Begin(trustedContext);
+            return inner.ExecuteAsync(arguments, ct);
+        }
+    }
+
+    private sealed class DailyGatewayInterventionHook(
+        GatewayMessage message,
+        Func<SessionPolicySnapshot> resolvePolicy) : IQueryRuntimeInterventionHook
+    {
+        public ValueTask<QueryRuntimeIntervention> OnToolCallRequestedAsync(
+            string toolName,
+            IDictionary<string, object?> arguments,
+            object? session,
+            CancellationToken ct = default)
+        {
+            _ = arguments;
+            _ = session;
+            ct.ThrowIfCancellationRequested();
+
+            var policy = resolvePolicy();
+            if (policy.WorkMode != SessionWorkMode.Daily)
+            {
+                return ValueTask.FromResult(QueryRuntimeIntervention.BlockWithMessage(
+                    new ChatMessage(ChatRole.User, "Current session is not in Daily mode."),
+                    "work_mode_mismatch"));
+            }
+
+            if (policy.PlanModeActive && !PlanSafeToolPolicy.IsToolNameAllowed(toolName, SessionWorkMode.Daily))
+            {
+                return ValueTask.FromResult(QueryRuntimeIntervention.BlockWithMessage(
+                    new ChatMessage(ChatRole.User, "Plan Mode is active (read-only)."),
+                    ExecutionReasonCodes.PlanModeActive));
+            }
+
+            if (string.Equals(toolName, "run_shell", StringComparison.OrdinalIgnoreCase))
+            {
+                if (policy.PlanModeActive || message.Source != GatewayMessageSource.UserChat)
+                {
+                    return ValueTask.FromResult(QueryRuntimeIntervention.BlockWithMessage(
+                        new ChatMessage(ChatRole.User, "run_shell requires active Daily user chat turn without Plan Mode."),
+                        ExecutionReasonCodes.PermissionDenied));
+                }
+
+                return ValueTask.FromResult(QueryRuntimeIntervention.None);
+            }
+
+            return ValueTask.FromResult(
+                ToolClassification.IsWriteTool(toolName)
+                    ? QueryRuntimeIntervention.BlockWithMessage(
+                        new ChatMessage(ChatRole.User, $"Tool '{toolName}' is not permitted in Daily mode."),
+                        "daily_write_tool_denied")
+                    : QueryRuntimeIntervention.None);
+        }
+
+        public ValueTask<QueryRuntimeIntervention> OnToolExecutionCompletedAsync(
+            string toolName,
+            string result,
+            bool success,
+            object? session,
+            CancellationToken ct = default)
+            => ValueTask.FromResult(QueryRuntimeIntervention.None);
+    }
 
     #endregion
 }

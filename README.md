@@ -6,7 +6,7 @@ English | [简体中文](README.zh-CN.md)
 
 CodexFlow brings conversations, planning, tool approvals, workspace files, changes, and jobs into one Electron application. A .NET host runs locally, persists state in SQLite, and connects to your configured model endpoint. You can work against a local folder, review a proposed plan, approve execution, and inspect the result without switching between separate API scripts.
 
-The first-generation desktop application is implemented. The source version is **0.1.7**; this repository contains the desktop client, local host, reusable .NET libraries, and test tooling.
+The first-generation desktop application is implemented. The source version is **0.1.8**; this repository contains the desktop client, local host, reusable .NET libraries, and test tooling.
 
 ![CodexFlow Desktop workspace](docs/images/desktop-workspace.jpg)
 
@@ -16,6 +16,7 @@ The first-generation desktop application is implemented. The source version is *
 - [Screenshots](#screenshots)
 - [Run from source](#run-from-source)
 - [Your first workflow](#your-first-workflow)
+- [Modes & conversation threads](#modes--conversation-threads)
 - [Plugins and business Skills](#plugins-and-business-skills)
 - [Configuration and data](#configuration-and-data)
 - [Standalone host](#standalone-host)
@@ -129,6 +130,51 @@ Implement this small feature and show the changes and test results.
 ```
 
 These are suggested prompts, not recorded results from the screenshot session. Available actions depend on the configured model, tools, backend, and permissions.
+
+## Modes & conversation threads
+
+CodexFlow separates **workspace work modes**, **Plan Mode**, **conversation thread modes**, and **execution/permission settings** so they can work independently without interfering with one another.
+
+### 1. Workspace work modes (`Development` vs. `Daily`)
+
+A session's work mode is locked when the workspace session is created (in-place `PATCH` mode changes are rejected with `400 mode_immutable`). Clicking the **开发模式 / 日常模式** badge in the top bar or composer lets you open **日常助手** or create a new session in the target mode:
+
+| Work mode | How to enter | Intended use & tool behavior |
+| --- | --- | --- |
+| **Development** (`开发模式`) | **Open folder** on a local project, `/dev`, or `POST /api/gateway/session` (default `workMode=development`) | Software engineering, codebase analysis, multi-agent planning, file editing, **Changes** diff review, and **Jobs** verification. `run_shell` is not exposed here. |
+| **Daily** (`日常模式` / **日常助手**) | **日常助手** shortcut in the sidebar (opens a dedicated protected workspace), **New workspace** (folderless desktop default), or `/daily` | Office workflows, document organization, read-only authorized folder inspection (`list_authorized_directory`), and **per-invocation approved** local shell scripts (`run_shell`). Workspace **Changes** and **Jobs** panels are hidden, and external repository folders cannot be bound to a `Daily` session (`409 daily_external_workspace_forbidden`). |
+
+> Even if `FullAuto` is enabled in execution settings, `run_shell` in `Daily` mode never inherits `FullAuto`: every execution requires an `allow_once` approval verified by control-plane SHA-256 script inspection in the desktop UI.
+
+### 2. Read-only Plan Mode (`/plan`)
+
+**Plan Mode** is an orthogonal read-only overlay that can be toggled inside **either** `Development` or `Daily` without changing the underlying workspace mode:
+
+- **Enter Plan Mode**: Type `/plan` in the composer (or choose **开启只读 Plan Mode** from the mode menu). Tools are restricted to a read-only allowlist—`run_shell`, file writes, and code modifications are disabled. Type `//plan ...` to send a literal `/plan` message without toggling the mode.
+- **Exit Plan Mode**: When the assistant finishes planning and calls `exit_plan_mode`, it only sends an exit request (`plan_mode_exit_requested`) and keeps Plan Mode locked. Read-only restrictions are lifted only after you click **确认退出 Plan Mode** on the approval card or run `/plan off` via the control plane (guarded by optimistic version CAS).
+
+### 3. Active conversation selection & API `conversationMode`
+
+In the desktop UI, replies always target **the conversation thread you currently have selected** in the sidebar—no manual thread-routing dropdown is needed:
+
+- **Selected thread**: Selecting any thread in the sidebar sends messages directly to that `conversationId` (`continue-current`).
+- **Workspace with no active thread**: Sending a message automatically reuses the workspace's primary `"主会话"` (`Master`) thread or creates one if none exists (`reuse-master`).
+- **Starting a new thread**: Click the **`+`** button next to a workspace in the sidebar (or use the command palette) to open and select a fresh conversation thread.
+
+For direct HTTP API callers (`POST /api/gateway/chat`), `conversationMode` supports three routing strategies:
+
+| API `conversationMode` | Display meaning | Backend routing behavior |
+| --- | --- | --- |
+| `reuse-master` (API default) | 继续主对话 (`continue`) | Uses the provided `conversationId` if valid; otherwise reuses the workspace's latest live `Master` thread (falling back to the latest `Chat` thread, or creating a new `Master` `"主会话"`). |
+| `continue-current` | 继续当前线程 | Appends strictly to the provided active `conversationId` (falling back to default resolution only if no valid ID is supplied). |
+| `new-thread` | 新建对话线程 (`new thread`) | Forces creation of a brand-new isolated `Chat` thread under the workspace session. |
+
+### 4. Execution & permission modes (Host settings)
+
+Configured separately under Settings → Execution:
+
+- **Execution backend**: `Local` runs supported operations directly on the host machine; `Docker` runs supported operations and verification inside the configured container image.
+- **Permission mode**: `Ask` prompts before sensitive or write operations; `FullAuto` auto-approves eligible development actions (excluding `Daily` `run_shell`, which always enforces `allow_once`).
 
 ## Plugins and business Skills
 

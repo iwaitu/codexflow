@@ -113,29 +113,19 @@ public class DefaultToolRegistry : IToolRegistry
 
     private bool IsAllowedBySessionMode(CodexSession session, ICodexTool tool)
     {
-        if (!_planningOptions.PlanPermissionModeEnabled)
+        var authoritativePlanActive = session.PlanModeActive;
+        var legacyMetadataPlanActive =
+            _planningOptions.PlanPermissionModeEnabled &&
+            session.Metadata.TryGetValue("PlanModeActive", out var activeRaw) &&
+            bool.TryParse(activeRaw, out var active) &&
+            active;
+
+        if (!authoritativePlanActive && !legacyMetadataPlanActive)
         {
             return true;
         }
 
-        if (!session.Metadata.TryGetValue("PlanModeActive", out var activeRaw) ||
-            !bool.TryParse(activeRaw, out var active) ||
-            !active)
-        {
-            return true;
-        }
-
-        if (tool.Name is "write_plan_file" or "read_plan_file" or "request_plan_approval" or "approve_plan" or "reject_plan" or "project_plan_to_tasks" or "plan_diff")
-        {
-            return true;
-        }
-
-        if (tool.Category is ToolCategory.Read or ToolCategory.Analysis or ToolCategory.Planning or ToolCategory.System)
-        {
-            return !tool.Metadata.IsDestructive;
-        }
-
-        return tool.Metadata.IsReadOnly && !tool.Metadata.IsDestructive;
+        return PlanSafeToolPolicy.IsAllowed(tool, session.WorkMode);
     }
 
     public IEnumerable<ICodexTool> SearchTools(string query)

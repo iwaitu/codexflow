@@ -4,6 +4,7 @@
 
 using System;
 using System.Collections.Generic;
+using CodexFlow.Core.Models;
 
 namespace CodexFlow.Domain.Chat
 {
@@ -24,6 +25,12 @@ namespace CodexFlow.Domain.Chat
         public DateTime? LastCompressedAt { get; set; }
         public bool IsArchived { get; set; } = false;
         public bool IsExternalWorkspace { get; set; } = false;
+        public SessionWorkMode WorkMode { get; set; } = SessionWorkMode.Development;
+        public int ModeVersion { get; set; } = 1;
+        public bool PlanModeActive { get; set; }
+        public int PlanModeVersion { get; set; } = 1;
+        public DateTime? PlanModeChangedAtUtc { get; set; }
+        public string? PlanModeChangedBy { get; set; }
 
         // Navigation property
         public virtual ICollection<IvilsonConversation> Conversations { get; set; } = new List<IvilsonConversation>();

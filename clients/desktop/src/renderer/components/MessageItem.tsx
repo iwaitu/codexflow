@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { Bot, ChevronDown, ChevronRight, Info, Paperclip, User } from 'lucide-react';
-import { formatFileSize, parseMessageWithAttachments } from '../lib/attachments';
+import { Bot, Check, ChevronDown, ChevronRight, Copy, Info, User } from 'lucide-react';
+import { formatFileSize, getAttachmentVisualMeta, parseMessageWithAttachments } from '../lib/attachments';
 import type { UiMessage } from '../lib/sessionRecovery';
+import { AttachmentTypeIcon } from './AttachmentTypeIcon';
 import { MarkdownRenderer } from './MarkdownRenderer';
 
 interface MessageItemProps {
@@ -10,6 +11,18 @@ interface MessageItemProps {
 
 export const MessageItem: React.FC<MessageItemProps> = ({ message }) => {
   const [thinkingOpen, setThinkingOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const handleCopyMessage = async () => {
+    if (!message.content || typeof navigator === 'undefined' || !navigator.clipboard?.writeText) return;
+    try {
+      await navigator.clipboard.writeText(message.content);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // 忽略剪贴板权限受限错误
+    }
+  };
 
   if (message.role === 'system') {
     return (
@@ -66,17 +79,23 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message }) => {
                 data-testid="message-attachments"
                 className={`${parsedUserContent.text ? 'mt-2 border-t border-indigo-400/30 pt-2' : ''} flex flex-wrap gap-1.5`}
               >
-                {parsedUserContent.attachments.map((att, idx) => (
-                  <span
-                    key={`${att.relativePath}-${idx}`}
-                    title={att.relativePath}
-                    className="inline-flex items-center gap-1 rounded-md bg-indigo-950/60 px-2 py-0.5 text-xs text-indigo-100 ring-1 ring-indigo-300/30"
-                  >
-                    <Paperclip className="h-3 w-3 shrink-0 text-indigo-200" />
-                    <span className="max-w-[200px] truncate font-medium">{att.name}</span>
-                    <span className="text-[10px] text-indigo-200/80">{formatFileSize(att.sizeBytes)}</span>
-                  </span>
-                ))}
+                {parsedUserContent.attachments.map((att, idx) => {
+                  const visualMeta = getAttachmentVisualMeta(att.name, att.contentType);
+                  return (
+                    <span
+                      key={`${att.relativePath}-${idx}`}
+                      title={att.relativePath}
+                      className="inline-flex items-center gap-1 rounded-md bg-indigo-950/60 px-2 py-0.5 text-xs text-indigo-100 ring-1 ring-indigo-300/30"
+                    >
+                      <AttachmentTypeIcon
+                        category={visualMeta.category}
+                        className={`h-3 w-3 shrink-0 ${visualMeta.iconColorClass}`}
+                      />
+                      <span className="max-w-[200px] truncate font-medium">{att.name}</span>
+                      <span className="text-[10px] text-indigo-200/80">{formatFileSize(att.sizeBytes)}</span>
+                    </span>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -87,6 +106,20 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message }) => {
         {message.truncated && (
           <div className="mt-2 inline-block rounded bg-amber-500/15 px-1.5 py-0.5 text-[11px] text-amber-300">
             内容因快照长度限制已截断
+          </div>
+        )}
+
+        {!isUser && message.content && (
+          <div className="mt-2 flex justify-end">
+            <button
+              type="button"
+              onClick={() => void handleCopyMessage()}
+              aria-label="复制回复内容"
+              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+            >
+              {copied ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+              <span>{copied ? '已复制' : '复制'}</span>
+            </button>
           </div>
         )}
       </div>

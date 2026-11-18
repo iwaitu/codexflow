@@ -794,13 +794,13 @@ public sealed class P5EndToEndAcceptanceTests : IDisposable
         {
             var migrator = legacyDb.GetService<IMigrator>();
             await migrator.MigrateAsync("20261116134656_AddSessionArchiveAndExternalWorkspace");
-            legacyDb.Sessions.Add(new IvilsonSession
-            {
-                Id = "legacy-ws-01",
-                UserId = LocalUser.Id,
-                Name = "Legacy Agent Workspace",
-                WorkspacePath = _root
-            });
+            await legacyDb.Database.ExecuteSqlRawAsync(
+                """
+                INSERT INTO Sessions (Id, UserId, Name, WorkspacePath, Created, CurrentStage, FactsJson, IsArchived, IsExternalWorkspace)
+                VALUES ('legacy-ws-01', {0}, 'Legacy Agent Workspace', {1}, '2026-11-16T00:00:00Z', 1, '[]', 0, 0);
+                """,
+                LocalUser.Id,
+                _root);
             legacyDb.Conversations.Add(new IvilsonConversation
             {
                 Id = "legacy-conv-01",

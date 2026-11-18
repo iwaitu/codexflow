@@ -130,7 +130,9 @@ export const StatusBar: React.FC<StatusBarProps> = ({
             className="inline-flex items-center gap-1 rounded border border-slate-800 bg-slate-900 px-2 py-0.5 text-slate-300 hover:bg-slate-800 hover:text-slate-100"
           >
             <Command className="h-3 w-3" />
-            <span className="font-mono text-[10px]">Ctrl+K</span>
+            <span className="font-mono text-[10px]">
+              {typeof navigator !== 'undefined' && /Mac|iPhone|iPad/i.test(navigator.platform) ? '⌘K' : 'Ctrl+K'}
+            </span>
           </button>
         )}
 

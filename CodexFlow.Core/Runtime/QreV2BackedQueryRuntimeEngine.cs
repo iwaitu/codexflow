@@ -239,7 +239,19 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
                 throw;
             }
 
-            _approvalBroker?.CancelSessionApprovals(request.SessionId, "Turn cancelled.");
+            if (request.ApprovalOwnerKind != CodexFlow.Core.Execution.Approval.ApprovalOwnerKind.Unspecified &&
+                !string.IsNullOrWhiteSpace(request.ApprovalOwnerId))
+            {
+                _approvalBroker?.CancelOwnerApprovals(
+                    request.SessionId,
+                    request.ApprovalOwnerKind,
+                    request.ApprovalOwnerId,
+                    "Turn cancelled.");
+            }
+            else
+            {
+                _approvalBroker?.CancelSessionApprovals(request.SessionId, "Turn cancelled.");
+            }
             return BuildFailureResult(
                 request,
                 queryId,

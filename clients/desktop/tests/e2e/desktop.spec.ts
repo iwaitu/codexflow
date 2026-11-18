@@ -70,7 +70,7 @@ test('Electron MVP cold start, security isolation, permission rule revoke, appro
     expect(bridgeAudit.keys).not.toContain('controlToken');
     expect(bridgeAudit.serialized).not.toContain('controlToken');
 
-    await expect(page.getByPlaceholder(/输入指令或问题/)).toBeEnabled({ timeout: 15_000 });
+    await expect(page.getByPlaceholder(/输入任务或指令/)).toBeEnabled({ timeout: 15_000 });
 
     // 2. B5 E2E: Open Settings -> 始终允许规则 -> revoke seeded rule by real backend `id`
     await page.getByRole('button', { name: '设置' }).click();
@@ -82,7 +82,7 @@ test('Electron MVP cold start, security isolation, permission rule revoke, appro
     await page.keyboard.press('Escape');
 
     // 3. Send chat message -> triggers command approval card -> approve via control-plane IPC
-    const textarea = page.getByPlaceholder(/输入指令或问题/);
+    const textarea = page.getByPlaceholder(/输入任务或指令/);
     await textarea.fill('请运行 dotnet --version');
     await page.getByRole('button', { name: '发送' }).click();
 
@@ -161,11 +161,11 @@ test('Electron MVP cold start, security isolation, permission rule revoke, appro
 
     // 6. Click "新建会话", verify thread appears as "新会话", send message, and verify SSE auto-title update
     await page.getByRole('button', { name: '新建会话' }).click();
-    await expect(page.getByText('新会话')).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('aside').getByText('新会话')).toBeVisible({ timeout: 5_000 });
     await textarea.fill('验证重启后新端口通信');
     await page.getByRole('button', { name: '发送' }).click();
     await expect(page.getByText('收到重启后请求: 验证重启后新端口通信').first()).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByText('会话标题已总结')).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator('aside').getByText('会话标题已总结')).toBeVisible({ timeout: 10_000 });
 
     // 7. P5 Workspace Inspector: toggle Files & Changes tabs
     await page.getByRole('button', { name: '工作区文件' }).click();
@@ -179,11 +179,12 @@ test('Electron MVP cold start, security isolation, permission rule revoke, appro
     await expect(page.getByTestId('business-skills-hub')).toBeVisible({ timeout: 5_000 });
     await expect(page.getByRole('button', { name: /接入新插件/ })).toBeEnabled();
     await page.getByRole('button', { name: '工作区对话' }).click();
-    await expect(page.getByText('会话标题已总结').first()).toBeVisible({ timeout: 5_000 });
+    const sidebar = page.locator('aside');
+    await expect(sidebar.getByText('会话标题已总结').first()).toBeVisible({ timeout: 5_000 });
     await page.getByRole('button', { name: '折叠 默认工作区' }).click();
-    await expect(page.getByText('会话标题已总结')).toHaveCount(0);
+    await expect(sidebar.getByText('会话标题已总结')).toHaveCount(0);
     await page.getByRole('button', { name: '展开 默认工作区' }).click();
-    await expect(page.getByText('会话标题已总结').first()).toBeVisible({ timeout: 5_000 });
+    await expect(sidebar.getByText('会话标题已总结').first()).toBeVisible({ timeout: 5_000 });
 
     // 9. P5 Enhancements: Command Palette (Ctrl+K), Theme Toggle, and Language Switch
     await page.keyboard.press('Control+k');

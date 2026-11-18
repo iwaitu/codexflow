@@ -26,6 +26,8 @@ public static class GatewaySseEventType
     public const string RetryNotice = "retry_notice";
     public const string PlanChangeRequest = "plan_change_request";
     public const string PlanApprovalRequested = "plan_approval_requested";
+    public const string PlanModeChanged = "plan_mode_changed";
+    public const string PlanModeExitRequested = "plan_mode_exit_requested";
     public const string PlanningSummary = "planning_summary";
     public const string WorkerStarted = "worker_started";
     public const string WorkerWaitingUser = "worker_waiting_user";

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   KeyRound,
@@ -49,6 +49,13 @@ export const PluginCatalogPanel: React.FC<PluginCatalogPanelProps> = ({
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [confirmDanger, setConfirmDanger] = useState<
+    | { kind: 'prune' }
+    | { kind: 'disable'; pluginId: string; pluginName: string }
+    | { kind: 'delete-cred'; pluginId: string; slot: CredentialSlotKind }
+    | null
+  >(null);
+  const capReqSeqRef = useRef(0);
 
   // 新建插件表单状态
   const [newName, setNewName] = useState('');
@@ -111,6 +118,10 @@ export const PluginCatalogPanel: React.FC<PluginCatalogPanelProps> = ({
     setSelectedCapId(null);
     setCapDetail(null);
     setPage(1);
+    setConfirmDanger(null);
+  }, [selectedPluginId, wipeSecretInputs]);
+
+  useEffect(() => {
     if (selectedPlugin?.connection) {
       const conn = selectedPlugin.connection;
       setEditSourceUrl(conn.sourceUrl ?? '');
@@ -118,14 +129,21 @@ export const PluginCatalogPanel: React.FC<PluginCatalogPanelProps> = ({
       setEditAllowedOrigin(conn.endpointPolicy?.allowedOrigin ?? '');
       setEditAllowedPrefix(conn.endpointPolicy?.allowedPathPrefix ?? '');
       setEditAllowPlainHttp(Boolean(conn.endpointPolicy?.allowPlainHttpForIntranet));
+    } else {
+      setEditSourceUrl('');
+      setEditEnvironment('Sandbox');
+      setEditAllowedOrigin('');
+      setEditAllowedPrefix('');
+      setEditAllowPlainHttp(false);
     }
-  }, [selectedPluginId, selectedPlugin?.connection, wipeSecretInputs]);
+  }, [selectedPluginId, selectedPlugin?.connection?.revision, selectedPlugin?.connection]);
 
   const loadCapabilities = useCallback(async () => {
     if (!auth || !selectedPluginId) {
       setCatalogPage(null);
       return;
     }
+    const seq = ++capReqSeqRef.current;
     try {
       const result = await apiClient.queryPluginCapabilities(auth, selectedPluginId, {
         snapshotId: selectedPlugin?.activeSnapshotId ?? undefined,
@@ -135,8 +153,10 @@ export const PluginCatalogPanel: React.FC<PluginCatalogPanelProps> = ({
         page,
         pageSize: 20,
       });
+      if (seq !== capReqSeqRef.current) return;
       setCatalogPage(result);
     } catch (err) {
+      if (seq !== capReqSeqRef.current) return;
       setError(formatBusinessSkillError(err, '加载能力目录失败'));
     }
   }, [auth, selectedPluginId, selectedPlugin?.activeSnapshotId, search, groupTag, executableOnly, page]);
@@ -306,8 +326,8 @@ export const PluginCatalogPanel: React.FC<PluginCatalogPanelProps> = ({
         setError(extractControlPlaneError(res, '删除凭证失败'));
         return;
       }
-      setNotice(`已解绑并删除 ${slot} 槽位凭证。`);
-      await onRefreshPlugins();
+      setNotice(`已解绑并删除「${slot === 'document' ? '文档拉取' : '接口执行'}」凭证。`);
+      await onRefreshPlugins().catch(() => undefined);
     } catch (err) {
       setError(formatBusinessSkillError(err, '删除凭证失败'));
     } finally {
@@ -433,7 +453,7 @@ export const PluginCatalogPanel: React.FC<PluginCatalogPanelProps> = ({
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            onClick={() => void handlePruneRetention()}
+            onClick={() => setConfirmDanger({ kind: 'prune' })}
             disabled={!controlPlaneAvailable || busyAction !== null}
             title={
               controlPlaneAvailable
@@ -458,13 +478,56 @@ export const PluginCatalogPanel: React.FC<PluginCatalogPanelProps> = ({
         </div>
       </div>
 
+      {confirmDanger && (
+        <div
+          role="alertdialog"
+          aria-label="高风险操作确认"
+          className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-rose-500/40 bg-rose-950/30 px-3 py-2 text-xs text-rose-200"
+        >
+          <span>
+            {confirmDanger.kind === 'prune' &&
+              '确认清理过期记录吗？将删除超过 30 天的终态运行与 7 天的步骤诊断（受保护快照与 OutcomeUnknown 会保留），不可恢复。'}
+            {confirmDanger.kind === 'disable' &&
+              `确认停用插件「${confirmDanger.pluginName}」吗？停用后依赖它的 Skill 在执行时会受阻。`}
+            {confirmDanger.kind === 'delete-cred' &&
+              `确认删除「${confirmDanger.slot === 'document' ? '文档拉取' : '接口执行'}」凭证并解除引用绑定吗？之后对应请求将改为无认证调用。`}
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                const target = confirmDanger;
+                setConfirmDanger(null);
+                if (target.kind === 'prune') {
+                  void handlePruneRetention();
+                } else if (target.kind === 'disable') {
+                  void handleDisablePlugin();
+                } else {
+                  void handleDeleteCredential(target.slot);
+                }
+              }}
+              className="rounded bg-rose-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-rose-500"
+            >
+              确认执行
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirmDanger(null)}
+              className="rounded border border-slate-700 px-2.5 py-1 text-[11px] text-slate-300 hover:bg-slate-800"
+            >
+              取消
+            </button>
+          </div>
+        </div>
+      )}
+
       {notice && (
-        <div className="rounded-lg border border-emerald-500/40 bg-emerald-950/30 px-3 py-2 text-xs text-emerald-200">
+        <div role="status" className="rounded-lg border border-emerald-500/40 bg-emerald-950/30 px-3 py-2 text-xs text-emerald-200">
           {notice}
         </div>
       )}
       {error && (
-        <div className="rounded-lg border border-rose-500/40 bg-rose-950/30 px-3 py-2 text-xs text-rose-200">
+        <div role="alert" className="rounded-lg border border-rose-500/40 bg-rose-950/30 px-3 py-2 text-xs text-rose-200">
           {error}
         </div>
       )}
@@ -651,7 +714,13 @@ export const PluginCatalogPanel: React.FC<PluginCatalogPanelProps> = ({
                     {selectedPlugin.enabled && (
                       <button
                         type="button"
-                        onClick={() => void handleDisablePlugin()}
+                        onClick={() =>
+                          setConfirmDanger({
+                            kind: 'disable',
+                            pluginId: selectedPlugin.id!,
+                            pluginName: selectedPlugin.name ?? selectedPlugin.id!,
+                          })
+                        }
                         disabled={!controlPlaneAvailable || busyAction !== null}
                         className="inline-flex items-center gap-1 rounded-lg border border-rose-500/40 bg-rose-500/10 px-2.5 py-1.5 text-xs text-rose-200 hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-50"
                       >
@@ -765,9 +834,16 @@ export const PluginCatalogPanel: React.FC<PluginCatalogPanelProps> = ({
                           {summary && (
                             <button
                               type="button"
-                              onClick={() => void handleDeleteCredential(slot)}
+                              onClick={() =>
+                                setConfirmDanger({
+                                  kind: 'delete-cred',
+                                  pluginId: selectedPlugin.id!,
+                                  slot,
+                                })
+                              }
                               disabled={!controlPlaneAvailable || busyAction !== null}
                               title="删除凭证"
+                              aria-label={`删除${slot === 'document' ? '文档拉取' : '接口执行'}凭证`}
                               className="rounded p-1 text-slate-400 hover:bg-rose-500/20 hover:text-rose-300 disabled:opacity-40"
                             >
                               <Trash2 className="h-3.5 w-3.5" />

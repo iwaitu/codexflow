@@ -26,6 +26,8 @@ function installMockBridge(overrides: Partial<DesktopBridge> = {}): DesktopBridg
     } satisfies BackendConnectionPublicInfo),
     onBackendConnectionChanged: vi.fn().mockReturnValue(() => {}),
     approveToolExecution: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
+    getApprovalScript: vi.fn().mockResolvedValue({ ok: false, status: 404 }),
+    setSessionPlanMode: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
     submitPlanChatAction: vi.fn().mockResolvedValue({ ok: true, status: 202 }),
     updateExecutionSettings: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
     updateModelSettings: vi.fn().mockResolvedValue({ ok: true, status: 200 }),

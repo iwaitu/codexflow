@@ -279,15 +279,37 @@ public sealed class ExecutionSettingsController(
                     .ProbeAsync(effectiveApiUrl, effectiveApiMode, effectiveModel, effectiveApiKey, ct)
                     .ConfigureAwait(false);
 
-                updated = modelSettingsService.Update(new ModelSettingsUpdate(
-                    SupportsMultimodal: probe.IsSupported,
-                    MultimodalProbeStatus: probe.Status,
-                    MultimodalProbeMessage: probe.Message));
+                if (probe.IsSupported)
+                {
+                    updated = modelSettingsService.Update(new ModelSettingsUpdate(
+                        SupportsMultimodal: true,
+                        MultimodalProbeStatus: probe.Status,
+                        MultimodalProbeMessage: probe.Message));
+                }
+                else if (string.Equals(probe.Status, "Unsupported", StringComparison.OrdinalIgnoreCase))
+                {
+                    updated = modelSettingsService.Update(new ModelSettingsUpdate(
+                        SupportsMultimodal: false,
+                        MultimodalProbeStatus: probe.Status,
+                        MultimodalProbeMessage: probe.Message));
+                }
+                else
+                {
+                    var preservedSupportsMultimodal = request.SupportsMultimodal ?? updated.SupportsMultimodal;
+                    var message = preservedSupportsMultimodal
+                        ? $"{probe.Message}（已保留你手动开启的多模态设置）"
+                        : probe.Message;
+                    updated = modelSettingsService.Update(new ModelSettingsUpdate(
+                        SupportsMultimodal: preservedSupportsMultimodal,
+                        MultimodalProbeStatus: probe.Status,
+                        MultimodalProbeMessage: message));
+                }
             }
             else if (multimodalProbe is not null)
             {
+                var preservedSupportsMultimodal = request.SupportsMultimodal ?? updated.SupportsMultimodal;
                 updated = modelSettingsService.Update(new ModelSettingsUpdate(
-                    SupportsMultimodal: false,
+                    SupportsMultimodal: preservedSupportsMultimodal,
                     MultimodalProbeStatus: "NotProbed",
                     MultimodalProbeMessage: "模型地址、API Key 或模型名称不完整，未执行多模态测试。"));
             }

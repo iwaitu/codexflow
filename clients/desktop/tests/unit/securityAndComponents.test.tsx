@@ -46,6 +46,8 @@ function installMockBridge(overrides: Partial<DesktopBridge> = {}): DesktopBridg
     } satisfies BackendConnectionPublicInfo),
     onBackendConnectionChanged: vi.fn().mockReturnValue(() => {}),
     approveToolExecution: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
+    getApprovalScript: vi.fn().mockResolvedValue({ ok: false, status: 404 }),
+    setSessionPlanMode: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
     submitPlanChatAction: vi.fn().mockResolvedValue({ ok: true, status: 202 }),
     updateExecutionSettings: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
     updateModelSettings: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
@@ -706,10 +708,8 @@ describe('Security boundary & MVP interactive cards', () => {
       <Composer
         disabled={false}
         isTurnRunning={false}
-        conversationMode="reuse-master"
         turnNotice={null}
         workspacePath="D:/repo"
-        onChangeMode={vi.fn()}
         onSend={onSend}
         onCancel={vi.fn()}
       />,
@@ -771,9 +771,7 @@ describe('Security boundary & MVP interactive cards', () => {
       <Composer
         disabled={false}
         isTurnRunning={false}
-        conversationMode="reuse-master"
         turnNotice={null}
-        onChangeMode={vi.fn()}
         onSend={vi.fn()}
         onCancel={vi.fn()}
       />,
@@ -843,6 +841,10 @@ describe('Security boundary & MVP interactive cards', () => {
         createdUtc: '2026-11-17T00:00:00Z',
         currentPlanArtifactId: null,
         activeTaskId: null,
+        workMode: 'Development',
+        modeVersion: 1,
+        planModeActive: false,
+        planModeVersion: 1,
       },
     ];
 
@@ -929,6 +931,10 @@ describe('Security boundary & MVP interactive cards', () => {
         createdUtc: '2026-11-17T00:00:00Z',
         currentPlanArtifactId: null,
         activeTaskId: null,
+        workMode: 'Development',
+        modeVersion: 1,
+        planModeActive: false,
+        planModeVersion: 1,
       },
       {
         sessionId: 'sess-b',
@@ -940,6 +946,10 @@ describe('Security boundary & MVP interactive cards', () => {
         createdUtc: '2026-11-17T00:00:00Z',
         currentPlanArtifactId: null,
         activeTaskId: null,
+        workMode: 'Development',
+        modeVersion: 1,
+        planModeActive: false,
+        planModeVersion: 1,
       },
     ];
 
@@ -1267,11 +1277,9 @@ describe('Security boundary & MVP interactive cards', () => {
       <Composer
         disabled={false}
         isTurnRunning={false}
-        conversationMode="reuse-master"
         turnNotice={null}
         workspacePath="D:/repo"
         supportsMultimodal={false}
-        onChangeMode={vi.fn()}
         onSend={onSend}
         onCancel={vi.fn()}
       />,

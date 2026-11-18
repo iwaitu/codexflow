@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -38,6 +38,18 @@ export const SkillRunCard: React.FC<SkillRunCardProps> = ({
   const [actionBusy, setActionBusy] = useState<'allow_once' | 'deny' | 'cancel' | null>(null);
   const [note, setNote] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [confirmStopOpen, setConfirmStopOpen] = useState(false);
+  const [pollFailureCount, setPollFailureCount] = useState(0);
+  const onRunUpdatedRef = useRef(onRunUpdated);
+  onRunUpdatedRef.current = onRunUpdated;
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (initialRun) {
@@ -52,15 +64,21 @@ export const SkillRunCard: React.FC<SkillRunCardProps> = ({
     setLoading(true);
     try {
       const latest = await apiClient.getSkillRun(auth, effectiveRunId);
+      if (!mountedRef.current) return;
       setRun(latest);
       setError(null);
-      onRunUpdated?.(latest);
+      setPollFailureCount(0);
+      onRunUpdatedRef.current?.(latest);
     } catch (err) {
+      if (!mountedRef.current) return;
+      setPollFailureCount((c) => c + 1);
       setError(formatBusinessSkillError(err, '获取运行状态失败'));
     } finally {
-      setLoading(false);
+      if (mountedRef.current) {
+        setLoading(false);
+      }
     }
-  }, [auth, effectiveRunId, onRunUpdated]);
+  }, [auth, effectiveRunId]);
 
   useEffect(() => {
     if (!auth || !effectiveRunId) return;
@@ -69,9 +87,9 @@ export const SkillRunCard: React.FC<SkillRunCardProps> = ({
     }
   }, [auth, effectiveRunId, run, refreshRun]);
 
-  // 仅在运行处于非终态（排队、执行中或等待审批）时按短周期轮询运行快照
+  // 仅在运行处于非终态且未连续连接失败时按短周期轮询运行快照
   useEffect(() => {
-    if (!auth || !effectiveRunId || !isNonTerminalRunStatus(run?.status)) {
+    if (!auth || !effectiveRunId || !isNonTerminalRunStatus(run?.status) || pollFailureCount >= 3) {
       return undefined;
     }
     const timer = window.setInterval(() => {
@@ -80,7 +98,7 @@ export const SkillRunCard: React.FC<SkillRunCardProps> = ({
     return () => {
       window.clearInterval(timer);
     };
-  }, [auth, effectiveRunId, run?.status, refreshRun]);
+  }, [auth, effectiveRunId, run?.status, pollFailureCount, refreshRun]);
 
   const handleApproval = async (decision: 'allow_once' | 'deny') => {
     const approval = run?.pendingApproval;
@@ -169,7 +187,10 @@ export const SkillRunCard: React.FC<SkillRunCardProps> = ({
           </span>
           <button
             type="button"
-            onClick={() => void refreshRun()}
+            onClick={() => {
+              setPollFailureCount(0);
+              void refreshRun();
+            }}
             disabled={loading}
             className="inline-flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs text-slate-200 hover:bg-slate-700 disabled:opacity-50"
           >
@@ -179,7 +200,7 @@ export const SkillRunCard: React.FC<SkillRunCardProps> = ({
           {isNonTerminalRunStatus(run.status) && (
             <button
               type="button"
-              onClick={() => void handleCancelRun()}
+              onClick={() => setConfirmStopOpen(true)}
               disabled={!canStop || actionBusy !== null}
               title={controlPlaneAvailable ? '停止后续步骤分发' : '控制面不可用时无法停止'}
               className="inline-flex items-center gap-1 rounded-lg border border-rose-500/40 bg-rose-500/10 px-2.5 py-1 text-xs font-medium text-rose-200 hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-50"
@@ -190,6 +211,41 @@ export const SkillRunCard: React.FC<SkillRunCardProps> = ({
           )}
         </div>
       </div>
+
+      {confirmStopOpen && (
+        <div
+          role="alertdialog"
+          aria-label="确认停止 Skill 运行"
+          className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-rose-500/40 bg-rose-950/30 p-2.5 text-xs text-rose-200"
+        >
+          <span>确认停止后续步骤吗？若外部写入请求已发出，状态可能标记为待人工核对结果。</span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setConfirmStopOpen(false);
+                void handleCancelRun();
+              }}
+              className="rounded bg-rose-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-rose-500"
+            >
+              确认停止
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirmStopOpen(false)}
+              className="rounded border border-slate-700 px-2.5 py-1 text-[11px] text-slate-300 hover:bg-slate-800"
+            >
+              取消
+            </button>
+          </div>
+        </div>
+      )}
+
+      {pollFailureCount >= 3 && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-950/30 px-3 py-1.5 text-xs text-amber-200">
+          连续获取状态失败，已暂停自动刷新，请确认连接正常后点击右上角“刷新”。
+        </div>
+      )}
 
       {run.status === 'OutcomeUnknown' && (
         <div className="flex items-start gap-2 rounded-lg border border-orange-500/40 bg-orange-950/30 p-3 text-xs text-orange-200">

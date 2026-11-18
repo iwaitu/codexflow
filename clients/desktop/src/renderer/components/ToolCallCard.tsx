@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { CheckCircle2, ChevronDown, ChevronRight, Loader2, Terminal, XCircle } from 'lucide-react';
 import type { UiToolCall } from '../lib/sessionRecovery';
 
@@ -8,6 +8,12 @@ interface ToolCallCardProps {
 
 export const ToolCallCard: React.FC<ToolCallCardProps> = ({ tool }) => {
   const [expanded, setExpanded] = useState(tool.status === 'running' || tool.status === 'failed');
+
+  useEffect(() => {
+    if (tool.status === 'failed') {
+      setExpanded(true);
+    }
+  }, [tool.status]);
 
   const statusBadge = {
     called: <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[11px] text-slate-300">已请求</span>,

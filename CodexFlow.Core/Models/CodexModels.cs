@@ -1406,6 +1406,39 @@ public static class CodexTaskClassifier
     ];
 }
 
+public enum SessionWorkMode
+{
+    Development = 0,
+    Daily = 1
+}
+
+public sealed record SessionPolicySnapshot(
+    SessionWorkMode WorkMode,
+    int ModeVersion,
+    bool PlanModeActive,
+    int PlanModeVersion,
+    DateTime? PlanModeChangedAtUtc = null,
+    string? PlanModeChangedBy = null)
+{
+    public static SessionPolicySnapshot Default { get; } = new(SessionWorkMode.Development, 1, false, 1);
+
+    public static SessionPolicySnapshot FromSession(CodexSession? session)
+        => session is null
+            ? Default
+            : new SessionPolicySnapshot(
+                session.WorkMode,
+                Math.Max(1, session.ModeVersion),
+                session.PlanModeActive,
+                Math.Max(1, session.PlanModeVersion),
+                session.PlanModeChangedAtUtc,
+                session.PlanModeChangedBy);
+}
+
+public interface ISessionPolicyResolver
+{
+    Task<SessionPolicySnapshot> ResolveRequiredAsync(string sessionId, CancellationToken ct = default);
+}
+
 public partial class CodexSession
 {
     public string Id { get; set; } = string.Empty;
@@ -1415,6 +1448,12 @@ public partial class CodexSession
     public string WorkspacePath { get; set; } = string.Empty;
     public int CurrentStage { get; set; }
     public string? ActiveTaskId { get; set; } // 当前正在执行的任务 ID
+    public SessionWorkMode WorkMode { get; set; } = SessionWorkMode.Development;
+    public int ModeVersion { get; set; } = 1;
+    public bool PlanModeActive { get; set; }
+    public int PlanModeVersion { get; set; } = 1;
+    public DateTime? PlanModeChangedAtUtc { get; set; }
+    public string? PlanModeChangedBy { get; set; }
     public Collection<CodexTask> Plan { get; } = new();
     public Dictionary<string, string> Metadata { get; } = new();
 
