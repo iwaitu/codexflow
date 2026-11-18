@@ -175,7 +175,7 @@ describe('Built-in Enterprise Plugin & Skill Builder UI', () => {
 
     expect(await screen.findByTestId('control-plane-readonly-banner')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /接入新插件/ })).toBeDisabled();
-    expect(screen.getByRole('button', { name: /刷新发现目录/ })).toBeDisabled();
+    expect(await screen.findByRole('button', { name: /刷新发现目录/ })).toBeDisabled();
   });
 
   it('clears secret input immediately after submitting credential and blocks remote images in OpenAPI markdown', async () => {
