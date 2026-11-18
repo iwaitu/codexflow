@@ -123,8 +123,11 @@ html.light .bg-slate-950 {
 
 html.light .bg-slate-950\/95,
 html.light .bg-slate-950\/90,
+html.light .bg-slate-950\/85,
 html.light .bg-slate-950\/80,
-html.light .bg-slate-950\/60 {
+html.light .bg-slate-950\/70,
+html.light .bg-slate-950\/60,
+html.light .bg-slate-950\/50 {
   background-color: rgba(255, 255, 255, 0.94);
 }
 
@@ -132,21 +135,27 @@ html.light .bg-slate-900 {
   background-color: #f1f5f9;
 }
 
+html.light .bg-slate-900\/95,
+html.light .bg-slate-900\/90,
 html.light .bg-slate-900\/80,
 html.light .bg-slate-900\/70,
 html.light .bg-slate-900\/60,
 html.light .bg-slate-900\/50,
-html.light .bg-slate-900\/40 {
+html.light .bg-slate-900\/40,
+html.light .bg-slate-900\/35 {
   background-color: rgba(241, 245, 249, 0.88);
 }
 
-html.light .bg-slate-800 {
+html.light .bg-slate-800,
+html.light .disabled\:bg-slate-800:disabled {
   background-color: #e2e8f0;
 }
 
+html.light .bg-slate-800\/90,
 html.light .bg-slate-800\/80,
 html.light .bg-slate-800\/70,
 html.light .bg-slate-800\/60,
+html.light .bg-slate-800\/50,
 html.light .bg-slate-800\/40 {
   background-color: rgba(226, 232, 240, 0.75);
 }
@@ -158,8 +167,10 @@ html.light .hover\:bg-slate-700:hover {
 }
 
 html.light .border-slate-800,
+html.light .border-slate-800\/90,
 html.light .border-slate-800\/80,
 html.light .border-slate-700,
+html.light .border-slate-700\/90,
 html.light .border-slate-700\/80 {
   border-color: #cbd5e1;
 }
@@ -191,6 +202,10 @@ html.light .text-slate-500 {
 html.light .hover\:text-slate-100:hover,
 html.light .hover\:text-slate-200:hover {
   color: #0f172a;
+}
+
+html.light .text-indigo-100 {
+  color: #3730a3;
 }
 
 html.light .text-indigo-200,
@@ -239,13 +254,20 @@ html.light .bg-indigo-950\/30 {
   background-color: rgba(79, 70, 229, 0.12);
 }
 
-html.light .text-emerald-200 {
+html.light .bg-sky-950\/30,
+html.light .bg-sky-950\/20 {
+  background-color: rgba(14, 165, 233, 0.12);
+}
+
+html.light .text-emerald-200,
+html.light .hover\:text-emerald-200:hover {
   color: #065f46;
 }
 
 html.light .text-amber-100,
 html.light .text-amber-200,
-html.light .text-amber-200\/90 {
+html.light .text-amber-200\/90,
+html.light .hover\:text-amber-200:hover {
   color: #92400e;
 }
 

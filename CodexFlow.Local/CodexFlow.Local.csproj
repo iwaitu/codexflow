@@ -9,6 +9,12 @@
     <RootNamespace>CodexFlow.Local</RootNamespace>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\CodexFlow.Orchestration\CodexFlow.Orchestration.csproj" />
     <ProjectReference Include="..\CodexFlow.Gateway.Http\CodexFlow.Gateway.Http.csproj" />

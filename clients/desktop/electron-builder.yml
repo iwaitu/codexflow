@@ -24,6 +24,10 @@ extraResources:
 
 asar: true
 generateUpdatesFilesForAllChannels: true
+electronLanguages:
+  - en-US
+  - zh-CN
+  - zh-TW
 
 publish:
   provider: github

@@ -522,14 +522,14 @@ export const Composer: React.FC<ComposerProps> = ({
                       type="button"
                       aria-label={`移除附件 ${item.name}`}
                       onClick={() => removeAttachment(item.id)}
-                      className="absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-slate-950/85 text-slate-200 opacity-0 ring-1 ring-slate-600/60 transition hover:bg-slate-900 hover:text-white group-hover:opacity-100 group-focus-within:opacity-100"
+                      className="absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-slate-950/85 text-slate-200 opacity-0 ring-1 ring-slate-600/60 transition hover:bg-slate-900 hover:text-slate-100 group-hover:opacity-100 group-focus-within:opacity-100"
                     >
                       <X className="h-3 w-3" />
                     </button>
 
                     <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-950/95 via-slate-950/75 to-transparent px-2 pb-1.5 pt-4 opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
-                      <div className="truncate text-[11px] font-medium text-slate-100">{item.name}</div>
-                      <div className="text-[10px] text-slate-300">
+                      <div className="truncate text-[11px] font-medium text-white">{item.name}</div>
+                      <div className="text-[10px] text-white/80">
                         {formatFileSize(item.sizeBytes)}
                         {item.workspaceRelativePath ? ' · 工作区' : ''}
                       </div>
@@ -573,7 +573,7 @@ export const Composer: React.FC<ComposerProps> = ({
                     type="button"
                     aria-label={`移除附件 ${item.name}`}
                     onClick={() => removeAttachment(item.id)}
-                    className="absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-slate-950/85 text-slate-200 opacity-0 ring-1 ring-slate-600/60 transition hover:bg-slate-900 hover:text-white group-hover:opacity-100 group-focus-within:opacity-100"
+                    className="absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-slate-950/85 text-slate-200 opacity-0 ring-1 ring-slate-600/60 transition hover:bg-slate-900 hover:text-slate-100 group-hover:opacity-100 group-focus-within:opacity-100"
                   >
                     <X className="h-3 w-3" />
                   </button>
@@ -720,7 +720,7 @@ export const Composer: React.FC<ComposerProps> = ({
               onClick={() => fileInputRef.current?.click()}
               title="添加文件（也可拖拽文件或 Ctrl+V 粘贴截图）"
               aria-label="添加文件"
-              className="inline-flex h-7 w-7 items-center justify-center rounded-full text-slate-300 transition hover:bg-slate-800 hover:text-white disabled:opacity-40"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-full text-slate-300 transition hover:bg-slate-800 hover:text-slate-100 disabled:opacity-40"
             >
               <Plus className="h-4 w-4" />
             </button>
@@ -788,7 +788,7 @@ export const Composer: React.FC<ComposerProps> = ({
               type="button"
               aria-label="关闭图片预览"
               onClick={() => setLightboxImage(null)}
-              className="absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-full bg-slate-900/90 text-slate-200 ring-1 ring-slate-600 hover:bg-slate-800 hover:text-white"
+              className="absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-full bg-slate-900/90 text-slate-200 ring-1 ring-slate-600 hover:bg-slate-800 hover:text-slate-100"
             >
               <X className="h-4 w-4" />
             </button>

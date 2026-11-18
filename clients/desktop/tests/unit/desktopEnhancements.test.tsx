@@ -1,4 +1,6 @@
 import React from 'react';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BackendConnectionPublicInfo, DesktopBridge } from '../../src/shared/ipc';
@@ -273,5 +275,19 @@ describe('P5 Desktop Enhancements (Notifications, Theme, i18n, Command Palette, 
       fireEvent.click(screen.getByTestId('check-updates-button'));
     });
     expect(checkUpdatesSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('defines html.light overrides for Composer surfaces, drag-over, slash selection, and disabled send button', () => {
+    const mainCss = readFileSync(resolve(__dirname, '../../src/renderer/styles/main.css'), 'utf8');
+    const requiredLightSelectors = [
+      'html.light .bg-slate-900\\/90',
+      'html.light .bg-slate-950\\/85',
+      'html.light .bg-sky-950\\/30',
+      'html.light .disabled\\:bg-slate-800:disabled',
+      'html.light .text-indigo-100',
+    ];
+    for (const selector of requiredLightSelectors) {
+      expect(mainCss).toContain(selector);
+    }
   });
 });

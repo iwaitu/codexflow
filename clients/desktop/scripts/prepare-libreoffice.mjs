@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { cpSync, createWriteStream, existsSync, mkdirSync, rmSync } from 'node:fs';
+import { cpSync, createWriteStream, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -128,21 +128,73 @@ async function downloadFileWithFallback(urls, destPath) {
   throw new Error(`All LibreOffice download attempts failed:\n${errors.join('\n')}`);
 }
 
-function pruneUnneededExtras(libreOfficeDir) {
-  // Keep core Writer/Calc/Impress conversion binaries; remove large optional help/dict/gallery/template folders.
-  for (const sub of [
-    'help',
-    'readmes',
-    'CREDITS.fodt',
-    join('share', 'extensions'),
-    join('share', 'gallery'),
-    join('share', 'template'),
-    join('share', 'wizards'),
-  ]) {
-    const candidate = join(libreOfficeDir, sub);
-    if (existsSync(candidate)) {
-      rmSync(candidate, { recursive: true, force: true });
+const KEPT_PROGRAM_RESOURCE_DIRS = new Set(['common', 'en', 'en_US', 'en_GB', 'zh_CN', 'zh_TW']);
+const KEPT_REGISTRY_RES_LANGS = new Set(['en-US', 'en-GB', 'zh-CN', 'zh-TW']);
+
+function removeMatchingEntries(dirPath, shouldRemove) {
+  if (!existsSync(dirPath)) {
+    return;
+  }
+  for (const entry of readdirSync(dirPath, { withFileTypes: true })) {
+    if (shouldRemove(entry)) {
+      rmSync(join(dirPath, entry.name), { recursive: true, force: true });
     }
+  }
+}
+
+function isKeptRegistryResFile(fileName) {
+  const match = /^(?:fcfg_langpack|registry)_(.+)\.xcd$/i.exec(fileName);
+  if (!match) {
+    // Keep non-langpack registry fragments so core filters remain intact.
+    return true;
+  }
+  return KEPT_REGISTRY_RES_LANGS.has(match[1]);
+}
+
+/**
+ * Removes large optional LibreOffice assets not required for headless document conversion
+ * across Windows/Linux (`program/`, `share/`) and macOS (`LibreOffice.app/Contents/Resources/`) layouts.
+ */
+export function pruneUnneededExtras(libreOfficeDir) {
+  if (!existsSync(libreOfficeDir)) {
+    return;
+  }
+
+  // Clean Windows administrative MSI extraction leftovers and root optional folders.
+  removeMatchingEntries(libreOfficeDir, (entry) => entry.isFile() && entry.name.toLowerCase().endsWith('.msi'));
+  for (const rootOptional of ['help', 'readmes', 'CREDITS.fodt', 'System', 'System64', 'Fonts', 'fonts']) {
+    rmSync(join(libreOfficeDir, rootOptional), { recursive: true, force: true });
+  }
+
+  const macResourcesDir = join(libreOfficeDir, 'LibreOffice.app', 'Contents', 'Resources');
+  const contentRoots = [
+    join(libreOfficeDir, 'share'),
+    macResourcesDir,
+  ].filter((dir) => existsSync(dir));
+
+  for (const contentRoot of contentRoots) {
+    for (const sub of ['help', 'readmes', 'extensions', 'gallery', 'template', 'wizards', 'Fonts', 'fonts']) {
+      rmSync(join(contentRoot, sub), { recursive: true, force: true });
+    }
+    removeMatchingEntries(
+      join(contentRoot, 'config'),
+      (entry) => entry.isFile() && /^images_.*\.zip$/i.test(entry.name),
+    );
+    removeMatchingEntries(
+      join(contentRoot, 'registry', 'res'),
+      (entry) => entry.isFile() && !isKeptRegistryResFile(entry.name),
+    );
+  }
+
+  const resourceDirs = [
+    join(libreOfficeDir, 'program', 'resource'),
+    join(macResourcesDir, 'resource'),
+  ];
+  for (const resourceDir of resourceDirs) {
+    removeMatchingEntries(
+      resourceDir,
+      (entry) => entry.isDirectory() && !KEPT_PROGRAM_RESOURCE_DIRS.has(entry.name),
+    );
   }
 }
 
@@ -163,6 +215,7 @@ async function main() {
   }
 
   if (findSofficeInTree(targetRoot)) {
+    pruneUnneededExtras(targetRoot);
     console.log(`Bundled LibreOffice already present at ${targetRoot}`);
     return;
   }
@@ -216,6 +269,7 @@ async function main() {
           throw new Error(`LibreOffice.app not found in ${mountPoint}`);
         }
         cpSync(appSrc, join(targetRoot, 'LibreOffice.app'), { recursive: true });
+        pruneUnneededExtras(targetRoot);
       } finally {
         execFileSync('hdiutil', ['detach', mountPoint, '-quiet'], { stdio: 'inherit' });
       }
@@ -254,7 +308,11 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+const isDirectExecution = Boolean(process.argv[1]) && resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1]);
+
+if (isDirectExecution) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
