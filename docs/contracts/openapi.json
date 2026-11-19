@@ -7544,6 +7544,15 @@
           },
           "selfApprovalProtection": {
             "type": "boolean"
+          },
+          "businessApprovals": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/BusinessApprovalRequestDto"
+            }
           }
         }
       },

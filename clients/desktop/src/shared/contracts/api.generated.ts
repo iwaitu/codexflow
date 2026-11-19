@@ -4499,6 +4499,7 @@ export type components = {
             shell: null | string;
         };
         PendingApprovalsResponse: {
+            businessApprovals?: null | components["schemas"]["BusinessApprovalRequestDto"][];
             controlPlaneAvailable: boolean;
             /** Format: int32 */
             count: number | string;
