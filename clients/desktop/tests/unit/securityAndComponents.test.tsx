@@ -502,6 +502,9 @@ describe('Security boundary & MVP interactive cards', () => {
     expect(updateExec).toHaveBeenCalledWith({ backend: 'Local', permissionMode: 'Ask' });
     expect(onSaved).toHaveBeenCalledTimes(1);
     expect(onClose).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: /连接已运行实例/ }));
+    expect(screen.getByLabelText('后端地址')).toHaveValue('http://127.0.0.1:32586');
   });
 
   it('displays and updates maxTokensLength, temperature and topP in SettingsModal model tab', async () => {

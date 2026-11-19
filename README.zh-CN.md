@@ -204,7 +204,7 @@ CodexFlow 将 **工作模式**、**Plan Mode**、**对话线程模式** 以及 *
 | `VllmAgent__ApiMode` | `ChatCompletions` 或 `Responses`，需与服务商接口匹配。 |
 | `VllmAgent__Model` | 服务商提供的模型标识。 |
 | `VllmAgent__ApiKey` | 通过进程环境传入的模型凭据。 |
-| `Local__Port` | 独立宿主默认端口为 `5206`；桌面托管模式申请动态端口。 |
+| `Local__Port` | 独立宿主默认端口为 `32586`；桌面托管模式申请动态端口。 |
 | `Local__PreflightMode` | 启动预检；`Report` 报告问题但不按严格模式阻止启动，`Off` 关闭预检。 |
 | `CODEXFLOW_DATA_DIR` | 覆盖桌面托管后端的数据目录。 |
 | `CODEXFLOW_BACKEND_BIN` | 指定桌面端使用的后端可执行文件或 DLL。 |
@@ -225,7 +225,7 @@ $env:VllmAgent__Model = 'your-model'
 dotnet run --project CodexFlow.Local
 ```
 
-宿主监听本机回环地址，通常为 `http://127.0.0.1:5206`。使用生成的 `host.token` 进行 API 身份验证；缺少令牌或令牌错误会返回 `401`。桌面连接向导可以发现本机实例，也可以指定地址与令牌文件；需要控制平面的操作还需对应控制凭据。
+宿主监听本机回环地址，通常为 `http://127.0.0.1:32586`。使用生成的 `host.token` 进行 API 身份验证；缺少令牌或令牌错误会返回 `401`。桌面连接向导可以发现本机实例，也可以指定地址与令牌文件；需要控制平面的操作还需对应控制凭据。
 
 接口定义见 [OpenAPI 文档](docs/contracts/openapi.json) 与 [SSE 事件契约](docs/contracts/sse-events.schema.json)。仓库尚未提供独立的 `codexflow` CLI，主要入口为桌面应用和 HTTP 宿主。
 
@@ -305,7 +305,7 @@ npm run test:e2e
 
 ```powershell
 python scripts/e2e/devsim list
-python scripts/e2e/devsim run bugfix-python-pager --api http://127.0.0.1:5206 --token-file .codexflow/host.token
+python scripts/e2e/devsim run bugfix-python-pager --api http://127.0.0.1:32586 --token-file .codexflow/host.token
 ```
 
 令牌路径应按当前宿主的实际数据目录调整。场景说明与故障注入方式见 [devsim 指南](scripts/e2e/devsim/README.md)。

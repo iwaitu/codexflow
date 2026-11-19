@@ -24,11 +24,11 @@ python scripts/e2e/devsim run --all --api http://127.0.0.1:5205
 1. **使用 `--execution-profile local-auto` 或 `docker-auto`**
    - `docker-auto`（Docker 后端 + `FullAuto`）：宿主启动时配置 `Execution__Backend=Docker` 与 `Execution__PermissionMode=FullAuto`（或传入 `--token-file .codexflow/host.token`，同目录 `control.token` 会自动用于切换配置与计划审批按钮）。
      ```bash
-     python scripts/e2e/devsim run --all --api http://127.0.0.1:5206 --token-file .codexflow/host.token --execution-profile docker-auto
+     python scripts/e2e/devsim run --all --api http://127.0.0.1:32586 --token-file .codexflow/host.token --execution-profile docker-auto
      ```
    - `local-auto`（Local 后端 + `FullAuto`）：使用默认 `Local` 后端无容器执行时可用 `--execution-profile local-auto`，并配合专门的本地场景（如 `bugfix-discounts-local`）：
      ```bash
-     python scripts/e2e/devsim run bugfix-discounts-local --api http://127.0.0.1:5206 --token-file .codexflow/host.token --execution-profile local-auto
+     python scripts/e2e/devsim run bugfix-discounts-local --api http://127.0.0.1:32586 --token-file .codexflow/host.token --execution-profile local-auto
      ```
 2. **控制面自动审批：`--auto-approve`**
    - 运行器通过控制面 API（`GET /api/gateway/session/{id}/approvals` + `POST /api/gateway/approvals/{approvalId}`）自动批准挂起的执行请求，并在场景结果 JSON（`approved_request_digests`）与 `summary.md` 中记录所有被批准的 `requestDigest`。
