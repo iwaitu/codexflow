@@ -650,6 +650,73 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/gateway/session/{sessionId}/compact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    sessionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/*+json": null | components["schemas"]["CompactSessionContextRequest"];
+                    "application/json": null | components["schemas"]["CompactSessionContextRequest"];
+                    "text/json": null | components["schemas"]["CompactSessionContextRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CompactSessionContextResponse"];
+                        "text/json": components["schemas"]["CompactSessionContextResponse"];
+                        "text/plain": components["schemas"]["CompactSessionContextResponse"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["GatewayErrorResponse"];
+                        "text/json": components["schemas"]["GatewayErrorResponse"];
+                        "text/plain": components["schemas"]["GatewayErrorResponse"];
+                    };
+                };
+                /** @description Conflict */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["GatewayErrorResponse"];
+                        "text/json": components["schemas"]["GatewayErrorResponse"];
+                        "text/plain": components["schemas"]["GatewayErrorResponse"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/gateway/session/{sessionId}/context-window": {
         parameters: {
             query?: never;
@@ -4174,6 +4241,25 @@ export type components = {
             /** Format: int64 */
             sizeBytes: number | string;
         };
+        CompactSessionContextRequest: {
+            conversationId?: null | string;
+            focus?: null | string;
+        };
+        CompactSessionContextResponse: {
+            compressed?: boolean;
+            /** Format: int32 */
+            compressedTurnCount?: number | string;
+            contextWindow?: components["schemas"]["SessionContextWindowResponse"];
+            /** Format: int64 */
+            estimatedTokensAfter?: number | string;
+            /** Format: int64 */
+            estimatedTokensBefore?: number | string;
+            lastCompressedAtUtc?: null | string;
+            sessionId?: string;
+            status?: string;
+            /** Format: int64 */
+            summaryChars?: number | string;
+        };
         ContinueWorkerHttpRequest: {
             prompt?: null | string;
             resumeToken?: null | string;
@@ -4556,6 +4642,34 @@ export type components = {
             workMode?: string;
             workspaceName?: string;
             workspacePath?: string;
+        };
+        SessionContextWindowResponse: {
+            /** Format: int32 */
+            compressionTriggerTokens?: number | string;
+            /** Format: int64 */
+            estimatedChars?: number | string;
+            /** Format: int64 */
+            estimatedTokens?: number | string;
+            /** Format: int32 */
+            modelMaxTokens?: number | string;
+            /** Format: int32 */
+            recentTurns?: number | string;
+            sessionId?: string;
+            /** Format: int64 */
+            summaryChars?: number | string;
+            /** Format: int64 */
+            totalCachedPromptTokens?: number | string;
+            /** Format: int64 */
+            totalCompletionTokens?: number | string;
+            /** Format: int64 */
+            totalPromptTokens?: number | string;
+            /** Format: int64 */
+            totalSessionTokens?: number | string;
+            /** Format: double */
+            triggerRatio?: number | string;
+            updatedAtUtc?: null | string;
+            /** Format: double */
+            usageRatio?: number | string;
         };
         SessionPlanDto: {
             goal: string;

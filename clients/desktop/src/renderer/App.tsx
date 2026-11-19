@@ -892,7 +892,7 @@ export const App: React.FC = () => {
         return;
       }
       if (key === 'f' && !event.shiftKey && !event.altKey) {
-        if (primaryView === 'chat' && !settingsOpen && !commandPaletteOpen) {
+        if (primaryView === 'chat' && !isSettingsOpen && !isCommandPaletteOpen) {
           event.preventDefault();
           setChatSearchOpen(true);
           setChatSearchFocusNonce((n) => n + 1);
@@ -929,7 +929,7 @@ export const App: React.FC = () => {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [activeSessionId, controlPlaneAvailable, primaryView, settingsOpen, commandPaletteOpen]);
+  }, [activeSessionId, controlPlaneAvailable, primaryView, isSettingsOpen, isCommandPaletteOpen]);
 
   const commandPaletteItems = useMemo<CommandPaletteItem[]>(
     () => [
