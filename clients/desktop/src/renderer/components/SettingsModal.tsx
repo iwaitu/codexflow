@@ -12,11 +12,12 @@ import { useI18n } from '../lib/i18n';
 import { parseModelSettingsInput } from '../lib/modelSettingsForm';
 import { usePreferencesStore } from '../stores/usePreferencesStore';
 import { AppUpdatePanel } from './AppUpdatePanel';
+import { EnvironmentCheckPanel } from './EnvironmentCheckPanel';
 import { MaxContextField } from './MaxContextField';
 
 export { isRelaxingPermission };
 
-export type SettingsTabKind = 'execution' | 'model' | 'rules' | 'preferences';
+export type SettingsTabKind = 'execution' | 'model' | 'rules' | 'environment' | 'preferences';
 
 interface SettingsModalProps {
   open: boolean;
@@ -246,6 +247,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 ['execution', t('settings.tab.execution')],
                 ['model', t('settings.tab.model')],
                 ['rules', t('settings.tab.rules')],
+                ['environment', t('settings.tab.environment')],
                 ['preferences', t('settings.tab.preferences')],
               ] as const
             ).map(([key, label]) => (
@@ -640,6 +642,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 hostVersion={systemStatus?.version ?? null}
               />
             </div>
+          )}
+
+          {tab === 'environment' && (
+            <EnvironmentCheckPanel active={open && tab === 'environment'} />
           )}
         </Dialog.Content>
       </Dialog.Portal>

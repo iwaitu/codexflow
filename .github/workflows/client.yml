@@ -199,8 +199,71 @@ jobs:
         shell: bash
         working-directory: clients/desktop
         env:
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: npx electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish never
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ "${{ matrix.platform }}" = "mac" ] && [ -z "${CSC_LINK:-}" ]; then
+            export CSC_IDENTITY_AUTO_DISCOVERY="false"
+            echo "No MAC_CSC_LINK secret configured; afterPack will apply verified inside-out ad-hoc signing."
+          elif [ "${{ matrix.platform }}" != "mac" ]; then
+            export CSC_IDENTITY_AUTO_DISCOVERY="false"
+          fi
+          npx electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish never
+
+      - name: Verify macOS bundle signature and bundled backend startup
+        if: matrix.platform == 'mac'
+        shell: bash
+        working-directory: clients/desktop
+        run: |
+          app_path="dist/mac-${{ matrix.arch }}/CodexFlow Desktop.app"
+          test -d "$app_path"
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+          backend_bin="$app_path/Contents/Resources/backend/CodexFlow.Local"
+          test -x "$backend_bin"
+          smoke_dir="$(mktemp -d)"
+          trap 'rm -rf "$smoke_dir"' EXIT
+          node -e '
+            const { spawn } = require("node:child_process");
+            const child = spawn(process.argv[1], [], {
+              cwd: require("node:path").dirname(process.argv[1]),
+              env: {
+                ...process.env,
+                Local__Port: "0",
+                Local__DataDirectory: process.argv[2],
+                Local__PreflightMode: "Off",
+                Local__TokenDelivery: "Pipe",
+              },
+              stdio: ["pipe", "pipe", "pipe"],
+            });
+            child.stdin.write(JSON.stringify({ accessToken: "smoke-access-token-0123456789", controlToken: "smoke-control-token-9876543210" }) + "\n");
+            child.stdin.end();
+            let output = "";
+            const timer = setTimeout(() => {
+              child.kill("SIGKILL");
+              console.error("Timed out waiting for CODEXFLOW_READY. Output:\n" + output);
+              process.exit(1);
+            }, 20000);
+            child.stdout.on("data", (d) => {
+              output += d.toString("utf8");
+              if (output.includes("CODEXFLOW_READY ")) {
+                clearTimeout(timer);
+                child.kill("SIGTERM");
+                console.log("Bundled macOS CodexFlow.Local reported CODEXFLOW_READY.");
+                process.exit(0);
+              }
+            });
+            child.stderr.on("data", (d) => { output += d.toString("utf8"); });
+            child.on("exit", (code) => {
+              if (!output.includes("CODEXFLOW_READY ")) {
+                clearTimeout(timer);
+                console.error("Bundled backend exited before ready (code=" + code + "). Output:\n" + output);
+                process.exit(1);
+              }
+            });
+          ' "$backend_bin" "$smoke_dir"
 
       - name: Collect distributable installers and checksums
         shell: bash

@@ -15,6 +15,8 @@ import {
   type DesktopPreferencesPayload,
   type DesktopTheme,
   type DroppedFileClassifyInput,
+  type EnvironmentDependencyId,
+  type EnvironmentInstallEvent,
   type GenerateSkillCandidateRequest,
   type OpenLocalWorkspacePayload,
   type PlanChatControlPayload,
@@ -32,6 +34,7 @@ import {
 import { buildApplicationMenuTemplate, buildContextMenuTemplate } from './appMenu';
 import { BackendManager } from './backendManager';
 import { callControlPlane } from './controlPlaneProxy';
+import { EnvironmentManager, isValidEnvironmentDependencyId } from './environmentManager';
 import { LocalBackendProxy } from './localBackendProxy';
 import {
   APP_ORIGIN,
@@ -52,6 +55,7 @@ let backendManager: BackendManager | null = null;
 let gatewayProxy: LocalBackendProxy | null = null;
 let trayManager: TrayManager | null = null;
 let updaterManager: UpdaterManager | null = null;
+let environmentManager: EnvironmentManager | null = null;
 let isQuitting = false;
 const desktopPreferences: {
   theme: DesktopTheme;
@@ -179,6 +183,13 @@ function broadcastUpdateState(state: AppUpdateState): void {
     return;
   }
   mainWindow.webContents.send(IPC_CHANNELS.updateStateChanged, state);
+}
+
+function broadcastEnvironmentInstallEvent(payload: EnvironmentInstallEvent): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  mainWindow.webContents.send(IPC_CHANNELS.environmentInstallEvent, payload);
 }
 
 function broadcastConnectionChange(): void {
@@ -743,6 +754,33 @@ function registerIpcHandlers(manager: BackendManager): void {
     assertTrustedIpcSender(event);
     return updaterManager?.quitAndInstall() ?? false;
   });
+
+  ipcMain.handle(IPC_CHANNELS.inspectEnvironment, async (event, forceRefresh?: boolean) => {
+    assertTrustedIpcSender(event);
+    if (!environmentManager) {
+      throw new Error('Environment manager is not initialized');
+    }
+    return environmentManager.inspect(Boolean(forceRefresh));
+  });
+
+  ipcMain.handle(
+    IPC_CHANNELS.installEnvironmentDependency,
+    async (event, dependencyId: EnvironmentDependencyId) => {
+      assertTrustedIpcSender(event);
+      if (!isValidEnvironmentDependencyId(dependencyId)) {
+        return { accepted: false, error: '无效的依赖项标识。' };
+      }
+      if (!environmentManager) {
+        return { accepted: false, error: '环境管理器尚未初始化。' };
+      }
+      return environmentManager.startInstall(dependencyId);
+    },
+  );
+
+  ipcMain.handle(IPC_CHANNELS.cancelEnvironmentInstall, (event) => {
+    assertTrustedIpcSender(event);
+    return environmentManager?.cancelInstall() ?? false;
+  });
 }
 
 const singleInstanceLock = app.requestSingleInstanceLock();
@@ -755,7 +793,9 @@ if (!singleInstanceLock) {
 
   void app.whenReady().then(async () => {
     const rendererDistDir = resolve(__dirname, '../renderer');
-    registerAppProtocolHandler(rendererDistDir);
+    if (!isDev || existsSync(rendererDistDir)) {
+      registerAppProtocolHandler(rendererDistDir);
+    }
 
     let devRendererOrigin: string | null = null;
     if (isDev && process.env.ELECTRON_RENDERER_URL) {
@@ -785,6 +825,13 @@ if (!singleInstanceLock) {
         isQuitting = true;
         trayManager?.dispose();
       },
+    });
+
+    environmentManager = new EnvironmentManager({
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      getBackendInfo: () => backendManager?.getPublicInfo() ?? null,
+      onInstallEvent: (payload) => broadcastEnvironmentInstallEvent(payload),
     });
 
     gatewayProxy = new LocalBackendProxy(
@@ -852,6 +899,7 @@ if (!singleInstanceLock) {
   let isDisposing = false;
   app.on('before-quit', (event) => {
     isQuitting = true;
+    environmentManager?.dispose();
     updaterManager?.dispose();
     trayManager?.dispose();
     if ((backendManager || gatewayProxy) && !isDisposing) {

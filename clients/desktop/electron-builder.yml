@@ -23,6 +23,7 @@ extraResources:
       - '**/*'
 
 asar: true
+afterPack: scripts/macos-sign.cjs
 generateUpdatesFilesForAllChannels: true
 electronLanguages:
   - en-US
@@ -80,6 +81,7 @@ mac:
         - arm64
   category: public.app-category.developer-tools
   hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
   gatekeeperAssess: false
-  identity: null
   artifactName: CodexFlow-Desktop-${version}-mac-${arch}.${ext}

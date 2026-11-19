@@ -86,6 +86,18 @@ function installMockBridge(overrides: Partial<DesktopBridge> = {}): DesktopBridg
       message: null,
     }),
     quitAndInstall: vi.fn().mockResolvedValue(false),
+    inspectEnvironment: vi.fn().mockResolvedValue({
+      platform: 'darwin',
+      arch: 'arm64',
+      isPackaged: false,
+      packageManager: null,
+      shellPathEnhanced: false,
+      checkedAtIso: '2026-11-19T00:00:00.000Z',
+      items: [],
+    }),
+    installEnvironmentDependency: vi.fn().mockResolvedValue({ accepted: false }),
+    cancelEnvironmentInstall: vi.fn().mockResolvedValue(false),
+    onEnvironmentInstallEvent: vi.fn(() => () => undefined),
     ...overrides,
   };
   window.codexflow = bridge;

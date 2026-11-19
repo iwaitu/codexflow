@@ -41,6 +41,7 @@ export const App: React.FC = () => {
   const [isCommandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [isUpdateModalOpen, setUpdateModalOpen] = useState(false);
   const [appUpdateState, setAppUpdateState] = useState<AppUpdateState | null>(null);
+  const [environmentIssueCount, setEnvironmentIssueCount] = useState(0);
   const [isAboutOpen, setAboutOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTabKind>('execution');
   const sseRef = useRef<SessionSseClient | null>(null);
@@ -112,6 +113,31 @@ export const App: React.FC = () => {
   useEffect(() => {
     syncHostPreferences();
   }, [syncHostPreferences]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const bridge = window.codexflow;
+    const syncIssueCount = (items: Array<{ severity: string; status: string }>) => {
+      if (cancelled) return;
+      const missingRequired = items.filter(
+        (item) => item.severity === 'required' && item.status !== 'ready',
+      ).length;
+      setEnvironmentIssueCount(missingRequired);
+    };
+    void bridge
+      ?.inspectEnvironment?.(false)
+      .then((report) => syncIssueCount(report.items))
+      .catch(() => undefined);
+    const unsubscribe = bridge?.onEnvironmentInstallEvent?.((event) => {
+      if (event.report) {
+        syncIssueCount(event.report.items);
+      }
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -806,6 +832,9 @@ export const App: React.FC = () => {
         case 'open-settings':
           actions.openSettings('execution');
           return;
+        case 'open-environment':
+          actions.openSettings('environment');
+          return;
         case 'open-updates':
           actions.openUpdates();
           return;
@@ -985,6 +1014,13 @@ export const App: React.FC = () => {
         keywords: 'settings preferences 设置 配置',
         shortcut: 'Ctrl/Cmd+,',
         onRun: () => openSettingsTab('execution'),
+      },
+      {
+        id: 'open-environment',
+        group: t('palette.group.system'),
+        label: t('env.title'),
+        keywords: 'environment dependencies doctor install dotnet git node python docker 环境 依赖 检测 安装',
+        onRun: () => openSettingsTab('environment'),
       },
       {
         id: 'check-updates',
@@ -1308,7 +1344,9 @@ export const App: React.FC = () => {
         systemStatus={systemStatusQuery.data ?? null}
         contextWindow={contextWindow}
         updateState={appUpdateState}
+        environmentIssueCount={environmentIssueCount}
         onOpenSettings={() => openSettingsTab('execution')}
+        onOpenEnvironment={() => openSettingsTab('environment')}
         onOpenCommandPalette={() => setCommandPaletteOpen(true)}
         onOpenUpdates={() => setUpdateModalOpen(true)}
         onRestartBackend={() => void window.codexflow.restartBackend()}

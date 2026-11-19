@@ -1,5 +1,5 @@
 import React from 'react';
-import { AlertTriangle, ArrowUpCircle, Command, Languages, Moon, RefreshCw, Shield, ShieldAlert, Sun } from 'lucide-react';
+import { AlertTriangle, ArrowUpCircle, Command, Languages, Moon, RefreshCw, Shield, ShieldAlert, Sun, Wrench } from 'lucide-react';
 import type { AppUpdateState, BackendConnectionPublicInfo } from '@shared/ipc';
 import type { SessionContextWindow, SystemStatusSummary } from '../lib/apiClient';
 import { useI18n } from '../lib/i18n';
@@ -12,7 +12,9 @@ interface StatusBarProps {
   systemStatus: SystemStatusSummary | null;
   contextWindow: SessionContextWindow | null;
   updateState?: AppUpdateState | null;
+  environmentIssueCount?: number;
   onOpenSettings: () => void;
+  onOpenEnvironment?: () => void;
   onOpenCommandPalette?: () => void;
   onOpenUpdates?: () => void;
   onRestartBackend: () => void;
@@ -24,7 +26,9 @@ export const StatusBar: React.FC<StatusBarProps> = ({
   systemStatus,
   contextWindow,
   updateState = null,
+  environmentIssueCount = 0,
   onOpenSettings,
+  onOpenEnvironment,
   onOpenCommandPalette,
   onOpenUpdates,
   onRestartBackend,
@@ -133,6 +137,26 @@ export const StatusBar: React.FC<StatusBarProps> = ({
             {t('status.modelUnconfigured')}
           </button>
         )}
+        {onOpenEnvironment && (
+          <button
+            type="button"
+            data-testid="status-environment-button"
+            onClick={onOpenEnvironment}
+            className={`inline-flex items-center gap-1 rounded px-2 py-0.5 font-medium ${
+              environmentIssueCount > 0 || connection?.status === 'error'
+                ? 'bg-amber-500/20 text-amber-300 hover:bg-amber-500/30'
+                : 'border border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800'
+            }`}
+          >
+            <Wrench className="h-3 w-3" />
+            <span>
+              {environmentIssueCount > 0
+                ? t('env.statusBarIssues', { count: environmentIssueCount })
+                : t('env.statusBarCheck')}
+            </span>
+          </button>
+        )}
+
         {connection?.mode === 'managed' && connection.status === 'error' && (
           <button
             type="button"

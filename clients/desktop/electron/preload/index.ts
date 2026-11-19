@@ -12,6 +12,8 @@ import {
   type DesktopNotificationPayload,
   type DesktopPreferencesPayload,
   type DroppedFileClassifyInput,
+  type EnvironmentDependencyId,
+  type EnvironmentInstallEvent,
   type GenerateSkillCandidateRequest,
   type OpenLocalWorkspacePayload,
   type PlanChatControlPayload,
@@ -131,6 +133,20 @@ const api: DesktopBridge = {
   checkForUpdates: () => ipcRenderer.invoke(IPC_CHANNELS.checkForUpdates),
   downloadUpdate: () => ipcRenderer.invoke(IPC_CHANNELS.downloadUpdate),
   quitAndInstall: () => ipcRenderer.invoke(IPC_CHANNELS.quitAndInstall),
+  inspectEnvironment: (forceRefresh?: boolean) =>
+    ipcRenderer.invoke(IPC_CHANNELS.inspectEnvironment, Boolean(forceRefresh)),
+  installEnvironmentDependency: (dependencyId: EnvironmentDependencyId) =>
+    ipcRenderer.invoke(IPC_CHANNELS.installEnvironmentDependency, dependencyId),
+  cancelEnvironmentInstall: () => ipcRenderer.invoke(IPC_CHANNELS.cancelEnvironmentInstall),
+  onEnvironmentInstallEvent: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: EnvironmentInstallEvent) => {
+      listener(payload);
+    };
+    ipcRenderer.on(IPC_CHANNELS.environmentInstallEvent, handler);
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.environmentInstallEvent, handler);
+    };
+  },
 };
 
 contextBridge.exposeInMainWorld('codexflow', api);

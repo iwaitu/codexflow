@@ -12,6 +12,7 @@ import type {
 import type { ControlPlaneCredentials } from './controlPlaneProxy';
 import type { LocalProxyUpstreamState } from './localBackendProxy';
 import { APP_ORIGIN } from './protocol';
+import { resolveEnhancedProcessEnv } from './shellEnv';
 
 interface ReadyPayload {
   port: number;
@@ -83,6 +84,7 @@ export function resolveBundledLibreOfficePath(
   resourcesPath: string,
   isPackaged: boolean,
   platform: NodeJS.Platform = process.platform,
+  pathExists: (candidate: string) => boolean = existsSync,
 ): string | null {
   const roots: string[] = [];
   if (isPackaged && resourcesPath) {
@@ -109,7 +111,7 @@ export function resolveBundledLibreOfficePath(
   for (const root of roots) {
     for (const rel of relativeCandidates) {
       const candidate = join(root, rel);
-      if (existsSync(candidate)) {
+      if (pathExists(candidate)) {
         return candidate;
       }
     }
@@ -550,8 +552,10 @@ export class BackendManager {
       process.env.CODEXFLOW_LIBREOFFICE_PATH ||
       resolveBundledLibreOfficePath(this.options.resourcesPath, this.options.isPackaged);
 
+    const enhancedBaseEnv = resolveEnhancedProcessEnv(process.env).env;
+
     const env: NodeJS.ProcessEnv = {
-      ...resolveManagedBackendEnvironment(this.options, process.env),
+      ...resolveManagedBackendEnvironment(this.options, enhancedBaseEnv),
       ...launch.extraEnv,
       ...(bundledLibreOffice ? { CODEXFLOW_LIBREOFFICE_PATH: bundledLibreOffice } : {}),
       Local__Port: '0',

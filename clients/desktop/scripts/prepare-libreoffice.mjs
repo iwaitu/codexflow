@@ -208,7 +208,7 @@ async function main() {
     }
     rmSync(targetRoot, { recursive: true, force: true });
     mkdirSync(targetRoot, { recursive: true });
-    cpSync(resolvedSource, targetRoot, { recursive: true });
+    cpSync(resolvedSource, targetRoot, { recursive: true, verbatimSymlinks: true });
     pruneUnneededExtras(targetRoot);
     console.log(`Copied LibreOffice from ${resolvedSource} to ${targetRoot}`);
     return;
@@ -268,7 +268,7 @@ async function main() {
         if (!existsSync(appSrc)) {
           throw new Error(`LibreOffice.app not found in ${mountPoint}`);
         }
-        cpSync(appSrc, join(targetRoot, 'LibreOffice.app'), { recursive: true });
+        cpSync(appSrc, join(targetRoot, 'LibreOffice.app'), { recursive: true, verbatimSymlinks: true });
         pruneUnneededExtras(targetRoot);
       } finally {
         execFileSync('hdiutil', ['detach', mountPoint, '-quiet'], { stdio: 'inherit' });
@@ -294,7 +294,7 @@ async function main() {
       if (!loFolder) {
         throw new Error(`Could not find extracted /opt/libreoffice* folder under ${rootfs}`);
       }
-      cpSync(join(optDir, loFolder), targetRoot, { recursive: true });
+      cpSync(join(optDir, loFolder), targetRoot, { recursive: true, verbatimSymlinks: true });
       pruneUnneededExtras(targetRoot);
     }
 

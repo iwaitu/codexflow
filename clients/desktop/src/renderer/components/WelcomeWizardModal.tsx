@@ -1,11 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { CheckCircle2, Link2, ShieldAlert, X } from 'lucide-react';
-import type { ExecutionBackendKind, ExecutionPermissionModeKind } from '@shared/ipc';
+import { CheckCircle2, Link2, ShieldAlert, Wrench, X } from 'lucide-react';
+import type { EnvironmentReport, ExecutionBackendKind, ExecutionPermissionModeKind } from '@shared/ipc';
 import type { ModelSettings, SystemStatusSummary } from '../lib/apiClient';
 import { isExecutionRiskIncreasing } from '../lib/executionPolicy';
 import { DEFAULT_MAX_CONTEXT_TOKENS, parseModelSettingsInput } from '../lib/modelSettingsForm';
 import { CodexFlowBrand } from './CodexFlowBrand';
+import { EnvironmentCheckPanel } from './EnvironmentCheckPanel';
 import { MaxContextField } from './MaxContextField';
 
 interface WelcomeWizardModalProps {
@@ -25,7 +26,8 @@ export const WelcomeWizardModal: React.FC<WelcomeWizardModalProps> = ({
   onClose,
   onSaved,
 }) => {
-  const [tab, setTab] = useState<'managed' | 'standalone'>('managed');
+  const [tab, setTab] = useState<'managed' | 'environment' | 'standalone'>('managed');
+  const [missingRequiredCount, setMissingRequiredCount] = useState(0);
   const [apiUrl, setApiUrl] = useState(modelSettings?.apiUrl ?? '');
   const [apiMode, setApiMode] = useState(modelSettings?.apiMode ?? 'ChatCompletions');
   const [model, setModel] = useState(modelSettings?.model ?? '');
@@ -66,6 +68,15 @@ export const WelcomeWizardModal: React.FC<WelcomeWizardModalProps> = ({
     setPermissionMode(currentPermissionMode);
     setConfirmRiskOpen(false);
     setError(null);
+    void window.codexflow
+      ?.inspectEnvironment?.(false)
+      .then((envReport: EnvironmentReport) => {
+        const missing = envReport.items.filter(
+          (item) => item.severity === 'required' && item.status !== 'ready',
+        ).length;
+        setMissingRequiredCount(missing);
+      })
+      .catch(() => undefined);
   }, [open, modelSettings, currentBackend, currentPermissionMode]);
 
   const executeSaveManaged = async () => {
@@ -235,6 +246,22 @@ export const WelcomeWizardModal: React.FC<WelcomeWizardModalProps> = ({
             </button>
             <button
               type="button"
+              data-testid="wizard-tab-environment"
+              onClick={() => setTab('environment')}
+              className={`inline-flex items-center gap-1 rounded-lg px-3 py-1.5 text-xs font-medium ${
+                tab === 'environment' ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-300'
+              }`}
+            >
+              <Wrench className="h-3.5 w-3.5" />
+              环境检测与依赖
+              {missingRequiredCount > 0 && (
+                <span className="ml-0.5 rounded-full bg-amber-500/25 px-1.5 py-0.2 text-[10px] text-amber-200">
+                  {missingRequiredCount}
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
               onClick={() => setTab('standalone')}
               className={`inline-flex items-center gap-1 rounded-lg px-3 py-1.5 text-xs font-medium ${
                 tab === 'standalone' ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-300'
@@ -245,7 +272,29 @@ export const WelcomeWizardModal: React.FC<WelcomeWizardModalProps> = ({
             </button>
           </div>
 
-          {tab === 'managed' ? (
+          {tab === 'environment' ? (
+            <div className="mt-4 space-y-4">
+              <EnvironmentCheckPanel
+                active={open && tab === 'environment'}
+                compact
+                onReportUpdated={(envReport) => {
+                  const missing = envReport.items.filter(
+                    (item) => item.severity === 'required' && item.status !== 'ready',
+                  ).length;
+                  setMissingRequiredCount(missing);
+                }}
+              />
+              <div className="flex justify-end gap-2 pt-2 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setTab('managed')}
+                  className="rounded-lg bg-indigo-600 px-4 py-1.5 font-medium text-white hover:bg-indigo-500"
+                >
+                  下一步：配置模型
+                </button>
+              </div>
+            </div>
+          ) : tab === 'managed' ? (
             <form noValidate onSubmit={(e) => void handleSaveManaged(e)} className="mt-4 space-y-4 text-xs">
               <div className="rounded-lg border border-slate-800 bg-slate-950/70 p-3">
                 <div className="flex items-center justify-between">

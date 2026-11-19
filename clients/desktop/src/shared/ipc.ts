@@ -263,6 +263,7 @@ export type DesktopCommandAction =
   | 'new-workspace'
   | 'open-folder'
   | 'open-settings'
+  | 'open-environment'
   | 'open-updates'
   | 'open-about'
   | 'open-command-palette'
@@ -272,6 +273,75 @@ export type DesktopCommandAction =
   | 'toggle-inspector-jobs'
   | 'switch-view-chat'
   | 'switch-view-skills';
+
+export type EnvironmentDependencyId =
+  | 'backend'
+  | 'git'
+  | 'dotnet'
+  | 'node'
+  | 'python'
+  | 'docker'
+  | 'libreoffice';
+
+export type EnvironmentDependencySeverity = 'required' | 'recommended' | 'optional';
+
+export type EnvironmentDependencyStatus =
+  | 'ready'
+  | 'missing'
+  | 'outdated'
+  | 'stopped'
+  | 'error';
+
+export type DependencyInstallStrategy = 'auto' | 'manual_cmd' | 'download_url' | 'none';
+
+export type EnvironmentPackageManager = 'brew' | 'winget' | 'apt' | 'dnf' | 'pacman' | null;
+
+export interface EnvironmentDependencyItem {
+  id: EnvironmentDependencyId;
+  name: string;
+  severity: EnvironmentDependencySeverity;
+  status: EnvironmentDependencyStatus;
+  version: string | null;
+  resolvedPath: string | null;
+  bundled: boolean;
+  summary: string;
+  detail: string | null;
+  installStrategy: DependencyInstallStrategy;
+  installCommandPreview: string | null;
+  downloadUrl: string | null;
+}
+
+export interface EnvironmentReport {
+  platform: string;
+  arch: string;
+  isPackaged: boolean;
+  packageManager: EnvironmentPackageManager;
+  shellPathEnhanced: boolean;
+  checkedAtIso: string;
+  items: EnvironmentDependencyItem[];
+}
+
+export type EnvironmentInstallPhase =
+  | 'starting'
+  | 'running'
+  | 'verifying'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled';
+
+export interface EnvironmentInstallEvent {
+  dependencyId: EnvironmentDependencyId;
+  phase: EnvironmentInstallPhase;
+  message: string;
+  logChunk?: string;
+  exitCode?: number | null;
+  report?: EnvironmentReport;
+}
+
+export interface EnvironmentInstallStartResult {
+  accepted: boolean;
+  error?: string;
+}
 
 export type AppUpdateStatus =
   | 'idle'
@@ -363,6 +433,12 @@ export interface DesktopBridge {
   checkForUpdates(): Promise<AppUpdateState>;
   downloadUpdate(): Promise<AppUpdateState>;
   quitAndInstall(): Promise<boolean>;
+  inspectEnvironment(forceRefresh?: boolean): Promise<EnvironmentReport>;
+  installEnvironmentDependency(
+    dependencyId: EnvironmentDependencyId,
+  ): Promise<EnvironmentInstallStartResult>;
+  cancelEnvironmentInstall(): Promise<boolean>;
+  onEnvironmentInstallEvent(listener: (event: EnvironmentInstallEvent) => void): () => void;
 }
 
 export const IPC_CHANNELS = {
@@ -408,4 +484,8 @@ export const IPC_CHANNELS = {
   checkForUpdates: 'codexflow:check-for-updates',
   downloadUpdate: 'codexflow:download-update',
   quitAndInstall: 'codexflow:quit-and-install',
+  inspectEnvironment: 'codexflow:inspect-environment',
+  installEnvironmentDependency: 'codexflow:install-environment-dependency',
+  cancelEnvironmentInstall: 'codexflow:cancel-environment-install',
+  environmentInstallEvent: 'codexflow:environment-install-event',
 } as const;
