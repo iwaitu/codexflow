@@ -1,8 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { AlertTriangle, Download, RefreshCw, Trash2, X } from 'lucide-react';
+import { AlertTriangle, Trash2, X } from 'lucide-react';
 import type {
-  AppUpdateState,
   ExecutionBackendKind,
   ExecutionPermissionModeKind,
   PersistedPermissionRule,
@@ -12,6 +11,7 @@ import { isExecutionRiskIncreasing, isRelaxingPermission } from '../lib/executio
 import { useI18n } from '../lib/i18n';
 import { parseModelSettingsInput } from '../lib/modelSettingsForm';
 import { usePreferencesStore } from '../stores/usePreferencesStore';
+import { AppUpdatePanel } from './AppUpdatePanel';
 import { MaxContextField } from './MaxContextField';
 
 export { isRelaxingPermission };
@@ -21,6 +21,7 @@ export type SettingsTabKind = 'execution' | 'model' | 'rules' | 'preferences';
 interface SettingsModalProps {
   open: boolean;
   initialTab?: SettingsTabKind;
+  clientVersion?: string | null;
   systemStatus: SystemStatusSummary | null;
   executionSettings: ExecutionSettings | null;
   modelSettings: ModelSettings | null;
@@ -32,6 +33,7 @@ interface SettingsModalProps {
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   open,
   initialTab = 'execution',
+  clientVersion,
   systemStatus,
   executionSettings,
   modelSettings,
@@ -53,7 +55,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setMinimizeToTrayOnClose,
   } = usePreferencesStore();
   const [tab, setTab] = useState<SettingsTabKind>(initialTab);
-  const [updateState, setUpdateState] = useState<AppUpdateState | null>(null);
+  const prevInitialTabRef = useRef<SettingsTabKind>(initialTab);
 
   const currentBackend = (executionSettings?.backend as ExecutionBackendKind) || 'Local';
   const currentMode = (executionSettings?.permissionMode as ExecutionPermissionModeKind) || 'Ask';
@@ -85,7 +87,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   useEffect(() => {
     const justOpened = open && !wasOpenRef.current;
+    const initialTabChanged = prevInitialTabRef.current !== initialTab;
     wasOpenRef.current = open;
+    prevInitialTabRef.current = initialTab;
+    if (open && initialTabChanged && !justOpened) {
+      setTab(initialTab);
+    }
     if (!justOpened) return;
     setTab(initialTab);
     setBackend(currentBackend);
@@ -102,21 +109,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setNotice(null);
     setError(null);
   }, [open, initialTab, currentBackend, currentMode, modelSettings]);
-
-  useEffect(() => {
-    if (!open || tab !== 'preferences') return;
-    let active = true;
-    void window.codexflow?.getUpdateState?.().then((state) => {
-      if (active && state) setUpdateState(state);
-    });
-    const unsubscribe = window.codexflow?.onUpdateStateChanged?.((state) => {
-      if (active) setUpdateState(state);
-    });
-    return () => {
-      active = false;
-      unsubscribe?.();
-    };
-  }, [open, tab]);
 
   const loadRules = async () => {
     if (!controlPlaneAvailable) return;
@@ -642,70 +634,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </label>
               </div>
 
-              <div className="rounded-xl border border-slate-800 bg-slate-950 p-3.5">
-                <div className="flex items-center justify-between gap-2">
-                  <div>
-                    <div className="font-medium text-slate-200">{t('settings.updatesSection')}</div>
-                    <div className="mt-0.5 text-[11px] text-slate-400">
-                      {t('settings.currentVersion', {
-                        version: updateState?.currentVersion ?? systemStatus?.version ?? '0.1.5',
-                      })}
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {updateState?.status === 'available' && updateState.availableVersion && (
-                      <button
-                        type="button"
-                        onClick={() => void window.codexflow?.downloadUpdate?.()}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 font-medium text-white hover:bg-indigo-500"
-                      >
-                        <Download className="h-3.5 w-3.5" />
-                        {t('settings.downloadUpdate', { version: updateState.availableVersion })}
-                      </button>
-                    )}
-                    {updateState?.status === 'downloaded' && updateState.availableVersion && (
-                      <button
-                        type="button"
-                        onClick={() => void window.codexflow?.quitAndInstall?.()}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 font-medium text-white hover:bg-emerald-500"
-                      >
-                        {t('settings.restartAndInstall', { version: updateState.availableVersion })}
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      data-testid="check-updates-button"
-                      disabled={updateState?.status === 'checking' || updateState?.status === 'downloading'}
-                      onClick={() =>
-                        void window.codexflow?.checkForUpdates?.().then((state) => {
-                          if (state) setUpdateState(state);
-                        })
-                      }
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 font-medium text-slate-200 hover:bg-slate-800 disabled:opacity-40"
-                    >
-                      <RefreshCw className={`h-3.5 w-3.5 ${updateState?.status === 'checking' ? 'animate-spin' : ''}`} />
-                      {updateState?.status === 'checking'
-                        ? t('settings.checkingUpdates')
-                        : t('settings.checkUpdates')}
-                    </button>
-                  </div>
-                </div>
-                <div data-testid="update-status-message" className="mt-2 text-[11px] text-slate-400">
-                  {updateState?.status === 'available' && updateState.availableVersion
-                    ? t('settings.updateAvailable', { version: updateState.availableVersion })
-                    : updateState?.status === 'not-available'
-                      ? t('settings.updateNotAvailable')
-                      : updateState?.status === 'downloading'
-                        ? t('settings.downloadingUpdate', { progress: updateState.downloadProgress ?? 0 })
-                        : updateState?.status === 'downloaded' && updateState.availableVersion
-                          ? t('settings.updateDownloaded', { version: updateState.availableVersion })
-                          : updateState?.status === 'unavailable'
-                            ? t('settings.updateUnavailable')
-                            : updateState?.status === 'error'
-                              ? t('settings.updateError', { message: updateState.message ?? '' })
-                              : t('settings.updateIdle')}
-                </div>
-              </div>
+              <AppUpdatePanel
+                active={open && tab === 'preferences'}
+                clientVersion={clientVersion}
+                hostVersion={systemStatus?.version ?? null}
+              />
             </div>
           )}
         </Dialog.Content>

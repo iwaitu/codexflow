@@ -79,6 +79,8 @@ const ZH_CN = {
   'status.restartBackend': '重启后端',
   'status.toggleTheme': '切换深浅主题',
   'status.toggleLanguage': '切换语言',
+  'status.updateAvailableBadge': '发现新版 v{version}',
+  'status.updateDownloadedBadge': '待安装 v{version}',
 
   // Settings Modal
   'settings.title': '设置',
@@ -162,6 +164,12 @@ const ZH_CN = {
   'about.copyInfo': '复制版本信息',
   'about.copied': '已复制',
   'about.close': '关闭',
+
+  // Update Modal
+  'updatesModal.title': '应用更新',
+  'updatesModal.subtitle': '检查 CodexFlow Desktop 新版本、下载安装包并重启完成更新。',
+  'updatesModal.openReleases': '查看 GitHub Releases',
+  'updatesModal.close': '关闭',
 } as const;
 
 export type I18nKey = keyof typeof ZH_CN;
@@ -238,6 +246,8 @@ const EN_US: Record<I18nKey, string> = {
   'status.restartBackend': 'Restart Backend',
   'status.toggleTheme': 'Toggle Light/Dark Theme',
   'status.toggleLanguage': 'Switch Language',
+  'status.updateAvailableBadge': 'Update v{version}',
+  'status.updateDownloadedBadge': 'Install v{version}',
 
   'settings.title': 'Settings',
   'settings.subtitle': 'Configure execution backend, permission mode, model endpoint, persistent rules, and desktop preferences.',
@@ -318,6 +328,12 @@ const EN_US: Record<I18nKey, string> = {
   'about.copyInfo': 'Copy Version Info',
   'about.copied': 'Copied',
   'about.close': 'Close',
+
+  // Update Modal
+  'updatesModal.title': 'Application Updates',
+  'updatesModal.subtitle': 'Check for new CodexFlow Desktop releases, download updates, and restart to install.',
+  'updatesModal.openReleases': 'View GitHub Releases',
+  'updatesModal.close': 'Close',
 };
 
 export const I18N_DICTIONARIES: Record<DesktopLanguage, Record<I18nKey, string>> = {

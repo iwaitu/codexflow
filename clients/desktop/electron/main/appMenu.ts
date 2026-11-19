@@ -201,6 +201,7 @@ export function buildApplicationMenuTemplate(options: ApplicationMenuOptions): M
       label: APP_METADATA.name,
       submenu: [
         { label: labels.appAbout, click: cmd('open-about') },
+        { label: labels.checkUpdates, click: cmd('open-updates') },
         { type: 'separator' },
         { label: labels.appSettings, accelerator: 'CmdOrCtrl+,', click: cmd('open-settings') },
         { type: 'separator' },

@@ -1,6 +1,6 @@
 import React from 'react';
-import { AlertTriangle, Command, Languages, Moon, RefreshCw, Shield, ShieldAlert, Sun } from 'lucide-react';
-import type { BackendConnectionPublicInfo } from '@shared/ipc';
+import { AlertTriangle, ArrowUpCircle, Command, Languages, Moon, RefreshCw, Shield, ShieldAlert, Sun } from 'lucide-react';
+import type { AppUpdateState, BackendConnectionPublicInfo } from '@shared/ipc';
 import type { SessionContextWindow, SystemStatusSummary } from '../lib/apiClient';
 import { useI18n } from '../lib/i18n';
 import { usePreferencesStore } from '../stores/usePreferencesStore';
@@ -11,8 +11,10 @@ interface StatusBarProps {
   sseState: 'connecting' | 'connected' | 'reconnecting' | 'closed';
   systemStatus: SystemStatusSummary | null;
   contextWindow: SessionContextWindow | null;
+  updateState?: AppUpdateState | null;
   onOpenSettings: () => void;
   onOpenCommandPalette?: () => void;
+  onOpenUpdates?: () => void;
   onRestartBackend: () => void;
 }
 
@@ -21,8 +23,10 @@ export const StatusBar: React.FC<StatusBarProps> = ({
   sseState,
   systemStatus,
   contextWindow,
+  updateState = null,
   onOpenSettings,
   onOpenCommandPalette,
+  onOpenUpdates,
   onRestartBackend,
 }) => {
   const { language, t } = useI18n();
@@ -98,6 +102,26 @@ export const StatusBar: React.FC<StatusBarProps> = ({
             v{connection.clientVersion}
           </span>
         )}
+        {(updateState?.status === 'available' || updateState?.status === 'downloaded') &&
+          updateState.availableVersion && (
+            <button
+              type="button"
+              data-testid="status-update-badge"
+              onClick={onOpenUpdates}
+              className={`inline-flex items-center gap-1 rounded px-2 py-0.5 font-medium ${
+                updateState.status === 'downloaded'
+                  ? 'bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30'
+                  : 'bg-indigo-500/20 text-indigo-300 hover:bg-indigo-500/30'
+              }`}
+            >
+              <ArrowUpCircle className="h-3 w-3" />
+              <span>
+                {updateState.status === 'downloaded'
+                  ? t('status.updateDownloadedBadge', { version: updateState.availableVersion })
+                  : t('status.updateAvailableBadge', { version: updateState.availableVersion })}
+              </span>
+            </button>
+          )}
         {contextWindow && <ContextUsageRing contextWindow={contextWindow} />}
         {systemStatus && !systemStatus.modelConfigured && (
           <button

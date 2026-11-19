@@ -20,6 +20,9 @@ export class UpdaterManager {
   private readonly options: UpdaterManagerOptions;
   private initialized = false;
   private state: AppUpdateState;
+  private startupTimer: ReturnType<typeof setTimeout> | null = null;
+  private startupScheduled = false;
+  private inFlightCheck: Promise<AppUpdateState> | null = null;
 
   constructor(options: UpdaterManagerOptions) {
     this.options = options;
@@ -108,24 +111,61 @@ export class UpdaterManager {
       return this.getState();
     }
 
-    this.initialize();
-    this.setState({
-      status: 'checking',
-      downloadProgress: null,
-      message: null,
-    });
-
-    try {
-      await this.resolveUpdater().checkForUpdates();
-    } catch (error) {
-      this.setState({
-        status: 'error',
-        downloadProgress: null,
-        message: error instanceof Error ? error.message : String(error),
-      });
+    if (this.inFlightCheck) {
+      return this.inFlightCheck;
     }
 
-    return this.getState();
+    const run = (async (): Promise<AppUpdateState> => {
+      this.initialize();
+      this.setState({
+        status: 'checking',
+        downloadProgress: null,
+        message: null,
+      });
+
+      try {
+        await this.resolveUpdater().checkForUpdates();
+      } catch (error) {
+        this.setState({
+          status: 'error',
+          downloadProgress: null,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+
+      return this.getState();
+    })();
+
+    this.inFlightCheck = run.finally(() => {
+      if (this.inFlightCheck === run) {
+        this.inFlightCheck = null;
+      }
+    });
+
+    return this.inFlightCheck;
+  }
+
+  /**
+   * Schedules a single background update check shortly after startup for packaged builds.
+   */
+  scheduleStartupCheck(delayMs = 3000): void {
+    if (!this.options.isPackaged || this.startupScheduled) {
+      return;
+    }
+    this.startupScheduled = true;
+    this.startupTimer = setTimeout(() => {
+      this.startupTimer = null;
+      if (this.state.status === 'idle') {
+        void this.checkForUpdates();
+      }
+    }, Math.max(0, delayMs));
+  }
+
+  dispose(): void {
+    if (this.startupTimer) {
+      clearTimeout(this.startupTimer);
+      this.startupTimer = null;
+    }
   }
 
   async downloadUpdate(): Promise<AppUpdateState> {

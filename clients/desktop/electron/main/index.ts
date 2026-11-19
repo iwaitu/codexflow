@@ -798,6 +798,9 @@ if (!singleInstanceLock) {
     refreshApplicationMenu();
 
     mainWindow = createMainWindow();
+    mainWindow.webContents.once('did-finish-load', () => {
+      updaterManager?.scheduleStartupCheck(3000);
+    });
     mainWindow.on('closed', () => {
       mainWindow = null;
       trayManager?.refreshMenu();
@@ -849,6 +852,7 @@ if (!singleInstanceLock) {
   let isDisposing = false;
   app.on('before-quit', (event) => {
     isQuitting = true;
+    updaterManager?.dispose();
     trayManager?.dispose();
     if ((backendManager || gatewayProxy) && !isDisposing) {
       isDisposing = true;

@@ -9,8 +9,10 @@ import { Composer, type WorkspaceAttachmentRequest } from './components/Composer
 import { SettingsModal, type SettingsTabKind } from './components/SettingsModal';
 import { Sidebar } from './components/Sidebar';
 import { StatusBar } from './components/StatusBar';
+import { UpdateModal } from './components/UpdateModal';
 import { WelcomeWizardModal } from './components/WelcomeWizardModal';
 import { WorkspaceInspector } from './components/WorkspaceInspector';
+import type { AppUpdateState } from '@shared/ipc';
 import { ApiError, apiClient, type ConversationSummary } from './lib/apiClient';
 import {
   formatOptimisticMessageWithAttachments,
@@ -37,6 +39,8 @@ export const App: React.FC = () => {
   const [expandedSessionIds, setExpandedSessionIds] = useState<string[]>([]);
   const [externalAttachment, setExternalAttachment] = useState<WorkspaceAttachmentRequest | null>(null);
   const [isCommandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [isUpdateModalOpen, setUpdateModalOpen] = useState(false);
+  const [appUpdateState, setAppUpdateState] = useState<AppUpdateState | null>(null);
   const [isAboutOpen, setAboutOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTabKind>('execution');
   const sseRef = useRef<SessionSseClient | null>(null);
@@ -742,6 +746,7 @@ export const App: React.FC = () => {
     newWorkspace: () => void;
     openFolder: () => void;
     openSettings: (tab?: SettingsTabKind) => void;
+    openUpdates: () => void;
     openAbout: () => void;
     openCommandPalette: () => void;
     toggleTheme: () => void;
@@ -754,6 +759,7 @@ export const App: React.FC = () => {
     newWorkspace: () => void handleCreateSession(),
     openFolder: () => void handleOpenFolder(),
     openSettings: (tab = 'execution') => openSettingsTab(tab),
+    openUpdates: () => setUpdateModalOpen(true),
     openAbout: () => setAboutOpen(true),
     openCommandPalette: () => setCommandPaletteOpen(true),
     toggleTheme: () => toggleTheme(),
@@ -763,6 +769,25 @@ export const App: React.FC = () => {
     },
     switchView: (view) => setPrimaryView(view),
   };
+
+  useEffect(() => {
+    let active = true;
+    const bridge = window.codexflow;
+    void bridge?.getUpdateState?.().then((state) => {
+      if (active && state) {
+        setAppUpdateState(state);
+      }
+    });
+    const unsubscribe = bridge?.onUpdateStateChanged?.((state) => {
+      if (active) {
+        setAppUpdateState(state);
+      }
+    });
+    return () => {
+      active = false;
+      unsubscribe?.();
+    };
+  }, []);
 
   useEffect(() => {
     const unsubscribe = window.codexflow?.onCommandAction?.((action) => {
@@ -782,7 +807,7 @@ export const App: React.FC = () => {
           actions.openSettings('execution');
           return;
         case 'open-updates':
-          actions.openSettings('preferences');
+          actions.openUpdates();
           return;
         case 'open-about':
           actions.openAbout();
@@ -966,7 +991,7 @@ export const App: React.FC = () => {
         group: t('palette.group.system'),
         label: t('palette.cmd.checkUpdates'),
         keywords: 'update version release 检查更新 版本',
-        onRun: () => openSettingsTab('preferences'),
+        onRun: () => setUpdateModalOpen(true),
       },
       {
         id: 'restart-backend',
@@ -1282,8 +1307,10 @@ export const App: React.FC = () => {
         sseState={sseState}
         systemStatus={systemStatusQuery.data ?? null}
         contextWindow={contextWindow}
+        updateState={appUpdateState}
         onOpenSettings={() => openSettingsTab('execution')}
         onOpenCommandPalette={() => setCommandPaletteOpen(true)}
+        onOpenUpdates={() => setUpdateModalOpen(true)}
         onRestartBackend={() => void window.codexflow.restartBackend()}
       />
 
@@ -1299,6 +1326,7 @@ export const App: React.FC = () => {
       <SettingsModal
         open={isSettingsOpen}
         initialTab={settingsInitialTab}
+        clientVersion={connection?.clientVersion ?? null}
         systemStatus={systemStatusQuery.data ?? null}
         executionSettings={executionSettingsQuery.data ?? null}
         modelSettings={modelSettingsQuery.data ?? null}
@@ -1311,6 +1339,13 @@ export const App: React.FC = () => {
         open={isCommandPaletteOpen}
         commands={commandPaletteItems}
         onOpenChange={setCommandPaletteOpen}
+      />
+
+      <UpdateModal
+        open={isUpdateModalOpen}
+        clientVersion={connection?.clientVersion ?? null}
+        hostVersion={systemStatusQuery.data?.version ?? null}
+        onOpenChange={setUpdateModalOpen}
       />
 
       <AboutModal
