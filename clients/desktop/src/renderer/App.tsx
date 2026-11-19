@@ -43,6 +43,8 @@ export const App: React.FC = () => {
   const [appUpdateState, setAppUpdateState] = useState<AppUpdateState | null>(null);
   const [isAboutOpen, setAboutOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTabKind>('execution');
+  const [chatSearchOpen, setChatSearchOpen] = useState(false);
+  const [chatSearchFocusNonce, setChatSearchFocusNonce] = useState(0);
   const sseRef = useRef<SessionSseClient | null>(null);
   const prevRestartCount = useRef<number>(0);
   const wasTurnRunningRef = useRef(false);
@@ -603,8 +605,39 @@ export const App: React.FC = () => {
     setTurnNotice(res.errorMessage || `无法退出 Plan Mode (${res.status})`);
   };
 
+  const handleCompactContext = async (focus?: string) => {
+    if (!auth || !activeSessionId) {
+      setTurnNotice('当前没有活动会话，无法压缩上下文。');
+      return;
+    }
+    if (isTurnRunning) {
+      setTurnNotice('当前回合正在执行中，请等待完成或取消后再压缩上下文。');
+      return;
+    }
+    setTurnNotice('正在压缩当前会话上下文，请稍候…');
+    try {
+      const res = await apiClient.compactContext(auth, activeSessionId, {
+        conversationId: activeConversationId ?? undefined,
+        focus: focus?.trim() || undefined,
+      });
+      if (res.contextWindow) {
+        setContextWindow(res.contextWindow);
+      }
+      if (res.compressed) {
+        setTurnNotice(
+          `上下文已压缩：归档 ${res.compressedTurnCount} 条对话，估算占用 ${res.estimatedTokensBefore.toLocaleString()} → ${res.estimatedTokensAfter.toLocaleString()} tokens。`,
+        );
+      } else {
+        setTurnNotice('当前没有可压缩的新增对话上下文。');
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      setTurnNotice(`压缩上下文失败：${msg}`);
+    }
+  };
+
   const handleSlashCommand = async (action: {
-    kind: 'plan-on' | 'plan-off' | 'daily' | 'dev';
+    kind: 'plan-on' | 'plan-off' | 'compact' | 'daily' | 'dev';
     argument?: string;
   }) => {
     if (action.kind === 'plan-on') {
@@ -613,6 +646,10 @@ export const App: React.FC = () => {
     }
     if (action.kind === 'plan-off') {
       await handleExitPlanMode();
+      return;
+    }
+    if (action.kind === 'compact') {
+      await handleCompactContext(action.argument);
       return;
     }
     if (action.kind === 'daily') {
@@ -854,6 +891,14 @@ export const App: React.FC = () => {
         setCommandPaletteOpen((prev) => !prev);
         return;
       }
+      if (key === 'f' && !event.shiftKey && !event.altKey) {
+        if (primaryView === 'chat' && !settingsOpen && !commandPaletteOpen) {
+          event.preventDefault();
+          setChatSearchOpen(true);
+          setChatSearchFocusNonce((n) => n + 1);
+        }
+        return;
+      }
       if (key === ',' && !event.shiftKey && !event.altKey) {
         event.preventDefault();
         actions.openSettings('execution');
@@ -884,10 +929,31 @@ export const App: React.FC = () => {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [activeSessionId, controlPlaneAvailable]);
+  }, [activeSessionId, controlPlaneAvailable, primaryView, settingsOpen, commandPaletteOpen]);
 
   const commandPaletteItems = useMemo<CommandPaletteItem[]>(
     () => [
+      {
+        id: 'search-in-chat',
+        group: t('palette.group.workspace'),
+        label: '在当前会话中搜索',
+        keywords: 'find search ctrl+f 搜索 查找 会话',
+        shortcut: 'Ctrl/Cmd+F',
+        disabled: !activeSessionId,
+        onRun: () => {
+          setPrimaryView('chat');
+          setChatSearchOpen(true);
+          setChatSearchFocusNonce((n) => n + 1);
+        },
+      },
+      {
+        id: 'compact-context',
+        group: t('palette.group.workspace'),
+        label: '压缩当前会话上下文 (/compact)',
+        keywords: 'compact compress context 压缩 上下文 摘要',
+        disabled: !auth || !activeSessionId || isTurnRunning,
+        onRun: () => void handleCompactContext(),
+      },
       {
         id: 'new-conversation',
         group: t('palette.group.workspace'),
@@ -1245,6 +1311,9 @@ export const App: React.FC = () => {
                 onDismissPlanModeExitRequest={dismissPlanModeExitRequest}
                 onVerifyJob={handleVerifyJob}
                 onSwitchManaged={() => void window.codexflow.switchToManaged()}
+                searchOpen={chatSearchOpen}
+                searchFocusNonce={chatSearchFocusNonce}
+                onCloseSearch={() => setChatSearchOpen(false)}
               />
 
               <Composer

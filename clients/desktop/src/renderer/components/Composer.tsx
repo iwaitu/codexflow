@@ -24,7 +24,7 @@ export interface WorkspaceAttachmentRequest {
 }
 
 export interface SlashCommandItem {
-  id: 'plan-on' | 'plan-off' | 'daily' | 'dev' | 'escape-plan';
+  id: 'plan-on' | 'plan-off' | 'compact' | 'daily' | 'dev' | 'escape-plan';
   command: string;
   title: string;
   description: string;
@@ -33,6 +33,7 @@ export interface SlashCommandItem {
 const SLASH_COMMANDS: SlashCommandItem[] = [
   { id: 'plan-on', command: '/plan', title: '进入 Plan Mode', description: '切换为只读规划模式，禁用脚本与代码修改工具' },
   { id: 'plan-off', command: '/plan off', title: '退出 Plan Mode', description: '经控制面确认退出只读模式，恢复当前模式工具' },
+  { id: 'compact', command: '/compact', title: '压缩上下文', description: '将较早对话压缩为精炼摘要，释放上下文窗口（可附聚焦说明）' },
   { id: 'daily', command: '/daily', title: '新建日常助手对话', description: '创建一个不可变 Daily 模式新工作区会话' },
   { id: 'dev', command: '/dev', title: '新建开发模式对话', description: '创建一个不可变 Development 模式新工作区会话' },
   { id: 'escape-plan', command: '//plan', title: '发送字面 /plan 文本', description: '转义并作为普通聊天内容发送，不触发模式切换' },
@@ -52,7 +53,7 @@ interface ComposerProps {
   controlPlaneAvailable?: boolean;
   onSend: (text: string, attachments?: PendingAttachment[]) => Promise<void>;
   onCancel: () => Promise<void>;
-  onSlashCommand?: (action: { kind: 'plan-on' | 'plan-off' | 'daily' | 'dev'; argument?: string }) => Promise<void>;
+  onSlashCommand?: (action: { kind: 'plan-on' | 'plan-off' | 'compact' | 'daily' | 'dev'; argument?: string }) => Promise<void>;
   onOpenDailyAssistant?: () => Promise<void>;
 }
 
@@ -293,6 +294,11 @@ export const Composer: React.FC<ComposerProps> = ({
       setText('');
       return true;
     }
+    if (lower === '/compact' || lower.startsWith('/compact ')) {
+      await onSlashCommand({ kind: 'compact', argument: trimmed.slice(8).trim() || undefined });
+      setText('');
+      return true;
+    }
     if (lower === '/daily' || lower.startsWith('/daily ')) {
       await onSlashCommand({ kind: 'daily', argument: trimmed.slice(6).trim() || undefined });
       setText('');
@@ -316,7 +322,10 @@ export const Composer: React.FC<ComposerProps> = ({
       setText(item.id === 'plan-off' ? '/plan off' : `${item.command} `);
       return;
     }
-    if (onSlashCommand && (item.id === 'plan-on' || item.id === 'plan-off' || item.id === 'daily' || item.id === 'dev')) {
+    if (
+      onSlashCommand &&
+      (item.id === 'plan-on' || item.id === 'plan-off' || item.id === 'compact' || item.id === 'daily' || item.id === 'dev')
+    ) {
       if (attachments.length > 0) {
         setAttachmentError('当前已附加文件，请先移除附件后再执行斜杠命令，或使用 //plan 发送普通消息。');
         return;
@@ -360,7 +369,7 @@ export const Composer: React.FC<ComposerProps> = ({
 
     if (trimmed.startsWith('/') && onSlashCommand) {
       if (attachments.length > 0) {
-        setAttachmentError('携带文件附件时不能触发 /plan、/daily、/dev 命令；请先移除附件，或输入 //plan ... 作为普通文本发送。');
+        setAttachmentError('携带文件附件时不能触发 /plan、/compact、/daily、/dev 命令；请先移除附件，或输入 //plan ... 作为普通文本发送。');
         return;
       }
       setSending(true);

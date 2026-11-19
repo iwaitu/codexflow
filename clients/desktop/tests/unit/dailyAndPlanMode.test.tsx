@@ -126,15 +126,26 @@ describe('Daily/Development WorkMode, Slash /plan, and Script SHA-256 Approval',
 
     const textarea = screen.getByRole('textbox');
 
-    // Type / to trigger autocomplete listbox
+    // Type / to trigger autocomplete listbox including /compact
     fireEvent.change(textarea, { target: { value: '/' } });
-    expect(screen.getByRole('listbox', { name: '斜杠命令自动补全' })).toBeInTheDocument();
+    const listbox = screen.getByRole('listbox', { name: '斜杠命令自动补全' });
+    expect(listbox).toBeInTheDocument();
+    expect(listbox).toHaveTextContent('/compact');
+    expect(listbox).toHaveTextContent('压缩上下文');
 
     // IME composing Enter should NOT submit
     fireEvent.compositionStart(textarea);
     fireEvent.keyDown(textarea, { key: 'Enter', isComposing: true });
     expect(onSlash).not.toHaveBeenCalled();
     fireEvent.compositionEnd(textarea);
+
+    // /compact with focus instruction executes compact command
+    fireEvent.change(textarea, { target: { value: '/compact 保留接口改动' } });
+    await act(async () => {
+      fireEvent.keyDown(textarea, { key: 'Enter' });
+    });
+    expect(onSlash).toHaveBeenCalledWith({ kind: 'compact', argument: '保留接口改动' });
+    expect(onSend).not.toHaveBeenCalled();
 
     // /plan off executes exit plan mode command
     fireEvent.change(textarea, { target: { value: '/plan off' } });
