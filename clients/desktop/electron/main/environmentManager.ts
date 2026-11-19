@@ -1,7 +1,7 @@
 import { execFile, spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, posix, resolve, win32 } from 'node:path';
 import type {
   BackendConnectionPublicInfo,
   DependencyInstallStrategy,
@@ -762,9 +762,10 @@ export class EnvironmentManager {
 
   private async checkBackend(): Promise<EnvironmentDependencyItem> {
     const exeName = this.platform === 'win32' ? 'CodexFlow.Local.exe' : 'CodexFlow.Local';
+    const pathJoin = this.platform === 'win32' ? win32.join : posix.join;
     const backendInfo = this.getBackendInfo();
     const bundled = this.isPackaged;
-    const packagedExe = join(this.resourcesPath, 'backend', exeName);
+    const packagedExe = pathJoin(this.resourcesPath, 'backend', exeName);
     const releaseExe = join(this.repoRoot, 'CodexFlow.Local', 'bin', 'Release', 'net10.0', exeName);
     const debugExe = join(this.repoRoot, 'CodexFlow.Local', 'bin', 'Debug', 'net10.0', exeName);
 

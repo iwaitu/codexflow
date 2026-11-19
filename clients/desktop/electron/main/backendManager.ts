@@ -2,7 +2,7 @@ import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:chil
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createWriteStream, existsSync, mkdirSync, readFileSync, type WriteStream } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, posix, resolve, win32 } from 'node:path';
 import type {
   BackendConnectionPublicInfo,
   ConnectStandalonePayload,
@@ -86,9 +86,10 @@ export function resolveBundledLibreOfficePath(
   platform: NodeJS.Platform = process.platform,
   pathExists: (candidate: string) => boolean = existsSync,
 ): string | null {
+  const pathJoin = platform === 'win32' ? win32.join : posix.join;
   const roots: string[] = [];
   if (isPackaged && resourcesPath) {
-    roots.push(join(resourcesPath, 'libreoffice'));
+    roots.push(pathJoin(resourcesPath, 'libreoffice'));
   }
   roots.push(resolve(__dirname, '../../../resources/libreoffice'));
   roots.push(resolve(__dirname, '../../resources/libreoffice'));
@@ -96,21 +97,21 @@ export function resolveBundledLibreOfficePath(
   const relativeCandidates =
     platform === 'win32'
       ? [
-          join('program', 'soffice.exe'),
-          join('App', 'libreoffice', 'program', 'soffice.exe'),
+          pathJoin('program', 'soffice.exe'),
+          pathJoin('App', 'libreoffice', 'program', 'soffice.exe'),
           'soffice.exe',
         ]
       : platform === 'darwin'
         ? [
-            join('LibreOffice.app', 'Contents', 'MacOS', 'soffice'),
-            join('program', 'soffice'),
+            pathJoin('LibreOffice.app', 'Contents', 'MacOS', 'soffice'),
+            pathJoin('program', 'soffice'),
             'soffice',
           ]
-        : [join('program', 'soffice'), 'soffice'];
+        : [pathJoin('program', 'soffice'), 'soffice'];
 
   for (const root of roots) {
     for (const rel of relativeCandidates) {
-      const candidate = join(root, rel);
+      const candidate = pathJoin(root, rel);
       if (pathExists(candidate)) {
         return candidate;
       }

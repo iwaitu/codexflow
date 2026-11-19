@@ -1,7 +1,11 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { posix, win32 } from 'node:path';
+
+function joinForPlatform(platform: NodeJS.Platform, ...parts: string[]): string {
+  return platform === 'win32' ? win32.join(...parts) : posix.join(...parts);
+}
 
 const PATH_START_MARKER = '__CODEXFLOW_PATH_START__';
 const PATH_END_MARKER = '__CODEXFLOW_PATH_END__';
@@ -32,18 +36,18 @@ export function getStandardToolDirs(
 ): string[] {
   if (platform === 'darwin') {
     return [
-      join(homeDir, '.dotnet'),
+      joinForPlatform(platform, homeDir, '.dotnet'),
       '/opt/homebrew/bin',
       '/opt/homebrew/sbin',
       '/usr/local/bin',
       '/usr/local/sbin',
       '/usr/local/share/dotnet',
       '/Applications/Docker.app/Contents/Resources/bin',
-      join(homeDir, '.local', 'bin'),
-      join(homeDir, '.nvm', 'current', 'bin'),
-      join(homeDir, '.volta', 'bin'),
-      join(homeDir, '.asdf', 'shims'),
-      join(homeDir, '.cargo', 'bin'),
+      joinForPlatform(platform, homeDir, '.local', 'bin'),
+      joinForPlatform(platform, homeDir, '.nvm', 'current', 'bin'),
+      joinForPlatform(platform, homeDir, '.volta', 'bin'),
+      joinForPlatform(platform, homeDir, '.asdf', 'shims'),
+      joinForPlatform(platform, homeDir, '.cargo', 'bin'),
       '/usr/bin',
       '/bin',
       '/usr/sbin',
@@ -53,26 +57,26 @@ export function getStandardToolDirs(
 
   if (platform === 'win32') {
     const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
-    const localAppData = process.env.LOCALAPPDATA || join(homeDir, 'AppData', 'Local');
+    const localAppData = process.env.LOCALAPPDATA || joinForPlatform(platform, homeDir, 'AppData', 'Local');
     return [
-      join(homeDir, '.dotnet'),
-      join(programFiles, 'dotnet'),
-      join(programFiles, 'Git', 'cmd'),
-      join(programFiles, 'nodejs'),
-      join(programFiles, 'Docker', 'Docker', 'resources', 'bin'),
-      join(localAppData, 'Microsoft', 'WindowsApps'),
+      joinForPlatform(platform, homeDir, '.dotnet'),
+      joinForPlatform(platform, programFiles, 'dotnet'),
+      joinForPlatform(platform, programFiles, 'Git', 'cmd'),
+      joinForPlatform(platform, programFiles, 'nodejs'),
+      joinForPlatform(platform, programFiles, 'Docker', 'Docker', 'resources', 'bin'),
+      joinForPlatform(platform, localAppData, 'Microsoft', 'WindowsApps'),
     ];
   }
 
   return [
-    join(homeDir, '.dotnet'),
+    joinForPlatform(platform, homeDir, '.dotnet'),
     '/usr/local/bin',
     '/usr/local/sbin',
     '/usr/share/dotnet',
-    join(homeDir, '.local', 'bin'),
-    join(homeDir, '.nvm', 'current', 'bin'),
-    join(homeDir, '.volta', 'bin'),
-    join(homeDir, '.cargo', 'bin'),
+    joinForPlatform(platform, homeDir, '.local', 'bin'),
+    joinForPlatform(platform, homeDir, '.nvm', 'current', 'bin'),
+    joinForPlatform(platform, homeDir, '.volta', 'bin'),
+    joinForPlatform(platform, homeDir, '.cargo', 'bin'),
     '/usr/bin',
     '/bin',
     '/usr/sbin',
@@ -211,11 +215,11 @@ export function resolveEnhancedProcessEnv(
   // or standard macOS/Linux locations and DOTNET_ROOT is not explicitly configured.
   if (!nextEnv.DOTNET_ROOT) {
     const dotnetBin = platform === 'win32' ? 'dotnet.exe' : 'dotnet';
-    const userDotnetRoot = join(homeDir, '.dotnet');
+    const userDotnetRoot = joinForPlatform(platform, homeDir, '.dotnet');
     const systemDotnetRoot = platform === 'darwin' ? '/usr/local/share/dotnet' : '/usr/share/dotnet';
-    if (pathExists(join(userDotnetRoot, dotnetBin))) {
+    if (pathExists(joinForPlatform(platform, userDotnetRoot, dotnetBin))) {
       nextEnv.DOTNET_ROOT = userDotnetRoot;
-    } else if (platform !== 'win32' && pathExists(join(systemDotnetRoot, dotnetBin))) {
+    } else if (platform !== 'win32' && pathExists(joinForPlatform(platform, systemDotnetRoot, dotnetBin))) {
       nextEnv.DOTNET_ROOT = systemDotnetRoot;
     }
   }

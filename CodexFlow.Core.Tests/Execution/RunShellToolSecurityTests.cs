@@ -98,7 +98,7 @@ public sealed class RunShellToolSecurityTests : IDisposable
         var monitor = new ExecutionApprovalAndPermissionTests.MutableOptionsMonitor<ExecutionOptions>(new ExecutionOptions
         {
             Backend = ExecutionBackend.Local,
-            PermissionMode = ExecutionPermissionMode.FullAuto,
+            PermissionMode = ExecutionPermissionMode.Ask,
             ApprovalTimeout = TimeSpan.FromMilliseconds(150)
         });
         var isoOptions = new IsolationOptions { StagingRoot = stg };
@@ -122,7 +122,53 @@ public sealed class RunShellToolSecurityTests : IDisposable
     }
 
     [Fact]
-    public async Task ExecutionApprovalBroker_ForRunShell_ShouldNeverInheritFullAuto_AndRestrictToAllowOnceOrDeny()
+    public async Task ExecutionApprovalBroker_ForRunShell_ShouldAutoAllow_WhenFullAutoEnabled()
+    {
+        var permPath = Path.Combine(_root, "perms-broker-fullauto.json");
+        Directory.CreateDirectory(_root);
+        using var permStore = new ExecutionPermissionStore(permPath);
+        var monitor = new ExecutionApprovalAndPermissionTests.MutableOptionsMonitor<ExecutionOptions>(new ExecutionOptions
+        {
+            Backend = ExecutionBackend.Local,
+            PermissionMode = ExecutionPermissionMode.FullAuto,
+            ApprovalTimeout = TimeSpan.FromSeconds(5)
+        });
+        var broker = new ExecutionApprovalBroker(monitor, permStore, NullLogger<ExecutionApprovalBroker>.Instance);
+
+        var request = new ExecutionRequest
+        {
+            SessionId = "s-daily-fullauto",
+            TurnId = "t1",
+            WorkspaceRoot = _root,
+            ToolName = "run_shell",
+            Executable = OperatingSystem.IsWindows() ? @"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" : "/bin/sh",
+            InterpreterChain = [],
+            Argv = ["-NoLogo"],
+            EnvironmentDelta = [],
+            Cwd = _root,
+            ScriptSha256 = new string('a', 64),
+            Backend = ExecutionBackend.Local,
+            Network = "Host",
+            Filesystem = "LocalOutputsOnly",
+            TrustedOriginVerified = true,
+            Origin = ExecutionOrigin.DailyChat,
+            PolicyVersion = 1,
+            ShellKind = "powershell",
+            ScriptText = "Write-Output 'ok'",
+            OwnerKind = ApprovalOwnerKind.GatewayTurn,
+            OwnerId = "turn-1"
+        };
+
+        var authResult = await broker.AuthorizeAsync(
+            new ExecutionAuthorizationContext(request, _root, _root, _root, null),
+            CancellationToken.None);
+
+        Assert.True(authResult.Decision.IsAllowed);
+        Assert.Empty(broker.GetPendingApprovals("s-daily-fullauto"));
+    }
+
+    [Fact]
+    public async Task ExecutionApprovalBroker_ForRunShell_InAskMode_ShouldRestrictToAllowOnceOrDeny()
     {
         var permPath = Path.Combine(_root, "perms-broker.json");
         Directory.CreateDirectory(_root);
@@ -130,7 +176,7 @@ public sealed class RunShellToolSecurityTests : IDisposable
         var monitor = new ExecutionApprovalAndPermissionTests.MutableOptionsMonitor<ExecutionOptions>(new ExecutionOptions
         {
             Backend = ExecutionBackend.Local,
-            PermissionMode = ExecutionPermissionMode.FullAuto,
+            PermissionMode = ExecutionPermissionMode.Ask,
             ApprovalTimeout = TimeSpan.FromSeconds(5)
         });
         var broker = new ExecutionApprovalBroker(monitor, permStore, NullLogger<ExecutionApprovalBroker>.Instance);

@@ -304,7 +304,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rose-400" />
                   <div>
                     <strong>高风险提示：</strong>
-                    `FullAuto` 等于信任模型自动放行研发白名单内命令；在 Local 后端下将以你的用户权限无隔离运行。注：日常模式下的 `run_shell` 始终强制逐次询问 (`allow_once`)，不继承此自动放行。
+                    `FullAuto` 等于信任模型自动放行研发白名单内命令及日常模式 `run_shell` 脚本；在 Local 后端下将以你的用户权限无隔离运行。
                   </div>
                 </div>
               )}

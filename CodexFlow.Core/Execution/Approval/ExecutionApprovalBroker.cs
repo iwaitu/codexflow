@@ -1303,15 +1303,10 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
         }
     }
 
-    private static bool IsRunShellTool(string? toolName)
-        => string.Equals(toolName, "run_shell", StringComparison.OrdinalIgnoreCase);
-
     private static ExecutionPermissionMode EffectivePermissionModeForRequest(
-        ExecutionRequest request,
+        ExecutionRequest _,
         ExecutionPermissionMode globalMode)
-        => IsRunShellTool(request.ToolName) && globalMode == ExecutionPermissionMode.FullAuto
-            ? ExecutionPermissionMode.Ask
-            : globalMode;
+        => globalMode;
 
     private static bool VerifyArtifactsOrInvalidate(ExecutionAuthorizationContext ctx)
         => ctx.VerifyStagedArtifactsUnchanged is null || ctx.VerifyStagedArtifactsUnchanged();

@@ -15,8 +15,8 @@ namespace CodexFlow.Core.Agents.Tools;
 
 /// <summary>
 /// Daily-mode general shell execution tool (PowerShell on Windows, Bash/sh on Unix and containers).
-/// Enforces DailyChat origin, single-use Ask approval (never inheriting FullAuto), fixed system
-/// interpreter resolution (no PATH fallback), versioned UTF-8 wrapper verification, and controlled
+/// Enforces DailyChat origin, single-use Ask approval under Ask/AutoInWorkspace (or auto-allow under FullAuto),
+/// fixed system interpreter resolution (no PATH fallback), versioned UTF-8 wrapper verification, and controlled
 /// output export under <c>outputs/</c>.
 /// </summary>
 public sealed class RunShellTool(
@@ -40,7 +40,7 @@ public sealed class RunShellTool(
     public string Name => "run_shell";
 
     public string Description =>
-        "在当前日常工作区中执行 Shell 脚本（Windows 支持 PowerShell 管道与系统工具，Linux/macOS/容器支持 Bash/sh）。每次执行都会展示完整脚本请求用户单次审批。\n" +
+        "在当前日常工作区中执行 Shell 脚本（Windows 支持 PowerShell 管道与系统工具，Linux/macOS/容器支持 Bash/sh）。默认逐次展示完整脚本并请求单次审批，当用户显式开启 FullAuto 时将自动放行。\n" +
         "重要边界说明：\n" +
         "  1. Local 模式下 HOME/USERPROFILE 会重定向到临时目录；只有写入工作区 outputs/ 目录内的产物会被保留并导出，写入 ~ 或其他非工作区路径的文件会随会话清理被丢弃或不受管理。\n" +
         "  2. Docker 模式下运行在离线容器（--network none），无法访问宿主机文件或桌面办公软件。\n" +

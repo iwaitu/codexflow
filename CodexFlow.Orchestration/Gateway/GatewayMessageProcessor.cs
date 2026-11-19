@@ -2070,7 +2070,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         sb.AppendLine("- 只读检查文件或目录元数据优先使用 `list_authorized_directory`、`ivilson_ls`、`ivilson_read`、`glob`、`search_in_files`。");
         if (!policy.PlanModeActive && CanExposeRunShell(message, policy))
         {
-            sb.AppendLine("- 需要通过脚本批量整理数据、转换格式或执行命令时，使用 `run_shell`；每次执行都会向用户展示完整脚本并请求单次审批。");
+            sb.AppendLine("- 需要通过脚本批量整理数据、转换格式或执行命令时，使用 `run_shell`；在非 FullAuto 模式下每次执行都会向用户展示完整脚本并请求单次审批，FullAuto 模式下将自动放行。");
             sb.AppendLine("- `run_shell` 在 Local 模式下 `HOME`/`USERPROFILE` 会指向临时隔离目录，只有写入 `outputs/` 下的文件会被持久化导出；Docker 模式下无网络且无法访问宿主机桌面软件。");
         }
         else if (!policy.PlanModeActive)
