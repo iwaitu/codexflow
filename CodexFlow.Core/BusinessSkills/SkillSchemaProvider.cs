@@ -168,7 +168,118 @@ public static class SkillSchemaProvider
 
     private static JsonElement CreateStructuredOutputSchema()
     {
-        var schema = JObject.Parse(CanonicalSchemaLazy.Value.GetRawText());
+        // 专供模型结构化输出的极简扁平 Schema（零 $defs、零 anyOf，毫秒级可被 vLLM/xgrammar 编译）：
+        // 1. 彻底移除由服务端权威回填的内部元数据（schemaVersion/skillId/version/pluginId/connectionBinding/catalogSnapshotId/selectedCapabilityIds），
+        //    避免解码器浪费 Token 或在未知内部字段上发生空白符退化循环；
+        // 2. 保持根节点 type=object、additionalProperties=false，steps.items 将多态判别符 "type" 置首位并限定 7 类枚举；
+        // 3. 详细步骤字段契约由 Prompt + 服务端静态校验 + 纠错重试共同保障，避免重型多分支 CFG 拖慢/卡死本地推理引擎。
+        const string modelSchema = """
+        {
+          "type": "object",
+          "required": [
+            "name",
+            "description",
+            "usedCapabilityIds",
+            "inputs",
+            "outputs",
+            "steps",
+            "successCriteria",
+            "dataPolicy",
+            "budgets"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "name": { "type": "string" },
+            "description": { "type": "string" },
+            "usedCapabilityIds": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "inputs": {
+              "type": "object",
+              "required": ["type", "required", "properties"],
+              "additionalProperties": true,
+              "properties": {
+                "type": { "type": "string", "enum": ["object"] },
+                "required": { "type": "array", "items": { "type": "string" } },
+                "properties": { "type": "object" }
+              }
+            },
+            "outputs": {
+              "type": "object",
+              "required": ["type", "fields"],
+              "additionalProperties": false,
+              "properties": {
+                "type": { "type": "string", "enum": ["object"] },
+                "fields": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["name", "type"],
+                    "additionalProperties": false,
+                    "properties": {
+                      "name": { "type": "string" },
+                      "type": { "type": "string" },
+                      "description": { "type": "string" }
+                    }
+                  }
+                }
+              }
+            },
+            "steps": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["type", "id"],
+                "additionalProperties": true,
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": ["tool", "transform", "branch", "foreach", "generateText", "approval", "output"]
+                  },
+                  "id": { "type": "string" },
+                  "title": { "type": "string" }
+                }
+              }
+            },
+            "successCriteria": {
+              "type": "object",
+              "required": ["requiredSteps", "requireCompletePagination", "failOnPartialData"],
+              "additionalProperties": false,
+              "properties": {
+                "requiredSteps": { "type": "array", "items": { "type": "string" } },
+                "requireCompletePagination": { "type": "boolean" },
+                "failOnPartialData": { "type": "boolean" }
+              }
+            },
+            "dataPolicy": {
+              "type": "object",
+              "required": ["allowedModelFields", "includeSanitizedSamplesForGeneration", "redactLogsAndExports"],
+              "additionalProperties": false,
+              "properties": {
+                "allowedModelFields": { "type": "array", "items": { "type": "string" } },
+                "includeSanitizedSamplesForGeneration": { "type": "boolean" },
+                "redactLogsAndExports": { "type": "boolean" }
+              }
+            },
+            "budgets": {
+              "type": "object",
+              "required": ["maxExternalRequests", "maxReadRecords", "maxJoinOutputRows", "maxWriteBatchItems", "maxReadOnlyRetries", "requestTimeoutSeconds"],
+              "additionalProperties": false,
+              "properties": {
+                "maxExternalRequests": { "type": "integer" },
+                "maxReadRecords": { "type": "integer" },
+                "maxJoinOutputRows": { "type": "integer" },
+                "maxWriteBatchItems": { "type": "integer" },
+                "maxReadOnlyRetries": { "type": "integer" },
+                "requestTimeoutSeconds": { "type": "integer" }
+              }
+            }
+          }
+        }
+        """;
+
+        var schema = JObject.Parse(modelSchema);
         schema.Remove("$schema");
 
         // 与 DefaultCodexPlanner.CreatePlanStructuredOutputJsonSchema 保持一致：

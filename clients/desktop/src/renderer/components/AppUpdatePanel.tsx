@@ -71,7 +71,7 @@ export const AppUpdatePanel: React.FC<AppUpdatePanelProps> = ({
     });
   };
 
-  const displayVersion = updateState?.currentVersion ?? clientVersion ?? hostVersion ?? '0.1.16';
+  const displayVersion = updateState?.currentVersion ?? clientVersion ?? hostVersion ?? '0.1.17';
   const statusMessage =
     updateState?.status === 'available' && updateState.availableVersion
       ? t('settings.updateAvailable', { version: updateState.availableVersion })

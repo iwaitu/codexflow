@@ -5,6 +5,7 @@ import {
   ArrowRight,
   CheckCircle2,
   FlaskConical,
+  Loader2,
   Play,
   Rocket,
   Search,
@@ -106,9 +107,23 @@ export const SkillBuilderWizard: React.FC<SkillBuilderWizardProps> = ({
   const [releaseNote, setReleaseNote] = useState('');
 
   const [busy, setBusy] = useState<string | null>(null);
+  const [generateElapsedSec, setGenerateElapsedSec] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const appliedInitialPluginIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (busy !== 'generate') {
+      setGenerateElapsedSec(0);
+      return;
+    }
+    const startedAt = Date.now();
+    setGenerateElapsedSec(0);
+    const timer = window.setInterval(() => {
+      setGenerateElapsedSec(Math.max(1, Math.floor((Date.now() - startedAt) / 1000)));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [busy]);
 
   useEffect(() => {
     if (initialPluginId && initialPluginId !== appliedInitialPluginIdRef.current) {
@@ -575,8 +590,9 @@ export const SkillBuilderWizard: React.FC<SkillBuilderWizardProps> = ({
                 type="button"
                 onClick={() => void handleDiscoverPluginInWizard()}
                 disabled={!controlPlaneAvailable || busy !== null}
-                className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-slate-100 hover:bg-slate-700 disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-slate-100 hover:bg-slate-700 disabled:opacity-50"
               >
+                {busy === 'discover' && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
                 {busy === 'discover' ? '发现中...' : '执行 / 刷新能力发现'}
               </button>
             </div>
@@ -752,8 +768,17 @@ export const SkillBuilderWizard: React.FC<SkillBuilderWizardProps> = ({
               disabled={!controlPlaneAvailable || busy !== null || selectedCapIds.length === 0}
               className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-medium text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {busy === 'save-selection' ? '保存中...' : '保存选择并进入生成'}
-              <ArrowRight className="h-3.5 w-3.5" />
+              {busy === 'save-selection' ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  保存中...
+                </>
+              ) : (
+                <>
+                  保存选择并进入生成
+                  <ArrowRight className="h-3.5 w-3.5" />
+                </>
+              )}
             </button>
           </div>
         </div>
@@ -831,11 +856,25 @@ export const SkillBuilderWizard: React.FC<SkillBuilderWizardProps> = ({
             </div>
           )}
 
+          {busy === 'generate' && (
+            <div
+              role="status"
+              aria-live="polite"
+              className="flex items-center gap-2.5 rounded-lg border border-indigo-500/40 bg-indigo-950/30 px-3 py-2.5 text-xs text-indigo-200"
+            >
+              <Loader2 className="h-4 w-4 shrink-0 animate-spin text-indigo-400" />
+              <span>
+                正在调用模型编排结构化 Skill 方案并执行静态校验（已用时 {generateElapsedSec}s），通常需要 20~60 秒，请耐心等待…
+              </span>
+            </div>
+          )}
+
           <div className="flex justify-between pt-2">
             <button
               type="button"
               onClick={() => setStepIndex(1)}
-              className="inline-flex items-center gap-1 rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-800"
+              disabled={busy !== null}
+              className="inline-flex items-center gap-1 rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <ArrowLeft className="h-3.5 w-3.5" />
               返回能力选择
@@ -845,7 +884,8 @@ export const SkillBuilderWizard: React.FC<SkillBuilderWizardProps> = ({
                 <button
                   type="button"
                   onClick={() => setStepIndex(3)}
-                  className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-700"
+                  disabled={busy !== null}
+                  className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   直接查看已有方案
                 </button>
@@ -854,10 +894,15 @@ export const SkillBuilderWizard: React.FC<SkillBuilderWizardProps> = ({
                 type="button"
                 onClick={() => void handleGenerateCandidate()}
                 disabled={!controlPlaneAvailable || busy !== null}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-medium text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
+                aria-busy={busy === 'generate'}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-medium text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                <Sparkles className="h-3.5 w-3.5" />
-                {busy === 'generate' ? '生成中...' : '生成候选方案'}
+                {busy === 'generate' ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Sparkles className="h-3.5 w-3.5" />
+                )}
+                {busy === 'generate' ? `生成中 (${generateElapsedSec}s)...` : '生成候选方案'}
               </button>
             </div>
           </div>
@@ -882,8 +927,9 @@ export const SkillBuilderWizard: React.FC<SkillBuilderWizardProps> = ({
               type="button"
               onClick={() => void handleValidateDraft()}
               disabled={busy !== null}
-              className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs text-slate-100 hover:bg-slate-700 disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs text-slate-100 hover:bg-slate-700 disabled:opacity-50"
             >
+              {busy === 'validate' && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
               {busy === 'validate' ? '校验中...' : '校验方案'}
             </button>
           </div>
@@ -958,8 +1004,12 @@ export const SkillBuilderWizard: React.FC<SkillBuilderWizardProps> = ({
                 disabled={!controlPlaneAvailable || busy !== null}
                 className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <FlaskConical className="h-3.5 w-3.5" />
-                只读试运行
+                {busy === 'test-read' ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <FlaskConical className="h-3.5 w-3.5" />
+                )}
+                {busy === 'test-read' ? '启动只读试运行中...' : '只读试运行'}
               </button>
               <button
                 type="button"
@@ -967,8 +1017,12 @@ export const SkillBuilderWizard: React.FC<SkillBuilderWizardProps> = ({
                 disabled={!controlPlaneAvailable || busy !== null}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/50 bg-amber-600/20 px-3 py-1.5 text-xs font-medium text-amber-200 hover:bg-amber-600/30 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <Play className="h-3.5 w-3.5" />
-                执行写入试运行
+                {busy === 'test-write' ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Play className="h-3.5 w-3.5" />
+                )}
+                {busy === 'test-write' ? '启动写入试运行中...' : '执行写入试运行'}
               </button>
             </div>
           </div>
@@ -1071,7 +1125,11 @@ export const SkillBuilderWizard: React.FC<SkillBuilderWizardProps> = ({
               disabled={!canPublish || busy !== null}
               className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              <Rocket className="h-3.5 w-3.5" />
+              {busy === 'publish' ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Rocket className="h-3.5 w-3.5" />
+              )}
               {busy === 'publish' ? '发布中...' : '发布不可变版本'}
             </button>
           </div>

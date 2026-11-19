@@ -37,7 +37,8 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        AllowOutOfOrderMetadataProperties = true
     };
 
     private readonly IJobDbContext _db;
@@ -341,19 +342,34 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
         _db.PluginOperations.Add(opEntity);
         await _db.SaveChangesAsync(ct).ConfigureAwait(false);
 
-        var genOutcome = await _generator.GenerateAsync(new SkillGenerationContext(
-            SkillId: $"skl-{draft.Id}",
-            Version: 1,
-            Name: draft.Name,
-            BusinessGoal: draft.BusinessGoal,
-            PluginId: plugin.Id,
-            Environment: conn.Environment,
-            ConnectionId: conn.Id,
-            ConnectionRevision: conn.Revision,
-            CredentialRevision: conn.CredentialRevision,
-            CatalogSnapshotId: draft.CatalogSnapshotId,
-            SelectedCapabilities: selectedCaps,
-            IncludeSanitizedSamples: request.IncludeSanitizedSamples), ct).ConfigureAwait(false);
+        SkillGenerationOutcome genOutcome;
+        try
+        {
+            genOutcome = await _generator.GenerateAsync(new SkillGenerationContext(
+                SkillId: $"skl-{draft.Id}",
+                Version: 1,
+                Name: draft.Name,
+                BusinessGoal: draft.BusinessGoal,
+                PluginId: plugin.Id,
+                Environment: conn.Environment,
+                ConnectionId: conn.Id,
+                ConnectionRevision: conn.Revision,
+                CredentialRevision: conn.CredentialRevision,
+                CatalogSnapshotId: draft.CatalogSnapshotId,
+                SelectedCapabilities: selectedCaps,
+                IncludeSanitizedSamples: request.IncludeSanitizedSamples), ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            genOutcome = new SkillGenerationOutcome(
+                false,
+                null,
+                ["生成过程发生未预期异常，请重试或检查模型服务配置。"],
+                [new BusinessSkillFieldError("generation", BusinessSkillErrorCodes.ValidationFailed, ex.Message)],
+                [],
+                BusinessSkillErrorCodes.ValidationFailed,
+                $"Unexpected skill generation error: {ex.Message}");
+        }
 
         if (!genOutcome.Success || genOutcome.CandidateDefinition is null)
         {

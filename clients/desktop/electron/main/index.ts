@@ -475,7 +475,7 @@ function registerIpcHandlers(manager: BackendManager): void {
         'POST',
         `/api/skill-drafts/${encodeURIComponent(draftId)}/generate`,
         body,
-        60_000,
+        180_000,
       );
     },
   );
