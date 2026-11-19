@@ -327,6 +327,14 @@ describe('Main-process security boundaries & lifecycle (B1, B3, B4, R3)', () => 
       writeFileSync(winExe, 'stub');
 
       expect(resolveBundledLibreOfficePath(tempDir, true, 'win32')).toBe(winExe);
+      expect(
+        resolveBundledLibreOfficePath(
+          '/tmp/cf-lo-posix',
+          true,
+          'win32',
+          (candidate) => candidate === '/tmp/cf-lo-posix/libreoffice/program/soffice.exe',
+        ),
+      ).toBe('/tmp/cf-lo-posix/libreoffice/program/soffice.exe');
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }

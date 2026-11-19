@@ -2,7 +2,7 @@ import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:chil
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createWriteStream, existsSync, mkdirSync, readFileSync, type WriteStream } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, join, posix, resolve, win32 } from 'node:path';
+import { basename, dirname, join, posix, resolve } from 'node:path';
 import type {
   BackendConnectionPublicInfo,
   ConnectStandalonePayload,
@@ -86,7 +86,10 @@ export function resolveBundledLibreOfficePath(
   platform: NodeJS.Platform = process.platform,
   pathExists: (candidate: string) => boolean = existsSync,
 ): string | null {
-  const pathJoin = platform === 'win32' ? win32.join : posix.join;
+  const usePosixJoin =
+    (platform !== 'win32' && !resourcesPath.includes('\\')) ||
+    (resourcesPath.startsWith('/') && !resourcesPath.includes('\\'));
+  const pathJoin = usePosixJoin ? posix.join : join;
   const roots: string[] = [];
   if (isPackaged && resourcesPath) {
     roots.push(pathJoin(resourcesPath, 'libreoffice'));
@@ -110,8 +113,9 @@ export function resolveBundledLibreOfficePath(
         : [pathJoin('program', 'soffice'), 'soffice'];
 
   for (const root of roots) {
+    const rootJoin = root.startsWith('/') && !root.includes('\\') ? posix.join : pathJoin;
     for (const rel of relativeCandidates) {
-      const candidate = pathJoin(root, rel);
+      const candidate = rootJoin(root, rel);
       if (pathExists(candidate)) {
         return candidate;
       }
