@@ -17,6 +17,8 @@ internal static class RuntimeToolTimeouts
     private static readonly TimeSpan BuildOrTest = TimeSpan.FromMinutes(10);
     // run_shell: 10m approval wait + up to 10m script run + 5m cleanup/staging margin.
     private static readonly TimeSpan DailyShell = TimeSpan.FromMinutes(25);
+    // run_business_skill: multi-step API pagination + optional interactive write approval wait.
+    private static readonly TimeSpan BusinessSkillRun = TimeSpan.FromMinutes(15);
 
     public static TimeSpan For(string? toolName)
     {
@@ -25,6 +27,7 @@ internal static class RuntimeToolTimeouts
         return toolName.ToLowerInvariant() switch
         {
             "run_shell" => DailyShell,
+            "run_business_skill" => BusinessSkillRun,
             "run_tests" or "exec_cmd" or "run_command" => BuildOrTest,
             _ => EngineDefault
         };

@@ -640,6 +640,52 @@ public sealed class P3SkillTransformAndValidatorTests
         Assert.Empty(outcome.Errors);
     }
 
+    [Fact]
+    public async Task StructuredGenerator_StripsEmptyStringDefaultValueFromOptionalInputs()
+    {
+        var capId = "kb:GET:/api/KnowledgeBase/v1/searchforchat";
+        var jsonWithEmptyDefaults = $$"""
+        {
+          "name": "内网知识库检索",
+          "description": "根据关键字查询公共知识库",
+          "usedCapabilityIds": ["{{capId}}"],
+          "inputs": {
+            "type": "object",
+            "required": ["keyword"],
+            "properties": {
+              "tenantId": { "type": "string", "description": "可选租户", "defaultValue": "" },
+              "keyword": { "type": "string", "description": "关键字", "defaultValue": "" },
+              "limit": { "type": "integer", "description": "条数", "defaultValue": 10 }
+            }
+          },
+          "outputs": { "type": "object", "fields": [] },
+          "steps": [
+            { "type": "tool", "id": "step_search", "title": "搜索", "capabilityId": "{{capId}}", "arguments": { "keyword": { "input": "keyword" } } },
+            { "type": "output", "id": "step_out", "title": "输出", "source": { "step": "step_search", "pointer": "" }, "namedOutputs": { "result": { "step": "step_search", "pointer": "" } } }
+          ],
+          "successCriteria": { "requiredSteps": ["step_search", "step_out"], "requireCompletePagination": false, "failOnPartialData": false },
+          "dataPolicy": { "allowedModelFields": [], "includeSanitizedSamplesForGeneration": false, "redactLogsAndExports": true },
+          "budgets": { "maxExternalRequests": 10, "maxReadRecords": 100, "maxJoinOutputRows": 100, "maxWriteBatchItems": 10, "maxReadOnlyRetries": 2, "requestTimeoutSeconds": 30 }
+        }
+        """;
+
+        var fakeChat = new Mock<IChatClient>();
+        fakeChat.Setup(c => c.GetResponseAsync(
+                It.IsAny<IEnumerable<ChatMessage>>(),
+                It.IsAny<ChatOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ChatResponse(new ChatMessage(ChatRole.Assistant, jsonWithEmptyDefaults)));
+
+        var generator = new StructuredBusinessSkillGenerator(fakeChat.Object);
+        var outcome = await generator.GenerateAsync(CreateKbGenerationContext(capId));
+
+        Assert.True(outcome.Success, outcome.ErrorMessage);
+        Assert.NotNull(outcome.CandidateDefinition);
+        Assert.Null(outcome.CandidateDefinition!.Inputs.Properties["tenantId"].DefaultValue);
+        Assert.NotNull(outcome.CandidateDefinition.Inputs.Properties["limit"].DefaultValue);
+        Assert.Equal(10, outcome.CandidateDefinition.Inputs.Properties["limit"].DefaultValue!.Value.GetInt32());
+    }
+
     private static SkillGenerationContext CreateKbGenerationContext(string capId, bool includeSanitizedSamples = false)
     {
         var cap = new CapabilityDetailDto

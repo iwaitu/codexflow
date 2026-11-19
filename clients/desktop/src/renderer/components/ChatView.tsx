@@ -1,9 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { AlertTriangle, ArrowDown, Bot, CheckCircle2, ChevronDown, ChevronUp, Cpu, FolderPlus, Loader2, Plus, RefreshCw, Search, ShieldCheck, X } from 'lucide-react';
+import type { BusinessApprovalRequestDto } from '@shared/ipc';
 import type { BackgroundJob, PlanModeExitRequestState, SessionPlan, SessionWorkMode, VerificationReceipt } from '../lib/apiClient';
 import { applyCssHighlightsForSearch, clearCssHighlightsForSearch, findSessionSearchMatches } from '../lib/chatSearch';
 import type { UiMessage, UiPendingApproval, UiToolCall, WorkerBarState } from '../lib/sessionRecovery';
+import { BusinessSkillApprovalCard } from './BusinessSkillApprovalCard';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { MessageItem } from './MessageItem';
 import { PlanApprovalCard } from './PlanApprovalCard';
@@ -22,6 +24,7 @@ interface ChatViewProps {
   isTurnRunning: boolean;
   toolCalls: UiToolCall[];
   pendingApprovals: UiPendingApproval[];
+  pendingBusinessApprovals?: BusinessApprovalRequestDto[];
   currentPlan: SessionPlan | null;
   jobs: BackgroundJob[];
   verificationReceipts: Record<string, VerificationReceipt>;
@@ -39,6 +42,7 @@ interface ChatViewProps {
   onCreateDailySession?: () => Promise<void>;
   onOpenFolder?: () => Promise<void>;
   onApprovalResolved: (approvalId: string) => void;
+  onBusinessApprovalResolved?: (approvalId: string) => void;
   onPlanActionSubmitted: () => void;
   onConfirmExitPlanMode?: () => Promise<void>;
   onDismissPlanModeExitRequest?: () => void;
@@ -60,6 +64,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   isTurnRunning,
   toolCalls,
   pendingApprovals,
+  pendingBusinessApprovals = [],
   currentPlan,
   jobs,
   verificationReceipts,
@@ -77,6 +82,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onCreateDailySession,
   onOpenFolder,
   onApprovalResolved,
+  onBusinessApprovalResolved,
   onPlanActionSubmitted,
   onConfirmExitPlanMode,
   onDismissPlanModeExitRequest,
@@ -194,10 +200,21 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   useEffect(() => {
     const el = scrollContainerRef.current;
-    if (el && isNearBottomRef.current && (isTurnRunning || pendingApprovals.length > 0)) {
+    if (
+      el &&
+      isNearBottomRef.current &&
+      (isTurnRunning || pendingApprovals.length > 0 || pendingBusinessApprovals.length > 0)
+    ) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [streamingContent, streamingThinking, toolCalls.length, pendingApprovals.length, isTurnRunning]);
+  }, [
+    streamingContent,
+    streamingThinking,
+    toolCalls.length,
+    pendingApprovals.length,
+    pendingBusinessApprovals.length,
+    isTurnRunning,
+  ]);
 
   const scrollToBottom = () => {
     const el = scrollContainerRef.current;
@@ -301,7 +318,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
           </div>
         )}
 
-        {messages.length === 0 && !isTurnRunning && !currentPlan && pendingApprovals.length === 0 && (
+        {messages.length === 0 &&
+          !isTurnRunning &&
+          !currentPlan &&
+          pendingApprovals.length === 0 &&
+          pendingBusinessApprovals.length === 0 && (
           !sessionId ? (
             <div
               data-testid="empty-session-welcome"
@@ -499,6 +520,19 @@ export const ChatView: React.FC<ChatViewProps> = ({
               controlPlaneAvailable={controlPlaneAvailable}
               onResolved={onApprovalResolved}
               onRequestSwitchManaged={onSwitchManaged}
+            />
+          ))}
+        </div>
+      )}
+
+      {pendingBusinessApprovals.length > 0 && (
+        <div className="mt-4 space-y-3" data-testid="pending-business-approvals">
+          {pendingBusinessApprovals.map((approval, idx) => (
+            <BusinessSkillApprovalCard
+              key={approval.approvalId ?? `${approval.runId ?? 'biz'}-${idx}`}
+              approval={approval}
+              controlPlaneAvailable={controlPlaneAvailable}
+              onResolved={(approvalId) => onBusinessApprovalResolved?.(approvalId)}
             />
           ))}
         </div>

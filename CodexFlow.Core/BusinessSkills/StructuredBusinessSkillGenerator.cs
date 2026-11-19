@@ -69,7 +69,7 @@ public sealed partial class StructuredBusinessSkillGenerator : IBusinessSkillGen
         "Contract rules: " +
         "(1) In every step object, put \"type\" as the first property (tool|transform|branch|foreach|generateText|approval|output). " +
         "(2) Every argument in tool.arguments, every value in output.namedOutputs, and every step source MUST be a SkillValueBinding object using one of: {\"input\":\"paramName\"}, {\"step\":\"stepId\",\"pointer\":\"/path\"}, {\"item\":\"item\",\"pointer\":\"/path\"}, or {\"literal\":value}. " +
-        "(3) In inputs.properties, use \"defaultValue\" and \"enumValues\" (NOT \"default\" or \"enum\"). " +
+        "(3) In inputs.properties, use \"defaultValue\" and \"enumValues\" (NOT \"default\" or \"enum\"); for optional inputs, omit \"defaultValue\" or set it to null (NEVER use \"\" as defaultValue). " +
         "(4) In transform steps, \"operation\" MUST use exact PascalCase: Filter, Sort, Project, Aggregate, InnerJoin, LeftJoin, Lookup. " +
         "Keep descriptions concise so the JSON fits well within the output token budget.";
 
@@ -617,11 +617,32 @@ public sealed partial class StructuredBusinessSkillGenerator : IBusinessSkillGen
         }
 
         var rawInputs = generated.Inputs ?? new SkillInputSchemaDto();
+        var requiredInputNames = new HashSet<string>(rawInputs.Required ?? [], StringComparer.Ordinal);
+        var normalizedInputProps = new Dictionary<string, SkillInputPropertyDto>(StringComparer.Ordinal);
+        foreach (var kv in rawInputs.Properties ?? new Dictionary<string, SkillInputPropertyDto>(StringComparer.Ordinal))
+        {
+            if (kv.Value is null)
+            {
+                continue;
+            }
+
+            var prop = kv.Value;
+            // 对非必填输入剥离空字符串 defaultValue，防止执行期向后端拼接空查询参数（如 ?tenantId=）
+            if (!requiredInputNames.Contains(kv.Key) &&
+                prop.DefaultValue is { ValueKind: JsonValueKind.String } defStr &&
+                string.IsNullOrWhiteSpace(defStr.GetString()))
+            {
+                prop = prop with { DefaultValue = null };
+            }
+
+            normalizedInputProps[kv.Key] = prop;
+        }
+
         var safeInputs = rawInputs with
         {
             Type = string.IsNullOrWhiteSpace(rawInputs.Type) ? "object" : rawInputs.Type,
             Required = rawInputs.Required ?? [],
-            Properties = rawInputs.Properties ?? new Dictionary<string, SkillInputPropertyDto>(StringComparer.Ordinal)
+            Properties = normalizedInputProps
         };
 
         var rawOutputs = generated.Outputs ?? new SkillOutputSchemaDto();

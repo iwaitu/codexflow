@@ -111,6 +111,8 @@ public static class CodexToolFunctionAdapterFactory
             "push_notification"     => CreateForPushNotification(tool, description),
             "workflow"              => CreateForWorkflow(tool, description),
             "tool_search"           => CreateForToolSearch(tool, description),
+            "list_business_skills"  => CreateForListBusinessSkills(tool, description),
+            "run_business_skill"    => CreateForRunBusinessSkill(tool, description),
             _                       => CreateFallback(tool, name, description),
         };
     }
@@ -1320,6 +1322,31 @@ public static class CodexToolFunctionAdapterFactory
                 return MarkResult(await tool.ExecuteAsync(toolArgs, ct).ConfigureAwait(false));
             },
             new AIFunctionFactoryOptions { Name = "workflow", Description = description });
+
+    private static AIFunction CreateForListBusinessSkills(ICodexTool tool, string description) =>
+        AIFunctionFactory.Create(
+            async (string? query = null, string? skillId = null, string? runId = null, CancellationToken ct = default) =>
+            {
+                var args = new Dictionary<string, object?>(StringComparer.Ordinal);
+                if (query is not null) args["query"] = query;
+                if (skillId is not null) args["skillId"] = skillId;
+                if (runId is not null) args["runId"] = runId;
+                return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
+            },
+            new AIFunctionFactoryOptions { Name = "list_business_skills", Description = description });
+
+    private static AIFunction CreateForRunBusinessSkill(ICodexTool tool, string description) =>
+        AIFunctionFactory.Create(
+            async (string skillId, string? inputsJson = null, CancellationToken ct = default) =>
+            {
+                var args = new Dictionary<string, object?>(StringComparer.Ordinal)
+                {
+                    ["skillId"] = skillId
+                };
+                if (inputsJson is not null) args["inputsJson"] = inputsJson;
+                return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
+            },
+            new AIFunctionFactoryOptions { Name = "run_business_skill", Description = description });
 
     /// <summary>
     /// Fallback for tools not yet mapped to a typed schema.

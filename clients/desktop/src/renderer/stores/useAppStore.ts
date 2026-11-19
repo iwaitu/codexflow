@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { BackendConnectionPublicInfo } from '@shared/ipc';
+import type { BackendConnectionPublicInfo, BusinessApprovalRequestDto } from '@shared/ipc';
 import type { ParsedSseEvent } from '@shared/contracts/sse.generated';
 import {
   apiClient,
@@ -98,6 +98,7 @@ export interface AppState {
 
   toolCalls: UiToolCall[];
   pendingApprovals: UiPendingApproval[];
+  pendingBusinessApprovals: BusinessApprovalRequestDto[];
   currentPlan: SessionPlan | null;
   jobs: BackgroundJob[];
   verificationReceipts: Record<string, VerificationReceipt>;
@@ -132,6 +133,7 @@ export interface AppState {
   applySnapshot: (snapshot: SessionSnapshot) => void;
   reconcileSession: (reason: string, options?: ReconcileOptions) => Promise<void>;
   reconcileApprovals: () => Promise<void>;
+  removeBusinessApproval: (approvalId: string) => void;
   setVerificationReceipt: (jobId: string, receipt: VerificationReceipt) => void;
   setContextWindow: (cw: SessionContextWindow | null) => void;
   setJobs: (jobs: BackgroundJob[]) => void;
@@ -468,6 +470,110 @@ function reduceSseEvent(
       return;
     }
 
+    case 'business_skill_approval_requested': {
+      const d = evtData as {
+        approvalId?: string;
+        requestDigest?: string;
+        sessionId?: string;
+        runId?: string;
+        stepId?: string;
+        kind?: string;
+        allowedDecisions?: string[];
+        expiresAtUtc?: string;
+      };
+      const approvalId = d.approvalId;
+      if (!approvalId) {
+        return;
+      }
+      const currentSid = get().activeSessionId;
+      if (d.sessionId && currentSid && d.sessionId !== currentSid) {
+        return;
+      }
+      const placeholder: BusinessApprovalRequestDto = {
+        approvalId,
+        requestDigest: d.requestDigest,
+        sessionId: d.sessionId ?? currentSid ?? undefined,
+        runId: d.runId,
+        stepId: d.stepId,
+        kind: d.kind,
+        allowedDecisions: d.allowedDecisions,
+        expiresAtUtc: d.expiresAtUtc,
+      };
+      set((s) => {
+        const exists = s.pendingBusinessApprovals.some((a) => a.approvalId === approvalId);
+        if (exists) {
+          return s;
+        }
+        return { pendingBusinessApprovals: [...s.pendingBusinessApprovals, placeholder] };
+      });
+      dispatchDesktopNotification(
+        'notify.toolApprovalTitle',
+        `业务 Skill 写入确认: ${d.runId ?? approvalId}`,
+      );
+      const conn = get().connection;
+      const targetGen = get().sessionGeneration;
+      const targetConnGen = get().connectionGeneration;
+      if (conn?.baseUrl && conn.accessToken && d.runId) {
+        void apiClient
+          .getSkillRun({ baseUrl: conn.baseUrl, accessToken: conn.accessToken }, d.runId)
+          .then((run) => {
+            const latest = get();
+            if (
+              latest.activeSessionId !== currentSid ||
+              latest.sessionGeneration !== targetGen ||
+              latest.connectionGeneration !== targetConnGen
+            ) {
+              return;
+            }
+            const hydrated = run.pendingApproval;
+            if (!hydrated || hydrated.approvalId !== approvalId) {
+              return;
+            }
+            set((s) => {
+              if (!s.pendingBusinessApprovals.some((a) => a.approvalId === approvalId)) {
+                return s;
+              }
+              return {
+                pendingBusinessApprovals: s.pendingBusinessApprovals.map((a) =>
+                  a.approvalId === approvalId ? hydrated : a,
+                ),
+              };
+            });
+          })
+          .catch(() => undefined);
+      }
+      return;
+    }
+
+    case 'business_skill_approval_resolved': {
+      const d = evtData as { approvalId?: string };
+      if (d.approvalId) {
+        set((s) => ({
+          pendingBusinessApprovals: s.pendingBusinessApprovals.filter(
+            (a) => a.approvalId !== d.approvalId,
+          ),
+        }));
+      }
+      return;
+    }
+
+    case 'business_skill_run_updated': {
+      const d = evtData as { runId?: string; status?: string };
+      const terminalStatuses = new Set([
+        'Succeeded',
+        'PartialSucceeded',
+        'Failed',
+        'Cancelled',
+        'OutcomeUnknown',
+      ]);
+      if (d.runId && d.status && terminalStatuses.has(d.status)) {
+        set((s) => ({
+          pendingBusinessApprovals: s.pendingBusinessApprovals.filter((a) => a.runId !== d.runId),
+        }));
+      }
+      return;
+    }
+
     case 'plan_approval_requested': {
       const prefs = usePreferencesStore.getState();
       dispatchDesktopNotification(
@@ -692,6 +798,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   toolCalls: [],
   pendingApprovals: [],
+  pendingBusinessApprovals: [],
   currentPlan: null,
   jobs: [],
   verificationReceipts: {},
@@ -754,6 +861,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         isTurnRunning: false,
         toolCalls: [],
         pendingApprovals: [],
+        pendingBusinessApprovals: [],
         currentPlan: null,
         jobs: [],
         verificationReceipts: {},
@@ -808,6 +916,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       isTurnRunning: false,
       toolCalls: [],
       pendingApprovals: [],
+      pendingBusinessApprovals: [],
       currentPlan: null,
       jobs: [],
       verificationReceipts: {},
@@ -1019,6 +1128,27 @@ export const useAppStore = create<AppState>((set, get) => ({
       } catch {
         // optional
       }
+
+      try {
+        const approvalsRes = await apiClient.getPendingApprovals(
+          auth,
+          activeSessionId,
+          controller.signal,
+        );
+        const latest = get();
+        if (
+          !controller.signal.aborted &&
+          latest.activeSessionId === activeSessionId &&
+          latest.sessionGeneration === sessionGeneration &&
+          latest.connectionGeneration === targetConnGen &&
+          latest.reconcileGeneration === targetReconcileGen &&
+          Array.isArray(approvalsRes.businessApprovals)
+        ) {
+          set({ pendingBusinessApprovals: approvalsRes.businessApprovals });
+        }
+      } catch {
+        // optional
+      }
     } catch {
       const cur = get();
       if (cur.reconcileGeneration === targetReconcileGen && cur.connectionGeneration === targetConnGen) {
@@ -1064,7 +1194,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       ) {
         return;
       }
-      set({ pendingApprovals: (res.items ?? []).map(normalizeApprovalFromRest) });
+      set((s) => ({
+        pendingApprovals: (res.items ?? []).map(normalizeApprovalFromRest),
+        ...(Array.isArray(res.businessApprovals)
+          ? { pendingBusinessApprovals: res.businessApprovals }
+          : { pendingBusinessApprovals: s.pendingBusinessApprovals }),
+      }));
     } catch {
       // ignore aborted or stale approval fetch
     } finally {
@@ -1073,6 +1208,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     }
   },
+
+  removeBusinessApproval: (approvalId) =>
+    set((s) => ({
+      pendingBusinessApprovals: s.pendingBusinessApprovals.filter(
+        (a) => a.approvalId !== approvalId,
+      ),
+    })),
 
   setVerificationReceipt: (jobId, receipt) =>
     set((s) => ({

@@ -781,4 +781,114 @@ public sealed class P2OpenApiAdapterTests
             await app.DisposeAsync();
         }
     }
+
+    [Fact]
+    public async Task OpenApiAdapter_SkipsEmptyOptionalQueryAndHeaderParams_AndIncludesErrorBodySnippet()
+    {
+        var guard = new OutboundTargetPolicyGuard();
+        var adapter = new OpenApiBusinessPluginAdapter(guard);
+
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
+        var app = builder.Build();
+
+        string? observedQueryString = null;
+        bool observedOptionalHeader = false;
+        app.MapGet("/api/kb/list", (HttpRequest req) =>
+        {
+            observedQueryString = req.QueryString.Value;
+            observedOptionalHeader = req.Headers.ContainsKey("X-Optional-Trace");
+            if (req.Query.ContainsKey("tenantId") && string.IsNullOrEmpty(req.Query["tenantId"].ToString()))
+            {
+                return Results.NotFound(new { message = "Invalid empty tenantId" });
+            }
+
+            return Results.Json(new { items = new[] { "kb-1" } });
+        });
+
+        app.MapGet("/api/kb/missing", () =>
+            Results.NotFound(new { code = "KB_NOT_FOUND", message = "Tenant knowledge base does not exist" }));
+
+        await app.StartAsync();
+        try
+        {
+            var baseUri = new Uri(app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First());
+            var origin = OutboundTargetPolicyGuard.GetOriginString(baseUri);
+
+            var specJson = $$"""
+            {
+              "openapi": "3.0.4",
+              "info": { "title": "KB", "version": "1.0.0" },
+              "paths": {
+                "/api/kb/list": {
+                  "get": {
+                    "parameters": [
+                      { "name": "tenantId", "in": "query", "required": false, "schema": { "type": "string", "format": "uuid" } },
+                      { "name": "keyword", "in": "query", "required": false, "schema": { "type": "string" } },
+                      { "name": "tags", "in": "query", "required": false, "schema": { "type": "array", "items": { "type": "string" } } },
+                      { "name": "X-Optional-Trace", "in": "header", "required": false, "schema": { "type": "string" } }
+                    ],
+                    "responses": { "200": { "description": "OK" } }
+                  }
+                },
+                "/api/kb/missing": {
+                  "get": {
+                    "responses": { "200": { "description": "OK" } }
+                  }
+                }
+              }
+            }
+            """;
+
+            var disc = await OpenApiBusinessPluginAdapter.DiscoverFromContentAsync("plg-kb", "snap-1", specJson, "json");
+            Assert.True(disc.Success);
+
+            var policy = new EndpointPolicyDto
+            {
+                AllowedOrigin = origin,
+                AllowPlainHttpForIntranet = true
+            };
+
+            var listCap = disc.Capabilities.Single(c => c.Invocation.NormalizedPath == "/api/kb/list");
+            var okRes = await adapter.InvokeSingleAsync(new CapabilityExecutionRequest
+            {
+                PluginId = "plg-kb",
+                SnapshotId = "snap-1",
+                Capability = listCap,
+                EffectiveRisk = CapabilityRiskLevel.Read,
+                EndpointPolicy = policy,
+                Arguments = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+                {
+                    ["tenantId"] = JsonSerializer.SerializeToElement(""),
+                    ["keyword"] = JsonSerializer.SerializeToElement("规划"),
+                    ["tags"] = JsonSerializer.SerializeToElement(Array.Empty<string>()),
+                    ["X-Optional-Trace"] = JsonSerializer.SerializeToElement("   ")
+                }
+            });
+
+            Assert.True(okRes.Success, okRes.ErrorMessage);
+            Assert.Equal("?keyword=%E8%A7%84%E5%88%92", observedQueryString);
+            Assert.False(observedOptionalHeader);
+
+            var missingCap = disc.Capabilities.Single(c => c.Invocation.NormalizedPath == "/api/kb/missing");
+            var errRes = await adapter.InvokeSingleAsync(new CapabilityExecutionRequest
+            {
+                PluginId = "plg-kb",
+                SnapshotId = "snap-1",
+                Capability = missingCap,
+                EffectiveRisk = CapabilityRiskLevel.Read,
+                EndpointPolicy = policy
+            });
+
+            Assert.False(errRes.Success);
+            Assert.Equal(404, errRes.HttpStatusCode);
+            Assert.Contains("HTTP 404", errRes.ErrorMessage, StringComparison.Ordinal);
+            Assert.Contains("KB_NOT_FOUND", errRes.ErrorMessage, StringComparison.Ordinal);
+            Assert.Contains("Tenant knowledge base does not exist", errRes.ErrorMessage, StringComparison.Ordinal);
+        }
+        finally
+        {
+            await app.DisposeAsync();
+        }
+    }
 }

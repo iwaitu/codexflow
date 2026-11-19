@@ -4,6 +4,7 @@
 
 using System.Security.Claims;
 using CodexFlow.Application;
+using CodexFlow.Contracts.BusinessSkills;
 using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Orchestration.BusinessSkills;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -34,7 +35,8 @@ public sealed record PendingApprovalsResponse(
     int Count,
     IReadOnlyList<PendingApprovalItem> Items,
     bool ControlPlaneAvailable,
-    bool SelfApprovalProtection);
+    bool SelfApprovalProtection,
+    IReadOnlyList<BusinessApprovalRequestDto>? BusinessApprovals = null);
 
 /// <summary>
 /// Interactive execution approval reconciliation (normal plane) and decision submission (control plane).
@@ -72,12 +74,16 @@ public sealed class GatewayApprovalController(
         }
 
         var items = approvalBroker.GetPendingApprovals(sessionId);
+        IReadOnlyList<BusinessApprovalRequestDto> businessApprovals = businessApprovalCoordinator is not null
+            ? await businessApprovalCoordinator.GetPendingApprovalsForSessionAsync(sessionId, ct).ConfigureAwait(false)
+            : [];
         return Ok(new PendingApprovalsResponse(
             sessionId,
             items.Count,
             items,
             controlPlane?.IsControlPlaneAvailable ?? true,
-            controlPlane?.SelfApprovalProtection ?? true));
+            controlPlane?.SelfApprovalProtection ?? true,
+            businessApprovals));
     }
 
     /// <summary>
@@ -172,6 +178,21 @@ public sealed class GatewayApprovalController(
         }
         else if (businessApprovalCoordinator is not null && businessApprovalCoordinator.HasApproval(approvalId))
         {
+            var bizSessionId = await businessApprovalCoordinator
+                .TryGetApprovalSessionIdAsync(approvalId, ct)
+                .ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(bizSessionId))
+            {
+                var bizSession = await chatService.GetSession(bizSessionId).ConfigureAwait(false);
+                if (bizSession is null || !string.Equals(bizSession.UserId, userId, StringComparison.Ordinal))
+                {
+                    return NotFound(new ExecutionApprovalErrorResponse(
+                        false,
+                        "approval_not_found",
+                        "Approval request was not found or is not owned by the caller."));
+                }
+            }
+
             var bizOutcome = await businessApprovalCoordinator
                 .TrySubmitDecisionAsync(approvalId, request.RequestDigest, decisionKind, userId, request.Note, ct)
                 .ConfigureAwait(false);

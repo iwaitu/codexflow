@@ -1,5 +1,6 @@
 import type { components } from '@shared/contracts/api.generated';
 import type {
+  BusinessApprovalRequestDto,
   BusinessPluginDto,
   CapabilityDetailDto,
   CapabilityPageResponseDto,
@@ -26,6 +27,7 @@ export type PendingApprovalsResponse = {
   items: PendingApprovalItem[];
   controlPlaneAvailable: boolean;
   selfApprovalProtection: boolean;
+  businessApprovals?: BusinessApprovalRequestDto[];
 };
 export type BackgroundJob = components['schemas']['BackgroundJobDto'];
 export type WorkspaceFileEntry = components['schemas']['WorkspaceFileEntryDto'];

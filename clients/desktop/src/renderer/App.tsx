@@ -79,6 +79,7 @@ export const App: React.FC = () => {
     turnNotice,
     toolCalls,
     pendingApprovals,
+    pendingBusinessApprovals,
     currentPlan,
     jobs,
     verificationReceipts,
@@ -105,6 +106,7 @@ export const App: React.FC = () => {
     applySseEvent,
     reconcileSession,
     reconcileApprovals,
+    removeBusinessApproval,
     setVerificationReceipt,
     setContextWindow,
     setJobs,
@@ -1321,6 +1323,7 @@ export const App: React.FC = () => {
                 isTurnRunning={isTurnRunning}
                 toolCalls={toolCalls}
                 pendingApprovals={pendingApprovals}
+                pendingBusinessApprovals={pendingBusinessApprovals}
                 currentPlan={currentPlan}
                 jobs={jobs}
                 verificationReceipts={verificationReceipts}
@@ -1338,6 +1341,7 @@ export const App: React.FC = () => {
                 onCreateDailySession={() => handleCreateSession('daily')}
                 onOpenFolder={handleOpenFolder}
                 onApprovalResolved={() => void reconcileApprovals()}
+                onBusinessApprovalResolved={(approvalId) => removeBusinessApproval(approvalId)}
                 onPlanActionSubmitted={() =>
                   void reconcileSession('plan_action', {
                     onCursorSynced: (eid, epoch) => sseRef.current?.updateCursor(eid, epoch),

@@ -41,6 +41,14 @@ public interface IBusinessSkillApprovalCoordinator
         string? note,
         CancellationToken ct = default);
 
+    Task<IReadOnlyList<BusinessApprovalRequestDto>> GetPendingApprovalsForSessionAsync(
+        string sessionId,
+        CancellationToken ct = default);
+
+    Task<string?> TryGetApprovalSessionIdAsync(
+        string approvalId,
+        CancellationToken ct = default);
+
     Task InvalidatePluginApprovalsAndRunsAsync(string pluginId, string reason, CancellationToken ct = default);
 }
 
@@ -103,8 +111,126 @@ public sealed class BusinessSkillApprovalCoordinator : IBusinessSkillApprovalCoo
                     ExpiredOrInvalidated: false,
                     ErrorCode: BusinessSkillErrorCodes.ApprovalRequired,
                     ErrorMessage: reason));
+                _ = PublishApprovalResolvedSseAsync(removed.Request, "cancelled", "system", reason, CancellationToken.None);
             }
         }
+    }
+
+    public async Task<IReadOnlyList<BusinessApprovalRequestDto>> GetPendingApprovalsForSessionAsync(
+        string sessionId,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId))
+        {
+            return [];
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var byId = new Dictionary<string, BusinessApprovalRequestDto>(StringComparer.Ordinal);
+
+        foreach (var entry in _pending.Values)
+        {
+            if (string.Equals(entry.Request.SessionId, sessionId, StringComparison.Ordinal) &&
+                entry.Request.ExpiresAtUtc > now)
+            {
+                byId[entry.Request.ApprovalId] = entry.Request;
+            }
+        }
+
+        try
+        {
+            await using var scope = _scopeFactory.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<IJobDbContext>();
+            var waitingRuns = await db.SkillRuns.AsNoTracking()
+                .Where(r => r.Status == nameof(SkillRunStatus.WaitingForApproval) && r.PendingApprovalJson != null)
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
+
+            foreach (var run in waitingRuns)
+            {
+                if (string.IsNullOrWhiteSpace(run.PendingApprovalJson))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var req = JsonSerializer.Deserialize<BusinessApprovalRequestDto>(run.PendingApprovalJson, JsonOptions);
+                    if (req is not null &&
+                        string.Equals(req.SessionId, sessionId, StringComparison.Ordinal) &&
+                        req.ExpiresAtUtc > now &&
+                        !byId.ContainsKey(req.ApprovalId))
+                    {
+                        byId[req.ApprovalId] = req;
+                    }
+                }
+                catch (JsonException)
+                {
+                    // 忽略损坏的旧审批快照
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed querying pending business approvals for session {SessionId}", sessionId);
+        }
+
+        return byId.Values
+            .OrderBy(static r => r.ExpiresAtUtc)
+            .ThenBy(static r => r.ApprovalId, StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    public async Task<string?> TryGetApprovalSessionIdAsync(
+        string approvalId,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(approvalId))
+        {
+            return null;
+        }
+
+        if (_pending.TryGetValue(approvalId, out var memEntry))
+        {
+            return memEntry.Request.SessionId;
+        }
+
+        try
+        {
+            await using var scope = _scopeFactory.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<IJobDbContext>();
+            var waitingRuns = await db.SkillRuns.AsNoTracking()
+                .Where(r => r.Status == nameof(SkillRunStatus.WaitingForApproval) && r.PendingApprovalJson != null)
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
+
+            foreach (var run in waitingRuns)
+            {
+                if (string.IsNullOrWhiteSpace(run.PendingApprovalJson))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var req = JsonSerializer.Deserialize<BusinessApprovalRequestDto>(run.PendingApprovalJson, JsonOptions);
+                    if (req is not null && string.Equals(req.ApprovalId, approvalId, StringComparison.Ordinal))
+                    {
+                        return req.SessionId;
+                    }
+                }
+                catch (JsonException)
+                {
+                    // 忽略损坏的快照
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed resolving session id for business approval {ApprovalId}", approvalId);
+        }
+
+        return null;
     }
 
     public async Task<SkillApprovalGrantOutcome> AwaitApprovalAsync(

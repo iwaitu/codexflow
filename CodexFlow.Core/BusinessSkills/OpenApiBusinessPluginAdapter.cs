@@ -347,12 +347,17 @@ public sealed partial class OpenApiBusinessPluginAdapter
                         _ => BusinessSkillErrorCodes.ConnectionUnavailable
                     };
 
+                    var errorSnippet = FormatErrorResponseSnippet(rawText);
+                    var errorMessage = string.IsNullOrEmpty(errorSnippet)
+                        ? $"HTTP {status}: {response.ReasonPhrase}"
+                        : $"HTTP {status}: {response.ReasonPhrase} - {errorSnippet}";
+
                     return new CapabilityExecutionResult
                     {
                         Success = false,
                         HttpStatusCode = status,
                         ErrorCode = errCode,
-                        ErrorMessage = $"HTTP {status}: {response.ReasonPhrase}",
+                        ErrorMessage = errorMessage,
                         PayloadJson = parsedJson,
                         RawText = rawText,
                         RequestsConsumed = requestsConsumed,
@@ -1090,6 +1095,12 @@ public sealed partial class OpenApiBusinessPluginAdapter
                         return false;
                     }
 
+                    // 非必填查询参数若为空/纯空白字符串或空数组，跳过不拼接（避免向 Guid?/uuid/int? 后端发送 ?tenantId= 引发 400/404）
+                    if (!param.Required && IsOptionalEmptyValue(rawArg))
+                    {
+                        continue;
+                    }
+
                     if (rawArg.ValueKind == JsonValueKind.Array)
                     {
                         var parts = rawArg.EnumerateArray().Select(BusinessCapabilityResponseHelpers.JsonElementToScalarString).ToArray();
@@ -1120,6 +1131,11 @@ public sealed partial class OpenApiBusinessPluginAdapter
                         return false;
                     }
 
+                    if (!param.Required && IsOptionalEmptyValue(rawArg))
+                    {
+                        continue;
+                    }
+
                     headers.Add((param.Name, SerializeSimpleValue(rawArg)));
                     break;
 
@@ -1141,6 +1157,56 @@ public sealed partial class OpenApiBusinessPluginAdapter
 
         builtUri = builder.Uri;
         return true;
+    }
+
+    private static bool IsOptionalEmptyValue(JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.String)
+        {
+            return string.IsNullOrWhiteSpace(element.GetString());
+        }
+
+        if (element.ValueKind == JsonValueKind.Array)
+        {
+            return element.GetArrayLength() == 0;
+        }
+
+        return false;
+    }
+
+    private static string FormatErrorResponseSnippet(string? rawText, int maxChars = 240)
+    {
+        if (string.IsNullOrWhiteSpace(rawText))
+        {
+            return string.Empty;
+        }
+
+        var sb = new StringBuilder(Math.Min(rawText.Length, maxChars + 8));
+        var prevSpace = false;
+        foreach (var ch in rawText)
+        {
+            if (char.IsWhiteSpace(ch))
+            {
+                if (!prevSpace && sb.Length > 0)
+                {
+                    sb.Append(' ');
+                    prevSpace = true;
+                }
+            }
+            else
+            {
+                sb.Append(ch);
+                prevSpace = false;
+            }
+
+            if (sb.Length > maxChars)
+            {
+                break;
+            }
+        }
+
+        var compact = sb.ToString().Trim();
+        return compact.Length <= maxChars ? compact : compact[..maxChars] + "...";
     }
 
     private static string SerializeSimpleValue(JsonElement element)
