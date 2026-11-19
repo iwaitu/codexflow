@@ -227,14 +227,16 @@ jobs:
           app_path="dist/mac-${{ matrix.arch }}/CodexFlow Desktop.app"
           test -d "$app_path"
           codesign --verify --deep --strict --verbose=2 "$app_path"
-          backend_bin="$app_path/Contents/Resources/backend/CodexFlow.Local"
+          backend_bin="$(pwd)/$app_path/Contents/Resources/backend/CodexFlow.Local"
           test -x "$backend_bin"
           smoke_dir="$(mktemp -d)"
           trap 'rm -rf "$smoke_dir"' EXIT
           node -e '
             const { spawn } = require("node:child_process");
-            const child = spawn(process.argv[1], [], {
-              cwd: require("node:path").dirname(process.argv[1]),
+            const path = require("node:path");
+            const bin = path.resolve(process.argv[1]);
+            const child = spawn(bin, [], {
+              cwd: path.dirname(bin),
               env: {
                 ...process.env,
                 Local__Port: "0",
