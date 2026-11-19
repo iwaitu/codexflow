@@ -748,4 +748,106 @@ public class SessionManagerTests
         // Assert — PG projection was cleared
         mockCompression.Verify(c => c.ClearAsync("s-clear", It.IsAny<CancellationToken>()), Times.Once);
     }
+
+    [Fact]
+    public async Task CompressContextAsync_EmptySession_ReturnsNothingToCompress()
+    {
+        var session = new CodexSession { Id = "s-compact-empty", UserId = "u1" };
+        var mockStore = new Mock<ISessionStore>();
+        var mockMemory = new Mock<IMemoryService>();
+        mockStore.Setup(s => s.GetSessionAsync("s-compact-empty", It.IsAny<CancellationToken>())).ReturnsAsync(session);
+        mockMemory.Setup(m => m.RecallFactsAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync([]);
+        mockMemory.Setup(m => m.RecallUserFactsAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync([]);
+
+        var manager = new CodexSessionManager(mockStore.Object, mockMemory.Object, NullLogger<CodexSessionManager>.Instance);
+
+        var result = await manager.CompressContextAsync("s-compact-empty");
+
+        Assert.False(result.Compressed);
+        Assert.Equal("nothing_to_compress", result.Status);
+        Assert.Equal(0, result.CompressedTurnCount);
+    }
+
+    [Fact]
+    public async Task CompressContextAsync_UsesModelSummarizerWhenMemoryServiceIsNoOp_AndClearsHighWatermark()
+    {
+        var session = new CodexSession { Id = "s-compact-1", UserId = "u1" };
+        session.RecentTurns.Add(new ChatTurn("user", new string('A', 400), DateTime.UtcNow));
+        session.RecentTurns.Add(new ChatTurn("assistant", new string('B', 400), DateTime.UtcNow));
+        session.Metadata["ContextWindowLastReportedTokens"] = "42000";
+        session.Metadata["ContextWindowLastBaselineEstimatedTokens"] = "1000";
+
+        var mockStore = new Mock<ISessionStore>();
+        var mockMemory = new Mock<IMemoryService>();
+        var mockCompression = new Mock<ISessionCompressionStore>();
+
+        mockStore.Setup(s => s.GetSessionAsync("s-compact-1", It.IsAny<CancellationToken>())).ReturnsAsync(session);
+        mockStore.Setup(s => s.SaveSessionAsync(It.IsAny<CodexSession>(), It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
+        mockMemory.Setup(m => m.RecallFactsAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync([]);
+        mockMemory.Setup(m => m.RecallUserFactsAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync([]);
+        // Simulate NullMemoryService returning existing summary unchanged
+        mockMemory.Setup(m => m.SummarizeHistoryAsync("s-compact-1", string.Empty, It.IsAny<IReadOnlyList<ChatTurn>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(string.Empty);
+
+        var manager = new CodexSessionManager(
+            mockStore.Object,
+            mockMemory.Object,
+            NullLogger<CodexSessionManager>.Instance,
+            mockCompression.Object);
+
+        string? capturedFocus = null;
+        var result = await manager.CompressContextAsync(
+            "s-compact-1",
+            focusInstruction: "保留接口设计",
+            modelSummarizer: (_, turns, focus, _) =>
+            {
+                capturedFocus = focus;
+                return Task.FromResult<string?>($"精炼摘要：共 {turns.Count} 条，重点={focus}");
+            });
+
+        Assert.True(result.Compressed);
+        Assert.Equal("compressed", result.Status);
+        Assert.Equal(2, result.CompressedTurnCount);
+        Assert.Equal("保留接口设计", capturedFocus);
+        Assert.Empty(session.RecentTurns);
+        Assert.NotNull(session.LastCompressedAt);
+        Assert.Contains("精炼摘要", session.HistorySummary);
+        Assert.False(session.Metadata.ContainsKey("ContextWindowLastReportedTokens"));
+        Assert.False(session.Metadata.ContainsKey("ContextWindowLastBaselineEstimatedTokens"));
+        Assert.True(result.EstimatedTokensBefore >= 42000);
+        Assert.True(result.EstimatedTokensAfter < result.EstimatedTokensBefore);
+        mockCompression.Verify(c => c.SaveAsync("s-compact-1", session.HistorySummary, It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task CompressContextAsync_FallbackTurnsAndDeterministicDegradation_WhenModelFails()
+    {
+        var session = new CodexSession { Id = "s-compact-fallback", UserId = "u1" };
+        var mockStore = new Mock<ISessionStore>();
+        var mockMemory = new Mock<IMemoryService>();
+
+        mockStore.Setup(s => s.GetSessionAsync("s-compact-fallback", It.IsAny<CancellationToken>())).ReturnsAsync(session);
+        mockStore.Setup(s => s.SaveSessionAsync(It.IsAny<CodexSession>(), It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
+        mockMemory.Setup(m => m.RecallFactsAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync([]);
+        mockMemory.Setup(m => m.RecallUserFactsAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync([]);
+        mockMemory.Setup(m => m.SummarizeHistoryAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<ChatTurn>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(string.Empty);
+
+        var manager = new CodexSessionManager(mockStore.Object, mockMemory.Object, NullLogger<CodexSessionManager>.Instance);
+        var fallbackTurns = new List<ChatTurn>
+        {
+            new("user", "请梳理支付回调幂等方案", DateTime.UtcNow.AddMinutes(-2)),
+            new("assistant", "已确认采用幂等键 + 事务去重表", DateTime.UtcNow.AddMinutes(-1)),
+        };
+
+        var result = await manager.CompressContextAsync(
+            "s-compact-fallback",
+            fallbackTurns: fallbackTurns,
+            modelSummarizer: (_, _, _, _) => throw new InvalidOperationException("model offline"));
+
+        Assert.True(result.Compressed);
+        Assert.Equal(2, result.CompressedTurnCount);
+        Assert.Contains("支付回调幂等方案", session.HistorySummary);
+        Assert.Contains("事务去重表", session.HistorySummary);
+    }
 }

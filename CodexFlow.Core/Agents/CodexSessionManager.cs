@@ -12,6 +12,18 @@ using System.Globalization;
 
 namespace CodexFlow.Core.Agents;
 
+/// <summary>
+/// 手动触发上下文压缩（如 /compact）的执行结果。
+/// </summary>
+public sealed record ManualContextCompressionResult(
+    bool Compressed,
+    string Status,
+    int CompressedTurnCount,
+    long EstimatedTokensBefore,
+    long EstimatedTokensAfter,
+    int SummaryChars,
+    DateTime? LastCompressedAtUtc);
+
 public class CodexSessionManager
 {
     private const string ContextEstimatedCharsMetadataKey = "ContextWindowEstimatedChars";
@@ -266,6 +278,205 @@ public class CodexSessionManager
         {
             await UpdateSessionAsync(session).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// 手动触发当前会话的上下文压缩：将近期未归档对话（或调用方传入的数据库增量回退轮次）
+    /// 与既有历史摘要合并为精炼摘要，清空热轮次缓冲区，重置失效的高水位基线并持久化压缩投影。
+    /// </summary>
+    public async Task<ManualContextCompressionResult> CompressContextAsync(
+        string sessionId,
+        string? focusInstruction = null,
+        IReadOnlyList<ChatTurn>? fallbackTurns = null,
+        Func<string, IReadOnlyList<ChatTurn>, string?, CancellationToken, Task<string?>>? modelSummarizer = null,
+        CancellationToken ct = default)
+    {
+        var session = await GetOrCreateSessionAsync(sessionId, string.Empty, string.Empty, (Uri?)null).ConfigureAwait(false);
+        var normalizedFocus = string.IsNullOrWhiteSpace(focusInstruction) ? null : focusInstruction.Trim();
+        var existingSummary = session.HistorySummary ?? string.Empty;
+
+        List<ChatTurn> turnsToCompress;
+        if (session.RecentTurns.Count > 0)
+        {
+            turnsToCompress = session.RecentTurns.ToList();
+        }
+        else if (fallbackTurns is { Count: > 0 })
+        {
+            turnsToCompress = fallbackTurns
+                .Where(static t => !string.IsNullOrWhiteSpace(t.Content))
+                .Select(CompactTurnForContextWindow)
+                .ToList();
+        }
+        else
+        {
+            turnsToCompress = [];
+        }
+
+        var tokensBefore = Math.Max(ResolveActiveContextTokens(session), EstimateConversationContextTokens(session));
+        if (session.RecentTurns.Count == 0 && turnsToCompress.Count > 0)
+        {
+            var charsPerToken = _compressionTriggerOptions.ResolveEstimatedCharsPerToken();
+            long fallbackChars = string.IsNullOrWhiteSpace(existingSummary) ? 0L : existingSummary.Length + 32L;
+            foreach (var turn in turnsToCompress)
+            {
+                fallbackChars += turn.Role.Length + turn.Content.Length + 8L;
+            }
+            var fallbackEstimated = (long)Math.Ceiling(fallbackChars / charsPerToken);
+            tokensBefore = Math.Max(tokensBefore, fallbackEstimated);
+        }
+
+        var canRecompressExistingSummary = !string.IsNullOrWhiteSpace(existingSummary) && normalizedFocus is not null;
+        if (turnsToCompress.Count == 0 && !canRecompressExistingSummary)
+        {
+            return new ManualContextCompressionResult(
+                Compressed: false,
+                Status: "nothing_to_compress",
+                CompressedTurnCount: 0,
+                EstimatedTokensBefore: tokensBefore,
+                EstimatedTokensAfter: tokensBefore,
+                SummaryChars: existingSummary.Length,
+                LastCompressedAtUtc: session.LastCompressedAt);
+        }
+
+        string? candidateSummary = null;
+        if (normalizedFocus is null && turnsToCompress.Count > 0)
+        {
+            try
+            {
+                var memorySummary = await _memoryService
+                    .SummarizeHistoryAsync(sessionId, existingSummary, turnsToCompress, ct)
+                    .ConfigureAwait(false);
+                if (!string.IsNullOrWhiteSpace(memorySummary) &&
+                    !string.Equals(memorySummary.Trim(), existingSummary.Trim(), StringComparison.Ordinal))
+                {
+                    candidateSummary = memorySummary.Trim();
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "MemoryService SummarizeHistoryAsync failed during manual compaction. SessionId={SessionId}", sessionId);
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(candidateSummary) && modelSummarizer is not null)
+        {
+            try
+            {
+                var modelSummary = await modelSummarizer(existingSummary, turnsToCompress, normalizedFocus, ct).ConfigureAwait(false);
+                if (!string.IsNullOrWhiteSpace(modelSummary))
+                {
+                    candidateSummary = modelSummary.Trim();
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Model summarizer failed during manual compaction; falling back to deterministic summary. SessionId={SessionId}", sessionId);
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(candidateSummary))
+        {
+            candidateSummary = BuildFallbackCompressedSummary(existingSummary, turnsToCompress, normalizedFocus);
+        }
+
+        session.HistorySummary = candidateSummary;
+        session.LastCompressedAt = DateTime.UtcNow;
+        session.RecentTurns.Clear();
+        session.Metadata.Remove(ContextLastReportedTokensMetadataKey);
+        session.Metadata.Remove(ContextLastBaselineEstimatedTokensMetadataKey);
+
+        RefreshContextWindowSnapshot(session);
+        await PersistCompressionProjectionAsync(session).ConfigureAwait(false);
+        await UpdateSessionAsync(session).ConfigureAwait(false);
+
+        var tokensAfter = ResolveActiveContextTokens(session);
+        StructuredLog.Information(
+            _logger,
+            "Manual context compression completed. SessionId={SessionId}, CompressedTurns={Turns}, TokensBefore={Before}, TokensAfter={After}, SummaryChars={SummaryChars}",
+            sessionId,
+            turnsToCompress.Count,
+            tokensBefore,
+            tokensAfter,
+            session.HistorySummary.Length);
+
+        return new ManualContextCompressionResult(
+            Compressed: true,
+            Status: "compressed",
+            CompressedTurnCount: turnsToCompress.Count,
+            EstimatedTokensBefore: tokensBefore,
+            EstimatedTokensAfter: tokensAfter,
+            SummaryChars: session.HistorySummary.Length,
+            LastCompressedAtUtc: session.LastCompressedAt);
+    }
+
+    private static string BuildFallbackCompressedSummary(
+        string existingSummary,
+        List<ChatTurn> turns,
+        string? focusInstruction)
+    {
+        const int maxSummaryChars = 4_000;
+        const int maxPerTurnChars = 280;
+        var sb = new System.Text.StringBuilder();
+
+        if (!string.IsNullOrWhiteSpace(focusInstruction))
+        {
+            sb.AppendLine("【压缩聚焦】" + focusInstruction);
+        }
+
+        if (!string.IsNullOrWhiteSpace(existingSummary))
+        {
+            var trimmedExisting = existingSummary.Trim();
+            if (trimmedExisting.Length > 1_800)
+            {
+                trimmedExisting = trimmedExisting[..1_800].TrimEnd() + "…";
+            }
+            sb.AppendLine("【历史摘要】");
+            sb.AppendLine(trimmedExisting);
+        }
+
+        if (turns.Count > 0)
+        {
+            sb.AppendLine("【近期对话要点】");
+            var recentSlice = turns.Count > 12 ? turns.Skip(turns.Count - 12).ToList() : turns;
+            if (turns.Count > recentSlice.Count)
+            {
+                sb.AppendLine($"- （更早 {turns.Count - recentSlice.Count} 条消息已省略）");
+            }
+
+            foreach (var turn in recentSlice)
+            {
+                var roleLabel = string.Equals(turn.Role, "user", StringComparison.OrdinalIgnoreCase)
+                    ? "用户"
+                    : string.Equals(turn.Role, "assistant", StringComparison.OrdinalIgnoreCase)
+                        ? "助手"
+                        : turn.Role;
+                var compactLine = string.Join(
+                    " ",
+                    turn.Content.Split(LineBreakSeparators, StringSplitOptions.RemoveEmptyEntries)
+                        .Select(static s => s.Trim())
+                        .Where(static s => s.Length > 0));
+                if (compactLine.Length > maxPerTurnChars)
+                {
+                    compactLine = compactLine[..maxPerTurnChars].TrimEnd() + "…";
+                }
+                sb.AppendLine($"- {roleLabel}：{compactLine}");
+                if (sb.Length >= maxSummaryChars)
+                {
+                    break;
+                }
+            }
+        }
+
+        var result = sb.ToString().Trim();
+        return result.Length <= maxSummaryChars ? result : result[..maxSummaryChars].TrimEnd() + "…";
     }
 
     /// <summary>

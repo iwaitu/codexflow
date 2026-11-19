@@ -19,6 +19,7 @@ using CodexFlow.Orchestration.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.AI;
 using Newtonsoft.Json;
 using System.Net;
 using System.Globalization;
@@ -470,6 +471,114 @@ public class CodexGatewayController : ControllerBase
             dbSession.WorkspacePath ?? string.Empty,
             (Uri?)null);
 
+        return Ok(BuildContextWindowResponse(sessionId, session));
+    }
+
+    /// <summary>
+    /// Manually triggers conversation context compaction for the specified session (e.g. via the /compact slash command).
+    /// </summary>
+    /// <param name="sessionId">Session identifier.</param>
+    /// <param name="request">Optional compaction options (conversation fallback ID and focus instruction).</param>
+    /// <param name="chatClient">Optional active model client used to synthesize a concise summary.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>Compaction outcome along with the refreshed context-window usage snapshot.</returns>
+    [HttpPost("session/{sessionId}/compact")]
+    [ProducesResponseType(typeof(CompactSessionContextResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> CompactSessionContext(
+        string sessionId,
+        [FromBody] CompactSessionContextRequest? request = null,
+        [FromServices] IChatClient? chatClient = null,
+        CancellationToken ct = default)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrEmpty(userId)) return Unauthorized();
+
+        var dbSession = await _chatService.GetSession(sessionId);
+        if (dbSession == null || dbSession.UserId != userId)
+        {
+            return NotFound(new GatewayErrorResponse("session_not_found", "Session not found."));
+        }
+
+        var channelState = _gateway.GetChannelSnapshotState(sessionId);
+        if (channelState is { IsTurnActive: true })
+        {
+            return Conflict(new GatewayErrorResponse("turn_in_progress", "当前回合正在执行中，请等待完成或取消后再压缩上下文。"));
+        }
+
+        var session = await _sessionManager.GetOrCreateSessionAsync(
+            sessionId,
+            userId,
+            dbSession.WorkspacePath ?? string.Empty,
+            (Uri?)null);
+
+        List<ChatTurn>? fallbackTurns = null;
+        if (session.RecentTurns.Count == 0 && !string.IsNullOrWhiteSpace(request?.ConversationId))
+        {
+            var conversation = await _chatService.Get(request.ConversationId);
+            if (conversation is not null &&
+                string.Equals(conversation.UserId, userId, StringComparison.Ordinal) &&
+                string.Equals(conversation.SessionId, sessionId, StringComparison.Ordinal))
+            {
+                var dbMessages = await _chatService.GetConversationMessagesAfterAsync(
+                    conversation.Id,
+                    session.LastCompressedAt,
+                    hardLimit: 120);
+                if (dbMessages is { Count: > 0 })
+                {
+                    fallbackTurns = new List<ChatTurn>(dbMessages.Count * 2);
+                    foreach (var m in dbMessages)
+                    {
+                        if (!string.IsNullOrWhiteSpace(m.UserContent))
+                        {
+                            fallbackTurns.Add(new ChatTurn("user", m.UserContent, m.Created));
+                        }
+                        if (!string.IsNullOrWhiteSpace(m.AiContent) && string.IsNullOrWhiteSpace(m.MessageType))
+                        {
+                            fallbackTurns.Add(new ChatTurn("assistant", m.AiContent, m.Created));
+                        }
+                    }
+                }
+            }
+        }
+
+        var effectiveChatClient = chatClient ?? HttpContext?.RequestServices.GetService<IChatClient>();
+        Func<string, IReadOnlyList<ChatTurn>, string?, CancellationToken, Task<string?>>? modelSummarizer =
+            effectiveChatClient is null
+                ? null
+                : (existingSummary, turns, focus, token) =>
+                    SummarizeContextWithModelAsync(effectiveChatClient, existingSummary, turns, focus, token);
+
+        var result = await _sessionManager.CompressContextAsync(
+            sessionId,
+            focusInstruction: request?.Focus,
+            fallbackTurns: fallbackTurns,
+            modelSummarizer: modelSummarizer,
+            ct: ct);
+
+        var refreshedSession = await _sessionManager.GetOrCreateSessionAsync(
+            sessionId,
+            userId,
+            dbSession.WorkspacePath ?? string.Empty,
+            (Uri?)null);
+
+        return Ok(new CompactSessionContextResponse
+        {
+            SessionId = sessionId,
+            Compressed = result.Compressed,
+            Status = result.Status,
+            CompressedTurnCount = result.CompressedTurnCount,
+            EstimatedTokensBefore = result.EstimatedTokensBefore,
+            EstimatedTokensAfter = result.EstimatedTokensAfter,
+            SummaryChars = result.SummaryChars,
+            LastCompressedAtUtc = result.LastCompressedAtUtc?.ToString("O", CultureInfo.InvariantCulture),
+            ContextWindow = BuildContextWindowResponse(sessionId, refreshedSession)
+        });
+    }
+
+    private SessionContextWindowResponse BuildContextWindowResponse(string sessionId, CodexSession session)
+    {
         var estimatedTokens = CodexSessionManager.ResolveActiveContextTokens(session);
         var estimatedChars = ParseLongMetadata(session.Metadata, "ContextWindowEstimatedChars");
         var recentTurns = (int)ParseLongMetadata(session.Metadata, "ContextWindowRecentTurns");
@@ -486,7 +595,7 @@ public class CodexGatewayController : ControllerBase
         var usageRatio = Math.Clamp((double)estimatedTokens / modelMaxTokens, 0d, 1d);
         var triggerRatio = Math.Clamp((double)estimatedTokens / Math.Max(1, triggerThresholdTokens), 0d, 1d);
 
-        return Ok(new SessionContextWindowResponse
+        return new SessionContextWindowResponse
         {
             SessionId = sessionId,
             EstimatedTokens = estimatedTokens,
@@ -502,7 +611,58 @@ public class CodexGatewayController : ControllerBase
             UsageRatio = usageRatio,
             TriggerRatio = triggerRatio,
             UpdatedAtUtc = updatedAtUtc
-        });
+        };
+    }
+
+    private static async Task<string?> SummarizeContextWithModelAsync(
+        IChatClient chatClient,
+        string existingSummary,
+        IReadOnlyList<ChatTurn> turns,
+        string? focusInstruction,
+        CancellationToken ct)
+    {
+        var sb = new System.Text.StringBuilder();
+        if (!string.IsNullOrWhiteSpace(existingSummary))
+        {
+            sb.AppendLine("【已有历史摘要】");
+            sb.AppendLine(existingSummary.Length > 8_000 ? existingSummary[..8_000] + "…" : existingSummary);
+            sb.AppendLine();
+        }
+
+        if (turns.Count > 0)
+        {
+            sb.AppendLine("【待压缩的近期对话】");
+            var budget = 24_000;
+            foreach (var turn in turns)
+            {
+                var content = turn.Content.Length > 2_000 ? turn.Content[..2_000] + "…" : turn.Content;
+                var line = $"[{turn.Role}] {content}";
+                if (sb.Length + line.Length > budget)
+                {
+                    sb.AppendLine("...(其余中间内容已截断)");
+                    break;
+                }
+                sb.AppendLine(line);
+            }
+        }
+
+        var systemPrompt =
+            "你是对话上下文压缩助手。请将已有历史摘要和近期对话合并为一份精炼、结构化的上下文摘要，供后续对话继续衔接。" +
+            "务必保留：1) 用户核心目标与约束；2) 已确认的技术/业务决策；3) 涉及的关键文件路径、符号名、命令与配置；4) 未完成事项与尚未解决的报错。" +
+            "省略寒暄、重复试错细节与冗余日志。请直接输出摘要正文，不要添加多余前言。";
+        if (!string.IsNullOrWhiteSpace(focusInstruction))
+        {
+            systemPrompt += $"\n用户指定的优先保留焦点：{focusInstruction}";
+        }
+
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.System, systemPrompt),
+            new(ChatRole.User, sb.ToString())
+        };
+
+        var response = await chatClient.GetResponseAsync(messages, cancellationToken: ct).ConfigureAwait(false);
+        return string.IsNullOrWhiteSpace(response.Text) ? null : response.Text.Trim();
     }
 
     /// <summary>
@@ -1027,6 +1187,42 @@ public class SessionContextWindowResponse
     public double TriggerRatio { get; set; }
     /// <summary>Last time the context window snapshot metadata was refreshed, in UTC ISO-8601 format.</summary>
     public string? UpdatedAtUtc { get; set; }
+}
+
+/// <summary>
+/// Request payload for manually compacting a session's conversation context.
+/// </summary>
+public class CompactSessionContextRequest
+{
+    /// <summary>Optional active conversation identifier used as fallback history source when hot memory is empty.</summary>
+    public string? ConversationId { get; set; }
+    /// <summary>Optional user instruction describing what information should be prioritized during compaction.</summary>
+    public string? Focus { get; set; }
+}
+
+/// <summary>
+/// Result of a manual session context compaction request.
+/// </summary>
+public class CompactSessionContextResponse
+{
+    /// <summary>Owning session identifier.</summary>
+    public string SessionId { get; set; } = string.Empty;
+    /// <summary>Whether compaction ran and updated the persisted history summary.</summary>
+    public bool Compressed { get; set; }
+    /// <summary>Machine-readable outcome status (<c>compressed</c> or <c>nothing_to_compress</c>).</summary>
+    public string Status { get; set; } = string.Empty;
+    /// <summary>Number of recent conversation turns archived into the compressed summary.</summary>
+    public int CompressedTurnCount { get; set; }
+    /// <summary>Estimated active context tokens before compaction.</summary>
+    public long EstimatedTokensBefore { get; set; }
+    /// <summary>Estimated active context tokens after compaction.</summary>
+    public long EstimatedTokensAfter { get; set; }
+    /// <summary>Character count of the updated history summary.</summary>
+    public long SummaryChars { get; set; }
+    /// <summary>UTC ISO-8601 timestamp of the latest compression watermark.</summary>
+    public string? LastCompressedAtUtc { get; set; }
+    /// <summary>Refreshed context-window snapshot for immediate UI synchronization.</summary>
+    public SessionContextWindowResponse ContextWindow { get; set; } = new();
 }
 
 /// <summary>

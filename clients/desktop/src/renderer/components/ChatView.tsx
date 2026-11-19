@@ -1,7 +1,8 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { AlertTriangle, ArrowDown, Bot, CheckCircle2, Cpu, FolderPlus, Loader2, Plus, RefreshCw, ShieldCheck } from 'lucide-react';
+import { AlertTriangle, ArrowDown, Bot, CheckCircle2, ChevronDown, ChevronUp, Cpu, FolderPlus, Loader2, Plus, RefreshCw, Search, ShieldCheck, X } from 'lucide-react';
 import type { BackgroundJob, PlanModeExitRequestState, SessionPlan, SessionWorkMode, VerificationReceipt } from '../lib/apiClient';
+import { applyCssHighlightsForSearch, clearCssHighlightsForSearch, findSessionSearchMatches } from '../lib/chatSearch';
 import type { UiMessage, UiPendingApproval, UiToolCall, WorkerBarState } from '../lib/sessionRecovery';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { MessageItem } from './MessageItem';
@@ -43,6 +44,9 @@ interface ChatViewProps {
   onDismissPlanModeExitRequest?: () => void;
   onVerifyJob: (jobId: string) => Promise<void>;
   onSwitchManaged: () => void;
+  searchOpen?: boolean;
+  searchFocusNonce?: number;
+  onCloseSearch?: () => void;
 }
 
 export const ChatView: React.FC<ChatViewProps> = ({
@@ -78,10 +82,16 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onDismissPlanModeExitRequest,
   onVerifyJob,
   onSwitchManaged,
+  searchOpen = false,
+  searchFocusNonce = 0,
+  onCloseSearch,
 }) => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const isNearBottomRef = useRef(true);
   const [showScrollBottom, setShowScrollBottom] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [activeMatchIdx, setActiveMatchIdx] = useState(0);
 
   const virtualizer = useVirtualizer({
     count: messages.length,
@@ -89,6 +99,83 @@ export const ChatView: React.FC<ChatViewProps> = ({
     estimateSize: () => 110,
     overscan: 6,
   });
+
+  const effectiveQuery = searchOpen ? searchQuery : '';
+  const searchMatches = useMemo(
+    () => findSessionSearchMatches(messages, effectiveQuery),
+    [messages, effectiveQuery],
+  );
+  const matchedMessageIds = useMemo(
+    () => new Set(searchMatches.map((m) => m.messageId)),
+    [searchMatches],
+  );
+  const clampedMatchIdx =
+    searchMatches.length > 0 ? Math.min(activeMatchIdx, searchMatches.length - 1) : 0;
+  const activeMatch = searchMatches.length > 0 ? searchMatches[clampedMatchIdx] ?? null : null;
+
+  useEffect(() => {
+    setSearchQuery('');
+    setActiveMatchIdx(0);
+    clearCssHighlightsForSearch();
+  }, [sessionId, conversationId]);
+
+  useEffect(() => {
+    if (!searchOpen) {
+      clearCssHighlightsForSearch();
+      return;
+    }
+    const input = searchInputRef.current;
+    if (input) {
+      input.focus();
+      input.select();
+    }
+  }, [searchOpen, searchFocusNonce]);
+
+  useEffect(() => {
+    setActiveMatchIdx(0);
+  }, [searchQuery]);
+
+  useEffect(() => {
+    if (!searchOpen || !activeMatch) return;
+    isNearBottomRef.current = false;
+    virtualizer.scrollToIndex(activeMatch.messageIndex, { align: 'center' });
+  }, [searchOpen, activeMatch, virtualizer]);
+
+  const virtualItems = virtualizer.getVirtualItems();
+  const visibleWindowKey = virtualItems.map((item) => item.index).join(',');
+
+  useEffect(() => {
+    if (!searchOpen || !effectiveQuery.trim()) {
+      clearCssHighlightsForSearch();
+      return undefined;
+    }
+    const rafId = window.requestAnimationFrame(() => {
+      applyCssHighlightsForSearch(
+        scrollContainerRef.current,
+        effectiveQuery,
+        activeMatch?.messageId ?? null,
+        activeMatch?.field ?? null,
+        activeMatch?.occurrenceInField ?? -1,
+      );
+    });
+    return () => {
+      window.cancelAnimationFrame(rafId);
+    };
+  }, [searchOpen, effectiveQuery, activeMatch, visibleWindowKey]);
+
+  useEffect(() => {
+    return () => {
+      clearCssHighlightsForSearch();
+    };
+  }, []);
+
+  const stepSearchMatch = (delta: 1 | -1) => {
+    if (searchMatches.length === 0) return;
+    setActiveMatchIdx((prev) => {
+      const normalized = Math.min(prev, searchMatches.length - 1);
+      return (normalized + delta + searchMatches.length) % searchMatches.length;
+    });
+  };
 
   const handleScroll = () => {
     const el = scrollContainerRef.current;
@@ -122,6 +209,77 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   return (
     <div className="relative flex-1 overflow-hidden">
+      {searchOpen && (
+        <div
+          data-testid="chat-search-bar"
+          role="search"
+          aria-label="会话内搜索"
+          className="absolute right-6 top-3 z-20 flex items-center gap-1.5 rounded-xl border border-slate-700/90 bg-slate-950/95 px-2.5 py-1.5 text-xs text-slate-200 shadow-2xl backdrop-blur"
+        >
+          <Search className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+          <input
+            ref={searchInputRef}
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                onCloseSearch?.();
+                return;
+              }
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                stepSearchMatch(e.shiftKey ? -1 : 1);
+              }
+            }}
+            placeholder="搜索当前会话..."
+            aria-label="在当前会话中搜索"
+            className="w-52 bg-transparent text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none"
+          />
+          {searchQuery.trim().length > 0 && (
+            <span
+              data-testid="chat-search-count"
+              className={`min-w-[44px] text-right font-mono text-[11px] ${
+                searchMatches.length > 0 ? 'text-slate-300' : 'text-rose-400'
+              }`}
+            >
+              {searchMatches.length > 0 ? `${clampedMatchIdx + 1} / ${searchMatches.length}` : '0 / 0'}
+            </span>
+          )}
+          <div className="mx-0.5 h-3.5 w-px bg-slate-800" />
+          <button
+            type="button"
+            disabled={searchMatches.length === 0}
+            onClick={() => stepSearchMatch(-1)}
+            title="上一条匹配 (Shift+Enter)"
+            aria-label="上一条匹配"
+            className="inline-flex h-6 w-6 items-center justify-center rounded-md text-slate-300 hover:bg-slate-800 hover:text-white disabled:opacity-35"
+          >
+            <ChevronUp className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            disabled={searchMatches.length === 0}
+            onClick={() => stepSearchMatch(1)}
+            title="下一条匹配 (Enter)"
+            aria-label="下一条匹配"
+            className="inline-flex h-6 w-6 items-center justify-center rounded-md text-slate-300 hover:bg-slate-800 hover:text-white disabled:opacity-35"
+          >
+            <ChevronDown className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => onCloseSearch?.()}
+            title="关闭搜索 (Esc)"
+            aria-label="关闭会话搜索"
+            className="inline-flex h-6 w-6 items-center justify-center rounded-md text-slate-400 hover:bg-slate-800 hover:text-white"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+
       <div
         ref={scrollContainerRef}
         onScroll={handleScroll}
@@ -263,9 +421,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
             position: 'relative',
           }}
         >
-          {virtualizer.getVirtualItems().map((virtualRow) => {
+          {virtualItems.map((virtualRow) => {
             const msg = messages[virtualRow.index];
             if (!msg) return null;
+            const hasMatch = matchedMessageIds.has(msg.id);
+            const isActiveMatch = activeMatch?.messageId === msg.id;
             return (
               <div
                 key={msg.id}
@@ -279,7 +439,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   transform: `translateY(${virtualRow.start}px)`,
                 }}
               >
-                <MessageItem message={msg} />
+                <MessageItem
+                  message={msg}
+                  searchQuery={effectiveQuery}
+                  hasSearchMatch={hasMatch}
+                  isActiveSearchMatch={isActiveMatch}
+                  activeSearchField={isActiveMatch ? activeMatch.field : null}
+                  activeOccurrenceInField={isActiveMatch ? activeMatch.occurrenceInField : -1}
+                />
               </div>
             );
           })}

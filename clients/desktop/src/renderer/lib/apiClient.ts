@@ -53,6 +53,18 @@ export interface SessionContextWindow {
   updatedAtUtc?: string | null;
 }
 
+export interface CompactContextResponse {
+  sessionId: string;
+  compressed: boolean;
+  status: string;
+  compressedTurnCount: number;
+  estimatedTokensBefore: number;
+  estimatedTokensAfter: number;
+  summaryChars: number;
+  lastCompressedAtUtc?: string | null;
+  contextWindow: SessionContextWindow;
+}
+
 export interface SessionBootstrapResponse {
   sessionId: string;
   workspaceName: string;
@@ -299,6 +311,19 @@ export const apiClient = {
       `/api/gateway/session/${encodeURIComponent(sessionId)}/context-window`,
       undefined,
       signal,
+    );
+  },
+
+  compactContext(
+    auth: ApiAuthContext,
+    sessionId: string,
+    payload?: { conversationId?: string; focus?: string },
+  ): Promise<CompactContextResponse> {
+    return requestJson<CompactContextResponse>(
+      auth,
+      'POST',
+      `/api/gateway/session/${encodeURIComponent(sessionId)}/compact`,
+      payload ?? {},
     );
   },
 
