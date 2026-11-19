@@ -199,17 +199,23 @@ jobs:
         shell: bash
         working-directory: clients/desktop
         env:
-          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          INPUT_MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          INPUT_MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          INPUT_APPLE_ID: ${{ secrets.APPLE_ID }}
+          INPUT_APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          INPUT_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          if [ "${{ matrix.platform }}" = "mac" ] && [ -z "${CSC_LINK:-}" ]; then
+          if [ "${{ matrix.platform }}" = "mac" ] && [ -n "${INPUT_MAC_CSC_LINK:-}" ]; then
+            export CSC_LINK="${INPUT_MAC_CSC_LINK}"
+            [ -n "${INPUT_MAC_CSC_KEY_PASSWORD:-}" ] && export CSC_KEY_PASSWORD="${INPUT_MAC_CSC_KEY_PASSWORD}"
+            [ -n "${INPUT_APPLE_ID:-}" ] && export APPLE_ID="${INPUT_APPLE_ID}"
+            [ -n "${INPUT_APPLE_APP_SPECIFIC_PASSWORD:-}" ] && export APPLE_APP_SPECIFIC_PASSWORD="${INPUT_APPLE_APP_SPECIFIC_PASSWORD}"
+            [ -n "${INPUT_APPLE_TEAM_ID:-}" ] && export APPLE_TEAM_ID="${INPUT_APPLE_TEAM_ID}"
+          else
             export CSC_IDENTITY_AUTO_DISCOVERY="false"
-            echo "No MAC_CSC_LINK secret configured; afterPack will apply verified inside-out ad-hoc signing."
-          elif [ "${{ matrix.platform }}" != "mac" ]; then
-            export CSC_IDENTITY_AUTO_DISCOVERY="false"
+            if [ "${{ matrix.platform }}" = "mac" ]; then
+              echo "No MAC_CSC_LINK secret configured; afterPack will apply verified inside-out ad-hoc signing."
+            fi
           fi
           npx electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish never
 
