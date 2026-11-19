@@ -119,7 +119,7 @@ catch (LocalInstanceAlreadyRunningException ex)
 using var instanceGuardLifetime = instanceGuard;
 
 // Loopback only, whatever ASPNETCORE_URLS says: the local interface is for this machine. Supports Local:Port=0.
-var configuredPort = builder.Configuration.GetValue<int?>("Local:Port") ?? 5206;
+var configuredPort = builder.Configuration.GetValue<int?>("Local:Port") ?? 32586;
 builder.WebHost.UseUrls($"http://127.0.0.1:{configuredPort}");
 
 builder.Host.UseDefaultServiceProvider((context, options) =>

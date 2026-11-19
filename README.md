@@ -204,7 +204,7 @@ Environment variables are useful for scripted standalone launches. Nested .NET s
 | `VllmAgent__ApiMode` | `ChatCompletions` or `Responses`; match the provider. |
 | `VllmAgent__Model` | Provider model identifier. |
 | `VllmAgent__ApiKey` | Provider credential for the process environment. |
-| `Local__Port` | Standalone listening port; default `5206`. Managed mode requests a dynamic port. |
+| `Local__Port` | Standalone listening port; default `32586`. Managed mode requests a dynamic port. |
 | `Local__PreflightMode` | Startup checks: use `Report` to report problems without strict startup rejection, or `Off` to disable preflight. |
 | `CODEXFLOW_DATA_DIR` | Desktop-managed backend data-directory override. |
 | `CODEXFLOW_BACKEND_BIN` | Desktop backend executable or DLL override. |
@@ -223,7 +223,7 @@ $env:VllmAgent__Model = 'your-model'
 dotnet run --project CodexFlow.Local
 ```
 
-The host listens on loopback, normally `http://127.0.0.1:5206`. Use the generated `host.token` for API authentication; missing or invalid credentials return `401`. The desktop connection wizard can discover a local instance or accept its address and token file. Operations requiring the control plane also need the corresponding control credential.
+The host listens on loopback, normally `http://127.0.0.1:32586`. Use the generated `host.token` for API authentication; missing or invalid credentials return `401`. The desktop connection wizard can discover a local instance or accept its address and token file. Operations requiring the control plane also need the corresponding control credential.
 
 See [OpenAPI contracts](docs/contracts/openapi.json) and [SSE event schemas](docs/contracts/sse-events.schema.json) for the API surface. There is no dedicated `codexflow` CLI in this repository; the desktop application and HTTP host are the primary entry points.
 
@@ -303,7 +303,7 @@ For a running standalone host, the developer simulator drives conversations, pla
 
 ```powershell
 python scripts/e2e/devsim list
-python scripts/e2e/devsim run bugfix-python-pager --api http://127.0.0.1:5206 --token-file .codexflow/host.token
+python scripts/e2e/devsim run bugfix-python-pager --api http://127.0.0.1:32586 --token-file .codexflow/host.token
 ```
 
 Adjust the token path to the active host's actual data directory. See the [devsim guide](scripts/e2e/devsim/README.md) for scenarios and fault injection.

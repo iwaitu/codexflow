@@ -41,7 +41,7 @@ export const WelcomeWizardModal: React.FC<WelcomeWizardModalProps> = ({
   const [confirmRiskOpen, setConfirmRiskOpen] = useState(false);
   const [riskReasons, setRiskReasons] = useState<string[]>([]);
 
-  const [standaloneUrl, setStandaloneUrl] = useState('http://127.0.0.1:5206');
+  const [standaloneUrl, setStandaloneUrl] = useState('http://127.0.0.1:32586');
   const [discoveryHandle, setDiscoveryHandle] = useState<string | undefined>(undefined);
   const [accessTokenHandle, setAccessTokenHandle] = useState<string | undefined>(undefined);
   const [accessTokenDisplay, setAccessTokenDisplay] = useState('');
