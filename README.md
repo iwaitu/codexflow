@@ -14,6 +14,7 @@ The first-generation desktop application is implemented. The source version is *
 
 - [Features](#features)
 - [Screenshots](#screenshots)
+- [Download & install](#download--install)
 - [Run from source](#run-from-source)
 - [Your first workflow](#your-first-workflow)
 - [Modes & conversation threads](#modes--conversation-threads)
@@ -65,6 +66,54 @@ The captured instance uses **Local** execution and **Ask** permissions.
 ![Execution and permission settings](docs/images/desktop-settings.jpg)
 
 The screenshot session verified startup, backend connection, and navigation through these screens. It did not run a model task, publish a Skill, or perform Docker verification.
+
+## Download & install
+
+All desktop release packages (Windows x64, macOS arm64, Linux x64) ship with a **self-contained .NET 10 runtime and bundled LibreOffice**. End users do **not** need to manually install `.NET 10`, `Node.js`, or `LibreOffice` to launch the app and run the managed backend. Download releases from [GitHub Releases](https://github.com/iwaitu/codexflow/releases).
+
+### macOS (Apple Silicon / arm64)
+
+> **Note on macOS Gatekeeper**: Open-source releases are currently ad-hoc signed (without a paid Apple Developer notarization certificate). When a `.dmg` is downloaded through a browser, macOS attaches a `com.apple.quarantine` attribute and displays `"CodexFlow Desktop" is damaged and can't be opened`. Use the one-line installer below (recommended) or clear the quarantine attribute after dragging the app into `Applications`.
+
+**Option 1 (Recommended): One-line installer** (downloads the latest `.dmg`, verifies `SHA256SUMS.txt`, installs to `/Applications`, and clears quarantine automatically):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/iwaitu/codexflow/main/scripts/install-macos.sh | bash
+```
+
+To pin a specific release tag and launch immediately after install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/iwaitu/codexflow/main/scripts/install-macos.sh | bash -s -- --version v0.1.15 --open
+```
+
+**Option 2: Manual `.dmg` download**:
+
+1. Download `CodexFlow-Desktop-*-mac-arm64.dmg` from [GitHub Releases](https://github.com/iwaitu/codexflow/releases).
+2. Open the `.dmg` and drag `CodexFlow Desktop.app` into `Applications`.
+3. Remove the browser quarantine attribute once in Terminal, then open the app normally:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/CodexFlow Desktop.app"
+```
+
+### Windows (x64)
+
+- Download `CodexFlow-Desktop-*-win-x64-setup.exe` (installer) or `CodexFlow-Desktop-*-win-x64-portable.zip` (portable) from [GitHub Releases](https://github.com/iwaitu/codexflow/releases).
+- If Windows SmartScreen warns on an unsigned installer, click **More info → Run anyway**.
+
+### Linux (x64)
+
+- Download the `.AppImage` or `.tar.gz` archive from [GitHub Releases](https://github.com/iwaitu/codexflow/releases):
+
+```bash
+chmod +x CodexFlow-Desktop-*-linux-x64.AppImage
+./CodexFlow-Desktop-*-linux-x64.AppImage
+```
+
+### Optional toolchain setup (in-app environment diagnostics)
+
+Inside CodexFlow Desktop, click **Environment** in the bottom status bar (or open **Settings → Environment** / the **Environment** tab in the Welcome Wizard) to inspect the local backend, `Git`, `.NET 10 SDK`, `Node.js`, `Python 3`, `Docker`, and `LibreOffice`, and trigger allowlisted one-click installation with live logs whenever your coding workspace needs those toolchains.
 
 ## Run from source
 

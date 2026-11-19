@@ -175,8 +175,36 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
+          cat > release-notes.md <<EOF
+          ## 安装说明 / Installation
+
+          Windows、macOS、Linux 安装包均已**内置自包含 .NET 10 运行时与 LibreOffice**，终端用户**无需手动安装 .NET、Node.js 或 LibreOffice**。
+          All desktop installers bundle a **self-contained .NET 10 runtime and LibreOffice** — no manual .NET, Node.js, or LibreOffice installation is required.
+
+          ### macOS (Apple Silicon / arm64)
+
+          - **推荐方式（一行命令自动下载、校验 SHA-256 并安装到 \`/Applications\`，无 Gatekeeper 拦截）：**
+            \`\`\`bash
+            curl -fsSL https://raw.githubusercontent.com/iwaitu/codexflow/main/scripts/install-macos.sh | bash -s -- --version ${TAG}
+            \`\`\`
+          - **手动下载 \`.dmg\` 安装：** 将 \`CodexFlow Desktop.app\` 拖入「应用程序」后，如遇系统提示“已损坏”或“无法验证开发者”（开源版本未配置 Apple Developer 公证证书，浏览器下载会自动附加隔离标记），在终端执行一行命令移除隔离标记即可正常打开：
+            \`\`\`bash
+            xattr -dr com.apple.quarantine "/Applications/CodexFlow Desktop.app"
+            \`\`\`
+
+          ### Windows (x64)
+
+          - 下载 \`CodexFlow-Desktop-*-win-x64-setup.exe\` 安装（或使用 \`portable.zip\` 解压即用）。首次运行若遇 Windows SmartScreen 提示，点击 **更多信息 → 仍要运行** 即可。
+
+          ### Linux (x64)
+
+          - 下载 \`.AppImage\` 后赋予执行权限运行：\`chmod +x CodexFlow-Desktop-*-linux-x64.AppImage && ./CodexFlow-Desktop-*-linux-x64.AppImage\`（或使用 \`.tar.gz\`）。
+
+          > 应用内已提供 **状态栏「环境诊断」 / 设置 →「环境与依赖」** 面板，可在开发具体语言项目时按需检测并一键安装 \`Git\`、\`.NET 10 SDK\`、\`Node.js\`、\`Python 3\`、\`Docker\` 等工具链。
+          EOF
+
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" release-assets/* --clobber
           else
-            gh release create "$TAG" release-assets/* --verify-tag --generate-notes --title "$TAG"
+            gh release create "$TAG" release-assets/* --verify-tag --notes-file release-notes.md --generate-notes --title "$TAG"
           fi

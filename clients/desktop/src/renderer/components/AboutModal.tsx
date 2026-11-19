@@ -52,7 +52,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({
     };
   }, [open, clientVersion]);
 
-  const displayVersion = resolvedVersion || hostVersion || '0.1.14';
+  const displayVersion = resolvedVersion || hostVersion || '0.1.15';
 
   const handleOpenProjectUrl = () => {
     void window.codexflow?.openExternal?.(APP_METADATA.projectUrl);

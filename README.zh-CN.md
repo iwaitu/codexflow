@@ -14,6 +14,7 @@ CodexFlow 将工作区对话、计划、工具审批、文件、变更和作业�
 
 - [主要功能](#主要功能)
 - [界面预览](#界面预览)
+- [下载与安装](#下载与安装)
 - [从源码运行](#从源码运行)
 - [第一次使用](#第一次使用)
 - [模式与对话线程说明](#模式与对话线程说明)
@@ -65,6 +66,54 @@ CodexFlow 将工作区对话、计划、工具审批、文件、变更和作业�
 ![执行与权限设置](docs/images/desktop-settings.jpg)
 
 本次截图验证了应用启动、后端连接和上述页面访问；未执行模型任务、真实业务 Skill 发布或 Docker 验收。
+
+## 下载与安装
+
+所有平台发布包（Windows x64、macOS arm64、Linux x64）均已**内置自包含 .NET 10 运行时与 LibreOffice**，**普通用户直接安装即可启动并运行内置后端，无需预先手动安装 `.NET 10`、`Node.js` 或 `LibreOffice`**。最新安装包请访问 [GitHub Releases](https://github.com/iwaitu/codexflow/releases)。
+
+### macOS (Apple Silicon / arm64)
+
+> **关于 macOS Gatekeeper 提示说明**：当前开源版本尚未配置付费 Apple Developer 证书进行 Apple 公证（Notarization），通过浏览器下载 `.dmg` 时 macOS 会自动写入 `com.apple.quarantine` 隔离标记并弹出“已损坏无法打开”。推荐优先使用下方一键安装命令，或在手动拖入「应用程序」后清除隔离标记即可正常使用。
+
+**方式一（推荐）：一键终端安装**（自动拉取最新版 `.dmg`、校验 `SHA256SUMS.txt`、安装到 `/Applications` 并清除隔离标记）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/iwaitu/codexflow/main/scripts/install-macos.sh | bash
+```
+
+如需指定版本并在安装后自动启动：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/iwaitu/codexflow/main/scripts/install-macos.sh | bash -s -- --version v0.1.15 --open
+```
+
+**方式二：手动下载 `.dmg` 安装**：
+
+1. 从 [GitHub Releases](https://github.com/iwaitu/codexflow/releases) 下载 `CodexFlow-Desktop-*-mac-arm64.dmg`；
+2. 双击打开并将 `CodexFlow Desktop.app` 拖入「应用程序（Applications）」；
+3. 在终端运行以下一行命令移除浏览器下载附加的隔离属性，之后即可直接双击打开：
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/CodexFlow Desktop.app"
+```
+
+### Windows (x64)
+
+- 前往 [GitHub Releases](https://github.com/iwaitu/codexflow/releases) 下载 `CodexFlow-Desktop-*-win-x64-setup.exe`（安装版）或 `CodexFlow-Desktop-*-win-x64-portable.zip`（解压即用便携版）。
+- 首次运行未签名 `.exe` 若弹出 Windows SmartScreen 提示，点击 **更多信息 → 仍要运行** 即可。
+
+### Linux (x64)
+
+- 从 [GitHub Releases](https://github.com/iwaitu/codexflow/releases) 下载 `.AppImage` 或 `.tar.gz`：
+
+```bash
+chmod +x CodexFlow-Desktop-*-linux-x64.AppImage
+./CodexFlow-Desktop-*-linux-x64.AppImage
+```
+
+### 按需安装开发工具链（应用内环境检测）
+
+打开应用后，点击底部状态栏的 **「环境诊断」**（或进入 **设置 → 环境与依赖** / 首次向导中的 **「环境检测与依赖」**），可自动检测本机 `CodexFlow 本地后端`、`Git`、`.NET 10 SDK`、`Node.js`、`Python 3`、`Docker`、`LibreOffice` 状态；当需要在工作区开发/编译对应语言项目时，可直接点击 **一键安装**（支持实时输出日志与完成后自动复检）。
 
 ## 从源码运行
 
