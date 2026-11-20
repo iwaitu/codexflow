@@ -21,4 +21,28 @@
     <ProjectReference Include="..\CodexFlow.Storage.Sqlite\CodexFlow.Storage.Sqlite.csproj" />
   </ItemGroup>
 
+  <Target Name="IncludeCodeAnalysisReferenceAssemblies"
+          BeforeTargets="AssignTargetPaths"
+          DependsOnTargets="ResolveTargetingPackAssets"
+          Condition="'$(DesignTimeBuild)' != 'true'">
+    <ItemGroup>
+      <_CodeAnalysisPack Include="@(ResolvedTargetingPack)"
+                         Condition="'%(ResolvedTargetingPack.Identity)' == 'Microsoft.NETCore.App'" />
+    </ItemGroup>
+    <PropertyGroup>
+      <_CodeAnalysisPackDirectory>@(_CodeAnalysisPack->'%(PackageDirectory)')</_CodeAnalysisPackDirectory>
+    </PropertyGroup>
+    <ItemGroup>
+      <_CodeAnalysisReference Include="$(_CodeAnalysisPackDirectory)/ref/$(TargetFramework)/*.dll"
+                              Condition="'$(_CodeAnalysisPackDirectory)' != ''" />
+      <Content Include="@(_CodeAnalysisReference)"
+               Link="code-analysis/$(TargetFramework)/%(Filename)%(Extension)"
+               CopyToOutputDirectory="PreserveNewest"
+               CopyToPublishDirectory="PreserveNewest"
+               ExcludeFromSingleFile="true" />
+    </ItemGroup>
+    <Error Condition="'@(_CodeAnalysisReference)' == ''"
+           Text="The .NET reference assemblies required for C# diagnostics were not resolved." />
+  </Target>
+
 </Project>

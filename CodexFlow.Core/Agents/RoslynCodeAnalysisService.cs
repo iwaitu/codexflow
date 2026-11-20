@@ -4,71 +4,113 @@
 
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.Extensions.Logging;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Models;
 using System;
+using System.Collections.Concurrent;
 using System.Globalization;
 
 namespace CodexFlow.Core.Agents
 {
     public class RoslynCodeAnalysisService : ICodeAnalysisService
     {
-        private readonly ILogger<RoslynCodeAnalysisService> _logger;
+        private const string ReferenceDirectoryVariable = "CODEXFLOW_CSHARP_REFERENCE_DIR";
+        private static readonly ConcurrentDictionary<string, MetadataReference[]> ReferenceCache =
+            new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+
+        private readonly ILogger _logger;
+        private readonly string? _referenceDirectory;
 
         public RoslynCodeAnalysisService(ILogger<RoslynCodeAnalysisService> logger)
+            : this((ILogger)logger)
+        {
+        }
+
+        internal RoslynCodeAnalysisService(ILogger logger, string? referenceDirectory = null)
         {
             _logger = logger;
+            _referenceDirectory = referenceDirectory;
         }
 
         public Task<List<CodeDiagnostic>> AnalyzeCodeAsync(string code, string language = "C#")
         {
             ArgumentNullException.ThrowIfNull(code);
 
+            var syntaxTree = CSharpSyntaxTree.ParseText(code);
+            var outputKind = syntaxTree.GetCompilationUnitRoot().Members.Any(static member => member is GlobalStatementSyntax)
+                ? OutputKind.ConsoleApplication
+                : OutputKind.DynamicallyLinkedLibrary;
+            var compilation = CSharpCompilation.Create(
+                "AgentAnalysis",
+                syntaxTrees: [syntaxTree],
+                references: GetReferences(),
+                options: new CSharpCompilationOptions(outputKind));
+
             var result = new List<CodeDiagnostic>();
-
-            try
+            foreach (var diagnostic in compilation.GetDiagnostics())
             {
-                // 解析语法树
-                var syntaxTree = CSharpSyntaxTree.ParseText(code);
-
-                // 创建一个简单的内存编译对象
-                var compilation = CSharpCompilation.Create("AgentAnalysis")
-                    .AddReferences(
-                        MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
-                        MetadataReference.CreateFromFile(typeof(Enumerable).Assembly.Location))
-                    .AddSyntaxTrees(syntaxTree);
-
-                // 获取诊断信息
-                var diagnostics = compilation.GetDiagnostics();
-
-                foreach (var diag in diagnostics)
+                if (diagnostic.Id is "CS0009" or "CS0518")
                 {
-                    // 仅关注错误和严重警告
-                    if (diag.Severity == DiagnosticSeverity.Error || diag.Severity == DiagnosticSeverity.Warning)
-                    {
-                        var lineSpan = diag.Location.GetLineSpan();
-                        result.Add(new CodeDiagnostic(
-                            diag.Id,
-                            diag.GetMessage(CultureInfo.InvariantCulture),
-                            diag.Severity.ToString(),
-                            lineSpan.StartLinePosition.Line + 1, // 1-indexed
-                            lineSpan.StartLinePosition.Character + 1
-                        ));
-                    }
+                    throw ReferenceUnavailable();
                 }
-            }
-            catch (ArgumentException ex)
-            {
-                StructuredLog.Error(_logger, ex, "Roslyn 分析过程出现异常");
-            }
-            catch (InvalidOperationException ex)
-            {
-                StructuredLog.Error(_logger, ex, "Roslyn 分析过程出现异常");
+
+                if (diagnostic.Severity is not (DiagnosticSeverity.Error or DiagnosticSeverity.Warning))
+                {
+                    continue;
+                }
+
+                var span = diagnostic.Location.GetLineSpan();
+                result.Add(new CodeDiagnostic(
+                    diagnostic.Id,
+                    diagnostic.GetMessage(CultureInfo.InvariantCulture),
+                    diagnostic.Severity.ToString(),
+                    span.StartLinePosition.Line + 1,
+                    span.StartLinePosition.Character + 1));
             }
 
             return Task.FromResult(result);
         }
+
+        private MetadataReference[] GetReferences()
+        {
+            var directory = _referenceDirectory
+                ?? Environment.GetEnvironmentVariable(ReferenceDirectoryVariable)
+                ?? Path.Combine(AppContext.BaseDirectory, "code-analysis", "net10.0");
+
+            try
+            {
+                if (string.IsNullOrWhiteSpace(directory))
+                {
+                    throw ReferenceUnavailable();
+                }
+
+                var fullPath = Path.GetFullPath(directory, AppContext.BaseDirectory);
+                return ReferenceCache.GetOrAdd(fullPath, static path => LoadReferences(path));
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+                or ArgumentException or NotSupportedException or BadImageFormatException)
+            {
+                throw ReferenceUnavailable(exception);
+            }
+        }
+
+        private static MetadataReference[] LoadReferences(string directory)
+        {
+            if (!File.Exists(Path.Combine(directory, "System.Runtime.dll"))
+                || !File.Exists(Path.Combine(directory, "System.Linq.dll")))
+            {
+                throw ReferenceUnavailable();
+            }
+
+            var paths = Directory.GetFiles(directory, "*.dll");
+            Array.Sort(paths, StringComparer.Ordinal);
+            return paths.Select(static path => MetadataReference.CreateFromFile(path)).ToArray();
+        }
+
+        private static CodeAnalysisUnavailableException ReferenceUnavailable(Exception? innerException = null)
+            => new($"无法加载 .NET 10 引用程序集。请检查应用内的 code-analysis/net10.0 目录，或将 {ReferenceDirectoryVariable} 指向可用的 .NET 10 引用程序集目录。", innerException);
 
         public Task<List<CodeDiagnostic>> AnalyzeProjectAsync(string projectPath)
         {
@@ -88,6 +130,18 @@ namespace CodexFlow.Core.Agents
 
         public List<string> GetImpactedFiles(DependencyGraph graph, string changedFilePath)
             => new List<string>();
+    }
+
+    internal sealed class CodeAnalysisUnavailableException(string message, Exception? innerException)
+        : InvalidOperationException(message, innerException)
+    {
+        public CodeAnalysisUnavailableException() : this("无法加载 .NET 10 引用程序集。")
+        {
+        }
+
+        public CodeAnalysisUnavailableException(string message) : this(message, null)
+        {
+        }
     }
 }
 
