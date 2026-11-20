@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 iwaitu
+// Copyright (c) 2026 iwaitu
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
@@ -16,14 +16,26 @@ namespace CodexFlow.Application
         private readonly ILogger<ChatService> _logger;
         private readonly IWorkspaceRootProvider? _workspaceRootProvider;
 
+        private readonly IConversationMessageStore _conversationMessages;
+
         public ChatService(
             CodexFlow.Orchestration.Jobs.IJobDbContext db,
             ILogger<ChatService> logger,
             IWorkspaceRootProvider? workspaceRootProvider = null)
+            : this(db, logger, workspaceRootProvider, new EfConversationMessageStore(db))
+        {
+        }
+
+        public ChatService(
+            CodexFlow.Orchestration.Jobs.IJobDbContext db,
+            ILogger<ChatService> logger,
+            IWorkspaceRootProvider? workspaceRootProvider,
+            IConversationMessageStore conversationMessages)
         {
             _db = db;
             _logger = logger;
             _workspaceRootProvider = workspaceRootProvider;
+            _conversationMessages = conversationMessages;
         }
 
         private string ResolveManagedWorkspacesRoot()
@@ -104,113 +116,53 @@ namespace CodexFlow.Application
             return result;
         }
 
-        public async Task<List<IvilsonChatMessage>> GetConversationMessagesAfterAsync(
+        public Task<List<IvilsonChatMessage>> GetConversationMessagesAfterAsync(
             string conversationId,
             DateTime? createdAfterUtc,
             int? hardLimit = null)
-        {
-            // When createdAfterUtc is null (session never compressed), preserve legacy
-            // behavior: return all messages in chronological order without any cap.
-            if (!createdAfterUtc.HasValue)
-                return await _db.ChatMessages
-                    .AsNoTracking()
-                    .Where(m => m.ConversationId == conversationId)
-                    .OrderBy(m => m.Created)
-                    .ToListAsync();
+            => _conversationMessages.ReadAfterAsync(conversationId, createdAfterUtc, hardLimit);
 
-            IQueryable<IvilsonChatMessage> query = _db.ChatMessages
-                .AsNoTracking()
-                .Where(m => m.ConversationId == conversationId)
-                .Where(m => m.Created > createdAfterUtc.Value);
+        public Task AddMessageWithToolcall(string userId, string conversationId, string userContent, string aiContent, int tokenUsed, string toolCall, string model, string replayId = "", string systemPrompt = "", string? thinkingContent = null)
+            => AppendMessageAsync(userId, conversationId, userContent, aiContent, tokenUsed, model, replayId, systemPrompt,
+                thinkingContent, toolCall ?? string.Empty, nameof(AddMessageWithToolcall));
 
-            if (hardLimit.HasValue)
-                return await query
-                    .OrderByDescending(m => m.Created)
-                    .Take(hardLimit.Value)
-                    .OrderBy(m => m.Created)
-                    .ToListAsync();
+        public Task AddMessage(string userId, string conversationId, string userContent, string aiContent, int tokenUsed, string model, string replayId = "", string systemPrompt = "", string? thinkingContent = null)
+            => AppendMessageAsync(userId, conversationId, userContent, aiContent, tokenUsed, model, replayId, systemPrompt,
+                thinkingContent, null, nameof(AddMessage));
 
-            return await query.OrderBy(m => m.Created).ToListAsync();
-        }
-
-        public async Task AddMessageWithToolcall(string userId, string conversationId, string userContent, string aiContent, int tokenUsed, string toolCall, string model, string replayId = "", string systemPrompt = "", string? thinkingContent = null)
+        private async Task AppendMessageAsync(
+            string userId,
+            string conversationId,
+            string userContent,
+            string aiContent,
+            int tokenUsed,
+            string model,
+            string replayId,
+            string systemPrompt,
+            string? thinkingContent,
+            string? toolCallResult,
+            string operation)
         {
             try
             {
-                var conversation = await _db.Conversations.FindAsync(conversationId);
-                if (conversation == null)
+                var message = new IvilsonChatMessage
                 {
-                    conversation = new IvilsonConversation
-                    {
-                        Id = conversationId,
-                        UserId = userId,
-                        Name = userContent.Length > 20 ? userContent.Substring(0, 20) : userContent,
-                        Model = model ?? "gpt-3.5-turbo", // 兜底
-                        UpdateAt = DateTime.UtcNow
-                    };
-                    _db.Conversations.Add(conversation);
-                }
-                else
-                {
-                    conversation.UpdateAt = DateTime.UtcNow;
-                }
-                var message = new IvilsonChatMessage();
-                message.Id = Guid.NewGuid().ToString("N"); // 显式生成 Id
-                message.ConversationId = conversationId;
-                message.UserContent = userContent ?? string.Empty;
-                message.AiContent = aiContent ?? string.Empty;
-                message.ThinkingContent = thinkingContent; // ✅ 结构化存储思维链
-                message.TokenUsed = tokenUsed;
-                message.SystemPrompt = systemPrompt ?? string.Empty;
-                message.ReplyId = replayId ?? string.Empty;
-                message.ToolCallResult = toolCall ?? string.Empty;
-                message.Created = DateTime.UtcNow; // 显式时间
-                _db.ChatMessages.Add(message);
-                await _db.SaveChangesAsync();
+                    Id = Guid.NewGuid().ToString("N"),
+                    ConversationId = conversationId,
+                    UserContent = userContent ?? string.Empty,
+                    AiContent = aiContent ?? string.Empty,
+                    ThinkingContent = thinkingContent,
+                    TokenUsed = tokenUsed,
+                    SystemPrompt = systemPrompt ?? string.Empty,
+                    ReplyId = replayId ?? string.Empty,
+                    ToolCallResult = toolCallResult,
+                    Created = DateTime.UtcNow,
+                };
+                await _conversationMessages.AppendAsync(userId, model, message);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "AddMessageWithToolcall failed");
-            }
-        }
-
-        public async Task AddMessage(string userId, string conversationId, string userContent, string aiContent, int tokenUsed, string model, string replayId = "", string systemPrompt = "", string? thinkingContent = null)
-        {
-            try
-            {
-                var conversation = await _db.Conversations.FindAsync(conversationId);
-                if (conversation == null)
-                {
-                    conversation = new IvilsonConversation
-                    {
-                        Id = conversationId,
-                        UserId = userId,
-                        Name = userContent.Length > 20 ? userContent.Substring(0, 20) : userContent,
-                        Model = model ?? "gpt-3.5-turbo", // 兜底
-                        UpdateAt = DateTime.UtcNow
-                    };
-                    _db.Conversations.Add(conversation);
-                }
-                else
-                {
-                    conversation.UpdateAt = DateTime.UtcNow;
-                }
-                var message = new IvilsonChatMessage();
-                message.Id = Guid.NewGuid().ToString("N"); // 显式生成 Id
-                message.ConversationId = conversationId;
-                message.UserContent = userContent ?? string.Empty;
-                message.AiContent = aiContent ?? string.Empty;
-                message.ThinkingContent = thinkingContent; // ✅ 结构化存储思维链
-                message.TokenUsed = tokenUsed;
-                message.SystemPrompt = systemPrompt ?? string.Empty;
-                message.ReplyId = replayId ?? string.Empty;
-                message.Created = DateTime.UtcNow; // 显式时间
-                _db.ChatMessages.Add(message);
-                await _db.SaveChangesAsync();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "AddMessage failed");
+                _logger.LogError(ex, "{Operation} failed", operation);
             }
         }
 

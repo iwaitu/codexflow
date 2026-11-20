@@ -54,6 +54,12 @@ public static class SqliteStorage
     /// the job runner ask their host for. Apply the migrations (<c>Database.MigrateAsync</c>) before the host starts serving.
     /// </summary>
     public static IServiceCollection AddCodexFlowSqliteStorage(this IServiceCollection services, string databasePath)
+        => services.AddCodexFlowSqliteStorage(databasePath, useSqliteConversationMessages: false);
+
+    public static IServiceCollection AddCodexFlowSqliteStorage(
+        this IServiceCollection services,
+        string databasePath,
+        bool useSqliteConversationMessages)
     {
         ArgumentNullException.ThrowIfNull(services);
         services.AddDbContext<JobDbContext>(options => options.UseSqliteFile(databasePath, typeof(SqliteStorage).Assembly.GetName().Name));
@@ -61,7 +67,19 @@ public static class SqliteStorage
 
         services.AddScoped<ISessionDirectory, EfSessionDirectory>();
         services.AddScoped<IConversationDirectory, EfConversationDirectory>();
-        services.AddScoped<IChatService, ChatService>();
+        if (useSqliteConversationMessages)
+        {
+            services.AddScoped<IConversationMessageStore, ScopedSqliteConversationMessageStore>();
+            services.AddScoped<IChatService>(sp => new ChatService(
+                sp.GetRequiredService<IJobDbContext>(),
+                sp.GetRequiredService<ILogger<ChatService>>(),
+                sp.GetService<IWorkspaceRootProvider>(),
+                sp.GetRequiredService<IConversationMessageStore>()));
+        }
+        else
+        {
+            services.AddScoped<IChatService, ChatService>();
+        }
         services.AddScoped<IGatewayChatStore>(sp => sp.GetRequiredService<IChatService>());
         services.AddScoped<ISessionCompressionStore, SessionCompressionStore>();
 

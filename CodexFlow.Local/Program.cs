@@ -196,7 +196,9 @@ builder.Services.AddAuthorization(options =>
 
 builder.Services.AddCodexFlowModelClient(builder.Configuration);
 builder.Services.AddCodexFlowRuntime(builder.Configuration);
-builder.Services.AddCodexFlowSqliteStorage(layout.SqlitePath);
+builder.Services.AddCodexFlowSqliteStorage(
+    layout.SqlitePath,
+    builder.Configuration.GetValue<bool>("Local:UseSqliteConversationMessages"));
 builder.Services.AddCodexFlowLocalDefaults();
 
 var app = builder.Build();
