@@ -4,6 +4,7 @@
 
 using System.Data;
 using CodexFlow.Application;
+using CodexFlow.Core.Browser;
 using CodexFlow.Domain.Chat;
 using CodexFlow.Orchestration.Hosting;
 using CodexFlow.Orchestration.Jobs;
@@ -12,6 +13,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 using Xunit;
 
 namespace CodexFlow.Core.Tests.Gateway;
@@ -264,6 +266,36 @@ public sealed class SqliteConversationMessageStoreTests
         Assert.Equal(useTransaction ? 0 : 1, persisted.ChatMessages.Count);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SessionDeletionClosesBrowserContextInBothStorageModes(bool usePilot)
+    {
+        const string sessionId = "browser-session";
+        var browser = new Mock<IBrowserSessionManager>();
+        await using var database = await TestDatabase.CreateAsync(browser.Object);
+        var provider = usePilot ? database.Pilot : database.Ef;
+        await using var scope = provider.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<JobDbContext>();
+        context.Sessions.Add(new IvilsonSession { Id = sessionId, UserId = Owner, Name = "Browser session" });
+        await context.SaveChangesAsync();
+        var wasPersistedBeforeClose = false;
+        browser.Setup(manager => manager.CloseSessionAsync(sessionId, "session_deleted", It.IsAny<CancellationToken>()))
+            .Returns(async () =>
+            {
+                wasPersistedBeforeClose = !await context.Sessions.AsNoTracking().AnyAsync(item => item.Id == sessionId);
+            });
+        var chat = scope.ServiceProvider.GetRequiredService<IChatService>();
+
+        await chat.DeleteSession(sessionId, "another-user");
+        Assert.True(await context.Sessions.AsNoTracking().AnyAsync(item => item.Id == sessionId));
+        browser.Verify(manager => manager.CloseSessionAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        await chat.DeleteSession(sessionId, Owner);
+        Assert.True(wasPersistedBeforeClose);
+        browser.Verify(manager => manager.CloseSessionAsync(sessionId, "session_deleted", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
     private static IvilsonChatMessage Message(string id, string conversationId, DateTime created) => new()
     {
         Id = id,
@@ -286,12 +318,20 @@ public sealed class SqliteConversationMessageStoreTests
         public ServiceProvider Ef { get; } = ef;
         public ServiceProvider Pilot { get; } = pilot;
 
-        public static async Task<TestDatabase> CreateAsync()
+        public static async Task<TestDatabase> CreateAsync(IBrowserSessionManager? browserSessionManager = null)
         {
             var directory = Directory.CreateTempSubdirectory("codexflow-sqlite-messages-");
             var path = Path.Combine(directory.FullName, "state.db");
-            var ef = new ServiceCollection().AddLogging().AddCodexFlowSqliteStorage(path).BuildServiceProvider();
-            var pilot = new ServiceCollection().AddLogging().AddCodexFlowSqliteStorage(path, true).BuildServiceProvider();
+            var efServices = new ServiceCollection().AddLogging().AddCodexFlowSqliteStorage(path);
+            var pilotServices = new ServiceCollection().AddLogging().AddCodexFlowSqliteStorage(path, true);
+            if (browserSessionManager is not null)
+            {
+                efServices.AddSingleton(browserSessionManager);
+                pilotServices.AddSingleton(browserSessionManager);
+            }
+
+            var ef = efServices.BuildServiceProvider();
+            var pilot = pilotServices.BuildServiceProvider();
             var database = new TestDatabase(directory, ef, pilot);
             try
             {

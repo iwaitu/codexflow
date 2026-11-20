@@ -176,6 +176,61 @@ describe('EnvironmentManager', () => {
     expect(byId.get('docker')?.status).toBe('stopped');
     expect(byId.get('libreoffice')?.status).toBe('ready');
     expect(byId.get('libreoffice')?.bundled).toBe(true);
+    expect(byId.get('browser')?.status).toBe('missing');
+    expect(byId.get('browser')?.installStrategy).toBe('auto');
+  });
+
+  it('detects installed managed Chromium browser in trusted system directory', async () => {
+    const chromePath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+    const probeCommand: CommandProbeFn = async (cmd) => {
+      if (cmd === chromePath) {
+        return { ok: true, stdout: 'Google Chrome 131.0.6778.86', stderr: '', exitCode: 0 };
+      }
+      return { ok: false, stdout: '', stderr: '', exitCode: 1 };
+    };
+
+    const manager = new EnvironmentManager({
+      isPackaged: true,
+      resourcesPath: '/app/resources',
+      platform: 'darwin',
+      arch: 'arm64',
+      homeDir: '/Users/tester',
+      pathExists: (candidate) => candidate === chromePath,
+      probeCommand,
+    });
+
+    const report = await manager.inspect(true);
+    const browserItem = report.items.find((item) => item.id === 'browser');
+    expect(browserItem?.status).toBe('ready');
+    expect(browserItem?.version).toBe('131.0.6778.86');
+    expect(browserItem?.resolvedPath).toBe(chromePath);
+  });
+
+  it('detects Linux /opt/google/chrome/chrome and truncates long unparsed browser version', async () => {
+    const linuxChrome = '/opt/google/chrome/chrome';
+    const longStdout = 'Chromium Custom Build ' + 'x'.repeat(120);
+    const probeCommand: CommandProbeFn = async (cmd) => {
+      if (cmd === linuxChrome) {
+        return { ok: true, stdout: longStdout, stderr: '', exitCode: 0 };
+      }
+      return { ok: false, stdout: '', stderr: '', exitCode: 1 };
+    };
+
+    const manager = new EnvironmentManager({
+      isPackaged: true,
+      resourcesPath: '/app/resources',
+      platform: 'linux',
+      arch: 'x64',
+      homeDir: '/home/tester',
+      pathExists: (candidate) => candidate === linuxChrome,
+      probeCommand,
+    });
+
+    const report = await manager.inspect(true);
+    const browserItem = report.items.find((item) => item.id === 'browser');
+    expect(browserItem?.status).toBe('ready');
+    expect(browserItem?.resolvedPath).toBe(linuxChrome);
+    expect(browserItem?.version?.length).toBe(64);
   });
 
   it('prevents concurrent installs and streams progress events', async () => {

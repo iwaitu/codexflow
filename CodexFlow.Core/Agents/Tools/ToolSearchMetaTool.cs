@@ -353,6 +353,48 @@ public class ToolSearchMetaTool : ICodexTool
                     "Search the web for current technical context.",
                     "Find candidate pages before fetch_webpage."
                 ]),
+            "browser_navigate" => new(
+                ["browser", "web", "url", "navigate", "spa", "localhost"],
+                ["main"],
+                "medium",
+                [
+                    "Open or navigate a JS-rendered webpage or localhost frontend in the managed browser."
+                ]),
+            "browser_snapshot" => new(
+                ["browser", "web", "dom", "snapshot", "screenshot", "console", "debug"],
+                ["main"],
+                "low",
+                [
+                    "Inspect interactive element refs, text, console logs, network errors, and optional viewport screenshot."
+                ]),
+            "browser_act" => new(
+                ["browser", "web", "click", "type", "interact", "form"],
+                ["main"],
+                "high",
+                [
+                    "Click, type, select, scroll, or wait on elements identified by browser_snapshot refs."
+                ]),
+            "browser_tabs" => new(
+                ["browser", "web", "tabs", "close"],
+                ["main"],
+                "low",
+                [
+                    "List, open, switch, or close browser tabs and shut down the session browser."
+                ]),
+            "browser_request_takeover" => new(
+                ["browser", "web", "takeover", "login", "captcha", "human"],
+                ["main"],
+                "high",
+                [
+                    "Bring the managed desktop browser window on-screen for human login/CAPTCHA takeover and wait until control is returned."
+                ]),
+            "browser_evaluate" => new(
+                ["browser", "web", "javascript", "eval", "debug", "state"],
+                ["main"],
+                "high",
+                [
+                    "Evaluate a JavaScript expression in the active page main context (requires explicit single-use allow_once approval)."
+                ]),
             "apply_patch" => new(
                 ["patch", "edit", "diff", "code-change"],
                 ["forge-worker"],

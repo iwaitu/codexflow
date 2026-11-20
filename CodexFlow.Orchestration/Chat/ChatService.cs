@@ -15,14 +15,16 @@ namespace CodexFlow.Application
         private readonly CodexFlow.Orchestration.Jobs.IJobDbContext _db;
         private readonly ILogger<ChatService> _logger;
         private readonly IWorkspaceRootProvider? _workspaceRootProvider;
+        private readonly CodexFlow.Core.Browser.IBrowserSessionManager? _browserSessionManager;
 
         private readonly IConversationMessageStore _conversationMessages;
 
         public ChatService(
             CodexFlow.Orchestration.Jobs.IJobDbContext db,
             ILogger<ChatService> logger,
-            IWorkspaceRootProvider? workspaceRootProvider = null)
-            : this(db, logger, workspaceRootProvider, new EfConversationMessageStore(db))
+            IWorkspaceRootProvider? workspaceRootProvider = null,
+            CodexFlow.Core.Browser.IBrowserSessionManager? browserSessionManager = null)
+            : this(db, logger, workspaceRootProvider, new EfConversationMessageStore(db), browserSessionManager)
         {
         }
 
@@ -30,12 +32,14 @@ namespace CodexFlow.Application
             CodexFlow.Orchestration.Jobs.IJobDbContext db,
             ILogger<ChatService> logger,
             IWorkspaceRootProvider? workspaceRootProvider,
-            IConversationMessageStore conversationMessages)
+            IConversationMessageStore conversationMessages,
+            CodexFlow.Core.Browser.IBrowserSessionManager? browserSessionManager)
         {
             _db = db;
             _logger = logger;
             _workspaceRootProvider = workspaceRootProvider;
             _conversationMessages = conversationMessages;
+            _browserSessionManager = browserSessionManager;
         }
 
         private string ResolveManagedWorkspacesRoot()
@@ -663,6 +667,18 @@ namespace CodexFlow.Application
                 _db.Conversations.RemoveRange(session.Conversations);
                 _db.Sessions.Remove(session);
                 await _db.SaveChangesAsync();
+
+                if (_browserSessionManager is not null)
+                {
+                    try
+                    {
+                        await _browserSessionManager.CloseSessionAsync(sessionId, "session_deleted").ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "删除会话 {SessionId} 时关闭浏览器上下文失败，继续清理工作区。", sessionId);
+                    }
+                }
 
                 // 2. 物理清理工作区目录 (仅限 CodexFlow 托管创建的内部沙箱工作区；严禁删除用户通过 P3-3 打开的外部本地文件夹)
                 if (!session.IsExternalWorkspace &&

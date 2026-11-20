@@ -192,6 +192,18 @@ export interface ClassifiedDroppedFile {
   workspaceRelativePath: string | null;
 }
 
+export interface WorkspaceFileContextMenuPayload {
+  workspacePath: string;
+  relativePath: string;
+  isDirectory: boolean;
+}
+
+export interface WorkspaceFileActionResult {
+  ok: boolean;
+  cancelled?: boolean;
+  error?: string;
+}
+
 export type BusinessPluginDto = components['schemas']['BusinessPluginDto'];
 export type BusinessPluginSourceType = components['schemas']['BusinessPluginSourceType'];
 export type BusinessAuthKind = components['schemas']['BusinessAuthKind'];
@@ -231,6 +243,16 @@ export type SkillStepDefinition = components['schemas']['SkillStepDefinition'];
 export type SkillRunStatus = components['schemas']['SkillRunStatus'];
 export type SkillRunStepState = components['schemas']['SkillRunStepState'];
 export type BusinessApprovalRequestDto = components['schemas']['BusinessApprovalRequestDto'];
+export type BrowserExecutableStatusDto = components['schemas']['BrowserExecutableStatusDto'];
+export type BrowserSettingsDto = components['schemas']['BrowserSettingsDto'];
+export type UpdateBrowserSettingsRequest = components['schemas']['UpdateBrowserSettingsRequest'];
+export type BrowserTabDto = components['schemas']['BrowserTabDto'];
+export type BrowserActionRecordDto = components['schemas']['BrowserActionRecordDto'];
+export type BrowserConsoleEntryDto = components['schemas']['BrowserConsoleEntryDto'];
+export type BrowserSessionStateDto = components['schemas']['BrowserSessionStateDto'];
+export type BrowserApprovalRequestDto = components['schemas']['BrowserApprovalRequestDto'];
+export type BrowserSessionCloseResponse = components['schemas']['BrowserSessionCloseResponse'];
+export type BrowserTakeoverResponse = components['schemas']['BrowserTakeoverResponse'];
 
 export type CredentialSlotKind = 'document' | 'execution';
 
@@ -281,7 +303,8 @@ export type EnvironmentDependencyId =
   | 'node'
   | 'python'
   | 'docker'
-  | 'libreoffice';
+  | 'libreoffice'
+  | 'browser';
 
 export type EnvironmentDependencySeverity = 'required' | 'recommended' | 'optional';
 
@@ -370,6 +393,10 @@ export interface DesktopBridge {
   submitPlanChatAction(payload: PlanChatControlPayload): Promise<ControlPlaneCallResult<PlanChatAcceptedResult>>;
   updateExecutionSettings(payload: UpdateExecutionSettingsPayload): Promise<ControlPlaneCallResult<ExecutionSettingsResult>>;
   updateModelSettings(payload: UpdateModelSettingsPayload): Promise<ControlPlaneCallResult<ModelSettingsResult>>;
+  updateBrowserSettings(payload: UpdateBrowserSettingsRequest): Promise<ControlPlaneCallResult<BrowserSettingsDto>>;
+  closeBrowserSession(sessionId: string): Promise<ControlPlaneCallResult<BrowserSessionCloseResponse>>;
+  startBrowserTakeover(sessionId: string, reason?: string): Promise<ControlPlaneCallResult<BrowserTakeoverResponse>>;
+  completeBrowserTakeover(sessionId: string, note?: string): Promise<ControlPlaneCallResult<BrowserTakeoverResponse>>;
   listPermissionRules(): Promise<ControlPlaneCallResult<PermissionRuleListResult>>;
   deletePermissionRule(ruleId: string): Promise<ControlPlaneCallResult<DeletePermissionRuleResult>>;
   openLocalWorkspace(payload: OpenLocalWorkspacePayload): Promise<ControlPlaneCallResult<OpenLocalWorkspaceResult>>;
@@ -425,6 +452,9 @@ export interface DesktopBridge {
   switchToManaged(): Promise<BackendConnectionPublicInfo>;
   restartBackend(): Promise<BackendConnectionPublicInfo>;
   openExternal(url: string): Promise<boolean>;
+  showWorkspaceFileContextMenu(
+    payload: WorkspaceFileContextMenuPayload,
+  ): Promise<WorkspaceFileActionResult>;
   showNotification(payload: DesktopNotificationPayload): Promise<void>;
   setDesktopPreferences(payload: DesktopPreferencesPayload): Promise<void>;
   onCommandAction(listener: (action: DesktopCommandAction) => void): () => void;
@@ -450,6 +480,10 @@ export const IPC_CHANNELS = {
   submitPlanChatAction: 'codexflow:submit-plan-chat-action',
   updateExecutionSettings: 'codexflow:update-execution-settings',
   updateModelSettings: 'codexflow:update-model-settings',
+  updateBrowserSettings: 'codexflow:update-browser-settings',
+  closeBrowserSession: 'codexflow:close-browser-session',
+  startBrowserTakeover: 'codexflow:start-browser-takeover',
+  completeBrowserTakeover: 'codexflow:complete-browser-takeover',
   listPermissionRules: 'codexflow:list-permission-rules',
   deletePermissionRule: 'codexflow:delete-permission-rule',
   openLocalWorkspace: 'codexflow:open-local-workspace',
@@ -476,6 +510,7 @@ export const IPC_CHANNELS = {
   switchToManaged: 'codexflow:switch-to-managed',
   restartBackend: 'codexflow:restart-backend',
   openExternal: 'codexflow:open-external',
+  showWorkspaceFileContextMenu: 'codexflow:show-workspace-file-context-menu',
   showNotification: 'codexflow:show-notification',
   setDesktopPreferences: 'codexflow:set-desktop-preferences',
   commandAction: 'codexflow:command-action',

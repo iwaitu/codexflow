@@ -12,7 +12,9 @@ public enum ToolCapability
     Unknown = 0,
     ReadOnly,
     WorkspaceWrite,
-    ExecuteUntrustedCode
+    ExecuteUntrustedCode,
+    BrowserRead,
+    BrowserInteract
 }
 
 public enum ExecutionDecisionKind

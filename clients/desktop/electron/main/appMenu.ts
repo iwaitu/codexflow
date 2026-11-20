@@ -15,6 +15,16 @@ export interface ContextMenuCallbacks {
   onCopyText: (text: string) => void;
 }
 
+export interface WorkspaceFileContextMenuOptions {
+  isDirectory: boolean;
+  hasRelativePath: boolean;
+  language: DesktopLanguage;
+  onOpenWithDefaultApp: () => void;
+  onOpenInFileManager: () => void;
+  onCopyRelativePath: () => void;
+  onCopyFullPath: () => void;
+}
+
 export type ContextMenuInput = Pick<ContextMenuParams, 'isEditable' | 'selectionText' | 'linkURL' | 'editFlags'>;
 
 interface MenuLabels {
@@ -65,6 +75,10 @@ interface MenuLabels {
   about: string;
   openLink: string;
   copyLink: string;
+  openWithDefaultApp: string;
+  openInFileManager: string;
+  copyRelativePath: string;
+  copyFullPath: string;
 }
 
 const MENU_LABELS: Record<DesktopLanguage, MenuLabels> = {
@@ -116,6 +130,10 @@ const MENU_LABELS: Record<DesktopLanguage, MenuLabels> = {
     about: `关于 ${APP_METADATA.name}`,
     openLink: '在浏览器中打开链接',
     copyLink: '复制链接地址',
+    openWithDefaultApp: '使用默认应用打开',
+    openInFileManager: '文件管理器打开',
+    copyRelativePath: '复制相对路径',
+    copyFullPath: '复制完整路径',
   },
   'en-US': {
     appAbout: `About ${APP_METADATA.name}`,
@@ -165,6 +183,10 @@ const MENU_LABELS: Record<DesktopLanguage, MenuLabels> = {
     about: `About ${APP_METADATA.name}`,
     openLink: 'Open Link in Browser',
     copyLink: 'Copy Link Address',
+    openWithDefaultApp: 'Open with Default App',
+    openInFileManager: 'Open in File Manager',
+    copyRelativePath: 'Copy Relative Path',
+    copyFullPath: 'Copy Full Path',
   },
 };
 
@@ -365,6 +387,48 @@ export function buildContextMenuTemplate(
       { label: labels.copyLink, click: () => callbacks.onCopyText(safeLinkUrl) },
     );
   }
+
+  return items;
+}
+
+/**
+ * Builds the native right-click context menu for workspace files, folders, and empty directory area.
+ */
+export function buildWorkspaceFileContextMenuTemplate(
+  options: WorkspaceFileContextMenuOptions,
+): MenuItemConstructorOptions[] {
+  const labels = MENU_LABELS[options.language] ?? MENU_LABELS['zh-CN'];
+  const items: MenuItemConstructorOptions[] = [];
+
+  if (!options.isDirectory) {
+    items.push({
+      id: 'workspace-file-open-default',
+      label: labels.openWithDefaultApp,
+      click: () => options.onOpenWithDefaultApp(),
+    });
+  }
+
+  items.push({
+    id: 'workspace-file-open-manager',
+    label: labels.openInFileManager,
+    click: () => options.onOpenInFileManager(),
+  });
+
+  items.push({ type: 'separator' });
+
+  if (options.hasRelativePath) {
+    items.push({
+      id: 'workspace-file-copy-relative',
+      label: labels.copyRelativePath,
+      click: () => options.onCopyRelativePath(),
+    });
+  }
+
+  items.push({
+    id: 'workspace-file-copy-full',
+    label: labels.copyFullPath,
+    click: () => options.onCopyFullPath(),
+  });
 
   return items;
 }

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Cpu, FileDiff, FolderTree } from 'lucide-react';
+import { Cpu, FileDiff, FolderTree, Globe } from 'lucide-react';
 import { BusinessSkillsHub } from './components/business-skills/BusinessSkillsHub';
 import { AboutModal } from './components/AboutModal';
 import { ChatView } from './components/ChatView';
@@ -80,6 +80,8 @@ export const App: React.FC = () => {
     toolCalls,
     pendingApprovals,
     pendingBusinessApprovals,
+    pendingBrowserApprovals,
+    browserState,
     currentPlan,
     jobs,
     verificationReceipts,
@@ -107,6 +109,8 @@ export const App: React.FC = () => {
     reconcileSession,
     reconcileApprovals,
     removeBusinessApproval,
+    removeBrowserApproval,
+    setBrowserState,
     setVerificationReceipt,
     setContextWindow,
     setJobs,
@@ -193,6 +197,12 @@ export const App: React.FC = () => {
     enabled: Boolean(auth),
   });
 
+  const browserSettingsQuery = useQuery({
+    queryKey: ['browser-settings', instanceKey, auth?.baseUrl],
+    queryFn: () => apiClient.getBrowserSettings(auth!),
+    enabled: Boolean(auth),
+  });
+
   const sessionsQuery = useQuery({
     queryKey: ['sessions', instanceKey, auth?.baseUrl],
     queryFn: () => apiClient.listSessions(auth!),
@@ -251,7 +261,7 @@ export const App: React.FC = () => {
   });
 
   useEffect(() => {
-    if (activeWorkMode === 'Daily' && inspectorTab !== 'files') {
+    if (activeWorkMode === 'Daily' && inspectorTab !== 'files' && inspectorTab !== 'browser') {
       setInspectorTab('files');
     }
   }, [activeWorkMode, inspectorTab, setInspectorTab]);
@@ -404,6 +414,7 @@ export const App: React.FC = () => {
     void queryClient.invalidateQueries({ queryKey: ['system-status'] });
     void queryClient.invalidateQueries({ queryKey: ['execution-settings'] });
     void queryClient.invalidateQueries({ queryKey: ['model-settings'] });
+    void queryClient.invalidateQueries({ queryKey: ['browser-settings'] });
     void queryClient.invalidateQueries({ queryKey: ['sessions'] });
     if (auth && activeSessionId) {
       const targetSessionId = activeSessionId;
@@ -1309,6 +1320,24 @@ export const App: React.FC = () => {
                       </button>
                     </>
                   )}
+                  <button
+                    type="button"
+                    data-testid="toolbar-browser-btn"
+                    disabled={!activeSessionId}
+                    onClick={() => toggleInspectorTab('browser')}
+                    aria-label="打开或收起浏览器面板"
+                    className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium disabled:opacity-40 ${
+                      isInspectorOpen && inspectorTab === 'browser'
+                        ? 'border-indigo-500/60 bg-indigo-500/20 text-indigo-200'
+                        : 'border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800'
+                    }`}
+                  >
+                    <Globe className="h-3.5 w-3.5" />
+                    <span>浏览器</span>
+                    {browserState?.status === 'running' && (
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                    )}
+                  </button>
                 </div>
               </div>
 
@@ -1324,6 +1353,7 @@ export const App: React.FC = () => {
                 toolCalls={toolCalls}
                 pendingApprovals={pendingApprovals}
                 pendingBusinessApprovals={pendingBusinessApprovals}
+                pendingBrowserApprovals={pendingBrowserApprovals}
                 currentPlan={currentPlan}
                 jobs={jobs}
                 verificationReceipts={verificationReceipts}
@@ -1342,6 +1372,7 @@ export const App: React.FC = () => {
                 onOpenFolder={handleOpenFolder}
                 onApprovalResolved={() => void reconcileApprovals()}
                 onBusinessApprovalResolved={(approvalId) => removeBusinessApproval(approvalId)}
+                onBrowserApprovalResolved={(approvalId) => removeBrowserApproval(approvalId)}
                 onPlanActionSubmitted={() =>
                   void reconcileSession('plan_action', {
                     onCursorSynced: (eid, epoch) => sseRef.current?.updateCursor(eid, epoch),
@@ -1385,8 +1416,10 @@ export const App: React.FC = () => {
         <WorkspaceInspector
           open={isInspectorOpen}
           activeTab={inspectorTab}
+          workMode={activeWorkMode}
           auth={auth}
           sessionId={activeSessionId}
+          workspacePath={activeWorkspacePath}
           workspaceRevision={workspaceRevision}
           changes={changesQuery.data}
           changesLoading={changesQuery.isLoading}
@@ -1395,6 +1428,9 @@ export const App: React.FC = () => {
           jobs={jobs}
           verificationReceipts={verificationReceipts}
           executionBackend={systemStatusQuery.data?.executionBackend ?? executionSettingsQuery.data?.backend ?? null}
+          browserState={browserState}
+          controlPlaneAvailable={controlPlaneAvailable}
+          onBrowserStateUpdated={setBrowserState}
           onSelectTab={setInspectorTab}
           onClose={() => setInspectorOpen(false)}
           onRefreshChanges={() => void changesQuery.refetch()}
@@ -1441,6 +1477,7 @@ export const App: React.FC = () => {
         systemStatus={systemStatusQuery.data ?? null}
         executionSettings={executionSettingsQuery.data ?? null}
         modelSettings={modelSettingsQuery.data ?? null}
+        browserSettings={browserSettingsQuery.data ?? null}
         controlPlaneAvailable={controlPlaneAvailable}
         onClose={() => setSettingsOpen(false)}
         onUpdated={refreshMetadata}

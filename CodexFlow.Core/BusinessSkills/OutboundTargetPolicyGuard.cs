@@ -2,11 +2,11 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-using System.Collections.Concurrent;
 using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
 using CodexFlow.Contracts.BusinessSkills;
+using CodexFlow.Core.Security;
 using Microsoft.Extensions.Options;
 
 namespace CodexFlow.Core.BusinessSkills;
@@ -35,24 +35,21 @@ public sealed record TargetPolicyEvaluationResult(
 /// </summary>
 public sealed class OutboundTargetPolicyGuard
 {
-    private static readonly IPAddress AlibabaMetadataIp = IPAddress.Parse("100.100.100.200");
-    private static readonly IPAddress AwsIpv6MetadataIp = IPAddress.Parse("fd00:ec2::254");
-
     private readonly IOptionsMonitor<BusinessSkillsOptions>? _options;
-    private readonly ConcurrentDictionary<int, byte> _runtimeProtectedLocalPorts = new();
+    private readonly ProtectedLocalPortRegistry _portRegistry;
 
-    public OutboundTargetPolicyGuard(IOptionsMonitor<BusinessSkillsOptions>? options = null)
+    public OutboundTargetPolicyGuard(
+        IOptionsMonitor<BusinessSkillsOptions>? options = null,
+        ProtectedLocalPortRegistry? portRegistry = null)
     {
         _options = options;
+        _portRegistry = portRegistry ?? new ProtectedLocalPortRegistry();
     }
 
+    public ProtectedLocalPortRegistry PortRegistry => _portRegistry;
+
     public void RegisterProtectedLocalPort(int port)
-    {
-        if (port is > 0 and <= 65535)
-        {
-            _runtimeProtectedLocalPorts[port] = 0;
-        }
-    }
+        => _portRegistry.RegisterPort(port, "host");
 
     public TargetPolicyEvaluationResult ValidateUri(
         Uri targetUri,
@@ -216,6 +213,7 @@ public sealed class OutboundTargetPolicyGuard
         {
             AllowAutoRedirect = false,
             UseCookies = false,
+            UseProxy = false,
             ConnectTimeout = connectTimeout ?? TimeSpan.FromSeconds(BusinessSkillDefaults.ConnectTimeoutSeconds),
             PooledConnectionLifetime = TimeSpan.FromMinutes(2),
             ConnectCallback = async (context, cancellationToken) =>
@@ -326,7 +324,7 @@ public sealed class OutboundTargetPolicyGuard
 
     public bool IsProtectedLocalPort(int port)
     {
-        if (_runtimeProtectedLocalPorts.ContainsKey(port))
+        if (_portRegistry.IsProtected(port))
         {
             return true;
         }
@@ -339,52 +337,11 @@ public sealed class OutboundTargetPolicyGuard
     {
         ArgumentNullException.ThrowIfNull(rawAddress);
 
-        var address = rawAddress.IsIPv4MappedToIPv6 ? rawAddress.MapToIPv4() : rawAddress;
+        var address = NetworkAddressClassifier.Normalize(rawAddress);
 
-        if (IPAddress.Any.Equals(address) || IPAddress.IPv6Any.Equals(address))
+        if (NetworkAddressClassifier.IsAlwaysForbidden(address, out reason))
         {
-            reason = "Unspecified wildcard IP addresses (0.0.0.0 / ::) are forbidden.";
             return false;
-        }
-
-        if (address.AddressFamily == AddressFamily.InterNetwork)
-        {
-            var bytes = address.GetAddressBytes();
-            // 0.0.0.0/8
-            if (bytes[0] == 0)
-            {
-                reason = $"Unspecified IP range '{address}' is forbidden.";
-                return false;
-            }
-
-            // 169.254.0.0/16 云元数据及链路本地地址
-            if (bytes[0] == 169 && bytes[1] == 254)
-            {
-                reason = $"Link-local/cloud metadata address '{address}' is forbidden.";
-                return false;
-            }
-
-            // 224.0.0.0/4 多播
-            if ((bytes[0] & 0xF0) == 224)
-            {
-                reason = $"Multicast address '{address}' is forbidden.";
-                return false;
-            }
-
-            // 阿里云元数据 100.100.100.200
-            if (AlibabaMetadataIp.Equals(address))
-            {
-                reason = $"Cloud metadata address '{address}' is forbidden.";
-                return false;
-            }
-        }
-        else if (address.AddressFamily == AddressFamily.InterNetworkV6)
-        {
-            if (address.IsIPv6LinkLocal || address.IsIPv6Multicast || AwsIpv6MetadataIp.Equals(address))
-            {
-                reason = $"Link-local/multicast/metadata IPv6 address '{address}' is forbidden.";
-                return false;
-            }
         }
 
         if (IPAddress.IsLoopback(address))
@@ -462,8 +419,7 @@ public sealed class OutboundTargetPolicyGuard
            (IPAddress.TryParse(uri.IdnHost, out var ip) && IPAddress.IsLoopback(ip.IsIPv4MappedToIPv6 ? ip.MapToIPv4() : ip));
 
     private static bool IsForbiddenMetadataHostname(string host)
-        => string.Equals(host, "metadata.google.internal", StringComparison.OrdinalIgnoreCase) ||
-           string.Equals(host, "metadata", StringComparison.OrdinalIgnoreCase);
+        => NetworkAddressClassifier.IsForbiddenMetadataHostname(host);
 
     private static bool HasPathTraversal(Uri uri)
     {

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://codexflow.local/schemas/sse-events.schema.json",
   "title": "CodexFlow Gateway SSE Event Schema",
-  "schemaVersion": "1.0.0",
+  "schemaVersion": "1.3.0",
   "type": "object",
   "required": [
     "event",
@@ -47,7 +47,10 @@
         "business_skill_approval_requested",
         "business_skill_approval_resolved",
         "plan_mode_changed",
-        "plan_mode_exit_requested"
+        "plan_mode_exit_requested",
+        "browser_state_updated",
+        "browser_approval_requested",
+        "browser_approval_resolved"
       ]
     },
     "data": {
@@ -496,6 +499,48 @@
         },
         "data": {
           "$ref": "#/$defs/plan_mode_exit_requested"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "browser_state_updated"
+        },
+        "data": {
+          "$ref": "#/$defs/browser_state_updated"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "browser_approval_requested"
+        },
+        "data": {
+          "$ref": "#/$defs/browser_approval_requested"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "browser_approval_resolved"
+        },
+        "data": {
+          "$ref": "#/$defs/browser_approval_resolved"
         }
       },
       "required": [
@@ -1632,6 +1677,185 @@
         "sessionId",
         "planModeVersion",
         "planSummary"
+      ]
+    },
+    "browser_state_updated": {
+      "type": "object",
+      "description": "Throttled snapshot of the session\u0027s managed browser state (URL, title, tabs, screenshotSeq, recent actions/console).",
+      "additionalProperties": true,
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "headless": {
+          "type": "boolean"
+        },
+        "profileMode": {
+          "type": "string"
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "screenshotSeq": {
+          "type": "integer"
+        },
+        "consoleErrorCount": {
+          "type": "integer"
+        },
+        "updatedAtUtc": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "takeoverActive": {
+          "type": "boolean"
+        },
+        "takeoverReason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "takeoverStartedAtUtc": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "isRemote": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "sessionId",
+        "status",
+        "headless",
+        "profileMode",
+        "screenshotSeq",
+        "consoleErrorCount"
+      ]
+    },
+    "browser_approval_requested": {
+      "type": "object",
+      "description": "Interactive control-plane approval request for a sensitive browser action or non-allowlisted dev loopback port.",
+      "additionalProperties": true,
+      "properties": {
+        "approvalId": {
+          "type": "string"
+        },
+        "requestDigest": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string"
+        },
+        "targetUrl": {
+          "type": "string"
+        },
+        "targetOrigin": {
+          "type": "string"
+        },
+        "targetDescription": {
+          "type": "string"
+        },
+        "riskReason": {
+          "type": "string"
+        },
+        "expressionOrPath": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expiresAtUtc": {
+          "type": "string"
+        },
+        "allowedDecisions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "controlPlaneAvailable": {
+          "type": "boolean"
+        },
+        "selfApprovalProtection": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "approvalId",
+        "requestDigest",
+        "sessionId",
+        "tool",
+        "action",
+        "targetUrl",
+        "targetOrigin",
+        "targetDescription",
+        "riskReason",
+        "expiresAtUtc",
+        "allowedDecisions",
+        "controlPlaneAvailable",
+        "selfApprovalProtection"
+      ]
+    },
+    "browser_approval_resolved": {
+      "type": "object",
+      "description": "Resolution outcome for a pending browser approval request.",
+      "additionalProperties": true,
+      "properties": {
+        "approvalId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "decision": {
+          "type": "string"
+        },
+        "decidedBy": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resolvedAtUtc": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "approvalId",
+        "sessionId",
+        "decision",
+        "resolvedAtUtc"
       ]
     }
   }

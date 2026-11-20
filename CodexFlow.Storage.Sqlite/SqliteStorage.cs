@@ -5,6 +5,7 @@
 using CodexFlow.Application;
 using CodexFlow.Application.Jobs;
 using CodexFlow.Core.Abstractions;
+using CodexFlow.Core.Browser;
 using CodexFlow.Orchestration.Hosting;
 using CodexFlow.Orchestration.Jobs;
 using CodexFlow.Services.Background;
@@ -74,7 +75,8 @@ public static class SqliteStorage
                 sp.GetRequiredService<IJobDbContext>(),
                 sp.GetRequiredService<ILogger<ChatService>>(),
                 sp.GetService<IWorkspaceRootProvider>(),
-                sp.GetRequiredService<IConversationMessageStore>()));
+                sp.GetRequiredService<IConversationMessageStore>(),
+                sp.GetService<IBrowserSessionManager>()));
         }
         else
         {

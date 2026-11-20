@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,6 +16,11 @@ import {
   validateIpcCaller,
 } from '../../electron/main/securityUtils';
 import { UpdaterManager } from '../../electron/main/updaterManager';
+import {
+  openWorkspaceFileWithDefaultApp,
+  openWorkspaceTargetInFileManager,
+  resolveSafeWorkspaceTarget,
+} from '../../electron/main/workspaceFiles';
 
 describe('Main-process security boundaries & lifecycle (B1, B3, B4, R3)', () => {
   it('B1: BackendManager blocks control.token in access slots and never leaks controlToken in public info', async () => {
@@ -335,6 +340,84 @@ describe('Main-process security boundaries & lifecycle (B1, B3, B4, R3)', () => 
           (candidate) => candidate === '/tmp/cf-lo-posix/libreoffice/program/soffice.exe',
         ),
       ).toBe('/tmp/cf-lo-posix/libreoffice/program/soffice.exe');
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('resolveSafeWorkspaceTarget blocks traversal and symlinks outside workspace, and routes file/folder open calls safely', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'cf-ws-open-'));
+    const workspaceDir = join(tempDir, 'workspace');
+    const outputsDir = join(workspaceDir, 'outputs');
+    const outsideFile = join(tempDir, 'outside.txt');
+    const insideFile = join(outputsDir, 'report.txt');
+
+    mkdirSync(outputsDir, { recursive: true });
+    writeFileSync(outsideFile, 'outside', 'utf-8');
+    writeFileSync(insideFile, 'inside', 'utf-8');
+
+    try {
+      const rootRes = resolveSafeWorkspaceTarget(workspaceDir, '');
+      expect(rootRes.ok).toBe(true);
+      if (rootRes.ok) {
+        expect(rootRes.target.isDirectory).toBe(true);
+        expect(rootRes.target.realPath).toBe(realpathSync(workspaceDir));
+      }
+
+      const dirRes = resolveSafeWorkspaceTarget(workspaceDir, 'outputs');
+      expect(dirRes.ok).toBe(true);
+      const fileRes = resolveSafeWorkspaceTarget(workspaceDir, 'outputs/report.txt');
+      expect(fileRes.ok).toBe(true);
+
+      // Traversal / drive-letter / UNC / backslash attempts must be rejected
+      expect(resolveSafeWorkspaceTarget(workspaceDir, '../outside.txt').ok).toBe(false);
+      expect(resolveSafeWorkspaceTarget(workspaceDir, 'outputs/../../outside.txt').ok).toBe(false);
+      expect(resolveSafeWorkspaceTarget(workspaceDir, 'C:/Windows/System32').ok).toBe(false);
+      expect(resolveSafeWorkspaceTarget(workspaceDir, '//server/share/file.txt').ok).toBe(false);
+      expect(resolveSafeWorkspaceTarget(workspaceDir, 'outputs\\report.txt').ok).toBe(false);
+      expect(resolveSafeWorkspaceTarget(workspaceDir, 'missing.txt').ok).toBe(false);
+
+      // Verify symlink escape rejection when OS permits creating symlinks
+      const escapeLink = join(workspaceDir, 'escape-link.txt');
+      let symlinkCreated = false;
+      try {
+        symlinkSync(outsideFile, escapeLink);
+        symlinkCreated = true;
+      } catch {
+        symlinkCreated = false;
+      }
+      if (symlinkCreated) {
+        const escapeRes = resolveSafeWorkspaceTarget(workspaceDir, 'escape-link.txt');
+        expect(escapeRes.ok).toBe(false);
+      }
+
+      // Directory opens directly via shell.openPath; file reveals via shell.showItemInFolder
+      const openPath = vi.fn().mockResolvedValue('');
+      const showItemInFolder = vi.fn();
+      const shellApi = { openPath, showItemInFolder };
+
+      if (dirRes.ok && fileRes.ok) {
+        const dirOpen = await openWorkspaceTargetInFileManager(dirRes.target, shellApi);
+        expect(dirOpen).toEqual({ ok: true });
+        expect(openPath).toHaveBeenCalledWith(dirRes.target.realPath);
+
+        const dirDefaultApp = await openWorkspaceFileWithDefaultApp(dirRes.target, shellApi);
+        expect(dirDefaultApp.ok).toBe(false);
+
+        const fileReveal = await openWorkspaceTargetInFileManager(fileRes.target, shellApi);
+        expect(fileReveal).toEqual({ ok: true });
+        expect(showItemInFolder).toHaveBeenCalledWith(fileRes.target.realPath);
+
+        openPath.mockClear();
+        const fileDefaultOpen = await openWorkspaceFileWithDefaultApp(fileRes.target, shellApi);
+        expect(fileDefaultOpen).toEqual({ ok: true });
+        expect(openPath).toHaveBeenCalledWith(fileRes.target.realPath);
+
+        openPath.mockResolvedValueOnce('No associated app');
+        const failedOpen = await openWorkspaceFileWithDefaultApp(fileRes.target, shellApi);
+        expect(failedOpen.ok).toBe(false);
+        expect(failedOpen.error).toContain('No associated app');
+      }
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }

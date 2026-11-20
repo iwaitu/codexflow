@@ -1,5 +1,10 @@
 import { create } from 'zustand';
-import type { BackendConnectionPublicInfo, BusinessApprovalRequestDto } from '@shared/ipc';
+import type {
+  BackendConnectionPublicInfo,
+  BrowserApprovalRequestDto,
+  BrowserSessionStateDto,
+  BusinessApprovalRequestDto,
+} from '@shared/ipc';
 import type { ParsedSseEvent } from '@shared/contracts/sse.generated';
 import {
   apiClient,
@@ -36,7 +41,7 @@ function dispatchDesktopNotification(titleKey: I18nKey, body: string): void {
 }
 
 export type ConversationMode = 'continue-current' | 'reuse-master' | 'new-thread';
-export type InspectorTab = 'files' | 'changes' | 'jobs';
+export type InspectorTab = 'files' | 'changes' | 'jobs' | 'browser';
 
 export interface ConversationTitleUpdate {
   conversationId: string;
@@ -99,6 +104,8 @@ export interface AppState {
   toolCalls: UiToolCall[];
   pendingApprovals: UiPendingApproval[];
   pendingBusinessApprovals: BusinessApprovalRequestDto[];
+  pendingBrowserApprovals: BrowserApprovalRequestDto[];
+  browserState: BrowserSessionStateDto | null;
   currentPlan: SessionPlan | null;
   jobs: BackgroundJob[];
   verificationReceipts: Record<string, VerificationReceipt>;
@@ -134,6 +141,8 @@ export interface AppState {
   reconcileSession: (reason: string, options?: ReconcileOptions) => Promise<void>;
   reconcileApprovals: () => Promise<void>;
   removeBusinessApproval: (approvalId: string) => void;
+  removeBrowserApproval: (approvalId: string) => void;
+  setBrowserState: (state: BrowserSessionStateDto | null) => void;
   setVerificationReceipt: (jobId: string, receipt: VerificationReceipt) => void;
   setContextWindow: (cw: SessionContextWindow | null) => void;
   setJobs: (jobs: BackgroundJob[]) => void;
@@ -181,6 +190,36 @@ function refreshTurnMetadataAfterFinish(
   }
 }
 
+function shouldAcceptBrowserState(
+  current: BrowserSessionStateDto | null,
+  incoming: BrowserSessionStateDto,
+): boolean {
+  if (!current) {
+    return true;
+  }
+  if (current.sessionId && incoming.sessionId && current.sessionId !== incoming.sessionId) {
+    return true;
+  }
+  const curTs = current.updatedAtUtc ? Date.parse(current.updatedAtUtc) : Number.NaN;
+  const incTs = incoming.updatedAtUtc ? Date.parse(incoming.updatedAtUtc) : Number.NaN;
+  if (!Number.isNaN(curTs) && !Number.isNaN(incTs)) {
+    if (incTs < curTs) {
+      return false;
+    }
+    if (incTs > curTs) {
+      return true;
+    }
+  }
+  if (current.status === 'running' && incoming.status === 'running') {
+    const curSeq = Number(current.screenshotSeq ?? 0);
+    const incSeq = Number(incoming.screenshotSeq ?? 0);
+    if (incSeq < curSeq) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function reduceSseEvent(
   evt: ParsedSseEvent,
   get: () => AppState,
@@ -221,8 +260,10 @@ function reduceSseEvent(
     case 'heartbeat': {
       if (opts?.allowTriggerApprovalsFetch !== false) {
         const pendingCount = Number(evtData.pendingApprovals ?? 0);
-        if (pendingCount !== get().pendingApprovals.length) {
-          void get().reconcileApprovals();
+        const cur = get();
+        const localCount = cur.pendingApprovals.length + cur.pendingBrowserApprovals.length;
+        if (pendingCount !== localCount) {
+          void cur.reconcileApprovals();
         }
       }
       return;
@@ -557,6 +598,58 @@ function reduceSseEvent(
       return;
     }
 
+    case 'browser_state_updated': {
+      const incoming = evtData as BrowserSessionStateDto;
+      const currentSid = get().activeSessionId;
+      if (!currentSid || (incoming.sessionId && incoming.sessionId !== currentSid)) {
+        return;
+      }
+      set((s) => ({
+        browserState: shouldAcceptBrowserState(s.browserState, incoming)
+          ? incoming
+          : s.browserState,
+      }));
+      return;
+    }
+
+    case 'browser_approval_requested': {
+      const incoming = evtData as BrowserApprovalRequestDto;
+      const currentSid = get().activeSessionId;
+      if (!currentSid || (incoming.sessionId && incoming.sessionId !== currentSid)) {
+        return;
+      }
+      if (!incoming.approvalId) {
+        return;
+      }
+      let inserted = false;
+      set((s) => {
+        if (s.pendingBrowserApprovals.some((a) => a.approvalId === incoming.approvalId)) {
+          return s;
+        }
+        inserted = true;
+        return { pendingBrowserApprovals: [...s.pendingBrowserApprovals, incoming] };
+      });
+      if (inserted) {
+        dispatchDesktopNotification(
+          'notify.toolApprovalTitle',
+          `浏览器安全确认: ${incoming.targetDescription ?? incoming.action ?? incoming.approvalId}`,
+        );
+      }
+      return;
+    }
+
+    case 'browser_approval_resolved': {
+      const d = evtData as { approvalId?: string };
+      if (d.approvalId) {
+        set((s) => ({
+          pendingBrowserApprovals: s.pendingBrowserApprovals.filter(
+            (a) => a.approvalId !== d.approvalId,
+          ),
+        }));
+      }
+      return;
+    }
+
     case 'business_skill_run_updated': {
       const d = evtData as { runId?: string; status?: string };
       const terminalStatuses = new Set([
@@ -799,6 +892,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   toolCalls: [],
   pendingApprovals: [],
   pendingBusinessApprovals: [],
+  pendingBrowserApprovals: [],
+  browserState: null,
   currentPlan: null,
   jobs: [],
   verificationReceipts: {},
@@ -862,6 +957,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         toolCalls: [],
         pendingApprovals: [],
         pendingBusinessApprovals: [],
+        pendingBrowserApprovals: [],
+        browserState: null,
         currentPlan: null,
         jobs: [],
         verificationReceipts: {},
@@ -917,6 +1014,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       toolCalls: [],
       pendingApprovals: [],
       pendingBusinessApprovals: [],
+      pendingBrowserApprovals: [],
+      browserState: null,
       currentPlan: null,
       jobs: [],
       verificationReceipts: {},
@@ -1141,10 +1240,36 @@ export const useAppStore = create<AppState>((set, get) => ({
           latest.activeSessionId === activeSessionId &&
           latest.sessionGeneration === sessionGeneration &&
           latest.connectionGeneration === targetConnGen &&
-          latest.reconcileGeneration === targetReconcileGen &&
-          Array.isArray(approvalsRes.businessApprovals)
+          latest.reconcileGeneration === targetReconcileGen
         ) {
-          set({ pendingBusinessApprovals: approvalsRes.businessApprovals });
+          set((s) => ({
+            pendingBusinessApprovals: Array.isArray(approvalsRes.businessApprovals)
+              ? approvalsRes.businessApprovals
+              : s.pendingBusinessApprovals,
+            pendingBrowserApprovals: Array.isArray(approvalsRes.browserApprovals)
+              ? approvalsRes.browserApprovals
+              : s.pendingBrowserApprovals,
+          }));
+        }
+      } catch {
+        // optional
+      }
+
+      try {
+        const bState = await apiClient.getBrowserState(auth, activeSessionId, controller.signal);
+        const latest = get();
+        if (
+          !controller.signal.aborted &&
+          latest.activeSessionId === activeSessionId &&
+          latest.sessionGeneration === sessionGeneration &&
+          latest.connectionGeneration === targetConnGen &&
+          latest.reconcileGeneration === targetReconcileGen
+        ) {
+          set((s) => ({
+            browserState: shouldAcceptBrowserState(s.browserState, bState)
+              ? bState
+              : s.browserState,
+          }));
         }
       } catch {
         // optional
@@ -1199,6 +1324,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         ...(Array.isArray(res.businessApprovals)
           ? { pendingBusinessApprovals: res.businessApprovals }
           : { pendingBusinessApprovals: s.pendingBusinessApprovals }),
+        ...(Array.isArray(res.browserApprovals)
+          ? { pendingBrowserApprovals: res.browserApprovals }
+          : { pendingBrowserApprovals: s.pendingBrowserApprovals }),
       }));
     } catch {
       // ignore aborted or stale approval fetch
@@ -1215,6 +1343,15 @@ export const useAppStore = create<AppState>((set, get) => ({
         (a) => a.approvalId !== approvalId,
       ),
     })),
+
+  removeBrowserApproval: (approvalId) =>
+    set((s) => ({
+      pendingBrowserApprovals: s.pendingBrowserApprovals.filter(
+        (a) => a.approvalId !== approvalId,
+      ),
+    })),
+
+  setBrowserState: (browserState) => set({ browserState }),
 
   setVerificationReceipt: (jobId, receipt) =>
     set((s) => ({

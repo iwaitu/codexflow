@@ -102,6 +102,12 @@ public static class CodexToolFunctionAdapterFactory
             "user_learn_preference" => CreateForUserLearnPreference(tool, description),
             "fetch_webpage"         => CreateForFetchWebpage(tool, description),
             "web_search"            => CreateForWebSearch(tool, description),
+            "browser_navigate"      => CreateForBrowserNavigate(tool, description),
+            "browser_snapshot"      => CreateForBrowserSnapshot(tool, description),
+            "browser_act"           => CreateForBrowserAct(tool, description),
+            "browser_tabs"          => CreateForBrowserTabs(tool, description),
+            "browser_request_takeover" => CreateForBrowserRequestTakeover(tool, description),
+            "browser_evaluate"      => CreateForBrowserEvaluate(tool, description),
             "skill"                 => CreateForSkill(tool, description),
             "list_mcp_resources"    => CreateForListMcpResources(tool, description),
             "read_mcp_resource"     => CreateForReadMcpResource(tool, description),
@@ -1096,6 +1102,90 @@ public static class CodexToolFunctionAdapterFactory
                 return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
             },
             new AIFunctionFactoryOptions { Name = "web_search", Description = description });
+
+    private static AIFunction CreateForBrowserNavigate(ICodexTool tool, string description) =>
+        AIFunctionFactory.Create(
+            async (string? url = null, string? action = null, CancellationToken ct = default) =>
+            {
+                var args = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+                if (url is not null) args["url"] = url;
+                if (action is not null) args["action"] = action;
+                return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
+            },
+            new AIFunctionFactoryOptions { Name = "browser_navigate", Description = description });
+
+    private static AIFunction CreateForBrowserSnapshot(ICodexTool tool, string description) =>
+        AIFunctionFactory.Create(
+            async (int? max_chars = null, bool? include_console = null, bool? include_network_errors = null, bool? include_screenshot = null, bool? annotate_screenshot = null, CancellationToken ct = default) =>
+            {
+                var args = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+                if (max_chars is not null) args["max_chars"] = max_chars;
+                if (include_console is not null) args["include_console"] = include_console;
+                if (include_network_errors is not null) args["include_network_errors"] = include_network_errors;
+                if (include_screenshot is not null) args["include_screenshot"] = include_screenshot;
+                if (annotate_screenshot is not null) args["annotate_screenshot"] = annotate_screenshot;
+                return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
+            },
+            new AIFunctionFactoryOptions { Name = "browser_snapshot", Description = description });
+
+    private static AIFunction CreateForBrowserAct(ICodexTool tool, string description) =>
+        AIFunctionFactory.Create(
+            async (string action, string? @ref = null, string? text = null, string? key = null, string? file_path = null, int? delta_y = null, int? timeout_ms = null, CancellationToken ct = default) =>
+            {
+                var args = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["action"] = action
+                };
+                if (@ref is not null) args["ref"] = @ref;
+                if (text is not null) args["text"] = text;
+                if (key is not null) args["key"] = key;
+                if (file_path is not null) args["file_path"] = file_path;
+                if (delta_y is not null) args["delta_y"] = delta_y;
+                if (timeout_ms is not null) args["timeout_ms"] = timeout_ms;
+                return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
+            },
+            new AIFunctionFactoryOptions { Name = "browser_act", Description = description });
+
+    private static AIFunction CreateForBrowserTabs(ICodexTool tool, string description) =>
+        AIFunctionFactory.Create(
+            async (string action, string? tab_id = null, string? url = null, CancellationToken ct = default) =>
+            {
+                var args = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["action"] = action
+                };
+                if (tab_id is not null) args["tab_id"] = tab_id;
+                if (url is not null) args["url"] = url;
+                return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
+            },
+            new AIFunctionFactoryOptions { Name = "browser_tabs", Description = description });
+
+    private static AIFunction CreateForBrowserRequestTakeover(ICodexTool tool, string description) =>
+        AIFunctionFactory.Create(
+            async (string reason, int? timeout_seconds = null, CancellationToken ct = default) =>
+            {
+                var args = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["reason"] = reason
+                };
+                if (timeout_seconds is not null) args["timeout_seconds"] = timeout_seconds;
+                return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
+            },
+            new AIFunctionFactoryOptions { Name = "browser_request_takeover", Description = description });
+
+    private static AIFunction CreateForBrowserEvaluate(ICodexTool tool, string description) =>
+        AIFunctionFactory.Create(
+            async (string expression, bool? await_promise = null, int? max_result_chars = null, CancellationToken ct = default) =>
+            {
+                var args = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["expression"] = expression
+                };
+                if (await_promise is not null) args["await_promise"] = await_promise;
+                if (max_result_chars is not null) args["max_result_chars"] = max_result_chars;
+                return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
+            },
+            new AIFunctionFactoryOptions { Name = "browser_evaluate", Description = description });
 
     private static AIFunction CreateForSkill(ICodexTool tool, string description) =>
         AIFunctionFactory.Create(

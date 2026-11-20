@@ -271,7 +271,49 @@ public static class OrchestrationServiceCollectionExtensions
 
         services.Configure<CodexFlow.Core.BusinessSkills.BusinessSkillsOptions>(
             configuration.GetSection(CodexFlow.Core.BusinessSkills.BusinessSkillsOptions.SectionName));
-        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<CodexFlow.Core.BusinessSkills.OutboundTargetPolicyGuard>(services);
+        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<CodexFlow.Core.Security.ProtectedLocalPortRegistry>(services);
+        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<CodexFlow.Core.BusinessSkills.OutboundTargetPolicyGuard>(
+            services,
+            sp => new CodexFlow.Core.BusinessSkills.OutboundTargetPolicyGuard(
+                sp.GetService<Microsoft.Extensions.Options.IOptionsMonitor<CodexFlow.Core.BusinessSkills.BusinessSkillsOptions>>(),
+                sp.GetRequiredService<CodexFlow.Core.Security.ProtectedLocalPortRegistry>()));
+
+        // Web Browser Use (pure .NET 10 CDP + local outbound SSRF proxy)
+        services.Configure<CodexFlow.Core.Browser.BrowserOptions>(
+            configuration.GetSection(CodexFlow.Core.Browser.BrowserOptions.SectionName));
+        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<CodexFlow.Core.Browser.BrowserPermissionClamp>(services);
+        services.AddSingleton<Microsoft.Extensions.Options.IPostConfigureOptions<CodexFlow.Core.Browser.BrowserOptions>>(
+            sp => sp.GetRequiredService<CodexFlow.Core.Browser.BrowserPermissionClamp>());
+        services.AddSingleton<Microsoft.Extensions.Options.IOptionsChangeTokenSource<CodexFlow.Core.Browser.BrowserOptions>>(
+            sp => sp.GetRequiredService<CodexFlow.Core.Browser.BrowserPermissionClamp>());
+        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<
+            CodexFlow.Core.Browser.IBrowserExecutableLocator,
+            CodexFlow.Core.Browser.BrowserExecutableLocator>(services);
+        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<
+            CodexFlow.Core.Browser.BrowserTargetPolicyGuard>(
+            services,
+            sp => new CodexFlow.Core.Browser.BrowserTargetPolicyGuard(
+                sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<CodexFlow.Core.Browser.BrowserOptions>>(),
+                sp.GetRequiredService<CodexFlow.Core.Security.ProtectedLocalPortRegistry>()));
+        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<
+            CodexFlow.Core.Browser.IBrowserStateEventPublisher,
+            CodexFlow.Orchestration.Browser.GatewayBrowserStateEventPublisher>(services);
+        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<
+            CodexFlow.Core.Browser.IBrowserApprovalCoordinator,
+            CodexFlow.Orchestration.Browser.BrowserApprovalCoordinator>(services);
+        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<
+            CodexFlow.Core.Browser.IBrowserSessionManager>(
+            services,
+            sp => new CodexFlow.Core.Browser.Cdp.BrowserSessionManager(
+                sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<CodexFlow.Core.Browser.BrowserOptions>>(),
+                sp.GetRequiredService<CodexFlow.Core.Browser.IBrowserExecutableLocator>(),
+                sp.GetRequiredService<CodexFlow.Core.Browser.BrowserTargetPolicyGuard>(),
+                sp.GetRequiredService<CodexFlow.Core.Security.ProtectedLocalPortRegistry>(),
+                sp.GetRequiredService<ILogger<CodexFlow.Core.Browser.Cdp.BrowserSessionManager>>(),
+                sp.GetService<CodexFlow.Core.Browser.IBrowserApprovalCoordinator>(),
+                sp.GetService<CodexFlow.Core.Browser.IBrowserStateEventPublisher>(),
+                controlPlane: sp.GetService<CodexFlow.Core.Execution.Approval.IControlPlaneStateProvider>()));
+        services.AddHostedService<CodexFlow.Orchestration.Browser.BrowserIdleReaperHostedService>();
         Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<CodexFlow.Core.BusinessSkills.OpenApiBusinessPluginAdapter>(services);
         Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<CodexFlow.Core.BusinessSkills.McpBusinessPluginAdapter>(services);
         Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<CodexFlow.Core.BusinessSkills.IBusinessCapabilityExecutor>(
