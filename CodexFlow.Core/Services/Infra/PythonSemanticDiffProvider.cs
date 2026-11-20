@@ -4,9 +4,9 @@
 
 using System.Diagnostics;
 using System.ComponentModel;
-using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Models;
 using CodexFlow.Core.Utils;
@@ -44,7 +44,7 @@ public class PythonSemanticDiffProvider : ILanguageSemanticDiffProvider
         if (File.Exists(diffScript))
         {
             var output = await RunPythonScriptAsync(diffScript, $"\"{mainPath}\" \"{shadowPath}\"", ct).ConfigureAwait(false);
-            if (!TryDeserializeJson(output, out PythonDiffResult? diffData, out var parseError))
+            if (!TryDeserializeJson(output, PythonSemanticDiffJsonContext.Default.PythonDiffResult, out var diffData, out var parseError))
             {
                 if (!string.IsNullOrWhiteSpace(parseError))
                 {
@@ -70,7 +70,7 @@ public class PythonSemanticDiffProvider : ILanguageSemanticDiffProvider
             if (!string.IsNullOrEmpty(rootDir) && File.Exists(graphScript))
             {
                 var graphOutput = await RunPythonScriptAsync(graphScript, $"\"{rootDir}\"", ct).ConfigureAwait(false);
-                if (TryDeserializeJson(graphOutput, out Dictionary<string, PythonNode>? graph, out var graphParseError))
+                if (TryDeserializeJson(graphOutput, PythonSemanticDiffJsonContext.Default.PythonDependencyGraph, out var graph, out var graphParseError))
                 {
                     // Graph: key = module_path (dotted), value = { path, imports[] }
                     if (graph != null)
@@ -162,9 +162,7 @@ public class PythonSemanticDiffProvider : ILanguageSemanticDiffProvider
         }
     }
 
-    private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
-
-    private static bool TryDeserializeJson<T>(string? rawOutput, out T? value, out string? reason)
+    private static bool TryDeserializeJson<T>(string? rawOutput, JsonTypeInfo<T> typeInfo, out T? value, out string? reason)
     {
         value = default;
         reason = null;
@@ -184,7 +182,7 @@ public class PythonSemanticDiffProvider : ILanguageSemanticDiffProvider
 
         try
         {
-            value = JsonSerializer.Deserialize<T>(candidate, JsonOptions);
+            value = JsonSerializer.Deserialize(candidate, typeInfo);
             return value != null;
         }
         catch (JsonException ex)
@@ -243,8 +241,7 @@ public class PythonSemanticDiffProvider : ILanguageSemanticDiffProvider
         return Path.GetDirectoryName(filePath);
     }
 
-    [SuppressMessage("Performance", "CA1812:Avoid uninstantiated internal classes", Justification = "Used by JSON deserialization.")]
-    private sealed class PythonDiffResult
+    internal sealed class PythonDiffResult
     {
         [JsonPropertyName("changed_symbols")]
         public List<string>? ChangedSymbols { get; set; }
@@ -254,11 +251,15 @@ public class PythonSemanticDiffProvider : ILanguageSemanticDiffProvider
         public List<string>? RemovedSymbols { get; set; }
     }
 
-    [SuppressMessage("Performance", "CA1812:Avoid uninstantiated internal classes", Justification = "Used by JSON deserialization.")]
-    private sealed class PythonNode
+    internal sealed class PythonNode
     {
         public string Path { get; set; } = "";
         public List<string> Imports { get; set; } = new();
     }
 }
+
+[JsonSourceGenerationOptions(GenerationMode = JsonSourceGenerationMode.Metadata, PropertyNameCaseInsensitive = true)]
+[JsonSerializable(typeof(PythonSemanticDiffProvider.PythonDiffResult))]
+[JsonSerializable(typeof(Dictionary<string, PythonSemanticDiffProvider.PythonNode>), TypeInfoPropertyName = "PythonDependencyGraph")]
+internal sealed partial class PythonSemanticDiffJsonContext : JsonSerializerContext;
 

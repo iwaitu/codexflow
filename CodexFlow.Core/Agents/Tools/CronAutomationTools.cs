@@ -13,7 +13,6 @@ public sealed class CronCreateTool(
     ICronSchedulerService scheduler,
     ILogger<CronCreateTool> logger) : ICodexTool
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     public string Name => "cron_create";
 
@@ -79,7 +78,8 @@ public sealed class CronCreateTool(
         try
         {
             var stored = await scheduler.CreateAsync(schedule, ct).ConfigureAwait(false);
-            var output = JsonSerializer.Serialize(new { created = true, schedule = stored }, JsonOptions);
+            var output = JsonSerializer.Serialize(new CronCreateToolResponse(true, stored),
+                BuiltInToolJsonContext.Web.CronCreateToolResponse);
             return CodexToolResult.Succeeded(output, new { created = true, schedule = stored }, summary: $"created cron: {stored.Id}");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -162,7 +162,6 @@ public sealed class CronDeleteTool(ICronSchedulerService scheduler) : ICodexTool
 
 public sealed class CronListTool(ICronSchedulerService scheduler) : ICodexTool
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     public string Name => "cron_list";
 
@@ -184,9 +183,9 @@ public sealed class CronListTool(ICronSchedulerService scheduler) : ICodexTool
         ToolArgumentNormalizer.NormalizeInPlace(arguments);
         var sessionId = arguments.GetValueOrDefault("session_id")?.ToString();
         var schedules = await scheduler.ListAsync(sessionId, ct).ConfigureAwait(false);
-        var result = new { count = schedules.Count, schedules };
-        var output = JsonSerializer.Serialize(result, JsonOptions);
-        return CodexToolResult.Succeeded(output, result, summary: $"cron schedules: {schedules.Count}");
+        var output = JsonSerializer.Serialize(new CronListToolResponse(schedules.Count, schedules),
+            BuiltInToolJsonContext.Web.CronListToolResponse);
+        return CodexToolResult.Succeeded(output, new { count = schedules.Count, schedules }, summary: $"cron schedules: {schedules.Count}");
     }
 }
 

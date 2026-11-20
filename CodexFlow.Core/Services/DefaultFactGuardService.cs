@@ -204,7 +204,7 @@ public sealed class DefaultFactGuardService : IFactGuardService
 
         try
         {
-            return JsonSerializer.Deserialize<MemoryEntryMetadata>(json);
+            return JsonSerializer.Deserialize(json, MemoryFactJsonContext.Default.MemoryEntryMetadata);
         }
         catch (System.Text.Json.JsonException)
         {

@@ -61,7 +61,7 @@ public sealed record MemoryEntryMetadata(
     string? VectorSyncState = null)
 {
     /// <summary>Serialise to compact JSON for storage in <see cref="MemoryEntry.Metadata"/>.</summary>
-    public string ToJson() => JsonSerializer.Serialize(this);
+    public string ToJson() => JsonSerializer.Serialize(this, MemoryFactJsonContext.Default.MemoryEntryMetadata);
 }
 
 /// <summary>

@@ -14,8 +14,6 @@ public sealed class MonitorTool(
     Func<string, CancellationToken, Task<IReadOnlyList<WorkerJobSummary>>>? listWorkersFunc = null,
     Func<WorkerOutputRequest, CancellationToken, Task<WorkerOutputResult>>? workerOutputFunc = null) : ICodexTool
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-
     public string Name => "monitor";
 
     public string Description => "监控 worker/job/session 当前状态。参数: session_id?, job_id? 或 worker_id?, include_events?, max_events?, after_seq?。只读，不启动新任务。";
@@ -195,7 +193,8 @@ public sealed class MonitorTool(
         }
 
         builder.AppendLine("json:");
-        builder.Append(JsonSerializer.Serialize(new { session = session?.Id, job = job?.JobId, workers = workers.Count }, JsonOptions));
+        var status = new MonitorStatusPayload(session?.Id, job?.JobId, workers.Count);
+        builder.Append(JsonSerializer.Serialize(status, AutomationToolJsonContext.Default.MonitorStatusPayload));
         return builder.ToString().TrimEnd();
     }
 

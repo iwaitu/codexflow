@@ -24,7 +24,6 @@ public sealed class ListAuthorizedDirectoryTool(
 {
     private const int DefaultLimit = 50;
     private const int MaxLimit = 200;
-    private static readonly JsonSerializerOptions CamelCaseJson = new(JsonSerializerDefaults.Web);
 
     private static readonly HashSet<string> SensitiveDirectoryNames = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -149,15 +148,9 @@ public sealed class ListAuthorizedDirectoryTool(
             var page = entries.Skip(cursor).Take(limit).ToList();
             var nextCursor = cursor + page.Count < totalMatched ? cursor + page.Count : (int?)null;
 
-            var payload = JsonSerializer.Serialize(new
-            {
-                directory = rawPath,
-                totalMatched,
-                cursor,
-                limit,
-                nextCursor,
-                entries = page
-            }, CamelCaseJson);
+            var payload = JsonSerializer.Serialize(
+                new AuthorizedDirectoryToolResponse(rawPath, totalMatched, cursor, limit, nextCursor, page),
+                BuiltInToolJsonContext.Web.AuthorizedDirectoryToolResponse);
 
             return Task.FromResult(CodexToolResult.Succeeded(
                 payload,
@@ -400,7 +393,7 @@ public sealed class ListAuthorizedDirectoryTool(
         };
     }
 
-    private sealed record AuthorizedEntryDto(
+    internal sealed record AuthorizedEntryDto(
         string Name,
         string Kind,
         long? SizeBytes,

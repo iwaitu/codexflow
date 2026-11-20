@@ -1377,25 +1377,23 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
             }
 
             var auditId = $"exec-approval-{Guid.NewGuid():N}";
-            var payload = JsonSerializer.Serialize(new
-            {
-                requestDigest = request.ComputeRequestDigest(),
-                tool = request.ToolName,
-                executable = request.Executable,
-                interpreterChain = request.InterpreterChain,
-                argv = request.Argv,
-                cwd = request.Cwd,
-                backend = request.Backend.ToString(),
-                network = request.Network,
-                filesystem = request.Filesystem,
+            var payload = JsonSerializer.Serialize(new ExecutionApprovalAudit(
+                request.ComputeRequestDigest(),
+                request.ToolName,
+                request.Executable,
+                request.InterpreterChain,
+                request.Argv,
+                request.Cwd,
+                request.Backend.ToString(),
+                request.Network,
+                request.Filesystem,
                 outcome,
                 decidedBy,
-                selfApprovalProtection = selfProtection,
-                origin = request.Origin.ToString(),
-                policyVersion = request.PolicyVersion,
-                shell = request.ShellKind,
-                note
-            });
+                selfProtection,
+                request.Origin.ToString(),
+                request.PolicyVersion,
+                request.ShellKind,
+                note), ExecutionApprovalJsonContext.Default.ExecutionApprovalAudit);
 
             await auditStore.StartAsync(new WorkflowRunRecord
             {

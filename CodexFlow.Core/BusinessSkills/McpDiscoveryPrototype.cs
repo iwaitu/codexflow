@@ -4,6 +4,7 @@
 
 using System.Text.Json;
 using CodexFlow.Contracts.BusinessSkills;
+using CodexFlow.Core.Agents;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol;
 using ModelContextProtocol.Protocol;
@@ -77,7 +78,10 @@ public static class McpDiscoveryPrototype
         var jsonArgs = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
         foreach (var pair in arguments)
         {
-            jsonArgs[pair.Key] = JsonSerializer.SerializeToElement(pair.Value);
+            // Preserve the public CLR argument contract for types without generated metadata.
+            jsonArgs[pair.Key] = ExternalToolArgumentJson.TryWriteElement(pair.Value, out var json)
+                ? json
+                : JsonSerializer.SerializeToElement(pair.Value);
         }
 
         var result = await client.CallToolAsync(

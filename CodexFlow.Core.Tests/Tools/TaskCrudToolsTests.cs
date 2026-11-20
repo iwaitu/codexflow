@@ -15,6 +15,17 @@ namespace CodexFlow.Core.Tests.Tools;
 public sealed class TaskCrudToolsTests
 {
     [Fact]
+    public void TaskListText_PreservesJsonStringsAndNulls_AndRejectsOtherItems()
+    {
+        Assert.Collection(TaskCrudToolSupport.ParseStringList("[\"文档\",null,\" a \"]"),
+            value => Assert.Equal("文档", value),
+            value => Assert.Null(value),
+            value => Assert.Equal(" a ", value));
+        Assert.Empty(TaskCrudToolSupport.ParseStringList("[\"valid\",1]"));
+        Assert.Empty(TaskCrudToolSupport.ParseStringList("[\"invalid\",]"));
+    }
+
+    [Fact]
     public async Task TaskCreate_ShouldAppendTask_AndSaveSnapshot()
     {
         var session = new CodexSession { Id = "session-task-create", CurrentStage = 2 };

@@ -447,7 +447,7 @@ public sealed class SkillTool(
         {
             try
             {
-                return JsonSerializer.Deserialize<string[]>(text) ?? [];
+                return JsonSerializer.Deserialize(text, AutomationToolArgumentJsonContext.Default.StringArray) ?? [];
             }
             catch (JsonException)
             {

@@ -122,13 +122,8 @@ public sealed class RemoteTriggerTool(
         };
 
         var stored = await triggerService.RecordAsync(triggerEvent, ct).ConfigureAwait(false);
-        var result = new
-        {
-            recorded = true,
-            trigger = stored,
-            worker_job_id = workerJobId
-        };
-        var output = JsonSerializer.Serialize(result, JsonOptions);
+        var result = new RemoteTriggerRecordedPayload(true, stored, workerJobId);
+        var output = JsonSerializer.Serialize(result, AutomationToolJsonContext.Default.RemoteTriggerRecordedPayload);
 
         return CodexToolResult.Succeeded(
             output,
@@ -145,9 +140,9 @@ public sealed class RemoteTriggerTool(
         var eventType = arguments.GetValueOrDefault("event_type")?.ToString()
             ?? arguments.GetValueOrDefault("event")?.ToString();
         var events = await triggerService.ListAsync(sessionId, source, eventType, ct).ConfigureAwait(false);
-        var result = new { count = events.Count, events };
+        var result = new RemoteTriggerListPayload(events.Count, events);
         return CodexToolResult.Succeeded(
-            JsonSerializer.Serialize(result, JsonOptions),
+            JsonSerializer.Serialize(result, AutomationToolJsonContext.Default.RemoteTriggerListPayload),
             result,
             summary: $"remote triggers: {events.Count}");
     }
@@ -171,7 +166,8 @@ public sealed class RemoteTriggerTool(
             return string.IsNullOrWhiteSpace(text) ? "{}" : text;
         }
 
-        return JsonSerializer.Serialize(raw, JsonOptions);
+        // Public callers can supply arbitrary CLR payloads. Keep their JIT format when the type has no generated metadata.
+        return ExternalToolArgumentJson.TryWriteWeb(raw, out var json) ? json : JsonSerializer.Serialize(raw, JsonOptions);
     }
 
     private static bool? ReadBool(object? raw)

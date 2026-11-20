@@ -83,6 +83,42 @@ public sealed class ExecutionApprovalAndPermissionTests : IDisposable
     }
 
     [Fact]
+    public void DigestBytes_MatchExistingPermissionRules()
+    {
+        var request = new ExecutionRequest
+        {
+            SessionId = "s:中🚀",
+            JobId = "job-a",
+            TurnId = "t-1",
+            WorkspaceRoot = "C:/示例/<work>&",
+            ToolName = "fixture",
+            Executable = "C:/invalid/never-executed.exe",
+            InterpreterChain = ["synthetic", "例"],
+            Argv = ["--", "雪🚀", "a<b & c\r"],
+            Cwd = "C:/示例/<work>&/src",
+            StdinSha256 = "stdin",
+            ScriptSha256 = "script",
+            CodeSha256 = "code",
+            InputsManifestSha256 = "inputs",
+            EnvironmentDelta = [new("z", "雪"), new("a", "second"), new("a", "first"), new("Z", "<>\"")],
+            Backend = ExecutionBackend.Local,
+            Network = "denied",
+            Filesystem = "synthetic",
+            Origin = ExecutionOrigin.DevWorker,
+            PolicyVersion = 3,
+            WrapperSha256 = "wrapper",
+            ExportScopeSha256 = "export",
+            TimeoutSeconds = 13,
+            ShellKind = "fixture-shell"
+        };
+
+        Assert.Equal("cb0e6b61c619aba60ad795ba99249232365d392929df7623e1b309751ddbc928", request.ComputeRequestDigest());
+        Assert.Equal("8de80764a1380c2f6d1963039d58d2df1646ef6d5366a2de02b3fb12c445a5f0", request.ComputeSessionAgnosticDigest());
+        var shuffled = request with { EnvironmentDelta = request.EnvironmentDelta.Reverse().ToArray() };
+        Assert.Equal(request.ComputeRequestDigest(), shuffled.ComputeRequestDigest());
+    }
+
+    [Fact]
     public async Task DigestSensitivity_ChangesInCodeScriptStdinInputsOrEnv_PreventReuse()
     {
         var harness = CreateHarness(new ExecutionOptions

@@ -163,7 +163,7 @@ public sealed record SkillToolStep : SkillStepDefinition
     public SkillResponseContract? ResponseContract { get; init; }
 }
 
-[JsonConverter(typeof(JsonStringEnumConverter))]
+[JsonConverter(typeof(JsonStringEnumConverter<SkillTransformOperation>))]
 public enum SkillTransformOperation
 {
     Filter = 0,
@@ -175,7 +175,7 @@ public enum SkillTransformOperation
     Lookup = 6
 }
 
-[JsonConverter(typeof(JsonStringEnumConverter))]
+[JsonConverter(typeof(JsonStringEnumConverter<SkillDuplicateKeyPolicy>))]
 public enum SkillDuplicateKeyPolicy
 {
     Reject = 0,

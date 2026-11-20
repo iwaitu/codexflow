@@ -947,12 +947,8 @@ public sealed partial class OpenApiBusinessPluginAdapter
         IReadOnlyList<CapabilityParameterSpecDto> parameters,
         string? requestBodySchemaJson)
     {
-        var model = new
-        {
-            parameters,
-            hasJsonBody = requestBodySchemaJson is not null
-        };
-        return JsonSerializer.Serialize(model);
+        var model = new CompositeOpenApiInputSchema(parameters, requestBodySchemaJson is not null);
+        return JsonSerializer.Serialize(model, BusinessSkillDefinitionJsonContext.Default.CompositeOpenApiInputSchema);
     }
 
     private static bool TryResolveServerUri(

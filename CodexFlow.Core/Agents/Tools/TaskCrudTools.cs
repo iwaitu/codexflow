@@ -94,7 +94,7 @@ internal static class TaskCrudToolSupport
         {
             try
             {
-                return System.Text.Json.JsonSerializer.Deserialize<string[]>(text) ?? [];
+                return JsonSerializer.Deserialize(text, BuiltInToolJsonContext.Default.StringArray) ?? [];
             }
             catch (System.Text.Json.JsonException)
             {

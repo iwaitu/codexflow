@@ -235,7 +235,7 @@ public sealed class NotebookEditTool(
         for (var i = 0; i < lines.Length; i++)
         {
             var line = lines[i];
-            array.Add(i < lines.Length - 1 ? line + "\n" : line);
+            array.Add((JsonNode?)JsonValue.Create(i < lines.Length - 1 ? line + "\n" : line));
         }
 
         return array;

@@ -487,7 +487,7 @@ public class RunCommandTool(
             {
                 try
                 {
-                    var parts = System.Text.Json.JsonSerializer.Deserialize<List<string>>(s);
+                    var parts = JsonSerializer.Deserialize(s, AutomationToolArgumentJsonContext.Default.ListString);
                     return parts;
                 }
                 catch (JsonException) { }

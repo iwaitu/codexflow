@@ -10,8 +10,6 @@ namespace CodexFlow.Core.Agents.Tools;
 
 public sealed class PushNotificationTool(IPushNotificationService notificationService) : ICodexTool
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-
     public string Name => "push_notification";
 
     public string Description => "向用户或会话推送通知。参数: user_id, title?, message, session_id?, task_id?, job_id?, priority?, channels?, markdown_report?, metadata?。";
@@ -71,16 +69,10 @@ public sealed class PushNotificationTool(IPushNotificationService notificationSe
             return CodexToolResult.Error(result.Error ?? "push_notification failed.");
         }
 
-        var payload = new
-        {
-            pushed = true,
-            notification_id = result.NotificationId,
-            delivered_channels = result.DeliveredChannels,
-            request
-        };
+        var payload = new PushNotificationPayload(true, result.NotificationId, result.DeliveredChannels, request);
 
         return CodexToolResult.Succeeded(
-            JsonSerializer.Serialize(payload, JsonOptions),
+            JsonSerializer.Serialize(payload, AutomationToolJsonContext.Default.PushNotificationPayload),
             payload,
             summary: $"notification pushed to {userId}: {string.Join(",", result.DeliveredChannels)}");
     }
