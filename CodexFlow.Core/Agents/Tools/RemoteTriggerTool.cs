@@ -13,7 +13,11 @@ public sealed class RemoteTriggerTool(
     IRemoteTriggerService triggerService,
     Func<SpawnWorkerRequest, CancellationToken, Task<SpawnWorkerResult>>? spawnWorkerFunc = null) : ICodexTool
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private const string InvalidPayloadMessage = "Invalid payload. Pass event text, JSON-compatible data, or JSON serialized with a source-generated context. Clone JSON elements before disposing their document.";
+    private static readonly HashSet<string> ArgumentContainerKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "args", "arguments", "params", "parameters", "input_params"
+    };
 
     public string Name => "remote_trigger";
 
@@ -33,7 +37,23 @@ public sealed class RemoteTriggerTool(
     public async Task<CodexToolResult> ExecuteAsync(Dictionary<string, object?> arguments, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(arguments);
-        ToolArgumentNormalizer.NormalizeInPlace(arguments);
+        if (HasCircularArgumentList(arguments))
+        {
+            return CodexToolResult.Error("Invalid argument list, including payload: lists must not reference themselves.");
+        }
+
+        try
+        {
+            ToolArgumentNormalizer.NormalizeInPlace(arguments);
+        }
+        catch (ObjectDisposedException)
+        {
+            return CodexToolResult.Error("Invalid JSON argument. Clone JSON elements, including a JSON payload, before disposing their document.");
+        }
+        catch (ArgumentException)
+        {
+            return CodexToolResult.Error("Invalid JSON argument. Use property names that are unique regardless of letter case.");
+        }
 
         var action = arguments.GetValueOrDefault("action")?.ToString();
         if (string.Equals(action, "list", StringComparison.OrdinalIgnoreCase) ||
@@ -83,6 +103,12 @@ public sealed class RemoteTriggerTool(
             return CodexToolResult.Error($"Unsupported worker_type: {workerTypeText}");
         }
 
+        var payloadJson = SerializePayload(arguments.GetValueOrDefault("payload"));
+        if (payloadJson is null)
+        {
+            return CodexToolResult.Error(InvalidPayloadMessage);
+        }
+
         if (dispatchWorker)
         {
             var spawnResult = await spawnWorkerFunc!(
@@ -113,7 +139,7 @@ public sealed class RemoteTriggerTool(
             EventType = eventType.Trim(),
             SessionId = sessionId,
             UserId = userId,
-            PayloadJson = SerializePayload(arguments.GetValueOrDefault("payload")),
+            PayloadJson = payloadJson,
             DispatchWorker = dispatchWorker,
             WorkerType = workerType.Value.ToString().ToLowerInvariant(),
             Prompt = prompt,
@@ -154,7 +180,40 @@ public sealed class RemoteTriggerTool(
             : null;
     }
 
-    private static string SerializePayload(object? raw)
+    private static bool HasCircularArgumentList(Dictionary<string, object?> arguments)
+    {
+        var activeLists = new HashSet<object>(ReferenceEqualityComparer.Instance);
+        foreach (var (name, value) in arguments)
+        {
+            // The normalizer recursively visits IList<object> and promotes values from these wrapper dictionaries.
+            if (HasCircularList(value, activeLists) ||
+                (ArgumentContainerKeys.Contains(name) && value is IDictionary<string, object?> wrapper &&
+                 wrapper.Values.Any(item => HasCircularList(item, activeLists))))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool HasCircularList(object? value, HashSet<object> activeLists)
+    {
+        if (value is not IList<object?> list)
+        {
+            return false;
+        }
+        if (!activeLists.Add(list))
+        {
+            return true;
+        }
+
+        var found = list.Any(item => HasCircularList(item, activeLists));
+        activeLists.Remove(list);
+        return found;
+    }
+
+    private static string? SerializePayload(object? raw)
     {
         if (raw == null)
         {
@@ -166,8 +225,14 @@ public sealed class RemoteTriggerTool(
             return string.IsNullOrWhiteSpace(text) ? "{}" : text;
         }
 
-        // Public callers can supply arbitrary CLR payloads. Keep their JIT format when the type has no generated metadata.
-        return ExternalToolArgumentJson.TryWriteWeb(raw, out var json) ? json : JsonSerializer.Serialize(raw, JsonOptions);
+        try
+        {
+            return ExternalToolArgumentJson.TryWriteWeb(raw, out var json) ? json : null;
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or ArgumentException)
+        {
+            return null;
+        }
     }
 
     private static bool? ReadBool(object? raw)
