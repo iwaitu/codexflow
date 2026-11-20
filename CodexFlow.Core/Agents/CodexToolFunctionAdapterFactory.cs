@@ -65,7 +65,7 @@ public static class CodexToolFunctionAdapterFactory
             "search_file_index"     => CreateForSearchFileIndex(tool, description),
             "run_tests"             => CreateForRunTests(tool, description),
             "analyze_project"       => CreateForAnalyzeProject(tool, description),
-            "analyze_code"          => CreateForAnalyzeCode(tool, description),
+            "analyze_code"          => new AnalyzeCodeAIFunction(tool, description),
             "lsp_get_diagnostics"   => CreateForLspGetDiagnostics(tool, description),
             "lsp_document_symbols"  => CreateForLspDocumentSymbols(tool, description),
             "lsp_workspace_symbols" => CreateForLspWorkspaceSymbols(tool, description),
@@ -161,6 +161,11 @@ public static class CodexToolFunctionAdapterFactory
         ArgumentNullException.ThrowIfNull(result);
         // Web defaults (camelCase) match what AIFunctionFactory produced before, so existing consumers keep working.
         var node = JsonSerializer.SerializeToNode(result, MarkedResultJsonOptions) as JsonObject ?? new JsonObject();
+        return MarkEnvelope(node);
+    }
+
+    internal static JsonNode MarkEnvelope(JsonObject node)
+    {
         node["__icodex_tool_result"] = true;
         return ToolResultSizeGuard.Apply(node);
     }
@@ -525,18 +530,6 @@ public static class CodexToolFunctionAdapterFactory
                 return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
             },
             new AIFunctionFactoryOptions { Name = "lsp_find_references", Description = description });
-
-    private static AIFunction CreateForAnalyzeCode(ICodexTool tool, string description) =>
-        AIFunctionFactory.Create(
-            async (string code, CancellationToken ct = default) =>
-            {
-                var args = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
-                {
-                    ["code"] = code,
-                };
-                return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
-            },
-            new AIFunctionFactoryOptions { Name = "analyze_code", Description = description });
 
     private static AIFunction CreateForGenerateDevPlan(ICodexTool tool, string description) =>
         AIFunctionFactory.Create(
