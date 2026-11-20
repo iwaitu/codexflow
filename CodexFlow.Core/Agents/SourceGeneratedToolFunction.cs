@@ -30,6 +30,11 @@ internal sealed class SourceGeneratedToolFunction(
     private static readonly JsonElement SearchSchema = ParseElement("""
         {"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":["string","null"],"default":null},"ignore_case":{"type":["boolean","null"],"default":null},"max_results":{"type":["integer","null"],"default":null},"session_id":{"type":["string","null"],"default":null},"workspace_path":{"type":["string","null"],"default":null},"project_root":{"type":["string","null"],"default":null}},"required":["pattern"]}
         """);
+    private static readonly JsonElement ListWorkspaceSchema = ParseElement("""
+        {"type":"object","properties":{"path":{"type":["string","null"],"default":null},"recursive":{"type":["boolean","null"],"default":null},"session_id":{"type":["string","null"],"default":null},"workspace_path":{"type":["string","null"],"default":null},"project_root":{"type":["string","null"],"default":null}}}
+        """);
+    private static readonly JsonElement FallbackSchema = ParseElement(
+        """{"type":"object","properties":{"parameters":{"type":"object"}},"required":["parameters"]}""");
 
     internal static AIFunction AnalyzeCode(ICodexTool tool, string description)
         => new SourceGeneratedToolFunction(tool, "analyze_code", description, AnalyzeSchema, BindAnalyzeCode);
@@ -39,6 +44,12 @@ internal sealed class SourceGeneratedToolFunction(
 
     internal static AIFunction SearchFiles(ICodexTool tool, string description)
         => new SourceGeneratedToolFunction(tool, "search_in_files", description, SearchSchema, BindSearchFiles);
+
+    internal static AIFunction ListWorkspace(ICodexTool tool, string description)
+        => new SourceGeneratedToolFunction(tool, "list_workspace", description, ListWorkspaceSchema, BindListWorkspace);
+
+    internal static AIFunction Fallback(ICodexTool tool, string name, string description)
+        => new SourceGeneratedToolFunction(tool, name, description, FallbackSchema, BindFallback);
 
     public override string Name => name;
     public override string Description => description;
@@ -66,20 +77,40 @@ internal sealed class SourceGeneratedToolFunction(
     }
 
     private static JsonElement EncodeResult(CodexToolResult result)
+        => ParseElement(MarkSourceGeneratedResult(result).ToJsonString());
+
+    internal static JsonNode MarkSourceGeneratedResult(CodexToolResult result)
     {
         if (result.Metadata is { } metadata && JsonContext.GetTypeInfo(metadata.GetType()) is null)
         {
-            // Allow existing managed plug-ins to attach metadata outside the built-in tool contracts.
-            if (JsonSerializer.IsReflectionEnabledByDefault)
-            {
-                return ParseElement(CodexToolFunctionAdapterFactory.MarkResult(result).ToJsonString());
-            }
-
-            result = CodexToolResult.Error("工具返回了未注册的结果元数据类型。");
+            return MarkUnregisteredMetadata(result);
         }
 
-        var envelope = (JsonObject)JsonSerializer.SerializeToNode(result, JsonContext.CodexToolResult)!;
-        return ParseElement(CodexToolFunctionAdapterFactory.MarkEnvelope(envelope).ToJsonString());
+        JsonObject envelope;
+        try
+        {
+            envelope = (JsonObject)JsonSerializer.SerializeToNode(result, JsonContext.CodexToolResult)!;
+        }
+        catch (NotSupportedException)
+        {
+            // A registered dictionary or list can still contain an unregistered metadata value.
+            return MarkUnregisteredMetadata(result);
+        }
+
+        return CodexToolFunctionAdapterFactory.MarkEnvelope(envelope);
+    }
+
+    private static JsonNode MarkUnregisteredMetadata(CodexToolResult result)
+    {
+        // Preserve existing managed plug-in metadata outside the generated contracts.
+        if (CodexToolFunctionAdapterFactory.SupportsManagedToolReflection)
+        {
+            return CodexToolFunctionAdapterFactory.MarkResult(result);
+        }
+
+        var failure = CodexToolResult.Error("工具返回了未注册的结果元数据类型。");
+        var envelope = (JsonObject)JsonSerializer.SerializeToNode(failure, JsonContext.CodexToolResult)!;
+        return CodexToolFunctionAdapterFactory.MarkEnvelope(envelope);
     }
 
     private static Dictionary<string, object?> BindAnalyzeCode(AIFunctionArguments input)
@@ -105,6 +136,34 @@ internal sealed class SourceGeneratedToolFunction(
         args["ignore_case"] = ReadArgument(input, "ignore_case", JsonContext.NullableBoolean) ?? true;
         args["max_results"] = ReadArgument(input, "max_results", JsonContext.NullableInt32) ?? 50;
         return args;
+    }
+
+    private static Dictionary<string, object?> BindListWorkspace(AIFunctionArguments input)
+    {
+        var args = WorkspaceArgs(input);
+        args["path"] = ReadArgument(input, "path", JsonContext.String) ?? ".";
+        args["recursive"] = ReadArgument(input, "recursive", JsonContext.NullableBoolean) ?? false;
+        return args;
+    }
+
+    private static Dictionary<string, object?> BindFallback(AIFunctionArguments input)
+    {
+        if (!input.TryGetValue("parameters", out var value))
+        {
+            throw new JsonException("缺少必需的参数 'parameters'。");
+        }
+
+        var parameters = value switch
+        {
+            null => null,
+            Dictionary<string, object?> dictionary => dictionary,
+            JsonElement element => element.Deserialize(JsonContext.DictionaryStringObject),
+            JsonNode node => node.Deserialize(JsonContext.DictionaryStringObject),
+            string json => JsonSerializer.Deserialize(json, JsonContext.DictionaryStringObject),
+            _ => throw new JsonException("参数 'parameters' 必须是 JSON 对象。")
+        };
+
+        return ToolArgumentNormalizer.NormalizeCopy(parameters);
     }
 
     private static Dictionary<string, object?> WorkspaceArgs(AIFunctionArguments input)
@@ -179,10 +238,21 @@ internal sealed class SourceGeneratedToolFunction(
 [JsonSerializable(typeof(ImageReadMetadata))]
 [JsonSerializable(typeof(HashlineReadMetadata))]
 [JsonSerializable(typeof(SearchInFilesMetadata))]
+[JsonSerializable(typeof(JsonElement))]
+[JsonSerializable(typeof(JsonObject))]
+[JsonSerializable(typeof(JsonArray))]
+[JsonSerializable(typeof(Dictionary<string, object>))]
+[JsonSerializable(typeof(List<object>))]
 [JsonSerializable(typeof(string))]
 [JsonSerializable(typeof(int?))]
 [JsonSerializable(typeof(bool?))]
+[JsonSerializable(typeof(byte))]
+[JsonSerializable(typeof(sbyte))]
+[JsonSerializable(typeof(short))]
+[JsonSerializable(typeof(ushort))]
+[JsonSerializable(typeof(uint))]
 [JsonSerializable(typeof(long))]
+[JsonSerializable(typeof(ulong))]
 [JsonSerializable(typeof(double))]
 [JsonSerializable(typeof(float))]
 [JsonSerializable(typeof(decimal))]

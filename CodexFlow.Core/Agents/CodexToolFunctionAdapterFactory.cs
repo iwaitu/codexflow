@@ -5,7 +5,9 @@
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Constants;
 using Microsoft.Extensions.AI;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using CodexFlow.Core.Models;
@@ -48,7 +50,9 @@ public static class CodexToolFunctionAdapterFactory
             "ivilson_read"          => SourceGeneratedToolFunction.ReadFile(tool, description),
             "hs_read"               => CreateForHsRead(tool, description),
             "ivilson_ls"            => CreateForIvilsonLs(tool, description),
-            "list_workspace"        => CreateForListWorkspace(tool, description),
+            "list_workspace"        => SupportsManagedToolReflection
+                ? CreateForListWorkspace(tool, description)
+                : SourceGeneratedToolFunction.ListWorkspace(tool, description),
             "glob"                  => CreateForGlob(tool, description),
             "write_file"            => CreateForWriteFile(tool, description),
             "edit_file"             => CreateForEditFile(tool, description),
@@ -113,7 +117,9 @@ public static class CodexToolFunctionAdapterFactory
             "tool_search"           => CreateForToolSearch(tool, description),
             "list_business_skills"  => CreateForListBusinessSkills(tool, description),
             "run_business_skill"    => CreateForRunBusinessSkill(tool, description),
-            _                       => CreateFallback(tool, name, description),
+            _                       => SupportsManagedToolReflection
+                ? CreateFallback(tool, name, description)
+                : SourceGeneratedToolFunction.Fallback(tool, name, description),
         };
     }
 
@@ -149,6 +155,9 @@ public static class CodexToolFunctionAdapterFactory
         }
     }
 
+    internal static bool SupportsManagedToolReflection =>
+        RuntimeFeature.IsDynamicCodeSupported && JsonSerializer.IsReflectionEnabledByDefault;
+
     /// <summary>
     /// Serializes a tool result keeping the CodexToolResult JSON shape and adds the explicit
     /// <c>__icodex_tool_result</c> marker so downstream consumers can recognise a typed tool envelope
@@ -159,9 +168,22 @@ public static class CodexToolFunctionAdapterFactory
     internal static JsonNode MarkResult(CodexToolResult result)
     {
         ArgumentNullException.ThrowIfNull(result);
-        // Web defaults (camelCase) match what AIFunctionFactory produced before, so existing consumers keep working.
-        var node = JsonSerializer.SerializeToNode(result, MarkedResultJsonOptions) as JsonObject ?? new JsonObject();
-        return MarkEnvelope(node);
+        return TryMarkManagedResult(result) is { } managed
+            ? MarkEnvelope(managed)
+            : SourceGeneratedToolFunction.MarkSourceGeneratedResult(result);
+    }
+
+    [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Open tool metadata uses reflection only when the runtime supports dynamic code and STJ default reflection is enabled.")]
+    [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "The reflection branch requires runtime dynamic code support, which Native AOT disables.")]
+    private static JsonObject? TryMarkManagedResult(CodexToolResult result)
+    {
+        if (!SupportsManagedToolReflection)
+        {
+            return null;
+        }
+
+        // Web defaults preserve the legacy JSON for managed plug-ins.
+        return JsonSerializer.SerializeToNode(result, MarkedResultJsonOptions) as JsonObject ?? new JsonObject();
     }
 
     internal static JsonNode MarkEnvelope(JsonObject node)
