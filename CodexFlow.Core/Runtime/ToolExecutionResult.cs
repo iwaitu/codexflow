@@ -7,6 +7,11 @@ using CodexFlow.Core.Models;
 namespace CodexFlow.Core.Runtime;
 
 /// <summary>What one tool call really returned; the evidence processor folds these into the turn's evidence.</summary>
+/// <remarks>
+/// To supply observation evidence in <c>Metadata</c>, use a <see cref="Newtonsoft.Json.Linq.JObject"/>
+/// or an object-valued <see cref="System.Text.Json.JsonElement"/> whose backing document is still available.
+/// Callers can provide JSON from their own explicit DTO serializer or clone the element before disposing its document.
+/// </remarks>
 public sealed record ToolExecutionResult(
     string ToolName,
     string CallId,

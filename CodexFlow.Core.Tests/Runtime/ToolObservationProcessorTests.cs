@@ -7,6 +7,7 @@ using CodexFlow.Core.Runtime;
 using CodexFlow.Core.Telemetry;
 using Microsoft.Extensions.AI;
 using Newtonsoft.Json.Linq;
+using System.Text.Json;
 using Xunit;
 
 namespace CodexFlow.Core.Tests.Runtime;
@@ -208,7 +209,8 @@ public sealed class ToolObservationProcessorTests
                     ResultLength: 120,
                     Metadata: new JObject
                     {
-                        ["Stdout"] = " M src/CleanApp.ServiceDefaults/CleanApp.ServiceDefaults.csproj\n"
+                        ["Stdout"] = " M src/CleanApp.ServiceDefaults/CleanApp.ServiceDefaults.csproj\n",
+                        ["ExitCode"] = 0
                     })
             ],
             RuntimeRequest = CreateRequest(),
@@ -240,6 +242,7 @@ public sealed class ToolObservationProcessorTests
                     ResultLength: 900,
                     Metadata: new JObject
                     {
+                        ["ExitCode"] = 0,
                         ["Stdout"] = """
                             diff --git a/src/CleanApp.Core/CleanApp.Core.csproj b/src/CleanApp.Core/CleanApp.Core.csproj
                             index 663a28d..395b46f 100644
@@ -289,7 +292,8 @@ public sealed class ToolObservationProcessorTests
                     ResultLength: 80,
                     Metadata: new JObject
                     {
-                        ["Stdout"] = "All projects are up-to-date for restore.\n"
+                        ["Stdout"] = "All projects are up-to-date for restore.\n",
+                        ["ExitCode"] = 0
                     }),
                 new ToolExecutionResult(
                     ToolName: "exec_cmd",
@@ -299,7 +303,8 @@ public sealed class ToolObservationProcessorTests
                     ResultLength: 300,
                     Metadata: new JObject
                     {
-                        ["Stdout"] = "The given project `CleanApp.Core` has no vulnerable packages given the current sources.\n"
+                        ["Stdout"] = "The given project `CleanApp.Core` has no vulnerable packages given the current sources.\n",
+                        ["ExitCode"] = 0
                     })
             ],
             RuntimeRequest = CreateRequest(),
@@ -389,6 +394,179 @@ public sealed class ToolObservationProcessorTests
     }
 
     [Fact]
+    public void Observe_ReplacesVerificationAfterKnownFailureAndLaterPass()
+    {
+        var state = new QueryRuntimeState();
+        ObserveRound(state, Command("dotnet build", new JObject { ["ExitCode"] = 0, ["Status"] = "Completed" }));
+        Assert.Equal("dotnet_build", Assert.Single(state.EvidenceLedger.Verifications).Kind);
+
+        ObserveRound(state, Command("dotnet build", ParseJson("""{"EXIT_CODE":1,"STATUS":"Completed"}""")));
+        Assert.Empty(state.EvidenceLedger.Verifications);
+
+        ObserveRound(state, Command("dotnet build", ParseJson("""{"EXIT_CODE":" 0 ","STATUS":"Completed"}""")));
+        Assert.Equal("dotnet_build", Assert.Single(state.EvidenceLedger.Verifications).Kind);
+    }
+
+    [Theory]
+    [InlineData("stdout-only")]
+    [InlineData("null-exit")]
+    [InlineData("empty-exit")]
+    [InlineData("overflow-exit")]
+    [InlineData("malformed-status")]
+    [InlineData("unsupported-object")]
+    [InlineData("disposed-json")]
+    [InlineData("undefined-json")]
+    public void Observe_UnknownVerificationRemovesStalePassWithoutReportingFailure(string scenario)
+    {
+        var state = new QueryRuntimeState();
+        ObserveRound(state, Command("dotnet build", new JObject { ["ExitCode"] = 0 }));
+        Assert.Single(state.EvidenceLedger.Verifications);
+
+        object metadata = scenario switch
+        {
+            "stdout-only" => new JObject { ["Stdout"] = "Build succeeded." },
+            "null-exit" => ParseJson("""{"exitCode":null}"""),
+            "empty-exit" => ParseJson("""{"exitCode":""}"""),
+            "overflow-exit" => ParseJson("""{"exitCode":9223372036854775808}"""),
+            "malformed-status" => ParseJson("""{"exitCode":0,"status":[]}"""),
+            "unsupported-object" => new { ExitCode = 0, Status = "Completed" },
+            "disposed-json" => ReadDisposedObject(),
+            "undefined-json" => default(JsonElement),
+            _ => throw new ArgumentOutOfRangeException(nameof(scenario))
+        };
+        ObserveRound(state, Command("dotnet build", metadata, "Build succeeded.\n"));
+
+        Assert.Empty(state.EvidenceLedger.Verifications);
+        Assert.Empty(state.EvidenceLedger.FailedVerifications);
+    }
+
+    [Fact]
+    public void Observe_VulnerabilityFindingInReceiptInvalidatesPriorCleanEvidence()
+    {
+        var state = new QueryRuntimeState();
+        const string listing = "dotnet list package --vulnerable --include-transitive";
+        var metadata = new JObject { ["ExitCode"] = 0, ["Stdout"] = "Project has no vulnerable packages." };
+        ObserveRound(state, Command(listing, metadata));
+        Assert.Equal("dotnet_vulnerable_clean", Assert.Single(state.EvidenceLedger.Verifications).Kind);
+
+        ObserveRound(state, Command(listing, metadata, "stderr: NU1903 a dependency has a known high severity vulnerability.\n"));
+
+        Assert.Empty(state.EvidenceLedger.Verifications);
+    }
+
+    [Theory]
+    [InlineData("git status --short")]
+    [InlineData("git diff")]
+    public void Observe_GitUpdatesOnlyFromPassedParseableOrEmptyOutput(string command)
+    {
+        var state = new QueryRuntimeState();
+        var status = command == "git status --short";
+        int SnapshotCount() => status ? state.EvidenceLedger.ChangedFiles.Count : state.EvidenceLedger.DiffChanges.Count;
+
+        var initialOutput = status ? " M src/project.csproj\n" : """
+            diff --git a/src/project.csproj b/src/project.csproj
+            +    <PackageReference Include="Sample" Version="1.2.3" />
+            """;
+        ObserveRound(state, Command(command, new JObject { ["ExitCode"] = 0, ["Stdout"] = initialOutput }));
+        Assert.Equal(1, SnapshotCount());
+
+        ObserveRound(state, Command(command, new JObject { ["ExitCode"] = 1, ["Stdout"] = "" }));
+        Assert.Equal(1, SnapshotCount());
+        ObserveRound(state, Command(command, new JObject { ["Stdout"] = "" }));
+        Assert.Equal(1, SnapshotCount());
+        ObserveRound(state, Command(command, ParseJson("""{"ExitCode":0,"Stdout":null}""")));
+        Assert.Equal(1, SnapshotCount());
+        ObserveRound(state, Command(command, ParseJson("""{"ExitCode":0,"Stdout":42}""")));
+        Assert.Equal(1, SnapshotCount());
+        ObserveRound(state, Command(command, new JObject { ["ExitCode"] = 0, ["Stdout"] = "not Git output" }));
+        Assert.Equal(1, SnapshotCount());
+        ObserveRound(state, Command($"echo '$ {command}'", new JObject { ["ExitCode"] = 0, ["Stdout"] = "" }));
+        Assert.Equal(1, SnapshotCount());
+        if (!status)
+        {
+            ObserveRound(state, Command("git diff --cached --check", new JObject { ["ExitCode"] = 0, ["Stdout"] = "" }));
+            Assert.Equal(1, SnapshotCount());
+        }
+
+        ObserveRound(state, Command(command, ParseJson("""{"exit_code":"0","stdout":""}""")));
+        Assert.Equal(0, SnapshotCount());
+    }
+
+    [Fact]
+    public void Observe_UsesJsonReadAliasesAndKeepsFingerprintAndRangeKeysDistinct()
+    {
+        var state = new QueryRuntimeState();
+        var result = BuildHashlineRead("read", "fixtures.txt", "legacy", "a");
+        var first = ObserveRound(state, result with
+        {
+            Metadata = ParseJson("""{"PATH":"ignored","filePATH":"fixtures.txt","snapshotID":"2024-05-10T12:00:00Z","fileFingerprint":" ","fingerPRINT":"a","startLine":"1","endLINE":20,"lines":100}""")
+        });
+        var file = Assert.Single(first.UpdatedLedger.Files);
+        Assert.Equal("2024-05-10T12:00:00Z", file.SnapshotId);
+        Assert.Equal("a", file.FileFingerprint);
+        Assert.Equal(1, file.WindowStartLine);
+        Assert.Equal(20, file.WindowEndLine);
+        Assert.Equal(100, file.TotalLineCount);
+
+        var sameFingerprint = ObserveRound(state, result with
+        {
+            Metadata = ParseJson("""{"filePath":"fixtures.txt","fingerprint":"a","startLine":21,"endLine":40}""")
+        });
+        Assert.True(sameFingerprint.HasRepeatedReadEvidence);
+        var firstRange = result with { Metadata = ParseJson("""{"filePath":"fixtures.txt","startLine":"1","endLine":20}""") };
+        Assert.False(ObserveRound(state, firstRange).HasRepeatedReadEvidence);
+        Assert.False(ObserveRound(state, result with
+        {
+            Metadata = ParseJson("""{"filePath":"fixtures.txt","startLine":21,"endLine":40}""")
+        }).HasRepeatedReadEvidence);
+        Assert.True(ObserveRound(state, firstRange).HasRepeatedReadEvidence);
+    }
+
+    [Fact]
+    public void ObservationMetadata_DistinguishesAbsentNullEmptyAndMalformedValues()
+    {
+        Assert.False(ToolObservationMetadata.From(null).IsProvided);
+        foreach (var malformed in new object[] { new { ExitCode = 0 }, ReadDisposedObject(), default(JsonElement), ParseJson("[]") })
+        {
+            var unreadable = ToolObservationMetadata.From(malformed);
+            Assert.True(unreadable.IsProvided);
+            Assert.False(unreadable.IsReadable);
+        }
+
+        var metadata = ToolObservationMetadata.From(ParseJson("""{"stdout":"","status":null,"exitCode":20000000000,"exit_code":"-2"}"""));
+        Assert.True(metadata.IsReadable);
+        Assert.True(metadata.HasField("Status"));
+        Assert.False(metadata.HasNonNullValue("Status"));
+        Assert.False(metadata.HasField("missing"));
+        Assert.Equal("", metadata.GetString("Stdout"));
+        Assert.True(metadata.HasNonNullValue("Stdout"));
+        Assert.Null(metadata.GetString("exitCode"));
+        Assert.Null(metadata.GetInt("exitCode"));
+        Assert.Equal(-2, metadata.GetInt("exitCode", "exit_code"));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Observe_ReadsDuplicateGuardHintFromSupportedMetadata(bool useJson)
+    {
+        var state = new QueryRuntimeState();
+        var reason = DefaultToolObservationProcessor.DuplicateHashlineReadReasonCode;
+        object metadata = useJson
+            ? ParseJson($$"""{"reasonCODE":"{{reason}}"}""")
+            : new { ReasonCode = reason };
+        var result = new ToolExecutionResult(
+            "hs_read", "refused", "duplicate read", false, Metadata: metadata,
+            SystemHintDetail: new ToolSystemHint("Use the existing snapshot.", "hs_write", ToolCallRequired: true));
+
+        ObserveRound(state, result);
+
+        Assert.Equal(useJson ? "hs_write" : null, state.RequiredToolNameForNextRound);
+        Assert.Equal(useJson, state.ForceAllowToolCallsNextRound);
+        Assert.Empty(state.EvidenceLedger.Files);
+    }
+
+    [Fact]
     public void Observe_ForcesStartNextTaskNextRound_AfterSuccessfulPlanProjectionHint()
     {
         var processor = DefaultToolObservationProcessor.Instance;
@@ -431,6 +609,30 @@ public sealed class ToolObservationProcessorTests
             Options = new ChatOptions(),
             MaxRounds = 1
         };
+
+    private static ToolObservationResult ObserveRound(QueryRuntimeState state, ToolExecutionResult result)
+        => DefaultToolObservationProcessor.Instance.Observe(new ToolObservationRequest
+        {
+            ToolCalls = [],
+            ToolResults = [result],
+            RuntimeRequest = CreateRequest(),
+            State = state
+        });
+
+    private static ToolExecutionResult Command(string command, object? metadata, string body = "")
+        => new("exec_cmd", "fixture", $"✅ command_task_id: fixture\n$ {command}\n{body}", true, Metadata: metadata);
+
+    private static JsonElement ParseJson(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        return document.RootElement.Clone();
+    }
+
+    private static JsonElement ReadDisposedObject()
+    {
+        using var document = JsonDocument.Parse("""{"exitCode":0}""");
+        return document.RootElement;
+    }
 
     private static ToolExecutionResult BuildHashlineRead(
         string callId,

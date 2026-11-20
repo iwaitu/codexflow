@@ -5,8 +5,6 @@
 using CodexFlow.Core.Agents;
 using CodexFlow.Core.Models;
 using Microsoft.Extensions.AI;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 using System.Text.RegularExpressions;
 
 namespace CodexFlow.Core.Runtime;
@@ -109,6 +107,13 @@ public sealed class DefaultToolObservationProcessor : IToolObservationProcessor
     {
         foreach (var result in executionResults)
         {
+            if (result.Metadata is { } suppliedMetadata &&
+                !ToolObservationMetadata.From(suppliedMetadata).IsReadable)
+            {
+                System.Diagnostics.Trace.TraceWarning(
+                    "Tool observation ignored unreadable result metadata. Supply a JSON object as JObject or JsonElement.");
+            }
+
             UpsertToolEvidence(
                 state.EvidenceLedger.ToolResults,
                 new ToolEvidence
@@ -121,21 +126,21 @@ public sealed class DefaultToolObservationProcessor : IToolObservationProcessor
                     IsOutputTruncated = result.IsOutputTruncated
                 });
 
-            if (TryExtractGitStatusShortEvidence(result, out var changedFiles))
+            if (ToolCommandObservation.Read(result) is { } command)
             {
-                state.EvidenceLedger.ChangedFiles.Clear();
-                state.EvidenceLedger.ChangedFiles.AddRange(changedFiles);
-            }
+                if (TryExtractGitStatusShortEvidence(command, result.ToolName, out var changedFiles))
+                {
+                    state.EvidenceLedger.ChangedFiles.Clear();
+                    state.EvidenceLedger.ChangedFiles.AddRange(changedFiles);
+                }
 
-            if (TryExtractGitDiffEvidence(result, out var diffChanges))
-            {
-                state.EvidenceLedger.DiffChanges.Clear();
-                state.EvidenceLedger.DiffChanges.AddRange(diffChanges);
-            }
+                if (TryExtractGitDiffEvidence(command, result.ToolName, out var diffChanges))
+                {
+                    state.EvidenceLedger.DiffChanges.Clear();
+                    state.EvidenceLedger.DiffChanges.AddRange(diffChanges);
+                }
 
-            if (TryExtractVerificationEvidence(result, out var verification))
-            {
-                UpsertVerificationEvidence(state.EvidenceLedger.Verifications, verification);
+                UpdateVerificationEvidence(state.EvidenceLedger.Verifications, command, result);
             }
 
             if (!result.Success)
@@ -212,147 +217,63 @@ public sealed class DefaultToolObservationProcessor : IToolObservationProcessor
         TrimHead(state.EvidenceLedger.Verifications, EvidenceLedgerMaxVerifications);
     }
 
-    private static bool TryExtractVerificationEvidence(
-        ToolExecutionResult result,
-        out RuntimeVerificationEvidence verification)
+    private static void UpdateVerificationEvidence(
+        List<RuntimeVerificationEvidence> verifications,
+        ToolCommandObservation command,
+        ToolExecutionResult result)
     {
-        verification = null!;
-        if (!result.Success ||
-            !string.Equals(result.ToolName, "exec_cmd", StringComparison.OrdinalIgnoreCase))
+        if (command.Verification is { } verification)
         {
-            return false;
-        }
-
-        var commandSource = result.Result ?? string.Empty;
-        var hasMetadata = TryGetMetadataObject(result.Metadata, out var metadata);
-        var output = hasMetadata
-            ? GetMetadataString(metadata, "Stdout", "stdout") ?? result.Result
-            : result.Result;
-        var combined = $"{commandSource}\n{output}";
-
-        // "Success" only says the command ran. A command that exited non-zero is still a successful tool call, with the outcome in the
-        // metadata and a "⚠️" marker in the text; the echoed command line is not evidence that it passed.
-        if (!ExitedCleanly(commandSource, hasMetadata ? metadata : null))
-        {
-            return false;
-        }
-
-        if (ContainsDotnetCommand(commandSource, "restore"))
-        {
-            verification = new RuntimeVerificationEvidence
+            if (command.Outcome != ToolCommandOutcome.Passed)
             {
-                Kind = "dotnet_restore",
-                Summary = "`dotnet restore` 通过",
-                SourceToolName = result.ToolName,
-                SourceCommand = "dotnet restore"
-            };
-            return true;
-        }
+                verifications.RemoveAll(item => string.Equals(item.Kind, verification.Kind, StringComparison.OrdinalIgnoreCase));
+                return;
+            }
 
-        if (ContainsDotnetCommand(commandSource, "build"))
-        {
-            verification = new RuntimeVerificationEvidence
+            UpsertVerificationEvidence(verifications, new RuntimeVerificationEvidence
             {
-                Kind = "dotnet_build",
-                Summary = "`dotnet build` 通过",
+                Kind = verification.Kind,
+                Summary = $"`{verification.Command}` 通过",
                 SourceToolName = result.ToolName,
-                SourceCommand = "dotnet build"
-            };
-            return true;
+                SourceCommand = verification.Command
+            });
+            return;
         }
 
-        if (ContainsDotnetCommand(commandSource, "test"))
+        if (!ContainsDotnetVulnerableListCommand(command.CommandLine))
         {
-            verification = new RuntimeVerificationEvidence
-            {
-                Kind = "dotnet_test",
-                Summary = "`dotnet test` 通过",
-                SourceToolName = result.ToolName,
-                SourceCommand = "dotnet test"
-            };
-            return true;
+            return;
         }
 
-        if (TestCommandEvidence.Classify(commandSource) is { } testRun)
-        {
-            verification = new RuntimeVerificationEvidence
-            {
-                Kind = testRun.Kind,
-                Summary = $"`{testRun.Command}` 通过",
-                SourceToolName = result.ToolName,
-                SourceCommand = testRun.Command
-            };
-            return true;
-        }
-
-        if (ContainsDotnetVulnerableListCommand(commandSource) &&
-            ContainsAny(combined,
+        const string vulnerableCleanKind = "dotnet_vulnerable_clean";
+        if (command.Outcome != ToolCommandOutcome.Passed || command.Output is not { } output ||
+            ContainsVulnerablePackageFinding(result.Result) || ContainsVulnerablePackageFinding(output) ||
+            !ContainsAny(output,
                 "no vulnerable packages",
                 "has no vulnerable packages",
                 "没有 vulnerable packages",
                 "无漏洞包",
                 "没有发现 vulnerable packages",
-                "未报告 vulnerable packages") &&
-            !ContainsVulnerablePackageFinding(combined))
+                "未报告 vulnerable packages"))
         {
-            verification = new RuntimeVerificationEvidence
-            {
-                Kind = "dotnet_vulnerable_clean",
-                Summary = "`dotnet list package --vulnerable --include-transitive` 未报告 vulnerable packages",
-                SourceToolName = result.ToolName,
-                SourceCommand = "dotnet list package --vulnerable --include-transitive"
-            };
-            return true;
+            verifications.RemoveAll(item => string.Equals(item.Kind, vulnerableCleanKind, StringComparison.OrdinalIgnoreCase));
+            return;
         }
 
-        return false;
+        UpsertVerificationEvidence(verifications, new RuntimeVerificationEvidence
+        {
+            Kind = vulnerableCleanKind,
+            Summary = "`dotnet list package --vulnerable --include-transitive` 未报告 vulnerable packages",
+            SourceToolName = result.ToolName,
+            SourceCommand = "dotnet list package --vulnerable --include-transitive"
+        });
     }
-
-    /// <summary>
-    /// False when the command is known not to have finished cleanly: metadata exit code non-zero, status not Completed, or - with no metadata to
-    /// say - the tool's own "⚠️ 命令执行完成" marker or a non-zero "exit code N" in its text. No information at all counts as clean (legacy tools).
-    /// </summary>
-    internal static bool ExitedCleanly(string resultText, JObject? metadata)
-    {
-        if (metadata != null)
-        {
-            var exitCode = GetMetadataInt(metadata, "ExitCode", "exitCode", "exit_code");
-            var status = GetMetadataString(metadata, "Status", "status");
-            if (exitCode.HasValue)
-            {
-                return exitCode.Value == 0 &&
-                       (status is null || string.Equals(status, "null", StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(status, "Completed", StringComparison.OrdinalIgnoreCase));
-            }
-
-            if (status is not null && !string.Equals(status, "null", StringComparison.OrdinalIgnoreCase) &&
-                !string.Equals(status, "Completed", StringComparison.OrdinalIgnoreCase))
-            {
-                return false;
-            }
-        }
-
-        if (resultText.Contains("⚠️ 命令执行完成", StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        var match = Regex.Match(resultText, @"exit code\s+(-?\d+)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-        return !match.Success || match.Groups[1].Value == "0";
-    }
-
-    private static bool ContainsDotnetCommand(string? text, string verb)
-        => !string.IsNullOrWhiteSpace(text) &&
-           Regex.IsMatch(
-               text,
-               $@"\$\s*dotnet\s+{Regex.Escape(verb)}\b",
-               RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static bool ContainsDotnetVulnerableListCommand(string? text)
         => !string.IsNullOrWhiteSpace(text) &&
            Regex.IsMatch(
                text,
-               @"\$\s*dotnet\s+list\s+package\b[^\r\n]*--vulnerable\b",
+               @"^\$[ \t]*dotnet\s+list\s+package\b[^\r\n]*--vulnerable\b",
                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static bool ContainsVulnerablePackageFinding(string? text)
@@ -372,21 +293,16 @@ public sealed class DefaultToolObservationProcessor : IToolObservationProcessor
         => needles.Any(needle => text.Contains(needle, StringComparison.OrdinalIgnoreCase));
 
     private static bool TryExtractGitStatusShortEvidence(
-        ToolExecutionResult result,
+        ToolCommandObservation command,
+        string toolName,
         out List<ChangedFileEvidence> changedFiles)
     {
         changedFiles = [];
-        if (!result.Success ||
-            !string.Equals(result.ToolName, "exec_cmd", StringComparison.OrdinalIgnoreCase) ||
-            !ContainsGitStatusShortCommand(result.Result))
+        if (command.Outcome != ToolCommandOutcome.Passed || command.Output is not { } source ||
+            !ContainsGitStatusShortCommand(command.CommandLine))
         {
             return false;
         }
-
-        var stdout = TryGetMetadataObject(result.Metadata, out var metadata)
-            ? GetMetadataString(metadata, "Stdout", "stdout")
-            : null;
-        var source = string.IsNullOrWhiteSpace(stdout) ? result.Result : stdout;
 
         foreach (var line in SplitLines(source))
         {
@@ -399,37 +315,32 @@ public sealed class DefaultToolObservationProcessor : IToolObservationProcessor
             {
                 FilePath = NormalizeEvidencePath(path),
                 Status = status,
-                SourceToolName = result.ToolName,
+                SourceToolName = toolName,
                 SourceCommand = "git status --short"
             });
         }
 
-        return true;
+        return source.Length == 0 || changedFiles.Count > 0;
     }
 
     private static bool ContainsGitStatusShortCommand(string? text)
         => !string.IsNullOrWhiteSpace(text) &&
            Regex.IsMatch(
                text,
-               @"\$\s*git\s+status\s+(?:--short|-s)\b",
+               @"^\$[ \t]*git\s+status\s+(?:--short|-s)\b",
                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static bool TryExtractGitDiffEvidence(
-        ToolExecutionResult result,
+        ToolCommandObservation command,
+        string toolName,
         out List<DiffChangeEvidence> diffChanges)
     {
         diffChanges = [];
-        if (!result.Success ||
-            !string.Equals(result.ToolName, "exec_cmd", StringComparison.OrdinalIgnoreCase) ||
-            !ContainsGitDiffCommand(result.Result))
+        if (command.Outcome != ToolCommandOutcome.Passed || command.Output is not { } source ||
+            !ContainsGitDiffCommand(command.CommandLine))
         {
             return false;
         }
-
-        var stdout = TryGetMetadataObject(result.Metadata, out var metadata)
-            ? GetMetadataString(metadata, "Stdout", "stdout")
-            : null;
-        var source = string.IsNullOrWhiteSpace(stdout) ? result.Result : stdout;
 
         var changes = new List<DiffChangeEvidence>();
         string? currentPath = null;
@@ -448,7 +359,7 @@ public sealed class DefaultToolObservationProcessor : IToolObservationProcessor
                 FilePath = NormalizeEvidencePath(currentPath),
                 Removed = removed.ToArray(),
                 Added = added.ToArray(),
-                SourceToolName = result.ToolName,
+                SourceToolName = toolName,
                 SourceCommand = "git diff"
             });
             removed.Clear();
@@ -487,15 +398,22 @@ public sealed class DefaultToolObservationProcessor : IToolObservationProcessor
 
         FlushCurrent();
         diffChanges = changes;
-        return true;
+        return source.Length == 0 || diffChanges.Count > 0;
     }
 
-    private static bool ContainsGitDiffCommand(string? text)
-        => !string.IsNullOrWhiteSpace(text) &&
-           Regex.IsMatch(
-               text,
-               @"\$\s*git\s+diff(?!\s+--check)\b",
-               RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static bool ContainsGitDiffCommand(string text)
+    {
+        const RegexOptions options = RegexOptions.IgnoreCase | RegexOptions.CultureInvariant;
+        if (!Regex.IsMatch(text, @"^\$[ \t]*git\s+diff\b", options))
+        {
+            return false;
+        }
+
+        // --check can produce an empty successful result even when the actual diff is nonempty.
+        var pathSeparator = Regex.Match(text, @"[ \t]--(?=[ \t]|$)", options);
+        var commandOptions = pathSeparator.Success ? text[..pathSeparator.Index] : text;
+        return !Regex.IsMatch(commandOptions, @"[ \t]--check(?=[ \t]|$)", options);
+    }
 
     private static bool TrySummarizeDiffLine(string line, out string summary)
     {
@@ -648,12 +566,7 @@ public sealed class DefaultToolObservationProcessor : IToolObservationProcessor
 
     private static bool IsDuplicateHashlineReadGuardResult(ToolExecutionResult result)
     {
-        if (!TryGetMetadataObject(result.Metadata, out var metadata))
-        {
-            return false;
-        }
-
-        var reasonCode = GetMetadataString(metadata, "ReasonCode", "reasonCode");
+        var reasonCode = ToolObservationMetadata.From(result.Metadata).GetNonBlankString("ReasonCode", "reasonCode");
         return string.Equals(
             reasonCode,
             DuplicateHashlineReadReasonCode,
@@ -670,23 +583,24 @@ public sealed class DefaultToolObservationProcessor : IToolObservationProcessor
         displayTarget = string.Empty;
         readEvidence = null!;
 
-        if (!IsRepeatableReadTool(result.ToolName) || !TryGetMetadataObject(result.Metadata, out var metadata))
+        if (!IsRepeatableReadTool(result.ToolName))
         {
             return false;
         }
 
-        var filePath = GetMetadataString(metadata, "FilePath", "filePath");
+        var metadata = ToolObservationMetadata.From(result.Metadata);
+        var filePath = metadata.GetNonBlankString("FilePath", "filePath");
         if (string.IsNullOrWhiteSpace(filePath))
         {
             return false;
         }
 
         displayTarget = filePath.Replace('\\', '/');
-        var fingerprint = GetMetadataString(metadata, "FileFingerprint", "fileFingerprint", "Fingerprint", "fingerprint");
-        var snapshotId = GetMetadataString(metadata, "SnapshotId", "snapshotId");
-        var rangeStart = GetMetadataInt(metadata, "WindowStartLine", "windowStartLine", "StartLine", "startLine");
-        var rangeEnd = GetMetadataInt(metadata, "WindowEndLine", "windowEndLine", "EndLine", "endLine");
-        var totalLineCount = GetMetadataInt(metadata, "TotalLineCount", "totalLineCount", "Lines", "lines");
+        var fingerprint = metadata.GetNonBlankString("FileFingerprint", "fileFingerprint", "Fingerprint", "fingerprint");
+        var snapshotId = metadata.GetNonBlankString("SnapshotId", "snapshotId");
+        var rangeStart = metadata.GetInt("WindowStartLine", "windowStartLine", "StartLine", "startLine");
+        var rangeEnd = metadata.GetInt("WindowEndLine", "windowEndLine", "EndLine", "endLine");
+        var totalLineCount = metadata.GetInt("TotalLineCount", "totalLineCount", "Lines", "lines");
 
         readEvidence = new RuntimeReadEvidence(
             result.ToolName,
@@ -722,70 +636,6 @@ public sealed class DefaultToolObservationProcessor : IToolObservationProcessor
 
         return toolName.Equals("ivilson_read", StringComparison.OrdinalIgnoreCase)
             || toolName.Equals("hs_read", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool TryGetMetadataObject(object? metadata, out JObject json)
-    {
-        switch (metadata)
-        {
-            case null:
-                json = null!;
-                return false;
-            case JObject jobject:
-                json = jobject;
-                return true;
-            default:
-                try
-                {
-                    json = JObject.FromObject(metadata);
-                    return true;
-                }
-                catch
-                {
-                    json = null!;
-                    return false;
-                }
-        }
-    }
-
-    private static string? GetMetadataString(JObject metadata, params string[] keys)
-    {
-        foreach (var key in keys)
-        {
-            if (metadata.TryGetValue(key, StringComparison.OrdinalIgnoreCase, out var token))
-            {
-                var value = token.Type == JTokenType.String ? token.Value<string>() : token.ToString(Formatting.None);
-                if (!string.IsNullOrWhiteSpace(value))
-                {
-                    return value;
-                }
-            }
-        }
-
-        return null;
-    }
-
-    private static int? GetMetadataInt(JObject metadata, params string[] keys)
-    {
-        foreach (var key in keys)
-        {
-            if (!metadata.TryGetValue(key, StringComparison.OrdinalIgnoreCase, out var token))
-            {
-                continue;
-            }
-
-            if (token.Type == JTokenType.Integer && token.Value<int?>() is { } intValue)
-            {
-                return intValue;
-            }
-
-            if (token.Type == JTokenType.String && int.TryParse(token.Value<string>(), out var parsed))
-            {
-                return parsed;
-            }
-        }
-
-        return null;
     }
 
     private static string FormatReadEvidenceSummary(RuntimeReadEvidence evidence)
@@ -862,8 +712,8 @@ public sealed class DefaultToolObservationProcessor : IToolObservationProcessor
     private static bool IsHashlineReadResult(ToolExecutionResult result)
         => IsReadFileTool(result.ToolName) &&
            (ContainsHashlineSnapshotHeader(result.Result) ||
-            (TryGetMetadataObject(result.Metadata, out var metadata) &&
-             !string.IsNullOrWhiteSpace(GetMetadataString(metadata, "FileFingerprint", "fileFingerprint", "Fingerprint", "fingerprint"))));
+            ToolObservationMetadata.From(result.Metadata)
+                .GetNonBlankString("FileFingerprint", "fileFingerprint", "Fingerprint", "fingerprint") is not null);
 
     private static bool IsReadFileTool(string? toolName)
         => string.Equals(toolName, "ivilson_read", StringComparison.OrdinalIgnoreCase) ||
