@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { AlertTriangle, Trash2, X } from 'lucide-react';
 import type {
+  BrowserSettingsDto,
   ExecutionBackendKind,
   ExecutionPermissionModeKind,
   PersistedPermissionRule,
@@ -17,7 +18,7 @@ import { MaxContextField } from './MaxContextField';
 
 export { isRelaxingPermission };
 
-export type SettingsTabKind = 'execution' | 'model' | 'rules' | 'environment' | 'preferences';
+export type SettingsTabKind = 'execution' | 'model' | 'browser' | 'rules' | 'environment' | 'preferences';
 
 interface SettingsModalProps {
   open: boolean;
@@ -26,6 +27,7 @@ interface SettingsModalProps {
   systemStatus: SystemStatusSummary | null;
   executionSettings: ExecutionSettings | null;
   modelSettings: ModelSettings | null;
+  browserSettings?: BrowserSettingsDto | null;
   controlPlaneAvailable: boolean;
   onClose: () => void;
   onUpdated: () => void;
@@ -38,6 +40,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   systemStatus,
   executionSettings,
   modelSettings,
+  browserSettings = null,
   controlPlaneAvailable,
   onClose,
   onUpdated,
@@ -78,6 +81,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   );
   const [apiKey, setApiKey] = useState('');
   const [supportsMultimodal, setSupportsMultimodal] = useState(Boolean(modelSettings?.supportsMultimodal));
+  const [browserEnabled, setBrowserEnabled] = useState(Boolean(browserSettings?.enabled ?? true));
+  const [browserExecutablePath, setBrowserExecutablePath] = useState(browserSettings?.executablePath ?? '');
+  const [browserApprovalPolicy, setBrowserApprovalPolicy] = useState(
+    browserSettings?.interactionApprovalPolicy ?? 'HighRiskOnly',
+  );
+  const [browserAllowLocalhostDaily, setBrowserAllowLocalhostDaily] = useState(
+    Boolean(browserSettings?.allowLocalhostInDailyMode),
+  );
 
   const [rules, setRules] = useState<PersistedPermissionRule[]>([]);
   const [riskReasons, setRiskReasons] = useState<string[]>([]);
@@ -106,10 +117,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setTopP(modelSettings?.topP != null ? String(modelSettings.topP) : '');
     setApiKey('');
     setSupportsMultimodal(Boolean(modelSettings?.supportsMultimodal));
+    setBrowserEnabled(Boolean(browserSettings?.enabled ?? true));
+    setBrowserExecutablePath(browserSettings?.executablePath ?? '');
+    setBrowserApprovalPolicy(browserSettings?.interactionApprovalPolicy ?? 'HighRiskOnly');
+    setBrowserAllowLocalhostDaily(Boolean(browserSettings?.allowLocalhostInDailyMode));
     setConfirmRelaxOpen(false);
     setNotice(null);
     setError(null);
-  }, [open, initialTab, currentBackend, currentMode, modelSettings]);
+  }, [open, initialTab, currentBackend, currentMode, modelSettings, browserSettings]);
 
   const loadRules = async () => {
     if (!controlPlaneAvailable) return;
@@ -246,6 +261,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               [
                 ['execution', t('settings.tab.execution')],
                 ['model', t('settings.tab.model')],
+                ['browser', language === 'en-US' ? 'Browser' : '浏览器'],
                 ['rules', t('settings.tab.rules')],
                 ['environment', t('settings.tab.environment')],
                 ['preferences', t('settings.tab.preferences')],
@@ -646,6 +662,128 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
           {tab === 'environment' && (
             <EnvironmentCheckPanel active={open && tab === 'environment'} />
+          )}
+
+          {tab === 'browser' && (
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                if (!controlPlaneAvailable || !window.codexflow) return;
+                setSaving(true);
+                setError(null);
+                setNotice(null);
+                try {
+                  const res = await window.codexflow.updateBrowserSettings({
+                    enabled: browserEnabled,
+                    executablePath: browserExecutablePath.trim(),
+                    interactionApprovalPolicy: browserApprovalPolicy,
+                    allowLocalhostInDailyMode: browserAllowLocalhostDaily,
+                  });
+                  if (!res.ok) {
+                    setError(res.errorMessage || `保存浏览器设置失败 (${res.status})`);
+                    return;
+                  }
+                  setNotice('浏览器设置已保存并立即生效。');
+                  onUpdated();
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : '保存浏览器设置失败');
+                } finally {
+                  setSaving(false);
+                }
+              }}
+              className="mt-4 space-y-4 text-xs"
+            >
+              <div className="rounded-xl border border-slate-800 bg-slate-950 p-3.5 space-y-2">
+                <div className="font-medium text-slate-200">本机浏览器自动探测</div>
+                {browserSettings?.detectedBrowser?.available ? (
+                  <div className="space-y-1 text-slate-300">
+                    <div className="flex items-center gap-2">
+                      <span className="h-2 w-2 rounded-full bg-emerald-400" />
+                      <span className="font-medium text-emerald-300">
+                        已就绪：{browserSettings.detectedBrowser.browserName}
+                        {browserSettings.detectedBrowser.version ? ` (${browserSettings.detectedBrowser.version})` : ''}
+                      </span>
+                    </div>
+                    <div className="truncate font-mono text-[11px] text-slate-400">
+                      {browserSettings.detectedBrowser.executablePath}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-amber-300">
+                    {browserSettings?.detectedBrowser?.diagnosticMessage ||
+                      '未在可信系统目录检测到 Chrome / Edge / Chromium，可安装任一浏览器或手动填写可执行路径。'}
+                  </div>
+                )}
+              </div>
+
+              <label className="flex cursor-pointer items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950 p-3.5">
+                <div>
+                  <div className="font-medium text-slate-200">启用内置 Web Browser Use</div>
+                  <div className="mt-0.5 text-[11px] text-slate-400">
+                    开启后，助手可在开发模式与日常模式下通过隔离浏览器渲染页面、采集控制台日志并执行受控交互。
+                  </div>
+                </div>
+                <input
+                  type="checkbox"
+                  data-testid="browser-enabled-toggle"
+                  checked={browserEnabled}
+                  onChange={(e) => setBrowserEnabled(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-700 accent-indigo-600"
+                />
+              </label>
+
+              <label className="block">
+                <span className="mb-1 block text-slate-300">自定义浏览器路径（留空则自动探测可信 Chrome / Edge）</span>
+                <input
+                  type="text"
+                  value={browserExecutablePath}
+                  onChange={(e) => setBrowserExecutablePath(e.target.value)}
+                  placeholder="例如 C:\Program Files\Google\Chrome\Application\chrome.exe"
+                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-slate-100 placeholder:text-slate-600"
+                />
+              </label>
+
+              <label className="block">
+                <span className="mb-1 block text-slate-300">页面交互审批策略</span>
+                <select
+                  value={browserApprovalPolicy}
+                  onChange={(e) => setBrowserApprovalPolicy(e.target.value)}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+                >
+                  <option value="HighRiskOnly">HighRiskOnly（默认：仅高风险提交/非白名单本地端口审批）</option>
+                  <option value="AlwaysAsk">AlwaysAsk（每次点击与输入均询问审批）</option>
+                  <option value="AutoInSession">AutoInSession（常规交互自动放行，敏感提交仍强制审批）</option>
+                </select>
+              </label>
+
+              <label className="flex cursor-pointer items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950 p-3.5">
+                <div>
+                  <div className="font-medium text-slate-200">日常模式允许访问 localhost / 127.0.0.1</div>
+                  <div className="mt-0.5 text-[11px] text-slate-400">
+                    默认关闭（CodexFlow 受保护控制端口始终禁止访问）。开发模式已自动支持白名单前端开发端口。
+                  </div>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={browserAllowLocalhostDaily}
+                  onChange={(e) => setBrowserAllowLocalhostDaily(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-700 accent-indigo-600"
+                />
+              </label>
+
+              {error && <div className="rounded-lg border border-rose-500/40 bg-rose-950/40 p-2.5 text-rose-200">{error}</div>}
+              {notice && <div className="rounded-lg border border-emerald-500/40 bg-emerald-950/40 p-2.5 text-emerald-200">{notice}</div>}
+
+              <div className="flex justify-end">
+                <button
+                  type="submit"
+                  disabled={!controlPlaneAvailable || saving}
+                  className="rounded-lg bg-indigo-600 px-4 py-2 font-medium text-white hover:bg-indigo-500 disabled:opacity-40"
+                >
+                  {saving ? '保存中…' : '保存浏览器设置'}
+                </button>
+              </div>
+            </form>
           )}
         </Dialog.Content>
       </Dialog.Portal>

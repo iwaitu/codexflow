@@ -63,6 +63,12 @@ public static class ToolCapabilityCatalog
             // 受控企业业务 Skill 工具：不写本地工作区、不执行不可信代码；外部系统写入由 BusinessSkillApprovalCoordinator 强制单次人工审批。
             "list_business_skills", "run_business_skill");
 
+        Add(ToolCapability.BrowserRead,
+            "browser_navigate", "browser_snapshot", "browser_tabs");
+
+        Add(ToolCapability.BrowserInteract,
+            "browser_act");
+
         return t;
     }
 }

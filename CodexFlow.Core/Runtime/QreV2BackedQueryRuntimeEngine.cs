@@ -34,6 +34,7 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
     private readonly QreV2.IRuntimeAuditSink? _auditSink;
     private readonly string? _auditDirectory;
     private readonly CodexFlow.Core.Execution.Approval.IExecutionApprovalBroker? _approvalBroker;
+    private readonly CodexFlow.Core.Browser.IBrowserApprovalCoordinator? _browserApprovalCoordinator;
 
     public QreV2BackedQueryRuntimeEngine(
         ILLMExecutor llmExecutor,
@@ -44,7 +45,8 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
         IOptions<QueryRuntimeBackendOptions>? backendOptions = null,
         ContextCompressionTriggerOptions? contextOptions = null,
         QreV2.IRuntimeAuditSink? auditSink = null,
-        CodexFlow.Core.Execution.Approval.IExecutionApprovalBroker? approvalBroker = null)
+        CodexFlow.Core.Execution.Approval.IExecutionApprovalBroker? approvalBroker = null,
+        CodexFlow.Core.Browser.IBrowserApprovalCoordinator? browserApprovalCoordinator = null)
     {
         _llmExecutor = llmExecutor ?? throw new ArgumentNullException(nameof(llmExecutor));
         _contextWindowManager = contextWindowManager;
@@ -57,6 +59,7 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
         _auditSink = auditSink;
         _auditDirectory = string.IsNullOrWhiteSpace(backendOptions?.Value.AuditDirectory) ? null : backendOptions!.Value.AuditDirectory;
         _approvalBroker = approvalBroker;
+        _browserApprovalCoordinator = browserApprovalCoordinator;
     }
 
     public async Task<QueryRuntimeResult> ExecuteAsync(
@@ -252,6 +255,7 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
             {
                 _approvalBroker?.CancelSessionApprovals(request.SessionId, "Turn cancelled.");
             }
+            _browserApprovalCoordinator?.CancelSessionApprovals(request.SessionId, "Turn cancelled.");
             return BuildFailureResult(
                 request,
                 queryId,

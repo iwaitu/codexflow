@@ -23,10 +23,12 @@ import {
   type SetPluginCredentialRequest,
   type StartSkillRunRequest,
   type SubmitToolApprovalPayload,
+  type UpdateBrowserSettingsRequest,
   type UpdateCapabilityRiskRequest,
   type UpdateExecutionSettingsPayload,
   type UpdateModelSettingsPayload,
   type UpdatePluginConnectionRequest,
+  type WorkspaceFileContextMenuPayload,
 } from '../../src/shared/ipc';
 
 const api: DesktopBridge = {
@@ -52,6 +54,10 @@ const api: DesktopBridge = {
     ipcRenderer.invoke(IPC_CHANNELS.updateExecutionSettings, payload),
   updateModelSettings: (payload: UpdateModelSettingsPayload) =>
     ipcRenderer.invoke(IPC_CHANNELS.updateModelSettings, payload),
+  updateBrowserSettings: (payload: UpdateBrowserSettingsRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.updateBrowserSettings, payload),
+  closeBrowserSession: (sessionId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.closeBrowserSession, sessionId),
   listPermissionRules: () => ipcRenderer.invoke(IPC_CHANNELS.listPermissionRules),
   deletePermissionRule: (ruleId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.deletePermissionRule, ruleId),
@@ -107,6 +113,8 @@ const api: DesktopBridge = {
   switchToManaged: () => ipcRenderer.invoke(IPC_CHANNELS.switchToManaged),
   restartBackend: () => ipcRenderer.invoke(IPC_CHANNELS.restartBackend),
   openExternal: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.openExternal, url),
+  showWorkspaceFileContextMenu: (payload: WorkspaceFileContextMenuPayload) =>
+    ipcRenderer.invoke(IPC_CHANNELS.showWorkspaceFileContextMenu, payload),
   showNotification: (payload: DesktopNotificationPayload) =>
     ipcRenderer.invoke(IPC_CHANNELS.showNotification, payload),
   setDesktopPreferences: (payload: DesktopPreferencesPayload) =>

@@ -166,7 +166,8 @@ if (layout.AllowedOrigins.Length > 0)
         {
             policy.WithOrigins(layout.AllowedOrigins)
                   .AllowAnyHeader()
-                  .AllowAnyMethod();
+                  .AllowAnyMethod()
+                  .WithExposedHeaders("X-Screenshot-Seq", "ETag");
         });
     });
 }
@@ -181,6 +182,8 @@ builder.Services.AddSingleton<CodexFlow.Core.Configuration.IModelSettingsService
 builder.Services.AddSingleton<CodexFlow.Core.Configuration.IExecutionSettingsService>(executionSettingsService);
 builder.Services.AddSingleton<CodexFlow.Core.Configuration.IWorkspaceSettingsService>(_ =>
     new CodexFlow.Core.Configuration.WorkspaceSettingsService(globalSettingsPath));
+builder.Services.AddSingleton<CodexFlow.Core.Configuration.IBrowserSettingsService>(_ =>
+    new CodexFlow.Core.Configuration.BrowserSettingsService(globalSettingsPath));
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddScheme<AuthenticationSchemeOptions, LocalTokenAuthenticationHandler>(JwtBearerDefaults.AuthenticationScheme, null);

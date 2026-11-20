@@ -2,7 +2,7 @@
 // AUTO-GENERATED from docs/contracts/sse-events.schema.json by scripts/generate-contracts.mjs
 // Do not edit manually.
 
-export const SSE_SCHEMA_VERSION = "1.0.0" as const;
+export const SSE_SCHEMA_VERSION = "1.1.0" as const;
 
 export const SSE_KNOWN_EVENTS = [
   "heartbeat",
@@ -37,6 +37,9 @@ export const SSE_KNOWN_EVENTS = [
   "business_skill_approval_resolved",
   "plan_mode_changed",
   "plan_mode_exit_requested",
+  "browser_state_updated",
+  "browser_approval_requested",
+  "browser_approval_resolved",
 ] as const;
 
 export type KnownSseEventName = (typeof SSE_KNOWN_EVENTS)[number];
@@ -333,6 +336,47 @@ export interface SsePlanModeExitRequestedPayload {
   [key: string]: unknown;
 }
 
+export interface SseBrowserStateUpdatedPayload {
+  sessionId: string;
+  status: string;
+  headless: boolean;
+  profileMode: string;
+  url?: string | null;
+  title?: string | null;
+  screenshotSeq: number;
+  consoleErrorCount: number;
+  updatedAtUtc?: string | null;
+  [key: string]: unknown;
+}
+
+export interface SseBrowserApprovalRequestedPayload {
+  approvalId: string;
+  requestDigest: string;
+  sessionId: string;
+  tool: string;
+  action: string;
+  targetUrl: string;
+  targetOrigin: string;
+  targetDescription: string;
+  riskReason: string;
+  expressionOrPath?: string | null;
+  expiresAtUtc: string;
+  allowedDecisions: Array<string>;
+  controlPlaneAvailable: boolean;
+  selfApprovalProtection: boolean;
+  [key: string]: unknown;
+}
+
+export interface SseBrowserApprovalResolvedPayload {
+  approvalId: string;
+  sessionId: string;
+  decision: string;
+  decidedBy?: string | null;
+  note?: string | null;
+  resolvedAtUtc: string;
+  [key: string]: unknown;
+}
+
 export interface SseEventPayloadMap {
   "heartbeat": SseHeartbeatPayload;
   "content": SseContentPayload;
@@ -366,6 +410,9 @@ export interface SseEventPayloadMap {
   "business_skill_approval_resolved": SseBusinessSkillApprovalResolvedPayload;
   "plan_mode_changed": SsePlanModeChangedPayload;
   "plan_mode_exit_requested": SsePlanModeExitRequestedPayload;
+  "browser_state_updated": SseBrowserStateUpdatedPayload;
+  "browser_approval_requested": SseBrowserApprovalRequestedPayload;
+  "browser_approval_resolved": SseBrowserApprovalResolvedPayload;
 }
 
 export type KnownSseEvent = {

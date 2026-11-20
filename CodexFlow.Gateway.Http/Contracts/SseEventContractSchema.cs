@@ -14,7 +14,7 @@ namespace CodexFlow.Gateway.Contracts;
 /// </summary>
 public static class SseEventContractSchema
 {
-    public const string SchemaVersion = "1.0.0";
+    public const string SchemaVersion = "1.1.0";
 
     private static readonly JsonSerializerOptions SerializerOptions = new()
     {
@@ -276,7 +276,53 @@ public static class SseEventContractSchema
                     ("planModeVersion", Int()),
                     ("planSummary", Str()),
                     ("reason", NullableStr())),
-                required: ["sessionId", "planModeVersion", "planSummary"])
+                required: ["sessionId", "planModeVersion", "planSummary"]),
+            [GatewaySseEventType.BrowserStateUpdated] = EventDef(
+                "Throttled snapshot of the session's managed browser state (URL, title, tabs, screenshotSeq, recent actions/console).",
+                Props(
+                    ("sessionId", Str()),
+                    ("status", Str()),
+                    ("headless", Bool()),
+                    ("profileMode", Str()),
+                    ("url", NullableStr()),
+                    ("title", NullableStr()),
+                    ("screenshotSeq", Int()),
+                    ("consoleErrorCount", Int()),
+                    ("updatedAtUtc", NullableStr())),
+                required: ["sessionId", "status", "headless", "profileMode", "screenshotSeq", "consoleErrorCount"]),
+            [GatewaySseEventType.BrowserApprovalRequested] = EventDef(
+                "Interactive control-plane approval request for a sensitive browser action or non-allowlisted dev loopback port.",
+                Props(
+                    ("approvalId", Str()),
+                    ("requestDigest", Str()),
+                    ("sessionId", Str()),
+                    ("tool", Str()),
+                    ("action", Str()),
+                    ("targetUrl", Str()),
+                    ("targetOrigin", Str()),
+                    ("targetDescription", Str()),
+                    ("riskReason", Str()),
+                    ("expressionOrPath", NullableStr()),
+                    ("expiresAtUtc", Str()),
+                    ("allowedDecisions", StrArray()),
+                    ("controlPlaneAvailable", Bool()),
+                    ("selfApprovalProtection", Bool())),
+                required:
+                [
+                    "approvalId", "requestDigest", "sessionId", "tool", "action",
+                    "targetUrl", "targetOrigin", "targetDescription", "riskReason",
+                    "expiresAtUtc", "allowedDecisions", "controlPlaneAvailable", "selfApprovalProtection"
+                ]),
+            [GatewaySseEventType.BrowserApprovalResolved] = EventDef(
+                "Resolution outcome for a pending browser approval request.",
+                Props(
+                    ("approvalId", Str()),
+                    ("sessionId", Str()),
+                    ("decision", Str()),
+                    ("decidedBy", NullableStr()),
+                    ("note", NullableStr()),
+                    ("resolvedAtUtc", Str())),
+                required: ["approvalId", "sessionId", "decision", "resolvedAtUtc"])
         };
 
         var root = new Dictionary<string, object>(StringComparer.Ordinal)

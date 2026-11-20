@@ -51,6 +51,8 @@ function installMockBridge(overrides: Partial<DesktopBridge> = {}): DesktopBridg
     submitPlanChatAction: vi.fn().mockResolvedValue({ ok: true, status: 202 }),
     updateExecutionSettings: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
     updateModelSettings: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
+    updateBrowserSettings: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
+    closeBrowserSession: vi.fn().mockResolvedValue({ ok: true, status: 200, data: { closed: true, sessionId: 's1' } }),
     listPermissionRules: vi.fn().mockResolvedValue({ ok: true, status: 200, data: { count: 0, rules: [] } }),
     deletePermissionRule: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
     openLocalWorkspace: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
@@ -63,6 +65,7 @@ function installMockBridge(overrides: Partial<DesktopBridge> = {}): DesktopBridg
     switchToManaged: vi.fn(),
     restartBackend: vi.fn(),
     openExternal: vi.fn().mockResolvedValue(true),
+    showWorkspaceFileContextMenu: vi.fn().mockResolvedValue({ ok: true, cancelled: true }),
     showNotification: vi.fn().mockResolvedValue(undefined),
     setDesktopPreferences: vi.fn().mockResolvedValue(undefined),
     onCommandAction: vi.fn().mockReturnValue(() => {}),
@@ -1361,6 +1364,73 @@ describe('Security boundary & MVP interactive cards', () => {
     } finally {
       listSpy.mockRestore();
       readSpy.mockRestore();
+    }
+  });
+
+  it('triggers workspace file context menu IPC on right-click for folders, files, and empty list area, and surfaces errors', async () => {
+    const showMenu = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: false, error: '无法使用默认应用打开文件：No handler' });
+    installMockBridge({ showWorkspaceFileContextMenu: showMenu });
+
+    const listSpy = vi.spyOn(apiClient, 'listFiles').mockResolvedValue({
+      sessionId: 'sess-1',
+      path: '',
+      entries: [
+        { name: 'outputs', path: 'outputs', isDirectory: true, sizeBytes: 0, lastModifiedUtc: '2026-01-01T00:00:00Z' },
+        { name: 'report.pdf', path: 'report.pdf', isDirectory: false, sizeBytes: 2048, lastModifiedUtc: '2026-01-01T00:00:00Z' },
+      ],
+      truncated: false,
+    });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    try {
+      render(
+        <QueryClientProvider client={qc}>
+          <WorkspaceFilesPanel
+            auth={{ baseUrl: 'http://127.0.0.1:5000', accessToken: 'tok' }}
+            sessionId="sess-1"
+            workspacePath="D:/workspaces/demo"
+            workspaceRevision={0}
+          />
+        </QueryClientProvider>,
+      );
+
+      await waitFor(() => expect(screen.getByText('outputs')).toBeInTheDocument());
+
+      await act(async () => {
+        fireEvent.contextMenu(screen.getByText('outputs'));
+      });
+      expect(showMenu).toHaveBeenNthCalledWith(1, {
+        workspacePath: 'D:/workspaces/demo',
+        relativePath: 'outputs',
+        isDirectory: true,
+      });
+
+      await act(async () => {
+        fireEvent.contextMenu(screen.getByTestId('workspace-files-list'));
+      });
+      expect(showMenu).toHaveBeenNthCalledWith(2, {
+        workspacePath: 'D:/workspaces/demo',
+        relativePath: '',
+        isDirectory: true,
+      });
+
+      await act(async () => {
+        fireEvent.contextMenu(screen.getByText('report.pdf'));
+      });
+      expect(showMenu).toHaveBeenNthCalledWith(3, {
+        workspacePath: 'D:/workspaces/demo',
+        relativePath: 'report.pdf',
+        isDirectory: false,
+      });
+      await waitFor(() =>
+        expect(screen.getByText('无法使用默认应用打开文件：No handler')).toBeInTheDocument(),
+      );
+    } finally {
+      listSpy.mockRestore();
     }
   });
 });

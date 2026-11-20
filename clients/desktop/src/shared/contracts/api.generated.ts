@@ -550,6 +550,166 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/gateway/session/{sessionId}/browser": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    sessionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BrowserSessionStateDto"];
+                        "text/json": components["schemas"]["BrowserSessionStateDto"];
+                        "text/plain": components["schemas"]["BrowserSessionStateDto"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BrowserApiErrorDto"];
+                        "text/json": components["schemas"]["BrowserApiErrorDto"];
+                        "text/plain": components["schemas"]["BrowserApiErrorDto"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/gateway/session/{sessionId}/browser/close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    sessionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BrowserSessionCloseResponse"];
+                        "text/json": components["schemas"]["BrowserSessionCloseResponse"];
+                        "text/plain": components["schemas"]["BrowserSessionCloseResponse"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BrowserApiErrorDto"];
+                        "text/json": components["schemas"]["BrowserApiErrorDto"];
+                        "text/plain": components["schemas"]["BrowserApiErrorDto"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/gateway/session/{sessionId}/browser/screenshot": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    sessionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description No Content */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Not Modified */
+                304: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BrowserApiErrorDto"];
+                        "text/json": components["schemas"]["BrowserApiErrorDto"];
+                        "text/plain": components["schemas"]["BrowserApiErrorDto"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/gateway/session/{sessionId}/cancel": {
         parameters: {
             query?: never;
@@ -2633,6 +2793,103 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/settings/browser": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BrowserSettingsDto"];
+                        "text/json": components["schemas"]["BrowserSettingsDto"];
+                        "text/plain": components["schemas"]["BrowserSettingsDto"];
+                    };
+                };
+            };
+        };
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/*+json": components["schemas"]["UpdateBrowserSettingsRequest"];
+                    "application/json": components["schemas"]["UpdateBrowserSettingsRequest"];
+                    "text/json": components["schemas"]["UpdateBrowserSettingsRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BrowserSettingsDto"];
+                        "text/json": components["schemas"]["BrowserSettingsDto"];
+                        "text/plain": components["schemas"]["BrowserSettingsDto"];
+                    };
+                };
+                /** @description Bad Request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BrowserApiErrorDto"];
+                        "text/json": components["schemas"]["BrowserApiErrorDto"];
+                        "text/plain": components["schemas"]["BrowserApiErrorDto"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ProblemDetails"];
+                        "text/json": components["schemas"]["ProblemDetails"];
+                        "text/plain": components["schemas"]["ProblemDetails"];
+                    };
+                };
+                /** @description Service Unavailable */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BrowserApiErrorDto"];
+                        "text/json": components["schemas"]["BrowserApiErrorDto"];
+                        "text/plain": components["schemas"]["BrowserApiErrorDto"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/settings/execution": {
         parameters: {
             query?: never;
@@ -4026,6 +4283,101 @@ export type components = {
         BootstrapRequest: {
             targetSessionId?: null | string;
         };
+        BrowserActionRecordDto: {
+            action: string;
+            /** Format: int64 */
+            durationMs: number | string;
+            /** Format: int64 */
+            seq: number | string;
+            succeeded: boolean;
+            summary: null | string;
+            target: null | string;
+            /** Format: date-time */
+            timestampUtc: string;
+            tool: string;
+            url: null | string;
+        };
+        BrowserApiErrorDto: {
+            code: string;
+            message: string;
+        };
+        BrowserApprovalRequestDto: {
+            action: string;
+            allowedDecisions: string[];
+            approvalId: string;
+            controlPlaneAvailable: boolean;
+            /** Format: date-time */
+            expiresAtUtc: string;
+            expressionOrPath: null | string;
+            requestDigest: string;
+            riskReason: string;
+            selfApprovalProtection: boolean;
+            sessionId: string;
+            targetDescription: string;
+            targetOrigin: string;
+            targetUrl: string;
+            tool: string;
+        };
+        BrowserConsoleEntryDto: {
+            level: string;
+            /** Format: int32 */
+            lineNumber: null | number | string;
+            sourceUrl: null | string;
+            text: string;
+            /** Format: date-time */
+            timestampUtc: string;
+        };
+        BrowserExecutableStatusDto: {
+            available: boolean;
+            browserName: null | string;
+            diagnosticMessage?: null | string;
+            executablePath: null | string;
+            source: null | string;
+            version: null | string;
+        };
+        BrowserSessionCloseResponse: {
+            closed: boolean;
+            sessionId: string;
+        };
+        BrowserSessionStateDto: {
+            /** Format: int32 */
+            consoleErrorCount: number | string;
+            headless: boolean;
+            profileMode: string;
+            recentActions: components["schemas"]["BrowserActionRecordDto"][];
+            recentConsole: components["schemas"]["BrowserConsoleEntryDto"][];
+            /** Format: int64 */
+            screenshotSeq: number | string;
+            sessionId: string;
+            status: string;
+            tabs: components["schemas"]["BrowserTabDto"][];
+            title: null | string;
+            /** Format: date-time */
+            updatedAtUtc?: null | string;
+            url: null | string;
+        };
+        BrowserSettingsDto: {
+            allowedDomains: string[];
+            allowLocalhostInDailyMode: boolean;
+            blockedDomains: string[];
+            detectedBrowser: components["schemas"]["BrowserExecutableStatusDto"];
+            developmentAllowedLoopbackPorts: (number | string)[];
+            enabled: boolean;
+            executablePath: null | string;
+            headless: boolean;
+            /** Format: int32 */
+            idleTimeoutMinutes: number | string;
+            interactionApprovalPolicy: string;
+            /** Format: int32 */
+            maxConcurrentSessions: number | string;
+            profileMode: string;
+        };
+        BrowserTabDto: {
+            active: boolean;
+            tabId: string;
+            title: string;
+            url: string;
+        };
         BusinessApprovalRequestDto: {
             allowedDecisions?: string[];
             approvalId?: string;
@@ -4499,6 +4851,7 @@ export type components = {
             shell: null | string;
         };
         PendingApprovalsResponse: {
+            browserApprovals?: null | components["schemas"]["BrowserApprovalRequestDto"][];
             businessApprovals?: null | components["schemas"]["BusinessApprovalRequestDto"][];
             controlPlaneAvailable: boolean;
             /** Format: int32 */
@@ -5102,6 +5455,21 @@ export type components = {
             selfApprovalProtection: boolean;
             tokenDeliveryMode: string;
             version: string;
+        };
+        UpdateBrowserSettingsRequest: {
+            allowedDomains?: null | string[];
+            allowLocalhostInDailyMode?: null | boolean;
+            blockedDomains?: null | string[];
+            developmentAllowedLoopbackPorts?: null | (number | string)[];
+            enabled?: null | boolean;
+            executablePath?: null | string;
+            headless?: null | boolean;
+            /** Format: int32 */
+            idleTimeoutMinutes?: null | number | string;
+            interactionApprovalPolicy?: null | string;
+            /** Format: int32 */
+            maxConcurrentSessions?: null | number | string;
+            profileMode?: null | string;
         };
         UpdateCapabilityRiskRequest: {
             capabilityId: string;

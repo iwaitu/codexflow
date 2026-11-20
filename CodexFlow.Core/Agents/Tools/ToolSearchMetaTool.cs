@@ -353,6 +353,34 @@ public class ToolSearchMetaTool : ICodexTool
                     "Search the web for current technical context.",
                     "Find candidate pages before fetch_webpage."
                 ]),
+            "browser_navigate" => new(
+                ["browser", "web", "url", "navigate", "spa", "localhost"],
+                ["main"],
+                "medium",
+                [
+                    "Open or navigate a JS-rendered webpage or localhost frontend in the managed browser."
+                ]),
+            "browser_snapshot" => new(
+                ["browser", "web", "dom", "snapshot", "screenshot", "console", "debug"],
+                ["main"],
+                "low",
+                [
+                    "Inspect interactive element refs, text, console logs, network errors, and optional viewport screenshot."
+                ]),
+            "browser_act" => new(
+                ["browser", "web", "click", "type", "interact", "form"],
+                ["main"],
+                "high",
+                [
+                    "Click, type, select, scroll, or wait on elements identified by browser_snapshot refs."
+                ]),
+            "browser_tabs" => new(
+                ["browser", "web", "tabs", "close"],
+                ["main"],
+                "low",
+                [
+                    "List, open, switch, or close browser tabs and shut down the session browser."
+                ]),
             "apply_patch" => new(
                 ["patch", "edit", "diff", "code-change"],
                 ["forge-worker"],

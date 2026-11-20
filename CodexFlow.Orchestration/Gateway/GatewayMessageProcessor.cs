@@ -63,6 +63,10 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
     [
         "web_search",
         "fetch_webpage",
+        "browser_navigate",
+        "browser_snapshot",
+        "browser_act",
+        "browser_tabs",
         "glob",
         "user_learn_preference"
     ];
@@ -73,6 +77,10 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
     [
         "web_search",
         "fetch_webpage",
+        "browser_navigate",
+        "browser_snapshot",
+        "browser_act",
+        "browser_tabs",
         "glob",
         "ivilson_read",
         "ivilson_ls",
@@ -976,6 +984,14 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             try
             {
                 using var visualScope = AmbientTurnVisualAttachmentContext.BeginScope(visualStore);
+                using var browserScope = message.Source == GatewayMessageSource.UserChat
+                    ? CodexFlow.Core.Browser.AmbientBrowserCallerContext.BeginScope(
+                        new CodexFlow.Core.Browser.BrowserTrustedCallerContext(
+                            message.SessionId,
+                            turnPolicy.WorkMode,
+                            turnPolicy.PlanModeActive,
+                            session?.WorkspacePath))
+                    : null;
                 (answer, usedRuntime) = await StreamWithToolLoopAsync(chatMessages, chatOptions, message, session, TrackedEmitAsync, ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -6464,7 +6480,11 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                 string.Equals(key, "exit_plan_mode", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(key, "tool_search", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(key, "web_search", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(key, "fetch_webpage", StringComparison.OrdinalIgnoreCase))
+                string.Equals(key, "fetch_webpage", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(key, "browser_navigate", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(key, "browser_snapshot", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(key, "browser_act", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(key, "browser_tabs", StringComparison.OrdinalIgnoreCase))
             {
                 result[key] = tool;
             }

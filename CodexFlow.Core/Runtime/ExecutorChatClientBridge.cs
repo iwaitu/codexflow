@@ -145,7 +145,7 @@ internal sealed class ExecutorChatClientBridge : IChatClient
         {
             var contents = new List<AIContent>(1 + trailingToolVisuals.Count * 2)
             {
-                new TextContent("[系统附带文档/PDF页面图像 - 请严格依据每张图标注的页码进行识别]")
+                new TextContent("[系统附带视觉图像（文档页面或浏览器网页截图）- 请严格依据每张图标注的来源信息进行识别]")
             };
 
             foreach (var item in trailingToolVisuals)

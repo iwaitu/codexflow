@@ -26,12 +26,19 @@ import {
   type SetPluginCredentialRequest,
   type StartSkillRunRequest,
   type SubmitToolApprovalPayload,
+  type UpdateBrowserSettingsRequest,
   type UpdateCapabilityRiskRequest,
   type UpdateExecutionSettingsPayload,
   type UpdateModelSettingsPayload,
   type UpdatePluginConnectionRequest,
+  type WorkspaceFileActionResult,
+  type WorkspaceFileContextMenuPayload,
 } from '../../src/shared/ipc';
-import { buildApplicationMenuTemplate, buildContextMenuTemplate } from './appMenu';
+import {
+  buildApplicationMenuTemplate,
+  buildContextMenuTemplate,
+  buildWorkspaceFileContextMenuTemplate,
+} from './appMenu';
 import { BackendManager } from './backendManager';
 import { callControlPlane } from './controlPlaneProxy';
 import { EnvironmentManager, isValidEnvironmentDependencyId } from './environmentManager';
@@ -46,6 +53,11 @@ import {
 import { isTrustedRendererOrigin, validateIpcCaller } from './securityUtils';
 import { TrayManager } from './trayManager';
 import { UpdaterManager } from './updaterManager';
+import {
+  openWorkspaceFileWithDefaultApp,
+  openWorkspaceTargetInFileManager,
+  resolveSafeWorkspaceTarget,
+} from './workspaceFiles';
 
 registerAppSchemePrivileges();
 
@@ -340,6 +352,89 @@ function registerIpcHandlers(manager: BackendManager): void {
   ipcMain.handle(IPC_CHANNELS.updateModelSettings, async (event, payload: UpdateModelSettingsPayload) => {
     assertTrustedIpcSender(event);
     return callControlPlane(manager.getControlPlaneCredentials(), 'PUT', '/api/settings/model', payload);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.updateBrowserSettings, async (event, payload: unknown) => {
+    assertTrustedIpcSender(event);
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      return {
+        ok: false,
+        status: 400,
+        errorCode: 'invalid_browser_settings_payload',
+        errorMessage: '浏览器设置参数必须是有效对象。',
+      };
+    }
+
+    const raw = payload as Record<string, unknown>;
+    const allowedKeys = new Set([
+      'enabled',
+      'executablePath',
+      'interactionApprovalPolicy',
+      'allowLocalhostInDailyMode',
+    ]);
+    for (const key of Object.keys(raw)) {
+      if (!allowedKeys.has(key)) {
+        return {
+          ok: false,
+          status: 400,
+          errorCode: 'unexpected_browser_settings_field',
+          errorMessage: `不允许通过桌面端提交未授权的浏览器配置字段：${key}`,
+        };
+      }
+    }
+
+    const sanitized: UpdateBrowserSettingsRequest = {};
+    if (raw.enabled !== undefined) {
+      if (typeof raw.enabled !== 'boolean') {
+        return { ok: false, status: 400, errorCode: 'invalid_browser_settings_payload', errorMessage: 'enabled 必须为布尔值。' };
+      }
+      sanitized.enabled = raw.enabled;
+    }
+    if (raw.executablePath !== undefined && raw.executablePath !== null) {
+      if (typeof raw.executablePath !== 'string' || raw.executablePath.length > 1024) {
+        return { ok: false, status: 400, errorCode: 'invalid_browser_settings_payload', errorMessage: 'executablePath 必须为有效路径字符串。' };
+      }
+      sanitized.executablePath = raw.executablePath;
+    }
+    if (raw.interactionApprovalPolicy !== undefined && raw.interactionApprovalPolicy !== null) {
+      const validPolicies = new Set(['HighRiskOnly', 'AlwaysAsk', 'AutoInSession']);
+      if (typeof raw.interactionApprovalPolicy !== 'string' || !validPolicies.has(raw.interactionApprovalPolicy)) {
+        return { ok: false, status: 400, errorCode: 'invalid_browser_settings_payload', errorMessage: 'interactionApprovalPolicy 取值无效。' };
+      }
+      sanitized.interactionApprovalPolicy = raw.interactionApprovalPolicy;
+    }
+    if (raw.allowLocalhostInDailyMode !== undefined) {
+      if (typeof raw.allowLocalhostInDailyMode !== 'boolean') {
+        return { ok: false, status: 400, errorCode: 'invalid_browser_settings_payload', errorMessage: 'allowLocalhostInDailyMode 必须为布尔值。' };
+      }
+      sanitized.allowLocalhostInDailyMode = raw.allowLocalhostInDailyMode;
+    }
+
+    return callControlPlane(manager.getControlPlaneCredentials(), 'PUT', '/api/settings/browser', sanitized);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.closeBrowserSession, async (event, sessionId: unknown) => {
+    assertTrustedIpcSender(event);
+    if (
+      typeof sessionId !== 'string' ||
+      sessionId.trim().length === 0 ||
+      sessionId.length > 128 ||
+      /[/?#\\]/.test(sessionId)
+    ) {
+      return {
+        ok: false,
+        status: 400,
+        errorCode: 'invalid_session_id',
+        errorMessage: '无效的浏览器会话 ID。',
+      };
+    }
+
+    return callControlPlane(
+      manager.getControlPlaneCredentials(),
+      'POST',
+      `/api/gateway/session/${encodeURIComponent(sessionId.trim())}/browser/close`,
+      {},
+    );
   });
 
   ipcMain.handle(IPC_CHANNELS.listPermissionRules, async (event) => {
@@ -667,6 +762,81 @@ function registerIpcHandlers(manager: BackendManager): void {
     assertTrustedIpcSender(event);
     return openSafeExternalUrl(rawUrl);
   });
+
+  ipcMain.handle(
+    IPC_CHANNELS.showWorkspaceFileContextMenu,
+    async (event, payload: WorkspaceFileContextMenuPayload): Promise<WorkspaceFileActionResult> => {
+      assertTrustedIpcSender(event);
+      if (!mainWindow || mainWindow.isDestroyed()) {
+        return {
+          ok: false,
+          error: desktopPreferences.language === 'en-US' ? 'Main window is unavailable.' : '主窗口不可用。',
+        };
+      }
+
+      const language = desktopPreferences.language;
+      const resolved = resolveSafeWorkspaceTarget(
+        payload?.workspacePath ?? '',
+        payload?.relativePath ?? '',
+        language,
+      );
+      if (!resolved.ok) {
+        return { ok: false, error: resolved.error };
+      }
+
+      const target = resolved.target;
+      const win = mainWindow;
+
+      return new Promise<WorkspaceFileActionResult>((resolveAction) => {
+        let settled = false;
+        let actionTriggered = false;
+        const finish = (result: WorkspaceFileActionResult) => {
+          if (settled) return;
+          settled = true;
+          resolveAction(result);
+        };
+
+        const runAsyncAction = (fn: () => Promise<WorkspaceFileActionResult>) => {
+          actionTriggered = true;
+          void fn().then(finish, (error) => {
+            finish({ ok: false, error: error instanceof Error ? error.message : String(error) });
+          });
+        };
+
+        const template = buildWorkspaceFileContextMenuTemplate({
+          isDirectory: target.isDirectory,
+          hasRelativePath: Boolean(target.relativePath),
+          language,
+          onOpenWithDefaultApp: () =>
+            runAsyncAction(() => openWorkspaceFileWithDefaultApp(target, shell, language)),
+          onOpenInFileManager: () =>
+            runAsyncAction(() => openWorkspaceTargetInFileManager(target, shell, language)),
+          onCopyRelativePath: () => {
+            actionTriggered = true;
+            clipboard.writeText(target.relativePath);
+            finish({ ok: true });
+          },
+          onCopyFullPath: () => {
+            actionTriggered = true;
+            clipboard.writeText(target.realPath);
+            finish({ ok: true });
+          },
+        });
+
+        const menu = Menu.buildFromTemplate(template);
+        menu.popup({
+          window: win,
+          callback: () => {
+            setTimeout(() => {
+              if (!actionTriggered) {
+                finish({ ok: true, cancelled: true });
+              }
+            }, 80);
+          },
+        });
+      });
+    },
+  );
 
   ipcMain.handle(IPC_CHANNELS.showNotification, (event, payload: DesktopNotificationPayload) => {
     assertTrustedIpcSender(event);

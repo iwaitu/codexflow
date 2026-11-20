@@ -4,6 +4,7 @@
 
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Agents.Tools;
+using CodexFlow.Core.Browser;
 using CodexFlow.Core.Configuration;
 using CodexFlow.Core.Constants;
 using CodexFlow.Core.Documents;
@@ -75,6 +76,8 @@ public sealed class ToolRegistryBootstrapper
     private readonly IModelSettingsService? _modelSettingsService;
     private readonly IPlanModeHostBridge? _planModeHostBridge;
     private readonly IWorkspaceSettingsService? _workspaceSettingsService;
+    private readonly IBrowserSessionManager? _browserSessionManager;
+    private readonly IOptionsMonitor<BrowserOptions>? _browserOptions;
     private readonly ILogger<ToolRegistryBootstrapper> _logger;
 
     public ToolRegistryBootstrapper(
@@ -123,7 +126,9 @@ public sealed class ToolRegistryBootstrapper
         IConfiguration? configuration = null,
         IModelSettingsService? modelSettingsService = null,
         IPlanModeHostBridge? planModeHostBridge = null,
-        IWorkspaceSettingsService? workspaceSettingsService = null)
+        IWorkspaceSettingsService? workspaceSettingsService = null,
+        IBrowserSessionManager? browserSessionManager = null,
+        IOptionsMonitor<BrowserOptions>? browserOptions = null)
     {
         _gitService = gitService;
         _orchestrator = orchestrator;
@@ -171,6 +176,8 @@ public sealed class ToolRegistryBootstrapper
         _modelSettingsService = modelSettingsService;
         _planModeHostBridge = planModeHostBridge;
         _workspaceSettingsService = workspaceSettingsService;
+        _browserSessionManager = browserSessionManager;
+        _browserOptions = browserOptions;
     }
 
     public void EnsureRegistered(IToolRegistry toolRegistry)
@@ -402,6 +409,14 @@ public sealed class ToolRegistryBootstrapper
             toolRegistry.RegisterTool(new WebSearchTool(
                 _loggerFactory.CreateLogger<WebSearchTool>(),
                 _httpClientFactory), ToolLoading.Deferred);
+        }
+
+        if (_browserSessionManager != null)
+        {
+            toolRegistry.RegisterTool(new BrowserNavigateTool(_browserSessionManager), ToolLoading.Deferred);
+            toolRegistry.RegisterTool(new BrowserSnapshotTool(_browserSessionManager, _modelSettingsService, _browserOptions), ToolLoading.Deferred);
+            toolRegistry.RegisterTool(new BrowserActTool(_browserSessionManager), ToolLoading.Deferred);
+            toolRegistry.RegisterTool(new BrowserTabsTool(_browserSessionManager), ToolLoading.Deferred);
         }
 
         // Archive

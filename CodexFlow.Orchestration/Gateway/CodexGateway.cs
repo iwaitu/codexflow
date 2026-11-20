@@ -118,6 +118,10 @@ public sealed class CodexGateway : ICodexGateway, IAsyncDisposable
         try
         {
             var approvalBroker = _serviceProvider.GetService<CodexFlow.Core.Execution.Approval.IExecutionApprovalBroker>();
+            var browserApprovalCoordinator = _serviceProvider.GetService<CodexFlow.Core.Browser.IBrowserApprovalCoordinator>();
+            int GetTotalPendingApprovals() =>
+                (approvalBroker?.GetPendingApprovalCount(sessionId) ?? 0) +
+                (browserApprovalCoordinator?.GetPendingApprovalsForSession(sessionId).Count ?? 0);
 
             // 发送初始连接确认事件
             yield return new GatewaySseEvent
@@ -130,7 +134,7 @@ public sealed class CodexGateway : ICodexGateway, IAsyncDisposable
                     status = "connected",
                     subscriberCount = channel.SubscriberCount,
                     epoch = channel.Epoch,
-                    pendingApprovals = approvalBroker?.GetPendingApprovalCount(sessionId) ?? 0
+                    pendingApprovals = GetTotalPendingApprovals()
                 }
             };
 
@@ -158,7 +162,7 @@ public sealed class CodexGateway : ICodexGateway, IAsyncDisposable
                         status = "alive",
                         subscriberCount = channel.SubscriberCount,
                         intervalSeconds = (int)_sseHeartbeatInterval.TotalSeconds,
-                        pendingApprovals = approvalBroker?.GetPendingApprovalCount(sessionId) ?? 0
+                        pendingApprovals = GetTotalPendingApprovals()
                     }
                 };
             }
@@ -219,6 +223,18 @@ public sealed class CodexGateway : ICodexGateway, IAsyncDisposable
     {
         _serviceProvider.GetService<CodexFlow.Core.Execution.Approval.IExecutionApprovalBroker>()
             ?.ClearSessionAuthorizations(sessionId);
+
+        if (_serviceProvider.GetService<CodexFlow.Core.Browser.IBrowserSessionManager>() is { } browserManager)
+        {
+            try
+            {
+                await browserManager.CloseSessionAsync(sessionId, "session_closed").ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Gateway] 关闭 Session {SessionId} 关联浏览器上下文失败，继续释放通道。", sessionId);
+            }
+        }
 
         if (_channels.TryRemove(sessionId, out var channel))
         {
