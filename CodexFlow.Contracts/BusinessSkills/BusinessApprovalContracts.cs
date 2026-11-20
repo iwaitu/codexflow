@@ -2,8 +2,9 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+using System.Buffers;
+using System.Globalization;
 using System.Security.Cryptography;
-using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 
@@ -59,33 +60,48 @@ public sealed record BusinessApprovalDigestInput(
     IReadOnlyList<string> BatchItemIds,
     DateTimeOffset ExpiresAtUtc)
 {
-    private static readonly JsonSerializerOptions CanonicalJsonOptions = new()
+    private static readonly JsonWriterOptions CanonicalJsonOptions = new()
     {
-        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-        WriteIndented = false
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
     };
 
     public string ComputeRequestDigest()
     {
-        var canonical = new
-        {
-            kind = BusinessApprovalConstants.BusinessSkillWriteKind,
-            runId = RunId,
-            skillId = SkillId,
-            skillVersion = SkillVersion,
-            skillContentHash = SkillContentHash,
-            connectionId = ConnectionId,
-            connectionRevision = ConnectionRevision,
-            credentialRevision = CredentialRevision,
-            capabilityId = CapabilityId,
-            catalogSnapshotHash = CatalogSnapshotHash,
-            normalizedArgumentsJson = NormalizedArgumentsJson,
-            batchItemIds = BatchItemIds,
-            expiresAtUtc = ExpiresAtUtc.ToUniversalTime().ToString("O")
-        };
+        var buffer = new ArrayBufferWriter<byte>();
+        using var writer = new Utf8JsonWriter(buffer, CanonicalJsonOptions);
 
-        var serialized = JsonSerializer.Serialize(canonical, CanonicalJsonOptions);
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(serialized));
+        // Keep the original serialized property order for existing approval digests.
+        writer.WriteStartObject();
+        writer.WriteString("kind", BusinessApprovalConstants.BusinessSkillWriteKind);
+        writer.WriteString("runId", RunId);
+        writer.WriteString("skillId", SkillId);
+        writer.WriteNumber("skillVersion", SkillVersion);
+        writer.WriteString("skillContentHash", SkillContentHash);
+        writer.WriteString("connectionId", ConnectionId);
+        writer.WriteNumber("connectionRevision", ConnectionRevision);
+        writer.WriteString("credentialRevision", CredentialRevision);
+        writer.WriteString("capabilityId", CapabilityId);
+        writer.WriteString("catalogSnapshotHash", CatalogSnapshotHash);
+        writer.WriteString("normalizedArgumentsJson", NormalizedArgumentsJson);
+        if (BatchItemIds is null)
+        {
+            writer.WriteNull("batchItemIds");
+        }
+        else
+        {
+            writer.WriteStartArray("batchItemIds");
+            foreach (var itemId in BatchItemIds)
+            {
+                writer.WriteStringValue(itemId);
+            }
+
+            writer.WriteEndArray();
+        }
+        writer.WriteString("expiresAtUtc", ExpiresAtUtc.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture));
+        writer.WriteEndObject();
+        writer.Flush();
+
+        var hash = SHA256.HashData(buffer.WrittenSpan);
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
 }

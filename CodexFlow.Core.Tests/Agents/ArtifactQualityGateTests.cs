@@ -10,6 +10,54 @@ namespace CodexFlow.Core.Tests.Agents;
 
 public sealed class ArtifactQualityGateTests
 {
+    [Fact]
+    public void ComputeManifestHash_MatchesPersistedFormat()
+    {
+        var date = new DateTimeOffset(2026, 11, 17, 14, 12, 35, TimeSpan.FromMinutes(330)).AddTicks(1_234_567);
+        var manifest = new ForgeArtifactManifest
+        {
+            Version = 1,
+            ArtifactId = "artifact-制品",
+            UserId = "user-🦊",
+            SessionId = "session",
+            JobId = "job",
+            TaskId = "task-甲",
+            Attempt = 7,
+            RepositoryIdentity = "repo/<>&\"'",
+            WorktreePath = "C:\\工作树\\source\n\t",
+            BaseCommit = new string('b', 40),
+            HeadCommit = new string('a', 40),
+            ScopeHash = "scope-\u2028",
+            PlanArtifactId = "plan-料",
+            PlanVersion = "v1-\r",
+            PlanHash = new string('c', 64),
+            RequiredTaskIds = new List<string> { "task-乙", "task-甲" },
+            ParentArtifactIds = ["制品-2", "artifact-1", "制品-2"],
+            ChangedPaths = ["src/乙.cs", "src/甲.cs"],
+            CreatedAtUtc = date
+        };
+
+        // These hashes were captured from the reflection-based serializer before the AOT change.
+        Assert.Equal("FDE550F3DACA3ADD50A5EB9043A52B906A6E4B68FF89559260C7441B03110799",
+            ArtifactQualityGate.ComputeManifestHash(manifest));
+        Assert.Equal("0157AB0525F41110C917B59D84991B16AF95CA6F0DA5032B915461DA2426C95D",
+            ArtifactQualityGate.ComputeManifestHash(manifest with { CreatedAtUtc = date.ToUniversalTime() }));
+        Assert.Equal("FD93FD84337EDB33A5C5F8152BDBEA1B25FD6522F6F3E1CA7A2155068CC8201E",
+            ArtifactQualityGate.ComputeManifestHash(manifest with { ChangedPaths = ["src/甲.cs", "src/乙.cs"] }));
+        Assert.Equal("1DC852735EADDF62F897919DB6D0ADB76061456E94FFA2EE52B6BCE059FACD8F",
+            ArtifactQualityGate.ComputeManifestHash(new()));
+        Assert.Equal("AB50C47751CA3A4D2DC8E3E84D884E33EB27B9A8DBB20B5B94CCFDBD7D3A8927",
+            ArtifactQualityGate.ComputeManifestHash(manifest with
+            {
+                ArtifactId = null!,
+                RequiredTaskIds = null!,
+                ParentArtifactIds = [null!, "", "a"],
+                ChangedPaths = []
+            }));
+        Assert.Equal("74234E98AFE7498FB5DAF1F36AC2D78ACC339464F950703B8C019892F982B90B",
+            ArtifactQualityGate.ComputeManifestHash(null!));
+    }
+
     private static ForgeArtifactVerificationReceipt Receipt()
     {
         var manifest = new ForgeArtifactManifest
