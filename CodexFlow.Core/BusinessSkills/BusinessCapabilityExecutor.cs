@@ -117,24 +117,24 @@ public sealed class BusinessCapabilityExecutor : IBusinessCapabilityExecutor
             {
                 if (!string.IsNullOrEmpty(pagination.CursorParam) && !string.IsNullOrEmpty(cursor))
                 {
-                    pageArgs[pagination.CursorParam] = JsonSerializer.SerializeToElement(cursor);
+                    pageArgs[pagination.CursorParam] = JsonSerializer.SerializeToElement(cursor, BusinessRuntimeJsonContext.Default.String);
                 }
 
                 if (!string.IsNullOrEmpty(pagination.PageSizeParam))
                 {
-                    pageArgs[pagination.PageSizeParam] = JsonSerializer.SerializeToElement(pagination.PageSize);
+                    pageArgs[pagination.PageSizeParam] = JsonSerializer.SerializeToElement(pagination.PageSize, BusinessRuntimeJsonContext.Default.Int32);
                 }
             }
             else
             {
                 if (!string.IsNullOrEmpty(pagination.PageParam))
                 {
-                    pageArgs[pagination.PageParam] = JsonSerializer.SerializeToElement(pageNumber);
+                    pageArgs[pagination.PageParam] = JsonSerializer.SerializeToElement(pageNumber, BusinessRuntimeJsonContext.Default.Int32);
                 }
 
                 if (!string.IsNullOrEmpty(pagination.PageSizeParam))
                 {
-                    pageArgs[pagination.PageSizeParam] = JsonSerializer.SerializeToElement(pagination.PageSize);
+                    pageArgs[pagination.PageSizeParam] = JsonSerializer.SerializeToElement(pagination.PageSize, BusinessRuntimeJsonContext.Default.Int32);
                 }
             }
 
@@ -232,7 +232,7 @@ public sealed class BusinessCapabilityExecutor : IBusinessCapabilityExecutor
             }
         }
 
-        var mergedArray = JsonSerializer.SerializeToElement(collected);
+        var mergedArray = JsonSerializer.SerializeToElement(collected, BusinessRuntimeJsonContext.Default.ListJsonElement);
         return new CapabilityExecutionResult
         {
             Success = true,

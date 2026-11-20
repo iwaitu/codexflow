@@ -4,6 +4,7 @@
 
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using CodexFlow.Contracts.BusinessSkills;
 
 namespace CodexFlow.Core.BusinessSkills;
@@ -140,11 +141,9 @@ public static class SkillTransformEngine
             workingRows = ApplySort(workingRows, step.SortBy);
         }
 
-        var payload = JsonSerializer.SerializeToElement(new
-        {
-            rows = workingRows,
-            count = workingRows.Count
-        });
+        var payload = JsonSerializer.SerializeToElement(
+            new BusinessTransformRowsPayload(workingRows, workingRows.Count),
+            BusinessRuntimeJsonContext.Default.BusinessTransformRowsPayload);
 
         return new SkillTransformResult(true, null, null, payload, workingRows.Count);
     }
@@ -225,7 +224,9 @@ public static class SkillTransformEngine
                 }
             }
 
-            projected.Add(JsonSerializer.SerializeToElement(dict));
+            projected.Add(JsonSerializer.SerializeToElement(
+                dict,
+                (JsonTypeInfo)BusinessRuntimeJsonContext.Default.DictionaryStringObject));
         }
 
         errorMessage = null;
@@ -411,7 +412,9 @@ public static class SkillTransformEngine
                 };
             }
 
-            aggregated.Add(JsonSerializer.SerializeToElement(outObj));
+            aggregated.Add(JsonSerializer.SerializeToElement(
+                outObj,
+                (JsonTypeInfo)BusinessRuntimeJsonContext.Default.DictionaryStringObject));
         }
 
         return true;
@@ -608,7 +611,9 @@ public static class SkillTransformEngine
             }
         }
 
-        return JsonSerializer.SerializeToElement(dict);
+        return JsonSerializer.SerializeToElement(
+            dict,
+            (JsonTypeInfo)BusinessRuntimeJsonContext.Default.DictionaryStringObject);
     }
 
     private static List<JsonElement> ApplySort(List<JsonElement> rows, IReadOnlyList<SkillSortSpec> sortBy)

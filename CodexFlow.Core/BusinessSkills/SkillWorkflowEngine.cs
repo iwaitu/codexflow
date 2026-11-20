@@ -196,7 +196,8 @@ public sealed class SkillWorkflowEngine
                         skippedStepIds.Add(skipId);
                     }
 
-                    stepOutputs[step.Id] = JsonSerializer.SerializeToElement(new { matched = condMatched });
+                    stepOutputs[step.Id] = JsonSerializer.SerializeToElement(
+                        new WorkflowBranchPayload(condMatched), BusinessRuntimeJsonContext.Default.WorkflowBranchPayload);
                     completedStepIds.Add(step.Id);
                     await host.PersistStepCheckpointAsync(stepInstanceId, "branch", SkillRunStepState.Succeeded,
                         null, $"matched={condMatched}", null, null, ct).ConfigureAwait(false);
@@ -291,11 +292,13 @@ public sealed class SkillWorkflowEngine
                         var idem = SkillValueBinder.RenderBoundedTemplate(toolStep.ResponseContract.IdempotencyKeyTemplate, ctx.Inputs, stepOutputs, loopItem);
                         if (!string.IsNullOrWhiteSpace(idem) && !bodyDict.ContainsKey("idempotencyKey"))
                         {
-                            bodyDict["idempotencyKey"] = JsonSerializer.SerializeToElement(idem);
+                            bodyDict["idempotencyKey"] = JsonSerializer.SerializeToElement(
+                                idem, BusinessRuntimeJsonContext.Default.String);
                         }
                     }
 
-                    bodyPayload = JsonSerializer.SerializeToElement(bodyDict);
+                    bodyPayload = JsonSerializer.SerializeToElement(
+                        bodyDict, BusinessRuntimeJsonContext.Default.DictionaryStringJsonElement);
                 }
             }
 
@@ -376,17 +379,12 @@ public sealed class SkillWorkflowEngine
 
             // 按步骤引用契约存储结果：{ items: [...] }（分页列表）或原始返回对象
             var storedOutput = toolStep.Pagination is not null
-                ? JsonSerializer.SerializeToElement(new
-                {
-                    items = execRes.CollectedItems,
-                    count = execRes.CollectedItems.Count,
-                    partialData = execRes.PartialData
-                })
-                : (execRes.PayloadJson ?? JsonSerializer.SerializeToElement(new
-                {
-                    createdId = execRes.CreatedId,
-                    text = execRes.RawText
-                }));
+                ? JsonSerializer.SerializeToElement(
+                    new WorkflowPagePayload(execRes.CollectedItems, execRes.CollectedItems.Count, execRes.PartialData),
+                    BusinessRuntimeJsonContext.Default.WorkflowPagePayload)
+                : (execRes.PayloadJson ?? JsonSerializer.SerializeToElement(
+                    new WorkflowCapabilityFallbackPayload(execRes.CreatedId, execRes.RawText),
+                    BusinessRuntimeJsonContext.Default.WorkflowCapabilityFallbackPayload));
 
             stepOutputs[toolStep.Id] = storedOutput;
             completedStepIds.Add(toolStep.Id);
@@ -422,10 +420,11 @@ public sealed class SkillWorkflowEngine
             string generatedText;
             if (_chatClient is not null)
             {
+                var sanitizedJson = JsonSerializer.Serialize(sanitizedPayload, BusinessRuntimeJsonContext.Default.Object);
                 var msgs = new List<ChatMessage>
                 {
                     new(ChatRole.System, "Summarize and draft clear Chinese explanation strictly using ONLY the provided sanitized JSON fields. Never invent numbers, dates, or tool commands."),
-                    new(ChatRole.User, $"{genStep.PromptTemplate}\n\nSanitizedData:\n{JsonSerializer.Serialize(sanitizedPayload)}")
+                    new(ChatRole.User, $"{genStep.PromptTemplate}\n\nSanitizedData:\n{sanitizedJson}")
                 };
                 var resp = await _chatClient.GetResponseAsync(msgs, new ChatOptions
                 {
@@ -439,11 +438,9 @@ public sealed class SkillWorkflowEngine
                 generatedText = $"{genStep.PromptTemplate} (records={CountPayloadRows(sanitizedPayload)})";
             }
 
-            var stepPayload = JsonSerializer.SerializeToElement(new
-            {
-                text = generatedText,
-                disclosedFields = allowedSet.ToArray()
-            });
+            var stepPayload = JsonSerializer.SerializeToElement(
+                new WorkflowGeneratedTextPayload(generatedText, allowedSet.ToArray()),
+                BusinessRuntimeJsonContext.Default.WorkflowGeneratedTextPayload);
             stepOutputs[genStep.Id] = stepPayload;
             completedStepIds.Add(genStep.Id);
 
@@ -517,18 +514,15 @@ public sealed class SkillWorkflowEngine
                         approvalStep.TargetCapabilityId,
                         targetCap?.Invocation.HttpMethod ?? targetCap?.Invocation.McpToolName ?? "WRITE",
                         targetCap?.Invocation.NormalizedPath ?? approvalStep.TargetCapabilityId,
-                        JsonSerializer.Serialize(previewObj)));
+                        JsonSerializer.Serialize(previewObj, BusinessRuntimeJsonContext.Default.DictionaryStringJsonElement)));
                 }
             }
 
             var now = DateTimeOffset.UtcNow;
             var expiresAt = now.AddMinutes(BusinessSkillDefaults.ApprovalValidityMinutes);
-            var normArgsJson = JsonSerializer.Serialize(new
-            {
-                targetCapabilityId = approvalStep.TargetCapabilityId,
-                inputs = ctx.Inputs,
-                batchCount = items.Length
-            });
+            var normArgsJson = JsonSerializer.Serialize(
+                new WorkflowApprovalPayload(approvalStep.TargetCapabilityId, ctx.Inputs, items.Length),
+                BusinessRuntimeJsonContext.Default.WorkflowApprovalPayload);
 
             var digestInput = new BusinessApprovalDigestInput(
                 ctx.RunId,
@@ -642,7 +636,9 @@ public sealed class SkillWorkflowEngine
                         cancelled ? SkillRunStepState.Cancelled : SkillRunStepState.Failed,
                         $"completed={idx}/{items.Length}", abort.ErrorMessage, null, abort.ErrorCode, CancellationToken.None).ConfigureAwait(false);
 
-                    stepOutputs[foreachStep.Id] = JsonSerializer.SerializeToElement(new { results = iterationResults, partial = true });
+                    stepOutputs[foreachStep.Id] = JsonSerializer.SerializeToElement(
+                        new WorkflowPartialLoopPayload(iterationResults, Partial: true),
+                        BusinessRuntimeJsonContext.Default.WorkflowPartialLoopPayload);
                     return new StepExecOutcome(
                         cancelled ? SkillRunStepState.Cancelled : SkillRunStepState.Failed,
                         abort.ErrorCode,
@@ -664,7 +660,9 @@ public sealed class SkillWorkflowEngine
                     var bodyOutcome = await ExecuteSingleStepAsync(bodyStep, items[idx], bodyInstanceId).ConfigureAwait(false);
                     if (bodyOutcome.State != SkillRunStepState.Succeeded)
                     {
-                        stepOutputs[foreachStep.Id] = JsonSerializer.SerializeToElement(new { results = iterationResults, partial = true });
+                        stepOutputs[foreachStep.Id] = JsonSerializer.SerializeToElement(
+                            new WorkflowPartialLoopPayload(iterationResults, Partial: true),
+                            BusinessRuntimeJsonContext.Default.WorkflowPartialLoopPayload);
                         await host.PersistStepCheckpointAsync(stepInstanceId, "foreach", bodyOutcome.State,
                             $"failedAt={idx}/{items.Length}", bodyOutcome.ErrorMessage, null, bodyOutcome.ErrorCode, CancellationToken.None).ConfigureAwait(false);
                         return bodyOutcome;
@@ -679,7 +677,9 @@ public sealed class SkillWorkflowEngine
                 }
             }
 
-            var loopPayload = JsonSerializer.SerializeToElement(new { results = iterationResults, count = iterationResults.Count });
+            var loopPayload = JsonSerializer.SerializeToElement(
+                new WorkflowLoopPayload(iterationResults, iterationResults.Count),
+                BusinessRuntimeJsonContext.Default.WorkflowLoopPayload);
             stepOutputs[foreachStep.Id] = loopPayload;
             completedStepIds.Add(foreachStep.Id);
             await host.PersistStepCheckpointAsync(stepInstanceId, "foreach", SkillRunStepState.Succeeded,
@@ -709,7 +709,7 @@ public sealed class SkillWorkflowEngine
                 outputDict["result"] = singleOut;
             }
 
-            var outPayload = JsonSerializer.SerializeToElement(outputDict);
+            var outPayload = JsonSerializer.SerializeToElement(outputDict, BusinessRuntimeJsonContext.Default.DictionaryStringJsonElement);
             stepOutputs[outputStep.Id] = outPayload;
             completedStepIds.Add(outputStep.Id);
             await host.PersistStepCheckpointAsync(stepInstanceId, "output", SkillRunStepState.Succeeded,
@@ -752,7 +752,7 @@ public sealed class SkillWorkflowEngine
         }
         else if (stepOutputs.Count > 0)
         {
-            finalOutput = JsonSerializer.SerializeToElement(stepOutputs);
+            finalOutput = JsonSerializer.SerializeToElement(stepOutputs, BusinessRuntimeJsonContext.Default.DictionaryStringJsonElement);
         }
 
         if (anyWriteOutcomeUnknown)
@@ -852,7 +852,7 @@ public sealed class SkillWorkflowEngine
     {
         if (allowedFields.Count == 0)
         {
-            return new { omitted = true };
+            return new WorkflowOmittedPayload(Omitted: true);
         }
 
         if (source.ValueKind == JsonValueKind.Array)
@@ -892,7 +892,7 @@ public sealed class SkillWorkflowEngine
             return d;
         }
 
-        return new { omitted = true };
+        return new WorkflowOmittedPayload(Omitted: true);
     }
 
     private static int CountPayloadRows(object payload)
