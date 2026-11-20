@@ -3,6 +3,7 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 using CodexFlow.Core.Abstractions;
+using CodexFlow.Core.Agents.Tools;
 using CodexFlow.Core.Constants;
 using Microsoft.Extensions.AI;
 using System.Diagnostics.CodeAnalysis;
@@ -43,9 +44,10 @@ public static class CodexToolFunctionAdapterFactory
         ArgumentNullException.ThrowIfNull(tool);
 
         var name = tool.Name ?? "unknown";
+        var canonicalName = name.ToLowerInvariant();
         var description = tool.Description ?? "";
 
-        return name.ToLowerInvariant() switch
+        return canonicalName switch
         {
             "ivilson_read"          => SourceGeneratedToolFunction.ReadFile(tool, description),
             "hs_read"               => CreateForHsRead(tool, description),
@@ -102,12 +104,15 @@ public static class CodexToolFunctionAdapterFactory
             "user_learn_preference" => CreateForUserLearnPreference(tool, description),
             "fetch_webpage"         => CreateForFetchWebpage(tool, description),
             "web_search"            => CreateForWebSearch(tool, description),
-            "browser_navigate"      => CreateForBrowserNavigate(tool, description),
-            "browser_snapshot"      => CreateForBrowserSnapshot(tool, description),
-            "browser_act"           => CreateForBrowserAct(tool, description),
-            "browser_tabs"          => CreateForBrowserTabs(tool, description),
-            "browser_request_takeover" => CreateForBrowserRequestTakeover(tool, description),
-            "browser_evaluate"      => CreateForBrowserEvaluate(tool, description),
+            BrowserToolNames.Navigate or BrowserToolNames.Snapshot or BrowserToolNames.Act or BrowserToolNames.Tabs
+                or BrowserToolNames.RequestTakeover or BrowserToolNames.Evaluate when !SupportsManagedToolReflection
+                => SourceGeneratedToolFunction.Browser(tool, canonicalName, description),
+            BrowserToolNames.Navigate => CreateForBrowserNavigate(tool, description),
+            BrowserToolNames.Snapshot => CreateForBrowserSnapshot(tool, description),
+            BrowserToolNames.Act => CreateForBrowserAct(tool, description),
+            BrowserToolNames.Tabs => CreateForBrowserTabs(tool, description),
+            BrowserToolNames.RequestTakeover => CreateForBrowserRequestTakeover(tool, description),
+            BrowserToolNames.Evaluate => CreateForBrowserEvaluate(tool, description),
             "skill"                 => CreateForSkill(tool, description),
             "list_mcp_resources"    => CreateForListMcpResources(tool, description),
             "read_mcp_resource"     => CreateForReadMcpResource(tool, description),

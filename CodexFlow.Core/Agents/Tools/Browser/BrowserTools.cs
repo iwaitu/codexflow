@@ -3,6 +3,7 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 using System.Globalization;
+using System.Text.Json.Serialization;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Browser;
 using CodexFlow.Core.Configuration;
@@ -24,6 +25,17 @@ public static class BrowserToolNames
 
     public static readonly string[] All = [Navigate, Snapshot, Act, Tabs, RequestTakeover, Evaluate];
 }
+
+internal sealed record BrowserPageToolMetadata(string? Url, string? Title);
+
+internal sealed record BrowserScreenshotToolMetadata(
+    string? Url,
+    string? Title,
+    [property: JsonPropertyName("screenshotSeq")]
+    [property: Newtonsoft.Json.JsonProperty("screenshotSeq")]
+    long? ScreenshotSeq);
+
+internal sealed record BrowserFailureToolMetadata(string? ErrorCode);
 
 internal static class BrowserToolHelpers
 {
@@ -147,8 +159,8 @@ public sealed class BrowserNavigateTool(
 
         var result = await manager.NavigateAsync(caller, action, url, ct).ConfigureAwait(false);
         return result.Succeeded
-            ? CodexToolResult.Succeeded(result.Output, new { result.Url, result.Title }, summary: result.Summary)
-            : CodexToolResult.Error(result.Output, new { result.ErrorCode }, summary: result.Summary);
+            ? CodexToolResult.Succeeded(result.Output, new BrowserPageToolMetadata(result.Url, result.Title), summary: result.Summary)
+            : CodexToolResult.Error(result.Output, new BrowserFailureToolMetadata(result.ErrorCode), summary: result.Summary);
     }
 }
 
@@ -205,7 +217,7 @@ public sealed class BrowserSnapshotTool(
 
         if (!result.Succeeded)
         {
-            return CodexToolResult.Error(result.Output, new { result.ErrorCode }, summary: result.Summary);
+            return CodexToolResult.Error(result.Output, new BrowserFailureToolMetadata(result.ErrorCode), summary: result.Summary);
         }
 
         var output = result.Output;
@@ -224,7 +236,7 @@ public sealed class BrowserSnapshotTool(
 
         return CodexToolResult.Succeeded(
             output,
-            new { result.Url, result.Title, screenshotSeq = result.Screenshot?.ScreenshotSeq },
+            new BrowserScreenshotToolMetadata(result.Url, result.Title, result.Screenshot?.ScreenshotSeq),
             summary: result.Summary);
     }
 }
@@ -285,8 +297,8 @@ public sealed class BrowserActTool(
 
         var result = await manager.ActAsync(caller, req, ct).ConfigureAwait(false);
         return result.Succeeded
-            ? CodexToolResult.Succeeded(result.Output, new { result.Url, result.Title }, summary: result.Summary)
-            : CodexToolResult.Error(result.Output, new { result.ErrorCode }, summary: result.Summary);
+            ? CodexToolResult.Succeeded(result.Output, new BrowserPageToolMetadata(result.Url, result.Title), summary: result.Summary)
+            : CodexToolResult.Error(result.Output, new BrowserFailureToolMetadata(result.ErrorCode), summary: result.Summary);
     }
 }
 
@@ -331,8 +343,8 @@ public sealed class BrowserTabsTool(
 
         var result = await manager.TabsAsync(caller, action, tabId, url, ct).ConfigureAwait(false);
         return result.Succeeded
-            ? CodexToolResult.Succeeded(result.Output, new { result.Url, result.Title }, summary: result.Summary)
-            : CodexToolResult.Error(result.Output, new { result.ErrorCode }, summary: result.Summary);
+            ? CodexToolResult.Succeeded(result.Output, new BrowserPageToolMetadata(result.Url, result.Title), summary: result.Summary)
+            : CodexToolResult.Error(result.Output, new BrowserFailureToolMetadata(result.ErrorCode), summary: result.Summary);
     }
 }
 
@@ -383,7 +395,7 @@ public sealed class BrowserRequestTakeoverTool(
         var result = await manager.RequestTakeoverAsync(caller, reason, timeoutSeconds, ct).ConfigureAwait(false);
         if (!result.Succeeded)
         {
-            return CodexToolResult.Error(result.Output, new { result.ErrorCode }, summary: result.Summary);
+            return CodexToolResult.Error(result.Output, new BrowserFailureToolMetadata(result.ErrorCode), summary: result.Summary);
         }
 
         var output = result.Output;
@@ -399,7 +411,7 @@ public sealed class BrowserRequestTakeoverTool(
 
         return CodexToolResult.Succeeded(
             output,
-            new { result.Url, result.Title, screenshotSeq = result.Screenshot?.ScreenshotSeq },
+            new BrowserScreenshotToolMetadata(result.Url, result.Title, result.Screenshot?.ScreenshotSeq),
             summary: result.Summary);
     }
 }
@@ -452,7 +464,7 @@ public sealed class BrowserEvaluateTool(
             .EvaluateAsync(caller, expression, awaitPromise, maxResultChars, ct)
             .ConfigureAwait(false);
         return result.Succeeded
-            ? CodexToolResult.Succeeded(result.Output, new { result.Url, result.Title }, summary: result.Summary)
-            : CodexToolResult.Error(result.Output, new { result.ErrorCode }, summary: result.Summary);
+            ? CodexToolResult.Succeeded(result.Output, new BrowserPageToolMetadata(result.Url, result.Title), summary: result.Summary)
+            : CodexToolResult.Error(result.Output, new BrowserFailureToolMetadata(result.ErrorCode), summary: result.Summary);
     }
 }

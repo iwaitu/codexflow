@@ -13,7 +13,7 @@ using Microsoft.Extensions.AI;
 
 namespace CodexFlow.Core.Agents;
 
-internal sealed class SourceGeneratedToolFunction(
+internal sealed partial class SourceGeneratedToolFunction(
     ICodexTool tool,
     string name,
     string description,
@@ -238,6 +238,9 @@ internal sealed class SourceGeneratedToolFunction(
 [JsonSerializable(typeof(ImageReadMetadata))]
 [JsonSerializable(typeof(HashlineReadMetadata))]
 [JsonSerializable(typeof(SearchInFilesMetadata))]
+[JsonSerializable(typeof(BrowserPageToolMetadata))]
+[JsonSerializable(typeof(BrowserScreenshotToolMetadata))]
+[JsonSerializable(typeof(BrowserFailureToolMetadata))]
 [JsonSerializable(typeof(JsonElement))]
 [JsonSerializable(typeof(JsonObject))]
 [JsonSerializable(typeof(JsonArray))]
