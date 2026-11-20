@@ -23,6 +23,7 @@ const VALID_DEPENDENCY_IDS = new Set<EnvironmentDependencyId>([
   'python',
   'docker',
   'libreoffice',
+  'browser',
 ]);
 
 const REPORT_CACHE_TTL_MS = 10_000;
@@ -375,6 +376,38 @@ export function resolveInstallRecipe(
             : null,
         downloadUrl: 'https://www.libreoffice.org/download/download-libreoffice/',
       };
+    case 'browser':
+      if (platform === 'darwin' && packageManager === 'brew') {
+        return {
+          strategy: 'auto',
+          command: 'brew',
+          args: ['install', '--cask', 'google-chrome'],
+          extraEnv: { HOMEBREW_NO_AUTO_UPDATE: '1' },
+          preview: 'brew install --cask google-chrome',
+          downloadUrl: 'https://www.google.com/chrome/',
+        };
+      }
+      if (platform === 'win32' && packageManager === 'winget') {
+        return {
+          strategy: 'auto',
+          command: 'winget',
+          args: [
+            'install',
+            '--id',
+            'Google.Chrome',
+            '-e',
+            '--accept-source-agreements',
+            '--accept-package-agreements',
+          ],
+          preview: 'winget install --id Google.Chrome -e',
+          downloadUrl: 'https://www.google.com/chrome/',
+        };
+      }
+      return {
+        strategy: 'download_url',
+        preview: null,
+        downloadUrl: 'https://www.google.com/chrome/',
+      };
   }
 }
 
@@ -445,6 +478,7 @@ export class EnvironmentManager {
       this.checkPython(env, packageManager),
       this.checkDocker(env, packageManager),
       this.checkLibreOffice(env, packageManager),
+      this.checkBrowser(env, packageManager),
     ]);
 
     const report: EnvironmentReport = {
@@ -1203,6 +1237,94 @@ export class EnvironmentManager {
       resolvedPath: null,
       bundled: false,
       summary: '未检测到 LibreOffice（处理旧版 Office 文档转换时可选安装）',
+      detail: null,
+      installStrategy: recipe.strategy,
+      installCommandPreview: recipe.preview,
+      downloadUrl: recipe.downloadUrl,
+    };
+  }
+
+  private async checkBrowser(
+    env: NodeJS.ProcessEnv,
+    packageManager: EnvironmentPackageManager,
+  ): Promise<EnvironmentDependencyItem> {
+    const candidates: Array<{ name: string; path: string }> = [];
+    if (this.platform === 'win32') {
+      const pf = env.ProgramFiles || 'C:\\Program Files';
+      const pf86 = env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
+      const localAppData = env.LOCALAPPDATA || win32.join(this.homeDir, 'AppData', 'Local');
+      candidates.push(
+        { name: 'Google Chrome', path: win32.join(pf, 'Google', 'Chrome', 'Application', 'chrome.exe') },
+        { name: 'Google Chrome', path: win32.join(pf86, 'Google', 'Chrome', 'Application', 'chrome.exe') },
+        { name: 'Google Chrome', path: win32.join(localAppData, 'Google', 'Chrome', 'Application', 'chrome.exe') },
+        { name: 'Microsoft Edge', path: win32.join(pf86, 'Microsoft', 'Edge', 'Application', 'msedge.exe') },
+        { name: 'Microsoft Edge', path: win32.join(pf, 'Microsoft', 'Edge', 'Application', 'msedge.exe') },
+        { name: 'Brave Browser', path: win32.join(pf, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe') },
+        { name: 'Brave Browser', path: win32.join(localAppData, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe') },
+      );
+    } else if (this.platform === 'darwin') {
+      candidates.push(
+        { name: 'Google Chrome', path: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' },
+        {
+          name: 'Google Chrome',
+          path: posix.join(this.homeDir, 'Applications', 'Google Chrome.app', 'Contents', 'MacOS', 'Google Chrome'),
+        },
+        { name: 'Microsoft Edge', path: '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge' },
+        { name: 'Brave Browser', path: '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser' },
+        { name: 'Chromium', path: '/Applications/Chromium.app/Contents/MacOS/Chromium' },
+      );
+    } else {
+      candidates.push(
+        { name: 'Google Chrome', path: '/usr/bin/google-chrome' },
+        { name: 'Google Chrome', path: '/usr/bin/google-chrome-stable' },
+        { name: 'Google Chrome', path: '/opt/google/chrome/chrome' },
+        { name: 'Chromium', path: '/usr/bin/chromium' },
+        { name: 'Chromium', path: '/usr/bin/chromium-browser' },
+        { name: 'Chromium (Snap)', path: '/snap/bin/chromium' },
+        { name: 'Microsoft Edge', path: '/usr/bin/microsoft-edge' },
+        { name: 'Microsoft Edge', path: '/usr/bin/microsoft-edge-stable' },
+        { name: 'Brave Browser', path: '/usr/bin/brave-browser' },
+      );
+    }
+
+    for (const candidate of candidates) {
+      if (!this.pathExists(candidate.path)) {
+        continue;
+      }
+      let version: string | null = null;
+      if (this.platform !== 'win32') {
+        const probe = await this.probeCommand(candidate.path, ['--version'], env, 3_000);
+        if (probe.ok && probe.stdout) {
+          const match = probe.stdout.match(/(\d+\.\d+\.\d+(?:\.\d+)?)/);
+          version = match ? match[1]! : probe.stdout.slice(0, 64);
+        }
+      }
+      return {
+        id: 'browser',
+        name: '受管浏览器（Web Browser Use）',
+        severity: 'optional',
+        status: 'ready',
+        version,
+        resolvedPath: candidate.path,
+        bundled: false,
+        summary: `已检测到 ${candidate.name}，可用于网页浏览、开发联调与人工接管`,
+        detail: null,
+        installStrategy: 'none',
+        installCommandPreview: null,
+        downloadUrl: null,
+      };
+    }
+
+    const recipe = resolveInstallRecipe('browser', this.platform, packageManager);
+    return {
+      id: 'browser',
+      name: '受管浏览器（Web Browser Use）',
+      severity: 'optional',
+      status: 'missing',
+      version: null,
+      resolvedPath: null,
+      bundled: false,
+      summary: '未在可信系统目录检测到 Chrome / Edge / Chromium（启用 Web Browser Use 时需要）',
       detail: null,
       installStrategy: recipe.strategy,
       installCommandPreview: recipe.preview,

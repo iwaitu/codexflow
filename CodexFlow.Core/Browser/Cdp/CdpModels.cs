@@ -147,6 +147,9 @@ internal sealed class CdpLiveRefProbe
 
     [JsonPropertyName("obscured")]
     public bool Obscured { get; init; }
+
+    [JsonPropertyName("pageUrl")]
+    public string? PageUrl { get; init; }
 }
 
 internal sealed class CdpActiveElementProbe
@@ -171,6 +174,9 @@ internal sealed class CdpActiveElementProbe
 
     [JsonPropertyName("inIframe")]
     public bool InIframe { get; init; }
+
+    [JsonPropertyName("pageUrl")]
+    public string? PageUrl { get; init; }
 }
 
 [JsonSerializable(typeof(CdpCommandRequest))]

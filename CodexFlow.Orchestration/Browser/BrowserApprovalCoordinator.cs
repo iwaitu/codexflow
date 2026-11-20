@@ -248,9 +248,7 @@ public sealed class BrowserApprovalCoordinator : IBrowserApprovalCoordinator
         if (grantedSession)
         {
             var grants = _sessionGrants.GetOrAdd(removed.Request.SessionId, static _ => new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase));
-            var category = string.Equals(removed.Request.Tool, "browser_navigate", StringComparison.OrdinalIgnoreCase)
-                ? "loopback"
-                : "interact";
+            var category = ResolveGrantCategory(removed.Request);
             grants[BuildGrantKey(removed.Request.TargetOrigin, category)] = 0;
         }
 
@@ -361,6 +359,18 @@ public sealed class BrowserApprovalCoordinator : IBrowserApprovalCoordinator
         });
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(canonical));
         return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    private static string ResolveGrantCategory(BrowserApprovalRequestDto req)
+    {
+        if (string.Equals(req.Action, "persistent_origin_navigation", StringComparison.OrdinalIgnoreCase))
+        {
+            return "persistent_nav";
+        }
+
+        return string.Equals(req.Tool, "browser_navigate", StringComparison.OrdinalIgnoreCase)
+            ? "loopback"
+            : "interact";
     }
 
     private static string BuildGrantKey(string origin, string actionCategory)

@@ -369,8 +369,13 @@ function registerIpcHandlers(manager: BackendManager): void {
     const allowedKeys = new Set([
       'enabled',
       'executablePath',
+      'headless',
+      'profileMode',
       'interactionApprovalPolicy',
       'allowLocalhostInDailyMode',
+      'allowControlledDownloads',
+      'idleTimeoutMinutes',
+      'maxConcurrentSessions',
     ]);
     for (const key of Object.keys(raw)) {
       if (!allowedKeys.has(key)) {
@@ -396,6 +401,19 @@ function registerIpcHandlers(manager: BackendManager): void {
       }
       sanitized.executablePath = raw.executablePath;
     }
+    if (raw.headless !== undefined) {
+      if (typeof raw.headless !== 'boolean') {
+        return { ok: false, status: 400, errorCode: 'invalid_browser_settings_payload', errorMessage: 'headless 必须为布尔值。' };
+      }
+      sanitized.headless = raw.headless;
+    }
+    if (raw.profileMode !== undefined && raw.profileMode !== null) {
+      const validProfiles = new Set(['Ephemeral', 'Persistent']);
+      if (typeof raw.profileMode !== 'string' || !validProfiles.has(raw.profileMode)) {
+        return { ok: false, status: 400, errorCode: 'invalid_browser_settings_payload', errorMessage: 'profileMode 必须为 Ephemeral 或 Persistent。' };
+      }
+      sanitized.profileMode = raw.profileMode;
+    }
     if (raw.interactionApprovalPolicy !== undefined && raw.interactionApprovalPolicy !== null) {
       const validPolicies = new Set(['HighRiskOnly', 'AlwaysAsk', 'AutoInSession']);
       if (typeof raw.interactionApprovalPolicy !== 'string' || !validPolicies.has(raw.interactionApprovalPolicy)) {
@@ -409,18 +427,42 @@ function registerIpcHandlers(manager: BackendManager): void {
       }
       sanitized.allowLocalhostInDailyMode = raw.allowLocalhostInDailyMode;
     }
+    if (raw.allowControlledDownloads !== undefined) {
+      if (typeof raw.allowControlledDownloads !== 'boolean') {
+        return { ok: false, status: 400, errorCode: 'invalid_browser_settings_payload', errorMessage: 'allowControlledDownloads 必须为布尔值。' };
+      }
+      sanitized.allowControlledDownloads = raw.allowControlledDownloads;
+    }
+    if (raw.idleTimeoutMinutes !== undefined && raw.idleTimeoutMinutes !== null) {
+      if (typeof raw.idleTimeoutMinutes !== 'number' || !Number.isInteger(raw.idleTimeoutMinutes) || raw.idleTimeoutMinutes < 1 || raw.idleTimeoutMinutes > 120) {
+        return { ok: false, status: 400, errorCode: 'invalid_browser_settings_payload', errorMessage: 'idleTimeoutMinutes 必须为 1-120 的整数。' };
+      }
+      sanitized.idleTimeoutMinutes = raw.idleTimeoutMinutes;
+    }
+    if (raw.maxConcurrentSessions !== undefined && raw.maxConcurrentSessions !== null) {
+      if (typeof raw.maxConcurrentSessions !== 'number' || !Number.isInteger(raw.maxConcurrentSessions) || raw.maxConcurrentSessions < 1 || raw.maxConcurrentSessions > 8) {
+        return { ok: false, status: 400, errorCode: 'invalid_browser_settings_payload', errorMessage: 'maxConcurrentSessions 必须为 1-8 的整数。' };
+      }
+      sanitized.maxConcurrentSessions = raw.maxConcurrentSessions;
+    }
 
     return callControlPlane(manager.getControlPlaneCredentials(), 'PUT', '/api/settings/browser', sanitized);
   });
 
+  function isValidBrowserSessionId(value: unknown): value is string {
+    if (typeof value !== 'string') {
+      return false;
+    }
+    const trimmed = value.trim();
+    if (trimmed.length === 0 || trimmed.length > 128 || trimmed === '.' || trimmed === '..') {
+      return false;
+    }
+    return /^[A-Za-z0-9._:-]+$/.test(trimmed);
+  }
+
   ipcMain.handle(IPC_CHANNELS.closeBrowserSession, async (event, sessionId: unknown) => {
     assertTrustedIpcSender(event);
-    if (
-      typeof sessionId !== 'string' ||
-      sessionId.trim().length === 0 ||
-      sessionId.length > 128 ||
-      /[/?#\\]/.test(sessionId)
-    ) {
+    if (!isValidBrowserSessionId(sessionId)) {
       return {
         ok: false,
         status: 400,
@@ -434,6 +476,44 @@ function registerIpcHandlers(manager: BackendManager): void {
       'POST',
       `/api/gateway/session/${encodeURIComponent(sessionId.trim())}/browser/close`,
       {},
+    );
+  });
+
+  ipcMain.handle(IPC_CHANNELS.startBrowserTakeover, async (event, sessionId: unknown, reason: unknown) => {
+    assertTrustedIpcSender(event);
+    if (!isValidBrowserSessionId(sessionId)) {
+      return {
+        ok: false,
+        status: 400,
+        errorCode: 'invalid_session_id',
+        errorMessage: '无效的浏览器会话 ID。',
+      };
+    }
+    const cleanReason = typeof reason === 'string' && reason.trim().length > 0 ? reason.trim().slice(0, 300) : undefined;
+    return callControlPlane(
+      manager.getControlPlaneCredentials(),
+      'POST',
+      `/api/gateway/session/${encodeURIComponent(sessionId.trim())}/browser/takeover/start`,
+      cleanReason ? { reason: cleanReason } : {},
+    );
+  });
+
+  ipcMain.handle(IPC_CHANNELS.completeBrowserTakeover, async (event, sessionId: unknown, note: unknown) => {
+    assertTrustedIpcSender(event);
+    if (!isValidBrowserSessionId(sessionId)) {
+      return {
+        ok: false,
+        status: 400,
+        errorCode: 'invalid_session_id',
+        errorMessage: '无效的浏览器会话 ID。',
+      };
+    }
+    const cleanNote = typeof note === 'string' && note.trim().length > 0 ? note.trim().slice(0, 300) : undefined;
+    return callControlPlane(
+      manager.getControlPlaneCredentials(),
+      'POST',
+      `/api/gateway/session/${encodeURIComponent(sessionId.trim())}/browser/takeover/complete`,
+      cleanNote ? { note: cleanNote } : {},
     );
   });
 

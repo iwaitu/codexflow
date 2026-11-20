@@ -24,7 +24,8 @@ public sealed record BrowserSettingsDto(
     IReadOnlyList<string> BlockedDomains,
     int IdleTimeoutMinutes,
     int MaxConcurrentSessions,
-    BrowserExecutableStatusDto DetectedBrowser);
+    BrowserExecutableStatusDto DetectedBrowser,
+    bool AllowControlledDownloads = false);
 
 public sealed record UpdateBrowserSettingsRequest(
     bool? Enabled = null,
@@ -37,7 +38,8 @@ public sealed record UpdateBrowserSettingsRequest(
     IReadOnlyList<string>? AllowedDomains = null,
     IReadOnlyList<string>? BlockedDomains = null,
     int? IdleTimeoutMinutes = null,
-    int? MaxConcurrentSessions = null);
+    int? MaxConcurrentSessions = null,
+    bool? AllowControlledDownloads = null);
 
 public sealed record BrowserTabDto(
     string TabId,
@@ -75,7 +77,21 @@ public sealed record BrowserSessionStateDto(
     IReadOnlyList<BrowserTabDto> Tabs,
     IReadOnlyList<BrowserActionRecordDto> RecentActions,
     IReadOnlyList<BrowserConsoleEntryDto> RecentConsole,
-    DateTimeOffset? UpdatedAtUtc = null);
+    DateTimeOffset? UpdatedAtUtc = null,
+    bool TakeoverActive = false,
+    string? TakeoverReason = null,
+    DateTimeOffset? TakeoverStartedAtUtc = null);
+
+public sealed record BrowserTakeoverStartRequest(
+    string? Reason = null);
+
+public sealed record BrowserTakeoverCompleteRequest(
+    string? Note = null);
+
+public sealed record BrowserTakeoverResponse(
+    bool Active,
+    string SessionId,
+    string? Message = null);
 
 public sealed record BrowserApprovalRequestDto(
     string ApprovalId,

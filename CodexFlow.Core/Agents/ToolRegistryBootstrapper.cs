@@ -417,6 +417,7 @@ public sealed class ToolRegistryBootstrapper
             toolRegistry.RegisterTool(new BrowserSnapshotTool(_browserSessionManager, _modelSettingsService, _browserOptions), ToolLoading.Deferred);
             toolRegistry.RegisterTool(new BrowserActTool(_browserSessionManager), ToolLoading.Deferred);
             toolRegistry.RegisterTool(new BrowserTabsTool(_browserSessionManager), ToolLoading.Deferred);
+            toolRegistry.RegisterTool(new BrowserRequestTakeoverTool(_browserSessionManager, _modelSettingsService, _browserOptions), ToolLoading.Deferred);
         }
 
         // Archive

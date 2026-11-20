@@ -4,6 +4,8 @@ import {
   Check,
   Copy,
   Globe,
+  Hand,
+  Play,
   Power,
   RefreshCw,
   Terminal,
@@ -32,6 +34,7 @@ export const BrowserPanel: React.FC<BrowserPanelProps> = ({
   const [loadingShot, setLoadingShot] = useState(false);
   const [shotError, setShotError] = useState<string | null>(null);
   const [closing, setClosing] = useState(false);
+  const [takeoverBusy, setTakeoverBusy] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
   const [drawerTab, setDrawerTab] = useState<DrawerTab>('actions');
   const lastFetchedSeqRef = useRef<number>(-1);
@@ -42,16 +45,25 @@ export const BrowserPanel: React.FC<BrowserPanelProps> = ({
   const mountedRef = useRef<boolean>(true);
 
   const status = browserState?.status ?? 'idle';
-  const isRunning = status === 'running';
+  const takeoverActive = status === 'takeover' || Boolean(browserState?.takeoverActive);
+  const isRunning = status === 'running' || takeoverActive;
   const screenshotSeq = Number(browserState?.screenshotSeq ?? 0);
   const currentUrl = browserState?.url ?? '';
+  let currentOrigin = '';
+  if (currentUrl) {
+    try {
+      currentOrigin = new URL(currentUrl).origin;
+    } catch {
+      currentOrigin = '';
+    }
+  }
   const currentTitle = browserState?.title ?? '';
   const tabs = browserState?.tabs ?? [];
   const actions = browserState?.recentActions ?? [];
   const consoleLogs = browserState?.recentConsole ?? [];
   const consoleErrorCount = Number(browserState?.consoleErrorCount ?? 0);
-  const modeLabel = `${browserState?.headless === false ? '可见窗口' : '无头'}${
-    browserState?.profileMode === 'PersistentDedicated' ? '持久化' : '隔离'
+  const modeLabel = `${browserState?.headless === false ? '有头窗口' : '无头'}${
+    browserState?.profileMode === 'Persistent' ? '·持久化' : '·隔离'
   }`;
 
   const revokeCurrentObjectUrl = useCallback(() => {
@@ -189,6 +201,49 @@ export const BrowserPanel: React.FC<BrowserPanelProps> = ({
     }
   };
 
+  const handleStartTakeover = async () => {
+    if (!sessionId || !window.codexflow || !controlPlaneAvailable) return;
+    setTakeoverBusy(true);
+    setShotError(null);
+    try {
+      const res = await window.codexflow.startBrowserTakeover(sessionId, '用户在浏览器面板主动发起人工接管');
+      if (!res.ok) {
+        setShotError(res.errorMessage || '发起人工接管失败');
+        return;
+      }
+      if (auth) {
+        const fresh = await apiClient.getBrowserState(auth, sessionId);
+        onStateUpdated(fresh);
+      }
+    } catch (err) {
+      setShotError(err instanceof Error ? err.message : '发起人工接管失败');
+    } finally {
+      setTakeoverBusy(false);
+    }
+  };
+
+  const handleCompleteTakeover = async () => {
+    if (!sessionId || !window.codexflow || !controlPlaneAvailable) return;
+    setTakeoverBusy(true);
+    setShotError(null);
+    try {
+      const res = await window.codexflow.completeBrowserTakeover(sessionId);
+      if (!res.ok) {
+        setShotError(res.errorMessage || '交回控制权失败');
+        return;
+      }
+      if (auth) {
+        const fresh = await apiClient.getBrowserState(auth, sessionId);
+        onStateUpdated(fresh);
+        await fetchScreenshot(true);
+      }
+    } catch (err) {
+      setShotError(err instanceof Error ? err.message : '交回控制权失败');
+    } finally {
+      setTakeoverBusy(false);
+    }
+  };
+
   const handleCopyUrl = async () => {
     if (!currentUrl) return;
     try {
@@ -211,11 +266,19 @@ export const BrowserPanel: React.FC<BrowserPanelProps> = ({
           <div className="flex items-center gap-2">
             <span
               className={`h-2 w-2 rounded-full ${
-                isRunning ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'
+                takeoverActive
+                  ? 'bg-amber-400 animate-pulse'
+                  : isRunning
+                    ? 'bg-emerald-400 animate-pulse'
+                    : 'bg-slate-600'
               }`}
             />
             <span className="font-medium text-slate-100">
-              {isRunning ? `受管浏览器运行中（${modeLabel}）` : '浏览器空闲'}
+              {takeoverActive
+                ? `人工接管中（${modeLabel}）`
+                : isRunning
+                  ? `受管浏览器运行中（${modeLabel}）`
+                  : '浏览器空闲'}
             </span>
           </div>
 
@@ -229,6 +292,19 @@ export const BrowserPanel: React.FC<BrowserPanelProps> = ({
             >
               <RefreshCw className={`h-3.5 w-3.5 ${loadingShot ? 'animate-spin' : ''}`} />
             </button>
+            {isRunning && !takeoverActive && browserState?.headless === false && (
+              <button
+                type="button"
+                data-testid="browser-start-takeover-btn"
+                onClick={() => void handleStartTakeover()}
+                disabled={takeoverBusy || !controlPlaneAvailable}
+                title={controlPlaneAvailable ? '唤出桌面浏览器窗口人工操作' : '独立模式未启用控制面'}
+                className="inline-flex items-center gap-1 rounded-md border border-amber-500/50 bg-amber-950/40 px-2 py-1 text-[11px] font-medium text-amber-200 transition-colors hover:bg-amber-900/50 disabled:opacity-40"
+              >
+                <Hand className="h-3 w-3" />
+                <span>{takeoverBusy ? '唤出中…' : '人工接管'}</span>
+              </button>
+            )}
             {isRunning && (
               <button
                 type="button"
@@ -243,6 +319,42 @@ export const BrowserPanel: React.FC<BrowserPanelProps> = ({
             )}
           </div>
         </div>
+
+        {takeoverActive && (
+          <div
+            data-testid="browser-takeover-banner"
+            className="flex flex-col gap-2 rounded-lg border border-amber-500/50 bg-amber-950/40 px-2.5 py-2 text-[11px] text-amber-100"
+          >
+            <div className="flex items-start gap-1.5">
+              <Hand className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-400" />
+              <div className="min-w-0 flex-1">
+                <div className="font-medium text-amber-200">人工接管进行中（操作完成后请交回控制权）</div>
+                {currentOrigin && (
+                  <div data-testid="browser-takeover-origin" className="mt-0.5 text-amber-200/90 break-all">
+                    当前站点：{currentOrigin}
+                  </div>
+                )}
+                {browserState?.takeoverReason && (
+                  <div className="mt-0.5 text-amber-100/90 break-words">
+                    接管说明：{browserState.takeoverReason}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="flex justify-end">
+              <button
+                type="button"
+                data-testid="browser-complete-takeover-btn"
+                onClick={() => void handleCompleteTakeover()}
+                disabled={takeoverBusy || !controlPlaneAvailable}
+                className="inline-flex items-center gap-1 rounded-md bg-amber-500 px-2.5 py-1 text-[11px] font-semibold text-slate-950 transition-colors hover:bg-amber-400 disabled:opacity-40"
+              >
+                <Play className="h-3 w-3" />
+                <span>{takeoverBusy ? '交回中…' : '完成并交回 Agent'}</span>
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Address bar */}
         <div className="flex items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-900/80 px-2.5 py-1.5">

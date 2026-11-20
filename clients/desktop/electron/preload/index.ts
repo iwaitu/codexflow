@@ -58,6 +58,10 @@ const api: DesktopBridge = {
     ipcRenderer.invoke(IPC_CHANNELS.updateBrowserSettings, payload),
   closeBrowserSession: (sessionId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.closeBrowserSession, sessionId),
+  startBrowserTakeover: (sessionId: string, reason?: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.startBrowserTakeover, sessionId, reason),
+  completeBrowserTakeover: (sessionId: string, note?: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.completeBrowserTakeover, sessionId, note),
   listPermissionRules: () => ipcRenderer.invoke(IPC_CHANNELS.listPermissionRules),
   deletePermissionRule: (ruleId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.deletePermissionRule, ruleId),

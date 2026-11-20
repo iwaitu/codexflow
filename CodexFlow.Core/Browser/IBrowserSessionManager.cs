@@ -34,7 +34,8 @@ public sealed record BrowserActRequest(
     string? Text = null,
     string? Key = null,
     int? DeltaY = null,
-    int? TimeoutMs = null);
+    int? TimeoutMs = null,
+    string? FilePath = null);
 
 /// <summary>
 /// Manages isolated Chromium BrowserContexts per CodexFlow session over a single shared managed browser process.
@@ -66,6 +67,24 @@ public interface IBrowserSessionManager : IAsyncDisposable
         string? tabId = null,
         string? url = null,
         CancellationToken ct = default);
+
+    Task<BrowserOperationResult> RequestTakeoverAsync(
+        BrowserTrustedCallerContext caller,
+        string reason,
+        int timeoutSeconds = 300,
+        CancellationToken ct = default);
+
+    Task<BrowserOperationResult> StartTakeoverAsync(
+        string sessionId,
+        string? reason = null,
+        CancellationToken ct = default);
+
+    Task<BrowserOperationResult> CompleteTakeoverAsync(
+        string sessionId,
+        string? note = null,
+        CancellationToken ct = default);
+
+    void CancelTakeover(string sessionId, string reason);
 
     BrowserSessionStateDto GetSessionState(string sessionId);
 

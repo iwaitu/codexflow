@@ -3,7 +3,7 @@
   "info": {
     "title": "CodexFlow Local Gateway API",
     "description": "HTTP & SSE contract for CodexFlow.Local and the Electron desktop client.",
-    "version": "1.1.0"
+    "version": "1.2.0"
   },
   "paths": {
     "/api/jobs": {
@@ -499,6 +499,224 @@
               "text/json": {
                 "schema": {
                   "$ref": "#/components/schemas/BrowserSessionCloseResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserApiErrorDto"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserApiErrorDto"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserApiErrorDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/gateway/session/{sessionId}/browser/takeover/start": {
+      "post": {
+        "tags": [
+          "BrowserSession"
+        ],
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/BrowserTakeoverStartRequest"
+                  }
+                ]
+              }
+            },
+            "text/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/BrowserTakeoverStartRequest"
+                  }
+                ]
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/BrowserTakeoverStartRequest"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserTakeoverResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserTakeoverResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserTakeoverResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserApiErrorDto"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserApiErrorDto"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserApiErrorDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserApiErrorDto"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserApiErrorDto"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserApiErrorDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/gateway/session/{sessionId}/browser/takeover/complete": {
+      "post": {
+        "tags": [
+          "BrowserSession"
+        ],
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/BrowserTakeoverCompleteRequest"
+                  }
+                ]
+              }
+            },
+            "text/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/BrowserTakeoverCompleteRequest"
+                  }
+                ]
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/BrowserTakeoverCompleteRequest"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserTakeoverResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserTakeoverResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserTakeoverResponse"
                 }
               }
             }
@@ -6172,6 +6390,23 @@
               "string"
             ],
             "format": "date-time"
+          },
+          "takeoverActive": {
+            "type": "boolean",
+            "default": false
+          },
+          "takeoverReason": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "takeoverStartedAtUtc": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "date-time"
           }
         }
       },
@@ -6254,6 +6489,10 @@
           },
           "detectedBrowser": {
             "$ref": "#/components/schemas/BrowserExecutableStatusDto"
+          },
+          "allowControlledDownloads": {
+            "type": "boolean",
+            "default": false
           }
         }
       },
@@ -6277,6 +6516,49 @@
           },
           "active": {
             "type": "boolean"
+          }
+        }
+      },
+      "BrowserTakeoverCompleteRequest": {
+        "type": "object",
+        "properties": {
+          "note": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
+      "BrowserTakeoverResponse": {
+        "required": [
+          "active",
+          "sessionId"
+        ],
+        "type": "object",
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "sessionId": {
+            "type": "string"
+          },
+          "message": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
+      "BrowserTakeoverStartRequest": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": [
+              "null",
+              "string"
+            ]
           }
         }
       },
@@ -10805,6 +11087,12 @@
               "string"
             ],
             "format": "int32"
+          },
+          "allowControlledDownloads": {
+            "type": [
+              "null",
+              "boolean"
+            ]
           }
         }
       },

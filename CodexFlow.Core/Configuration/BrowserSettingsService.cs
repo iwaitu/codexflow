@@ -103,6 +103,12 @@ public sealed class BrowserSettingsService : IBrowserSettingsService
                 section[nameof(BrowserOptions.AllowLocalhostInDailyMode)] = allowLocalhost;
             }
 
+            if (request.AllowControlledDownloads is { } allowDownloads)
+            {
+                current.AllowControlledDownloads = allowDownloads;
+                section[nameof(BrowserOptions.AllowControlledDownloads)] = allowDownloads;
+            }
+
             if (request.DevelopmentAllowedLoopbackPorts is not null)
             {
                 var cleaned = request.DevelopmentAllowedLoopbackPorts
@@ -190,6 +196,11 @@ public sealed class BrowserSettingsService : IBrowserSettingsService
         if (section[nameof(BrowserOptions.AllowLocalhostInDailyMode)]?.Type == JTokenType.Boolean)
         {
             opts.AllowLocalhostInDailyMode = section.Value<bool>(nameof(BrowserOptions.AllowLocalhostInDailyMode));
+        }
+
+        if (section[nameof(BrowserOptions.AllowControlledDownloads)]?.Type == JTokenType.Boolean)
+        {
+            opts.AllowControlledDownloads = section.Value<bool>(nameof(BrowserOptions.AllowControlledDownloads));
         }
 
         if (section[nameof(BrowserOptions.DevelopmentAllowedLoopbackPorts)] is JArray portsArr)

@@ -36,6 +36,7 @@ internal static partial class BrowserSnapshotScript
       if (t === 'checkbox') return 'checkbox';
       if (t === 'radio') return 'radio';
       if (t === 'search') return 'searchbox';
+      if (t === 'file') return 'file_input';
       return 'textbox';
     }
     return tag;
@@ -119,6 +120,9 @@ internal static partial class BrowserSnapshotScript
 
   const isVisible = (el) => {
     if (!el || el.nodeType !== 1) return false;
+    if (el.tagName.toLowerCase() === 'input' && (el.type || '').toLowerCase() === 'file') {
+      return !el.disabled;
+    }
     const style = window.getComputedStyle(el);
     if (!style || style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity || '1') === 0) {
       return false;
@@ -231,7 +235,8 @@ internal static partial class BrowserSnapshotScript
     name: getLabelWithoutValue(el),
     isPassword: isSecretField(el),
     isSensitiveSubmit: isSensitiveSubmitElement(el),
-    obscured
+    obscured,
+    pageUrl: String(window.location.href || '')
   });
 })()
 """;
@@ -246,7 +251,7 @@ internal static partial class BrowserSnapshotScript
     guard++;
   }
   if (!active || active.nodeType !== 1) {
-    return JSON.stringify({ tag: null, role: null, name: null, isEditable: false, isPassword: false, isSensitiveSubmitContext: false, inIframe: false });
+    return JSON.stringify({ tag: null, role: null, name: null, isEditable: false, isPassword: false, isSensitiveSubmitContext: false, inIframe: false, pageUrl: String(window.location.href || '') });
   }
   const tag = active.tagName.toLowerCase();
   const inIframe = tag === 'iframe' || tag === 'frame';
@@ -275,8 +280,39 @@ internal static partial class BrowserSnapshotScript
     isEditable,
     isPassword,
     isSensitiveSubmitContext,
-    inIframe
+    inIframe,
+    pageUrl: String(window.location.href || '')
   });
+})()
+""";
+
+    public static string BuildVerifyFileInputRefJs(string escapedRefId) => $$"""
+(() => {
+  const map = globalThis.__cfRefMap;
+  const el = map && map.get("{{escapedRefId}}");
+  if (!el || !el.isConnected) return 'not_found';
+  if (el.tagName.toLowerCase() !== 'input' || (el.type || '').toLowerCase() !== 'file') return 'not_file_input';
+  if (el.disabled) return 'disabled';
+  return 'ok';
+})()
+""";
+
+    public static string BuildResolveRefElementJs(string escapedRefId) => $$"""
+(() => {
+  const map = globalThis.__cfRefMap;
+  const el = map && map.get("{{escapedRefId}}");
+  return (el && el.isConnected) ? el : null;
+})()
+""";
+
+    public static string BuildDispatchFileChangeJs(string escapedRefId) => $$"""
+(() => {
+  const map = globalThis.__cfRefMap;
+  const el = map && map.get("{{escapedRefId}}");
+  if (!el || !el.isConnected) return 'not_found';
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+  return 'ok';
 })()
 """;
 

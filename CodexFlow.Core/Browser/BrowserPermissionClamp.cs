@@ -27,6 +27,7 @@ public sealed class BrowserPermissionClamp :
     private BrowserProfileMode _lastRawProfileMode;
     private BrowserInteractionApprovalPolicy _lastRawApprovalPolicy;
     private bool _lastRawAllowLocalhostInDaily;
+    private bool _lastRawAllowControlledDownloads;
     private List<int> _lastRawDevLoopbackPorts = [];
     private List<string> _lastRawAllowedDomains = [];
     private List<string> _lastRawBlockedDomains = [];
@@ -38,6 +39,7 @@ public sealed class BrowserPermissionClamp :
     private BrowserProfileMode _effectiveProfileMode = BrowserProfileMode.Ephemeral;
     private BrowserInteractionApprovalPolicy _effectiveApprovalPolicy = BrowserInteractionApprovalPolicy.HighRiskOnly;
     private bool _effectiveAllowLocalhostInDaily;
+    private bool _effectiveAllowControlledDownloads;
     private List<int> _effectiveDevLoopbackPorts = [.. BrowserOptions.DefaultDevelopmentLoopbackPorts];
     private List<string> _effectiveAllowedDomains = [];
     private List<string> _effectiveBlockedDomains = [];
@@ -72,6 +74,7 @@ public sealed class BrowserPermissionClamp :
                 _effectiveProfileMode = _lastRawProfileMode = options.ProfileMode;
                 _effectiveApprovalPolicy = _lastRawApprovalPolicy = options.InteractionApprovalPolicy;
                 _effectiveAllowLocalhostInDaily = _lastRawAllowLocalhostInDaily = options.AllowLocalhostInDailyMode;
+                _effectiveAllowControlledDownloads = _lastRawAllowControlledDownloads = options.AllowControlledDownloads;
                 _effectiveDevLoopbackPorts = [.. rawPorts];
                 _lastRawDevLoopbackPorts = [.. rawPorts];
                 _effectiveAllowedDomains = [.. rawAllowed];
@@ -130,6 +133,15 @@ public sealed class BrowserPermissionClamp :
                     }
                 }
 
+                if (options.AllowControlledDownloads != _lastRawAllowControlledDownloads)
+                {
+                    _lastRawAllowControlledDownloads = options.AllowControlledDownloads;
+                    if (!options.AllowControlledDownloads)
+                    {
+                        _effectiveAllowControlledDownloads = false;
+                    }
+                }
+
                 if (!rawPorts.SequenceEqual(_lastRawDevLoopbackPorts))
                 {
                     _lastRawDevLoopbackPorts = [.. rawPorts];
@@ -178,6 +190,7 @@ public sealed class BrowserPermissionClamp :
             _effectiveProfileMode = updated.ProfileMode;
             _effectiveApprovalPolicy = updated.InteractionApprovalPolicy;
             _effectiveAllowLocalhostInDaily = updated.AllowLocalhostInDailyMode;
+            _effectiveAllowControlledDownloads = updated.AllowControlledDownloads;
             _effectiveDevLoopbackPorts = NormalizePorts(updated.DevelopmentAllowedLoopbackPorts);
             _effectiveAllowedDomains = NormalizeDomains(updated.AllowedDomains);
             _effectiveBlockedDomains = NormalizeDomains(updated.BlockedDomains);
@@ -207,6 +220,7 @@ public sealed class BrowserPermissionClamp :
         options.ProfileMode = _effectiveProfileMode;
         options.InteractionApprovalPolicy = _effectiveApprovalPolicy;
         options.AllowLocalhostInDailyMode = _effectiveAllowLocalhostInDaily;
+        options.AllowControlledDownloads = _effectiveAllowControlledDownloads;
         options.DevelopmentAllowedLoopbackPorts = [.. _effectiveDevLoopbackPorts];
         options.AllowedDomains = [.. _effectiveAllowedDomains];
         options.BlockedDomains = [.. _effectiveBlockedDomains];

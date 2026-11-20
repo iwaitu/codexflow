@@ -14,7 +14,7 @@ namespace CodexFlow.Gateway.Contracts;
 /// </summary>
 public static class SseEventContractSchema
 {
-    public const string SchemaVersion = "1.1.0";
+    public const string SchemaVersion = "1.2.0";
 
     private static readonly JsonSerializerOptions SerializerOptions = new()
     {
@@ -288,7 +288,10 @@ public static class SseEventContractSchema
                     ("title", NullableStr()),
                     ("screenshotSeq", Int()),
                     ("consoleErrorCount", Int()),
-                    ("updatedAtUtc", NullableStr())),
+                    ("updatedAtUtc", NullableStr()),
+                    ("takeoverActive", Bool()),
+                    ("takeoverReason", NullableStr()),
+                    ("takeoverStartedAtUtc", NullableStr())),
                 required: ["sessionId", "status", "headless", "profileMode", "screenshotSeq", "consoleErrorCount"]),
             [GatewaySseEventType.BrowserApprovalRequested] = EventDef(
                 "Interactive control-plane approval request for a sensitive browser action or non-allowlisted dev loopback port.",

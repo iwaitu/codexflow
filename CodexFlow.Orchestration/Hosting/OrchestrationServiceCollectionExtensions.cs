@@ -311,7 +311,8 @@ public static class OrchestrationServiceCollectionExtensions
                 sp.GetRequiredService<CodexFlow.Core.Security.ProtectedLocalPortRegistry>(),
                 sp.GetRequiredService<ILogger<CodexFlow.Core.Browser.Cdp.BrowserSessionManager>>(),
                 sp.GetService<CodexFlow.Core.Browser.IBrowserApprovalCoordinator>(),
-                sp.GetService<CodexFlow.Core.Browser.IBrowserStateEventPublisher>()));
+                sp.GetService<CodexFlow.Core.Browser.IBrowserStateEventPublisher>(),
+                controlPlane: sp.GetService<CodexFlow.Core.Execution.Approval.IControlPlaneStateProvider>()));
         services.AddHostedService<CodexFlow.Orchestration.Browser.BrowserIdleReaperHostedService>();
         Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<CodexFlow.Core.BusinessSkills.OpenApiBusinessPluginAdapter>(services);
         Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<CodexFlow.Core.BusinessSkills.McpBusinessPluginAdapter>(services);

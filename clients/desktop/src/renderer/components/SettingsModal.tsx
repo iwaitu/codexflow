@@ -83,11 +83,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [supportsMultimodal, setSupportsMultimodal] = useState(Boolean(modelSettings?.supportsMultimodal));
   const [browserEnabled, setBrowserEnabled] = useState(Boolean(browserSettings?.enabled ?? true));
   const [browserExecutablePath, setBrowserExecutablePath] = useState(browserSettings?.executablePath ?? '');
+  const [browserHeadless, setBrowserHeadless] = useState(Boolean(browserSettings?.headless ?? true));
+  const [browserProfileMode, setBrowserProfileMode] = useState(browserSettings?.profileMode ?? 'Ephemeral');
   const [browserApprovalPolicy, setBrowserApprovalPolicy] = useState(
     browserSettings?.interactionApprovalPolicy ?? 'HighRiskOnly',
   );
   const [browserAllowLocalhostDaily, setBrowserAllowLocalhostDaily] = useState(
     Boolean(browserSettings?.allowLocalhostInDailyMode),
+  );
+  const [browserAllowDownloads, setBrowserAllowDownloads] = useState(
+    Boolean(browserSettings?.allowControlledDownloads),
+  );
+  const [browserIdleMinutes, setBrowserIdleMinutes] = useState(
+    String(browserSettings?.idleTimeoutMinutes ?? 15),
+  );
+  const [browserMaxSessions, setBrowserMaxSessions] = useState(
+    String(browserSettings?.maxConcurrentSessions ?? 3),
   );
 
   const [rules, setRules] = useState<PersistedPermissionRule[]>([]);
@@ -119,8 +130,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setSupportsMultimodal(Boolean(modelSettings?.supportsMultimodal));
     setBrowserEnabled(Boolean(browserSettings?.enabled ?? true));
     setBrowserExecutablePath(browserSettings?.executablePath ?? '');
+    setBrowserHeadless(Boolean(browserSettings?.headless ?? true));
+    setBrowserProfileMode(browserSettings?.profileMode ?? 'Ephemeral');
     setBrowserApprovalPolicy(browserSettings?.interactionApprovalPolicy ?? 'HighRiskOnly');
     setBrowserAllowLocalhostDaily(Boolean(browserSettings?.allowLocalhostInDailyMode));
+    setBrowserAllowDownloads(Boolean(browserSettings?.allowControlledDownloads));
+    setBrowserIdleMinutes(String(browserSettings?.idleTimeoutMinutes ?? 15));
+    setBrowserMaxSessions(String(browserSettings?.maxConcurrentSessions ?? 3));
     setConfirmRelaxOpen(false);
     setNotice(null);
     setError(null);
@@ -673,17 +689,24 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 setError(null);
                 setNotice(null);
                 try {
+                  const parsedIdle = Number.parseInt(browserIdleMinutes, 10);
+                  const parsedMax = Number.parseInt(browserMaxSessions, 10);
                   const res = await window.codexflow.updateBrowserSettings({
                     enabled: browserEnabled,
                     executablePath: browserExecutablePath.trim(),
+                    headless: browserHeadless,
+                    profileMode: browserProfileMode,
                     interactionApprovalPolicy: browserApprovalPolicy,
                     allowLocalhostInDailyMode: browserAllowLocalhostDaily,
+                    allowControlledDownloads: browserAllowDownloads,
+                    idleTimeoutMinutes: Number.isFinite(parsedIdle) ? Math.min(120, Math.max(1, parsedIdle)) : 15,
+                    maxConcurrentSessions: Number.isFinite(parsedMax) ? Math.min(8, Math.max(1, parsedMax)) : 3,
                   });
                   if (!res.ok) {
                     setError(res.errorMessage || `保存浏览器设置失败 (${res.status})`);
                     return;
                   }
-                  setNotice('浏览器设置已保存并立即生效。');
+                  setNotice('浏览器设置已保存（审批与下载策略立即生效；若当前已有运行中的浏览器会话，窗口模式与 Profile 模式将在关闭该浏览器会话后生效）。');
                   onUpdated();
                 } catch (err) {
                   setError(err instanceof Error ? err.message : '保存浏览器设置失败');
@@ -743,6 +766,40 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 />
               </label>
 
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label className="block">
+                  <span className="mb-1 block text-slate-300">运行窗口模式</span>
+                  <select
+                    data-testid="browser-headless-select"
+                    value={browserHeadless ? 'headless' : 'headed'}
+                    onChange={(e) => setBrowserHeadless(e.target.value === 'headless')}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+                  >
+                    <option value="headless">无头后台（默认，零打扰）</option>
+                    <option value="headed">桌面离屏有头（支持无损人工接管登录/验证码）</option>
+                  </select>
+                </label>
+
+                <label className="block">
+                  <span className="mb-1 block text-slate-300">登录态与 Profile 策略</span>
+                  <select
+                    data-testid="browser-profile-select"
+                    value={browserProfileMode}
+                    onChange={(e) => setBrowserProfileMode(e.target.value)}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+                  >
+                    <option value="Ephemeral">会话隔离临时 Profile（默认，关闭即销毁）</option>
+                    <option value="Persistent">专用目录持久化登录态（单活互斥，非本地写操作强审批）</option>
+                  </select>
+                </label>
+              </div>
+
+              {browserProfileMode === 'Persistent' && (
+                <div className="rounded-lg border border-amber-500/40 bg-amber-950/30 px-3 py-2 text-[11px] text-amber-200">
+                  持久化 Profile 存储于专用的 <code className="rounded bg-slate-900 px-1">~/.codexflow/browser-profiles/default</code>（不读取您日常浏览器数据）。同一时间仅允许 1 个活跃会话占用，且对所有非 localhost 网站的点击/输入/上传均强制要求单次人工审批。
+                </div>
+              )}
+
               <label className="block">
                 <span className="mb-1 block text-slate-300">页面交互审批策略</span>
                 <select
@@ -770,6 +827,47 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   className="h-4 w-4 rounded border-slate-700 accent-indigo-600"
                 />
               </label>
+
+              <label className="flex cursor-pointer items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950 p-3.5">
+                <div>
+                  <div className="font-medium text-slate-200">允许受控文件下载至工作区</div>
+                  <div className="mt-0.5 text-[11px] text-slate-400">
+                    默认拒绝所有浏览器下载；开启后仅重定向到当前会话工作区的 <code className="rounded bg-slate-900 px-1">outputs/browser-downloads/</code> 目录。
+                  </div>
+                </div>
+                <input
+                  type="checkbox"
+                  data-testid="browser-downloads-toggle"
+                  checked={browserAllowDownloads}
+                  onChange={(e) => setBrowserAllowDownloads(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-700 accent-indigo-600"
+                />
+              </label>
+
+              <div className="grid grid-cols-2 gap-3">
+                <label className="block">
+                  <span className="mb-1 block text-slate-300">空闲自动回收（分钟，1-120）</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={120}
+                    value={browserIdleMinutes}
+                    onChange={(e) => setBrowserIdleMinutes(e.target.value)}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-slate-300">最大并发会话数（1-8）</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={8}
+                    value={browserMaxSessions}
+                    onChange={(e) => setBrowserMaxSessions(e.target.value)}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+                  />
+                </label>
+              </div>
 
               {error && <div className="rounded-lg border border-rose-500/40 bg-rose-950/40 p-2.5 text-rose-200">{error}</div>}
               {notice && <div className="rounded-lg border border-emerald-500/40 bg-emerald-950/40 p-2.5 text-emerald-200">{notice}</div>}

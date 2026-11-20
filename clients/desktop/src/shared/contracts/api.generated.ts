@@ -710,6 +710,129 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/gateway/session/{sessionId}/browser/takeover/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    sessionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/*+json": null | components["schemas"]["BrowserTakeoverCompleteRequest"];
+                    "application/json": null | components["schemas"]["BrowserTakeoverCompleteRequest"];
+                    "text/json": null | components["schemas"]["BrowserTakeoverCompleteRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BrowserTakeoverResponse"];
+                        "text/json": components["schemas"]["BrowserTakeoverResponse"];
+                        "text/plain": components["schemas"]["BrowserTakeoverResponse"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BrowserApiErrorDto"];
+                        "text/json": components["schemas"]["BrowserApiErrorDto"];
+                        "text/plain": components["schemas"]["BrowserApiErrorDto"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/gateway/session/{sessionId}/browser/takeover/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    sessionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/*+json": null | components["schemas"]["BrowserTakeoverStartRequest"];
+                    "application/json": null | components["schemas"]["BrowserTakeoverStartRequest"];
+                    "text/json": null | components["schemas"]["BrowserTakeoverStartRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BrowserTakeoverResponse"];
+                        "text/json": components["schemas"]["BrowserTakeoverResponse"];
+                        "text/plain": components["schemas"]["BrowserTakeoverResponse"];
+                    };
+                };
+                /** @description Bad Request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BrowserApiErrorDto"];
+                        "text/json": components["schemas"]["BrowserApiErrorDto"];
+                        "text/plain": components["schemas"]["BrowserApiErrorDto"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BrowserApiErrorDto"];
+                        "text/json": components["schemas"]["BrowserApiErrorDto"];
+                        "text/plain": components["schemas"]["BrowserApiErrorDto"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/gateway/session/{sessionId}/cancel": {
         parameters: {
             query?: never;
@@ -4351,12 +4474,19 @@ export type components = {
             sessionId: string;
             status: string;
             tabs: components["schemas"]["BrowserTabDto"][];
+            /** @default false */
+            takeoverActive: boolean;
+            takeoverReason?: null | string;
+            /** Format: date-time */
+            takeoverStartedAtUtc?: null | string;
             title: null | string;
             /** Format: date-time */
             updatedAtUtc?: null | string;
             url: null | string;
         };
         BrowserSettingsDto: {
+            /** @default false */
+            allowControlledDownloads: boolean;
             allowedDomains: string[];
             allowLocalhostInDailyMode: boolean;
             blockedDomains: string[];
@@ -4377,6 +4507,17 @@ export type components = {
             tabId: string;
             title: string;
             url: string;
+        };
+        BrowserTakeoverCompleteRequest: {
+            note?: null | string;
+        };
+        BrowserTakeoverResponse: {
+            active: boolean;
+            message?: null | string;
+            sessionId: string;
+        };
+        BrowserTakeoverStartRequest: {
+            reason?: null | string;
         };
         BusinessApprovalRequestDto: {
             allowedDecisions?: string[];
@@ -5457,6 +5598,7 @@ export type components = {
             version: string;
         };
         UpdateBrowserSettingsRequest: {
+            allowControlledDownloads?: null | boolean;
             allowedDomains?: null | string[];
             allowLocalhostInDailyMode?: null | boolean;
             blockedDomains?: null | string[];

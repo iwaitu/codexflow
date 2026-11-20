@@ -252,6 +252,7 @@ export type BrowserConsoleEntryDto = components['schemas']['BrowserConsoleEntryD
 export type BrowserSessionStateDto = components['schemas']['BrowserSessionStateDto'];
 export type BrowserApprovalRequestDto = components['schemas']['BrowserApprovalRequestDto'];
 export type BrowserSessionCloseResponse = components['schemas']['BrowserSessionCloseResponse'];
+export type BrowserTakeoverResponse = components['schemas']['BrowserTakeoverResponse'];
 
 export type CredentialSlotKind = 'document' | 'execution';
 
@@ -302,7 +303,8 @@ export type EnvironmentDependencyId =
   | 'node'
   | 'python'
   | 'docker'
-  | 'libreoffice';
+  | 'libreoffice'
+  | 'browser';
 
 export type EnvironmentDependencySeverity = 'required' | 'recommended' | 'optional';
 
@@ -393,6 +395,8 @@ export interface DesktopBridge {
   updateModelSettings(payload: UpdateModelSettingsPayload): Promise<ControlPlaneCallResult<ModelSettingsResult>>;
   updateBrowserSettings(payload: UpdateBrowserSettingsRequest): Promise<ControlPlaneCallResult<BrowserSettingsDto>>;
   closeBrowserSession(sessionId: string): Promise<ControlPlaneCallResult<BrowserSessionCloseResponse>>;
+  startBrowserTakeover(sessionId: string, reason?: string): Promise<ControlPlaneCallResult<BrowserTakeoverResponse>>;
+  completeBrowserTakeover(sessionId: string, note?: string): Promise<ControlPlaneCallResult<BrowserTakeoverResponse>>;
   listPermissionRules(): Promise<ControlPlaneCallResult<PermissionRuleListResult>>;
   deletePermissionRule(ruleId: string): Promise<ControlPlaneCallResult<DeletePermissionRuleResult>>;
   openLocalWorkspace(payload: OpenLocalWorkspacePayload): Promise<ControlPlaneCallResult<OpenLocalWorkspaceResult>>;
@@ -478,6 +482,8 @@ export const IPC_CHANNELS = {
   updateModelSettings: 'codexflow:update-model-settings',
   updateBrowserSettings: 'codexflow:update-browser-settings',
   closeBrowserSession: 'codexflow:close-browser-session',
+  startBrowserTakeover: 'codexflow:start-browser-takeover',
+  completeBrowserTakeover: 'codexflow:complete-browser-takeover',
   listPermissionRules: 'codexflow:list-permission-rules',
   deletePermissionRule: 'codexflow:delete-permission-rule',
   openLocalWorkspace: 'codexflow:open-local-workspace',

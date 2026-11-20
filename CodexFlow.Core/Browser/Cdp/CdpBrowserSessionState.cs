@@ -44,16 +44,59 @@ internal sealed class CdpBrowserSessionState : IAsyncDisposable
     private long _lastPublishedTicks;
     private volatile bool _isClosed;
     private int _disposed;
+    private bool _takeoverActive;
+    private bool _isManualTakeover;
+    private string? _takeoverReason;
+    private DateTimeOffset? _takeoverStartedAtUtc;
+    private TaskCompletionSource<string?>? _takeoverTcs;
 
     public string SessionId { get; }
     public string BrowserContextId { get; }
+    public bool Headless { get; }
+    public BrowserProfileMode ProfileMode { get; }
+    public bool UsesDefaultContext { get; }
+    public string? WorkspaceRoot { get; }
+    public string StagingDirectory { get; }
     public string GenerationId { get; } = Guid.NewGuid().ToString("N")[..8];
-    public BrowserOutboundProxy OutboundProxy { get; }
+    public BrowserOutboundProxy? OutboundProxy { get; }
     public SemaphoreSlim ExecutionLock { get; } = new(1, 1);
     public string? ActiveTargetId { get; private set; }
     public DateTimeOffset LastActivityUtc { get; private set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAtUtc { get; private set; } = DateTimeOffset.UtcNow;
     public bool IsClosed => _isClosed;
+
+    public bool TakeoverActive
+    {
+        get
+        {
+            lock (_stateLock)
+            {
+                return _takeoverActive;
+            }
+        }
+    }
+
+    public bool IsManualTakeover
+    {
+        get
+        {
+            lock (_stateLock)
+            {
+                return _takeoverActive && _isManualTakeover;
+            }
+        }
+    }
+
+    public DateTimeOffset? TakeoverStartedAtUtc
+    {
+        get
+        {
+            lock (_stateLock)
+            {
+                return _takeoverStartedAtUtc;
+            }
+        }
+    }
 
     public SessionWorkMode WorkMode
     {
@@ -70,12 +113,118 @@ internal sealed class CdpBrowserSessionState : IAsyncDisposable
         string sessionId,
         string browserContextId,
         SessionWorkMode workMode,
-        BrowserOutboundProxy outboundProxy)
+        BrowserOutboundProxy? outboundProxy,
+        bool headless = true,
+        BrowserProfileMode profileMode = BrowserProfileMode.Ephemeral,
+        bool usesDefaultContext = false,
+        string? workspaceRoot = null,
+        string? stagingDirectory = null)
     {
         SessionId = sessionId;
         BrowserContextId = browserContextId;
         _workMode = workMode;
         OutboundProxy = outboundProxy;
+        Headless = headless;
+        ProfileMode = profileMode;
+        UsesDefaultContext = usesDefaultContext;
+        WorkspaceRoot = workspaceRoot;
+        StagingDirectory = string.IsNullOrWhiteSpace(stagingDirectory)
+            ? Path.Combine(Path.GetTempPath(), "cf-browser-staging", $"{sessionId}-{GenerationId}")
+            : stagingDirectory;
+    }
+
+    public Task<string?> BeginTakeover(string reason, bool manual = false)
+    {
+        lock (_stateLock)
+        {
+            _takeoverActive = true;
+            _isManualTakeover = manual;
+            _takeoverReason = string.IsNullOrWhiteSpace(reason) ? "人工接管浏览器会话" : reason.Trim();
+            _takeoverStartedAtUtc = DateTimeOffset.UtcNow;
+            _takeoverTcs ??= new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            UpdatedAtUtc = DateTimeOffset.UtcNow;
+            LastActivityUtc = DateTimeOffset.UtcNow;
+            return _takeoverTcs.Task;
+        }
+    }
+
+    public bool CompleteTakeover(string? note)
+    {
+        TaskCompletionSource<string?>? tcs;
+        lock (_stateLock)
+        {
+            if (!_takeoverActive && _takeoverTcs is null)
+            {
+                return false;
+            }
+
+            _takeoverActive = false;
+            _isManualTakeover = false;
+            _takeoverReason = null;
+            _takeoverStartedAtUtc = null;
+            tcs = _takeoverTcs;
+            _takeoverTcs = null;
+            UpdatedAtUtc = DateTimeOffset.UtcNow;
+            LastActivityUtc = DateTimeOffset.UtcNow;
+        }
+
+        tcs?.TrySetResult(note);
+        return true;
+    }
+
+    public void CancelTakeover(string reason)
+    {
+        TaskCompletionSource<string?>? tcs;
+        lock (_stateLock)
+        {
+            _takeoverActive = false;
+            _isManualTakeover = false;
+            _takeoverReason = null;
+            _takeoverStartedAtUtc = null;
+            tcs = _takeoverTcs;
+            _takeoverTcs = null;
+            UpdatedAtUtc = DateTimeOffset.UtcNow;
+        }
+
+        tcs?.TrySetCanceled();
+    }
+
+    public void AbortTakeover(string reason)
+    {
+        TaskCompletionSource<string?>? tcs;
+        lock (_stateLock)
+        {
+            if (!_takeoverActive && _takeoverTcs is null)
+            {
+                return;
+            }
+
+            _takeoverActive = false;
+            _isManualTakeover = false;
+            _takeoverReason = null;
+            _takeoverStartedAtUtc = null;
+            tcs = _takeoverTcs;
+            _takeoverTcs = null;
+            UpdatedAtUtc = DateTimeOffset.UtcNow;
+        }
+
+        tcs?.TrySetException(new InvalidOperationException(reason));
+    }
+
+    public IReadOnlyList<BrowserTabRecord> GetTabsSnapshot()
+    {
+        lock (_stateLock)
+        {
+            return _tabs.ToArray();
+        }
+    }
+
+    public bool HasTab(string targetId)
+    {
+        lock (_stateLock)
+        {
+            return _tabs.Any(t => string.Equals(t.TargetId, targetId, StringComparison.Ordinal));
+        }
     }
 
     public void Touch() => LastActivityUtc = DateTimeOffset.UtcNow;
@@ -428,12 +577,15 @@ internal sealed class CdpBrowserSessionState : IAsyncDisposable
         {
             var active = _tabs.FirstOrDefault(t => string.Equals(t.TargetId, ActiveTargetId, StringComparison.Ordinal))
                          ?? _tabs.FirstOrDefault();
+            var effectiveStatus = _takeoverActive && string.Equals(status, "running", StringComparison.Ordinal)
+                ? "takeover"
+                : status;
 
             return new BrowserSessionStateDto(
                 SessionId: SessionId,
-                Status: status,
-                Headless: true,
-                ProfileMode: profileMode ?? BrowserProfileMode.Ephemeral.ToString(),
+                Status: effectiveStatus,
+                Headless: Headless,
+                ProfileMode: profileMode ?? ProfileMode.ToString(),
                 Url: active?.Url,
                 Title: active?.Title,
                 ScreenshotSeq: _screenshotSeq,
@@ -445,7 +597,10 @@ internal sealed class CdpBrowserSessionState : IAsyncDisposable
                     string.Equals(t.TargetId, active?.TargetId, StringComparison.Ordinal))).ToArray(),
                 RecentActions: _actions.ToArray(),
                 RecentConsole: _console.TakeLast(40).ToArray(),
-                UpdatedAtUtc: UpdatedAtUtc);
+                UpdatedAtUtc: UpdatedAtUtc,
+                TakeoverActive: _takeoverActive,
+                TakeoverReason: _takeoverReason,
+                TakeoverStartedAtUtc: _takeoverStartedAtUtc);
         }
     }
 
@@ -457,7 +612,12 @@ internal sealed class CdpBrowserSessionState : IAsyncDisposable
         }
 
         _isClosed = true;
-        await OutboundProxy.DisposeAsync().ConfigureAwait(false);
+        AbortTakeover("session_disposed");
+        if (OutboundProxy is not null)
+        {
+            await OutboundProxy.DisposeAsync().ConfigureAwait(false);
+        }
+        BrowserWorkspacePathGuard.TryDeleteDirectory(StagingDirectory);
         // Note: Do NOT eagerly Dispose ExecutionLock here while an in-flight caller may still be releasing it in finally;
         // GC reclaims the managed SemaphoreSlim safely without throwing ObjectDisposedException on in-flight Release().
     }

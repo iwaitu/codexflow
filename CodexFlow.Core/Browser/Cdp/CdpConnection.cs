@@ -29,9 +29,11 @@ public sealed class CdpConnection : IAsyncDisposable
     private readonly Task _receiveLoop;
     private int _nextId;
     private int _disposed;
+    private int _disconnectNotified;
     private volatile bool _faulted;
 
     public event Action<CdpEventMessage>? EventReceived;
+    public event Action<Exception?>? Disconnected;
 
     public bool IsConnected => _disposed == 0 && !_faulted && _socket.State == WebSocketState.Open;
 
@@ -171,7 +173,9 @@ public sealed class CdpConnection : IAsyncDisposable
                     if (result.MessageType == WebSocketMessageType.Close)
                     {
                         _faulted = true;
-                        FailAllPending(new IOException("CDP WebSocket closed by browser."));
+                        var closeEx = new IOException("CDP WebSocket closed by browser.");
+                        FailAllPending(closeEx);
+                        NotifyDisconnected(closeEx);
                         return;
                     }
 
@@ -180,7 +184,9 @@ public sealed class CdpConnection : IAsyncDisposable
                         _faulted = true;
                         _logger.LogWarning("CDP incoming frame exceeded {MaxBytes} bytes; aborting socket.", MaxIncomingMessageBytes);
                         try { _socket.Abort(); } catch (Exception) { }
-                        FailAllPending(new InvalidDataException("CDP message exceeded maximum allowed size."));
+                        var sizeEx = new InvalidDataException("CDP message exceeded maximum allowed size.");
+                        FailAllPending(sizeEx);
+                        NotifyDisconnected(sizeEx);
                         return;
                     }
 
@@ -202,7 +208,9 @@ public sealed class CdpConnection : IAsyncDisposable
         catch (OperationCanceledException)
         {
             _faulted = true;
-            FailAllPending(new OperationCanceledException("CDP connection shut down."));
+            var cancelEx = new OperationCanceledException("CDP connection shut down.");
+            FailAllPending(cancelEx);
+            NotifyDisconnected(cancelEx);
         }
         catch (Exception ex)
         {
@@ -210,6 +218,11 @@ public sealed class CdpConnection : IAsyncDisposable
             _logger.LogDebug(ex, "CDP receive loop terminated unexpectedly.");
             try { _socket.Abort(); } catch (Exception) { }
             FailAllPending(ex);
+            NotifyDisconnected(ex);
+        }
+        finally
+        {
+            NotifyDisconnected(null);
         }
     }
 
@@ -287,6 +300,30 @@ public sealed class CdpConnection : IAsyncDisposable
         }
     }
 
+    private void NotifyDisconnected(Exception? ex)
+    {
+        if (Interlocked.Exchange(ref _disconnectNotified, 1) != 0)
+        {
+            return;
+        }
+
+        var handler = Disconnected;
+        if (handler is not null)
+        {
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    handler(ex);
+                }
+                catch (Exception callbackEx)
+                {
+                    _logger.LogDebug(callbackEx, "Unhandled exception in CDP Disconnected callback.");
+                }
+            });
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -311,6 +348,7 @@ public sealed class CdpConnection : IAsyncDisposable
 
         try { await _receiveLoop.ConfigureAwait(false); } catch (Exception) { }
         FailAllPending(new ObjectDisposedException(nameof(CdpConnection)));
+        NotifyDisconnected(null);
         _socket.Dispose();
         _sendLock.Dispose();
         _receiveCts.Dispose();

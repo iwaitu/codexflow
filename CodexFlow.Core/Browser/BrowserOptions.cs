@@ -42,6 +42,8 @@ public sealed class BrowserOptions
 
     public bool AllowLocalhostInDailyMode { get; set; }
 
+    public bool AllowControlledDownloads { get; set; }
+
     public List<int> DevelopmentAllowedLoopbackPorts { get; set; } = [.. DefaultDevelopmentLoopbackPorts];
 
     public List<string> AllowedDomains { get; set; } = [];

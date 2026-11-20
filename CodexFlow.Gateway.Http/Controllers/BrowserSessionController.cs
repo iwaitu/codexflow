@@ -135,6 +135,87 @@ public sealed class BrowserSessionController(
         return Ok(new BrowserSessionCloseResponse(true, sessionId));
     }
 
+    [HttpPost("api/gateway/session/{sessionId}/browser/takeover/start")]
+    [Authorize(Policy = ControlPlaneAuthConstants.ControlPlanePolicy)]
+    [ProducesResponseType(typeof(BrowserTakeoverResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(BrowserApiErrorDto), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(BrowserApiErrorDto), StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<BrowserTakeoverResponse>> StartBrowserTakeover(
+        [FromRoute] string sessionId,
+        [FromBody] BrowserTakeoverStartRequest? request = null,
+        CancellationToken ct = default)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrEmpty(userId))
+        {
+            return Unauthorized();
+        }
+
+        if (!ControlPlaneAuthConstants.IsControlPlanePrincipal(User, controlPlane))
+        {
+            return Forbid();
+        }
+
+        var session = await chatService.GetSession(sessionId).ConfigureAwait(false);
+        if (session is null || !string.Equals(session.UserId, userId, StringComparison.Ordinal))
+        {
+            return NotFound(new BrowserApiErrorDto("session_not_found", "Session does not exist or is not owned by the caller."));
+        }
+
+        var result = await browserSessionManager
+            .StartTakeoverAsync(sessionId, request?.Reason, ct)
+            .ConfigureAwait(false);
+        if (!result.Succeeded)
+        {
+            var code = result.ErrorCode ?? "takeover_failed";
+            if (string.Equals(code, "session_not_found", StringComparison.Ordinal))
+            {
+                return NotFound(new BrowserApiErrorDto(code, result.Summary ?? result.Output));
+            }
+
+            return BadRequest(new BrowserApiErrorDto(code, result.Summary ?? result.Output));
+        }
+
+        return Ok(new BrowserTakeoverResponse(true, sessionId, result.Summary));
+    }
+
+    [HttpPost("api/gateway/session/{sessionId}/browser/takeover/complete")]
+    [Authorize(Policy = ControlPlaneAuthConstants.ControlPlanePolicy)]
+    [ProducesResponseType(typeof(BrowserTakeoverResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(BrowserApiErrorDto), StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<BrowserTakeoverResponse>> CompleteBrowserTakeover(
+        [FromRoute] string sessionId,
+        [FromBody] BrowserTakeoverCompleteRequest? request = null,
+        CancellationToken ct = default)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrEmpty(userId))
+        {
+            return Unauthorized();
+        }
+
+        if (!ControlPlaneAuthConstants.IsControlPlanePrincipal(User, controlPlane))
+        {
+            return Forbid();
+        }
+
+        var session = await chatService.GetSession(sessionId).ConfigureAwait(false);
+        if (session is null || !string.Equals(session.UserId, userId, StringComparison.Ordinal))
+        {
+            return NotFound(new BrowserApiErrorDto("session_not_found", "Session does not exist or is not owned by the caller."));
+        }
+
+        var result = await browserSessionManager
+            .CompleteTakeoverAsync(sessionId, request?.Note, ct)
+            .ConfigureAwait(false);
+        if (!result.Succeeded)
+        {
+            return NotFound(new BrowserApiErrorDto(result.ErrorCode ?? "takeover_complete_failed", result.Summary ?? result.Output));
+        }
+
+        return Ok(new BrowserTakeoverResponse(false, sessionId, result.Summary));
+    }
+
     [HttpGet("api/settings/browser")]
     [Authorize(Policy = "ActiveUser")]
     [ProducesResponseType(typeof(BrowserSettingsDto), StatusCodes.Status200OK)]
@@ -203,5 +284,6 @@ public sealed class BrowserSessionController(
             BlockedDomains: opts.BlockedDomains.ToArray(),
             IdleTimeoutMinutes: opts.IdleTimeoutMinutes,
             MaxConcurrentSessions: opts.MaxConcurrentSessions,
-            DetectedBrowser: detected);
+            DetectedBrowser: detected,
+            AllowControlledDownloads: opts.AllowControlledDownloads);
 }

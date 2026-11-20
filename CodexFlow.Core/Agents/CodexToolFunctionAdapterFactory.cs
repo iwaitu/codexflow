@@ -102,6 +102,7 @@ public static class CodexToolFunctionAdapterFactory
             "browser_snapshot"      => CreateForBrowserSnapshot(tool, description),
             "browser_act"           => CreateForBrowserAct(tool, description),
             "browser_tabs"          => CreateForBrowserTabs(tool, description),
+            "browser_request_takeover" => CreateForBrowserRequestTakeover(tool, description),
             "skill"                 => CreateForSkill(tool, description),
             "list_mcp_resources"    => CreateForListMcpResources(tool, description),
             "read_mcp_resource"     => CreateForReadMcpResource(tool, description),
@@ -1146,7 +1147,7 @@ public static class CodexToolFunctionAdapterFactory
 
     private static AIFunction CreateForBrowserAct(ICodexTool tool, string description) =>
         AIFunctionFactory.Create(
-            async (string action, string? @ref = null, string? text = null, string? key = null, int? delta_y = null, int? timeout_ms = null, CancellationToken ct = default) =>
+            async (string action, string? @ref = null, string? text = null, string? key = null, string? file_path = null, int? delta_y = null, int? timeout_ms = null, CancellationToken ct = default) =>
             {
                 var args = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
                 {
@@ -1155,6 +1156,7 @@ public static class CodexToolFunctionAdapterFactory
                 if (@ref is not null) args["ref"] = @ref;
                 if (text is not null) args["text"] = text;
                 if (key is not null) args["key"] = key;
+                if (file_path is not null) args["file_path"] = file_path;
                 if (delta_y is not null) args["delta_y"] = delta_y;
                 if (timeout_ms is not null) args["timeout_ms"] = timeout_ms;
                 return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
@@ -1174,6 +1176,19 @@ public static class CodexToolFunctionAdapterFactory
                 return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
             },
             new AIFunctionFactoryOptions { Name = "browser_tabs", Description = description });
+
+    private static AIFunction CreateForBrowserRequestTakeover(ICodexTool tool, string description) =>
+        AIFunctionFactory.Create(
+            async (string reason, int? timeout_seconds = null, CancellationToken ct = default) =>
+            {
+                var args = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["reason"] = reason
+                };
+                if (timeout_seconds is not null) args["timeout_seconds"] = timeout_seconds;
+                return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
+            },
+            new AIFunctionFactoryOptions { Name = "browser_request_takeover", Description = description });
 
     private static AIFunction CreateForSkill(ICodexTool tool, string description) =>
         AIFunctionFactory.Create(

@@ -67,6 +67,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         "browser_snapshot",
         "browser_act",
         "browser_tabs",
+        "browser_request_takeover",
         "glob",
         "user_learn_preference"
     ];
@@ -81,6 +82,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         "browser_snapshot",
         "browser_act",
         "browser_tabs",
+        "browser_request_takeover",
         "glob",
         "ivilson_read",
         "ivilson_ls",
@@ -6484,7 +6486,8 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                 string.Equals(key, "browser_navigate", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(key, "browser_snapshot", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(key, "browser_act", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(key, "browser_tabs", StringComparison.OrdinalIgnoreCase))
+                string.Equals(key, "browser_tabs", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(key, "browser_request_takeover", StringComparison.OrdinalIgnoreCase))
             {
                 result[key] = tool;
             }

@@ -381,6 +381,13 @@ public class ToolSearchMetaTool : ICodexTool
                 [
                     "List, open, switch, or close browser tabs and shut down the session browser."
                 ]),
+            "browser_request_takeover" => new(
+                ["browser", "web", "takeover", "login", "captcha", "human"],
+                ["main"],
+                "high",
+                [
+                    "Bring the managed desktop browser window on-screen for human login/CAPTCHA takeover and wait until control is returned."
+                ]),
             "apply_patch" => new(
                 ["patch", "edit", "diff", "code-change"],
                 ["forge-worker"],

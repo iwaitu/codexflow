@@ -9,6 +9,7 @@ using System.Text;
 using System.Text.Json;
 using CodexFlow.Contracts.Browser;
 using CodexFlow.Core.Configuration;
+using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Core.Models;
 using CodexFlow.Core.Protocols;
 using CodexFlow.Core.Security;
@@ -25,7 +26,10 @@ namespace CodexFlow.Core.Browser.Cdp;
 public sealed class BrowserSessionManager : IBrowserSessionManager
 {
     private const string IsolatedWorldName = "__codexflow_isolated__";
+    private const long MaxUploadFileSizeBytes = 50L * 1024 * 1024;
+    private const long MaxDownloadFileSizeBytes = 200L * 1024 * 1024;
     private static readonly TimeSpan StatePublishThrottle = TimeSpan.FromMilliseconds(300);
+    private static readonly TimeSpan ManualTakeoverMaxDuration = TimeSpan.FromMinutes(15);
 
     private readonly IOptionsMonitor<BrowserOptions> _options;
     private readonly IBrowserExecutableLocator _locator;
@@ -33,13 +37,18 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
     private readonly ProtectedLocalPortRegistry _portRegistry;
     private readonly IBrowserApprovalCoordinator? _approvalCoordinator;
     private readonly IBrowserStateEventPublisher? _eventPublisher;
+    private readonly IControlPlaneStateProvider? _controlPlane;
     private readonly ILogger<BrowserSessionManager> _logger;
     private readonly string _runtimeBaseDir;
+    private readonly string _persistentProfileDir;
+    private readonly IDisposable? _optionsChangeSubscription;
 
     private readonly SemaphoreSlim _processGate = new(1, 1);
     private readonly ConcurrentDictionary<string, CdpBrowserSessionState> _sessions = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, string> _cdpSessionToAppSession = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, string> _trackedTargets = new(StringComparer.Ordinal);
     private CdpManagedBrowserProcess? _sharedProcess;
+    private volatile string? _persistentOwnerSessionId;
     private int _disposed;
 
     public BrowserSessionManager(
@@ -50,7 +59,9 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         ILogger<BrowserSessionManager> logger,
         IBrowserApprovalCoordinator? approvalCoordinator = null,
         IBrowserStateEventPublisher? eventPublisher = null,
-        string? runtimeBaseDir = null)
+        string? runtimeBaseDir = null,
+        IControlPlaneStateProvider? controlPlane = null,
+        string? persistentProfileDir = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(locator);
@@ -64,12 +75,17 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         _portRegistry = portRegistry;
         _approvalCoordinator = approvalCoordinator;
         _eventPublisher = eventPublisher;
+        _controlPlane = controlPlane;
         _logger = logger;
         _runtimeBaseDir = string.IsNullOrWhiteSpace(runtimeBaseDir)
             ? Path.Combine(CodexFlowPaths.GlobalDirectory(), "browser-runtime")
             : runtimeBaseDir;
+        _persistentProfileDir = string.IsNullOrWhiteSpace(persistentProfileDir)
+            ? Path.Combine(CodexFlowPaths.GlobalDirectory(), "browser-profiles", "default")
+            : persistentProfileDir;
 
         CdpManagedBrowserProcess.ReapOrphanedRuntimeDirectories(_runtimeBaseDir, _logger);
+        _optionsChangeSubscription = _options.OnChange(OnOptionsChanged);
     }
 
     public async Task<BrowserOperationResult> NavigateAsync(
@@ -104,6 +120,11 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             if (session.IsClosed)
             {
                 return Fail("session_closed", "当前浏览器会话已关闭，请重试。");
+            }
+
+            if (session.TakeoverActive)
+            {
+                return Fail("takeover_active", "当前浏览器会话正处于人工接管状态，请等待用户点击「完成并交回 Agent」后再执行操作。");
             }
 
             session.Touch();
@@ -145,6 +166,14 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                     return Fail(eval.ReasonCode ?? "policy_denied", eval.Message ?? "URL 被浏览器安全策略拦截。");
                 }
 
+                var navRefusal = await EnforcePersistentNavigationApprovalAsync(session, eval.NormalizedUri, ct).ConfigureAwait(false);
+                if (navRefusal is not null)
+                {
+                    session.RecordAction("browser_navigate", "goto", eval.NormalizedUri.AbsoluteUri, tab.Url, false, navRefusal.Output, sw.ElapsedMilliseconds);
+                    await PublishStateAsync(session, force: true, ct: ct).ConfigureAwait(false);
+                    return navRefusal;
+                }
+
                 var navJson = JsonSerializer.Serialize(new { url = eval.NormalizedUri.AbsoluteUri });
                 var navResult = await proc.Connection.SendJsonAsync("Page.navigate", navJson, tab.CdpSessionId, ct).ConfigureAwait(false);
                 if (navResult.TryGetProperty("errorText", out var errProp) && !string.IsNullOrWhiteSpace(errProp.GetString()))
@@ -179,9 +208,15 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                     if (!string.IsNullOrWhiteSpace(entryUrl) && !string.Equals(entryUrl, "about:blank", StringComparison.OrdinalIgnoreCase))
                     {
                         var historyEval = _policyGuard.ValidateNavigationUrl(entryUrl, caller.WorkMode, session.GetApprovedLoopbackPortsSnapshot());
-                        if (!historyEval.Allowed)
+                        if (!historyEval.Allowed || historyEval.NormalizedUri is null)
                         {
                             return Fail(historyEval.ReasonCode ?? "policy_denied", $"历史记录目标 '{entryUrl}' 不符合当前安全策略: {historyEval.Message}");
+                        }
+
+                        var navRefusal = await EnforcePersistentNavigationApprovalAsync(session, historyEval.NormalizedUri, ct).ConfigureAwait(false);
+                        if (navRefusal is not null)
+                        {
+                            return navRefusal;
                         }
                     }
 
@@ -267,6 +302,11 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 return Fail("session_closed", "当前浏览器会话已关闭，请重试。");
             }
 
+            if (session.TakeoverActive)
+            {
+                return Fail("takeover_active", "当前浏览器会话正处于人工接管状态，请等待用户点击「完成并交回 Agent」后再执行操作。");
+            }
+
             session.Touch();
             var proc = await EnsureProcessAsync(ct).ConfigureAwait(false);
             var tab = await EnsureActiveTabAsync(proc, session, ct).ConfigureAwait(false);
@@ -325,9 +365,9 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         }
 
         var action = (request.Action ?? string.Empty).Trim().ToLowerInvariant();
-        if (action is not ("click" or "double_click" or "hover" or "type" or "clear" or "press_key" or "select_option" or "scroll" or "wait"))
+        if (action is not ("click" or "double_click" or "hover" or "type" or "clear" or "press_key" or "select_option" or "scroll" or "wait" or "upload_file"))
         {
-            return Fail("invalid_action", $"不支持的交互动作 '{request.Action}'，允许值: click, double_click, hover, type, clear, press_key, select_option, scroll, wait。");
+            return Fail("invalid_action", $"不支持的交互动作 '{request.Action}'，允许值: click, double_click, hover, type, clear, press_key, select_option, upload_file, scroll, wait。");
         }
 
         var (session, err) = await AcquireSessionAsync(caller, ct).ConfigureAwait(false);
@@ -338,11 +378,18 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
 
         await session.ExecutionLock.WaitAsync(ct).ConfigureAwait(false);
         var sw = Stopwatch.StartNew();
+        StagedUploadFile? stagedUpload = null;
+        var keepStagedForDeferredFormSubmit = false;
         try
         {
             if (session.IsClosed)
             {
                 return Fail("session_closed", "当前浏览器会话已关闭，请重试。");
+            }
+
+            if (session.TakeoverActive)
+            {
+                return Fail("takeover_active", "当前浏览器会话正处于人工接管状态，请等待用户点击「完成并交回 Agent」后再执行操作。");
             }
 
             session.Touch();
@@ -353,7 +400,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             CdpLiveRefProbe? preActionLiveProbe = null;
             CdpActiveElementProbe? activeProbeForKey = null;
 
-            if (action is "click" or "double_click" or "hover" or "type" or "clear" or "select_option")
+            if (action is "click" or "double_click" or "hover" or "type" or "clear" or "select_option" or "upload_file")
             {
                 if (string.IsNullOrWhiteSpace(request.Ref))
                 {
@@ -366,24 +413,60 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                     return Fail("stale_ref", $"元素编号 '{request.Ref}' 不存在或已随页面导航失效，请重新调用 browser_snapshot 获取最新编号。");
                 }
 
-                // P0-2: Always verify live DOM in isolated world before any interaction (prevents TOCTOU & clickjacking).
-                preActionLiveProbe = await LocateAndVerifyRefInIsolatedWorldAsync(proc.Connection, tab, refId, ct).ConfigureAwait(false);
-                if (preActionLiveProbe is null || !preActionLiveProbe.Ok)
+                if (action == "upload_file")
                 {
-                    return Fail("stale_ref", $"元素 [{refId}] 已从页面消失或不可见 ({preActionLiveProbe?.Error ?? "not_found"})，请重新调用 browser_snapshot。");
-                }
+                    var fileCheck = await EvaluateInIsolatedWorldAsync(
+                        proc.Connection,
+                        tab,
+                        BrowserSnapshotScript.BuildVerifyFileInputRefJs(EscapeJsString(refId)),
+                        ct).ConfigureAwait(false);
+                    if (!string.Equals(fileCheck, "ok", StringComparison.Ordinal))
+                    {
+                        return Fail("invalid_file_input", $"元素 [{refId}] 不是可用的文件上传控件 <input type=\"file\"> ({fileCheck ?? "unknown"})，请重新调用 browser_snapshot 检查。");
+                    }
 
-                if (action is "click" or "double_click" or "type" or "clear" && preActionLiveProbe.Obscured)
-                {
-                    return Fail("element_obscured", $"元素 [{refId}] 当前被其他浮层遮挡（可能存在弹窗遮罩或点击劫持），已拒绝操作，请先重新快照检查页面。");
-                }
+                    // P0-2 & P1-6: Canonical real-path resolution + immutable private staging BEFORE approval.
+                    var (staged, stageErr) = await BrowserWorkspacePathGuard
+                        .StageWorkspaceUploadFileAsync(caller.WorkspaceRoot, request.FilePath, session.StagingDirectory, MaxUploadFileSizeBytes, ct)
+                        .ConfigureAwait(false);
+                    if (stageErr is not null || staged is null)
+                    {
+                        return stageErr!;
+                    }
 
-                // Enforce password/OTP prohibition using BOTH snapshot AND live DOM probe.
-                if (action is "type" or "clear" && (targetElement.IsPassword || preActionLiveProbe.IsPassword))
+                    stagedUpload = staged;
+                }
+                else
                 {
-                    return Fail(
-                        "password_input_forbidden",
-                        $"安全策略禁止 AI 直接向密码、支付卡或验证码/OTP 字段 [{targetElement.Ref}] 输入内容。请提示用户自行处理登录/验证。");
+                    // P0-2: Always verify live DOM in isolated world before any interaction (prevents TOCTOU & clickjacking).
+                    preActionLiveProbe = await LocateAndVerifyRefInIsolatedWorldAsync(proc.Connection, tab, refId, ct).ConfigureAwait(false);
+                    if (preActionLiveProbe is null || !preActionLiveProbe.Ok)
+                    {
+                        return Fail("stale_ref", $"元素 [{refId}] 已从页面消失或不可见 ({preActionLiveProbe?.Error ?? "not_found"})，请重新调用 browser_snapshot。");
+                    }
+
+                    // P1-3: Never allow click on <input type="file"> because it pops OS native dialog and hangs automation.
+                    if (action is "click" or "double_click" &&
+                        (string.Equals(targetElement.Role, "file_input", StringComparison.OrdinalIgnoreCase) ||
+                         string.Equals(preActionLiveProbe.Role, "file_input", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        return Fail(
+                            "use_upload_file_action",
+                            $"元素 [{refId}] 是文件上传控件，禁止直接点击触发原生文件选择框；请改用 browser_act(action=\"upload_file\", ref=\"{refId}\", file_path=\"工作区内文件路径\")。");
+                    }
+
+                    if (action is "click" or "double_click" or "type" or "clear" && preActionLiveProbe.Obscured)
+                    {
+                        return Fail("element_obscured", $"元素 [{refId}] 当前被其他浮层遮挡（可能存在弹窗遮罩或点击劫持），已拒绝操作，请先重新快照检查页面。");
+                    }
+
+                    // Enforce password/OTP prohibition using BOTH snapshot AND live DOM probe.
+                    if (action is "type" or "clear" && (targetElement.IsPassword || preActionLiveProbe.IsPassword))
+                    {
+                        return Fail(
+                            "password_input_forbidden",
+                            $"安全策略禁止 AI 直接向密码、支付卡或验证码/OTP 字段 [{targetElement.Ref}] 输入内容。请提示用户自行处理登录/验证或调用 browser_request_takeover 交由人工操作。");
+                    }
                 }
             }
             else if (action == "press_key")
@@ -401,7 +484,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 {
                     return Fail(
                         "password_input_forbidden",
-                        "安全策略禁止通过 press_key 向当前聚焦的密码/OTP/支付敏感字段输入字符。请提示用户自行输入。");
+                        "安全策略禁止通过 press_key 向当前聚焦的密码/OTP/支付敏感字段输入字符。请提示用户自行输入或请求人工接管。");
                 }
 
                 if (!isSafeNavigationKey && activeProbeForKey is { InIframe: true })
@@ -412,49 +495,79 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 }
             }
 
-            var urlBeforeApproval = tab.Url;
+            var liveUrlBeforeApproval = !string.IsNullOrWhiteSpace(preActionLiveProbe?.PageUrl)
+                ? preActionLiveProbe.PageUrl!
+                : !string.IsNullOrWhiteSpace(activeProbeForKey?.PageUrl)
+                    ? activeProbeForKey.PageUrl!
+                    : tab.Url;
+
+            var isPersistentRemoteWrite =
+                session.ProfileMode == BrowserProfileMode.Persistent &&
+                !IsLoopbackUrl(liveUrlBeforeApproval) &&
+                action is not ("scroll" or "wait" or "hover") &&
+                !(action == "press_key" && request.Key?.Trim() is "Escape" or "Tab");
+
             var isSensitive =
+                action == "upload_file" ||
+                isPersistentRemoteWrite ||
                 targetElement?.IsSensitiveSubmit == true ||
                 preActionLiveProbe?.IsSensitiveSubmit == true ||
                 (action == "press_key" &&
                  IsSubmitTriggerKey(request.Key) &&
                  activeProbeForKey?.IsSensitiveSubmitContext == true);
 
-            // Approval gate for sensitive interactions or AlwaysAsk policy.
+            // Approval gate for sensitive interactions, upload_file, persistent remote writes, or AlwaysAsk policy.
             var (approvalRefusal, waitedForApproval) = await EnforceInteractionApprovalAsync(
                 caller,
                 session,
                 tab,
+                liveUrlBeforeApproval,
                 action,
                 request,
                 targetElement,
                 preActionLiveProbe,
                 activeProbeForKey,
                 isSensitive,
+                isPersistentRemoteWrite,
+                stagedUpload,
                 ct).ConfigureAwait(false);
             if (approvalRefusal is not null)
             {
-                session.RecordAction("browser_act", action, SanitizeOneLine(request.Ref ?? request.Key, 80), tab.Url, false, approvalRefusal.Output, sw.ElapsedMilliseconds);
+                session.RecordAction("browser_act", action, SanitizeOneLine(request.Ref ?? request.Key, 80), liveUrlBeforeApproval, false, approvalRefusal.Output, sw.ElapsedMilliseconds);
                 await PublishStateAsync(session, force: true, ct: ct).ConfigureAwait(false);
                 return approvalRefusal;
             }
 
-            // P1-5: Re-verify URL origin and live DOM target after human approval to eliminate TOCTOU.
+            // P1-5: Re-verify live URL origin and live DOM target after human approval to eliminate TOCTOU.
             if (waitedForApproval)
             {
-                var currentOrigin = ExtractOrigin(tab.Url);
-                var priorOrigin = ExtractOrigin(urlBeforeApproval);
+                var priorOrigin = ExtractOrigin(liveUrlBeforeApproval);
+                var currentLiveUrl = await EvaluateInIsolatedWorldAsync(proc.Connection, tab, "String(window.location.href || '')", ct).ConfigureAwait(false) ?? tab.Url;
+                var currentOrigin = ExtractOrigin(currentLiveUrl);
                 if (!string.Equals(currentOrigin, priorOrigin, StringComparison.OrdinalIgnoreCase))
                 {
                     return Fail("stale_ref", "等待审批期间页面已跳转至其他站点，已取消本次交互以防止越权操作，请重新快照。");
                 }
 
-                if (targetElement is not null)
+                if (action == "upload_file")
+                {
+                    var fileRecheck = await EvaluateInIsolatedWorldAsync(
+                        proc.Connection,
+                        tab,
+                        BrowserSnapshotScript.BuildVerifyFileInputRefJs(EscapeJsString(targetElement!.Ref)),
+                        ct).ConfigureAwait(false);
+                    if (!string.Equals(fileRecheck, "ok", StringComparison.Ordinal))
+                    {
+                        return Fail("stale_ref", $"等待审批期间文件上传控件 [{targetElement.Ref}] 状态已失效 ({fileRecheck ?? "unknown"})，已中止上传。");
+                    }
+                }
+                else if (targetElement is not null)
                 {
                     var postApprovalProbe = await LocateAndVerifyRefInIsolatedWorldAsync(proc.Connection, tab, targetElement.Ref, ct).ConfigureAwait(false);
                     if (postApprovalProbe is null || !postApprovalProbe.Ok || postApprovalProbe.Obscured ||
                         (action is "type" or "clear" && postApprovalProbe.IsPassword) ||
-                        !string.Equals(postApprovalProbe.Role, preActionLiveProbe?.Role, StringComparison.OrdinalIgnoreCase))
+                        !string.Equals(postApprovalProbe.Role, preActionLiveProbe?.Role, StringComparison.OrdinalIgnoreCase) ||
+                        !string.Equals(ExtractOrigin(postApprovalProbe.PageUrl ?? currentLiveUrl), priorOrigin, StringComparison.OrdinalIgnoreCase))
                     {
                         return Fail("stale_ref", $"等待审批期间元素 [{targetElement.Ref}] 状态已发生变化，已中止执行，请重新调用 browser_snapshot。");
                     }
@@ -563,6 +676,17 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                     }
                     break;
                 }
+                case "upload_file":
+                {
+                    await SetFileInputFilesInIsolatedWorldAsync(
+                        proc.Connection,
+                        tab,
+                        targetElement!.Ref,
+                        stagedUpload!.StagedFilePath,
+                        ct).ConfigureAwait(false);
+                    keepStagedForDeferredFormSubmit = true;
+                    break;
+                }
             }
 
             await WaitForDocumentSettleAsync(proc.Connection, tab, ct, maxWaitMs: 2500).ConfigureAwait(false);
@@ -599,6 +723,11 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         }
         finally
         {
+            if (stagedUpload is not null && !keepStagedForDeferredFormSubmit)
+            {
+                BrowserWorkspacePathGuard.TryDeleteDirectory(stagedUpload.TempSubDir);
+            }
+
             session.ExecutionLock.Release();
         }
     }
@@ -637,6 +766,11 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 return Fail("session_closed", "当前浏览器会话已关闭。");
             }
 
+            if (session.TakeoverActive && normalized is not ("list" or "close_browser"))
+            {
+                return Fail("takeover_active", "当前浏览器会话正处于人工接管状态，请等待用户点击「完成并交回 Agent」后再执行操作。");
+            }
+
             session.Touch();
             var proc = await EnsureProcessAsync(ct).ConfigureAwait(false);
 
@@ -644,7 +778,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             {
                 case "list":
                 {
-                    var state = session.ToDto("running", _options.CurrentValue.ProfileMode.ToString());
+                    var state = session.ToDto("running");
                     var sb = new StringBuilder();
                     sb.AppendLine(CultureInfo.InvariantCulture, $"当前会话共有 {state.Tabs.Count} 个标签页:");
                     foreach (var t in state.Tabs)
@@ -661,9 +795,31 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                     if (!string.IsNullOrWhiteSpace(url))
                     {
                         var eval = _policyGuard.ValidateNavigationUrl(url, caller.WorkMode, session.GetApprovedLoopbackPortsSnapshot());
+                        if (!eval.Allowed && eval.RequiresLoopbackPortApproval && eval.NormalizedUri is not null)
+                        {
+                            var approvalResult = await RequestLoopbackPortApprovalAsync(session, eval.NormalizedUri, eval.TargetPort, ct).ConfigureAwait(false);
+                            if (!approvalResult.Approved)
+                            {
+                                return Fail(approvalResult.ErrorCode ?? BrowserTargetPolicyGuard.ReasonLoopbackApprovalRequired, approvalResult.ErrorMessage ?? "访问非白名单本机端口未获批准。");
+                            }
+
+                            if (approvalResult.GrantedForSession)
+                            {
+                                session.ApproveLoopbackPortForSession(eval.TargetPort);
+                            }
+
+                            eval = _policyGuard.ValidateNavigationUrl(url, caller.WorkMode, session.GetApprovedLoopbackPortsSnapshot());
+                        }
+
                         if (!eval.Allowed || eval.NormalizedUri is null)
                         {
                             return Fail(eval.ReasonCode ?? "policy_denied", eval.Message ?? "新标签页 URL 被安全策略拦截。");
+                        }
+
+                        var navRefusal = await EnforcePersistentNavigationApprovalAsync(session, eval.NormalizedUri, ct).ConfigureAwait(false);
+                        if (navRefusal is not null)
+                        {
+                            return navRefusal;
                         }
 
                         targetUri = eval.NormalizedUri;
@@ -742,11 +898,293 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         }
     }
 
+    public async Task<BrowserOperationResult> RequestTakeoverAsync(
+        BrowserTrustedCallerContext caller,
+        string reason,
+        int timeoutSeconds = 300,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(caller);
+        if (caller.PlanModeActive)
+        {
+            return Fail("plan_mode_active", "当前处于只读 Plan Mode，禁止发起浏览器人工接管。");
+        }
+
+        if (_controlPlane is { IsControlPlaneAvailable: false })
+        {
+            return Fail("control_plane_unavailable", "当前处于未启用控制面的独立模式，无法在桌面端交互完成人工接管。");
+        }
+
+        var (session, err) = await AcquireSessionAsync(caller, ct).ConfigureAwait(false);
+        if (err is not null || session is null)
+        {
+            return err!;
+        }
+
+        if (session.Headless)
+        {
+            return Fail(
+                "headless_mode_no_takeover",
+                "当前受管浏览器运行在「无头模式」，不支持唤出窗口人工接管。请让用户在「设置 → 浏览器」中将运行模式切换为「桌面有头（支持人工接管）」并关闭当前浏览器会话后重试。");
+        }
+
+        var effectiveReason = string.IsNullOrWhiteSpace(reason) ? "需要人工完成登录、验证码或确认操作" : reason.Trim();
+        Task<string?> completionTask;
+        CdpManagedBrowserProcess? shownProc = null;
+        BrowserTabRecord? shownTab = null;
+
+        await session.ExecutionLock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (session.IsClosed)
+            {
+                return Fail("session_closed", "当前浏览器会话已关闭。");
+            }
+
+            if (session.TakeoverActive)
+            {
+                return Fail("takeover_already_active", "当前浏览器会话已处于人工接管状态，请先完成当前人工接管。");
+            }
+
+            session.Touch();
+            var proc = await EnsureProcessAsync(ct).ConfigureAwait(false);
+            var tab = await EnsureActiveTabAsync(proc, session, ct).ConfigureAwait(false);
+            shownProc = proc;
+            shownTab = tab;
+
+            completionTask = session.BeginTakeover(effectiveReason, manual: false);
+            try
+            {
+                await SetWindowVisibleAsync(proc.Connection, tab, visible: true, ct, throwOnShowFailure: true).ConfigureAwait(false);
+            }
+            catch (Exception showEx) when (showEx is not OperationCanceledException)
+            {
+                session.CancelTakeover("window_show_failed");
+                return Fail("takeover_window_failed", $"无法将受管浏览器窗口唤出到前台：{showEx.Message}");
+            }
+
+            session.RecordAction("browser_request_takeover", "start", SanitizeOneLine(effectiveReason, 120), tab.Url, true, "已唤出桌面浏览器窗口等待人工接管", 0);
+            await PublishStateAsync(session, force: true, ct: ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            // Release ExecutionLock while waiting for human takeover so CompleteTakeoverAsync/CloseSessionAsync never deadlock.
+            session.ExecutionLock.Release();
+        }
+
+        var clampedTimeout = TimeSpan.FromSeconds(Math.Clamp(timeoutSeconds, 30, 870));
+        using var pauseGuard = AmbientTurnTimeoutController.Current?.PauseTimers();
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(clampedTimeout);
+
+        string? userNote;
+        try
+        {
+            userNote = await completionTask.WaitAsync(timeoutCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            session.CancelTakeover("turn_cancelled");
+            await TryHideSessionWindowAsync(session, shownProc, shownTab).ConfigureAwait(false);
+            await PublishStateAsync(session, force: true, ct: CancellationToken.None).ConfigureAwait(false);
+            return Fail("takeover_cancelled", "人工接管已随回合取消而终止。");
+        }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+        {
+            session.CancelTakeover("takeover_timeout");
+            await TryHideSessionWindowAsync(session, shownProc, shownTab).ConfigureAwait(false);
+            await PublishStateAsync(session, force: true, ct: CancellationToken.None).ConfigureAwait(false);
+            return Fail("takeover_timeout", string.Create(CultureInfo.InvariantCulture, $"等待人工接管完成超时（{(int)clampedTimeout.TotalSeconds} 秒）。"));
+        }
+        catch (Exception ex)
+        {
+            session.CancelTakeover("takeover_aborted");
+            await TryHideSessionWindowAsync(session, shownProc, shownTab).ConfigureAwait(false);
+            await PublishStateAsync(session, force: true, ct: CancellationToken.None).ConfigureAwait(false);
+            var abortedByExit = ex is InvalidOperationException && ex.Message.Contains("browser_process_exited", StringComparison.Ordinal);
+            return Fail(abortedByExit ? "browser_exited" : "takeover_aborted", $"人工接管已中断（{(abortedByExit ? "浏览器进程已关闭" : ex.Message)}）。");
+        }
+
+        // Human returned control: re-acquire ExecutionLock and capture fresh post-takeover snapshot & screenshot.
+        await session.ExecutionLock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (session.IsClosed)
+            {
+                return Fail("session_closed", "人工接管结束后浏览器会话已关闭。");
+            }
+
+            var proc = await EnsureProcessAsync(ct).ConfigureAwait(false);
+            var tab = await EnsureActiveTabAsync(proc, session, ct).ConfigureAwait(false);
+            await SetWindowVisibleAsync(proc.Connection, tab, visible: false, ct).ConfigureAwait(false);
+            await WaitForDocumentSettleAsync(proc.Connection, tab, ct, maxWaitMs: 2500).ConfigureAwait(false);
+            var snapshot = await CaptureDomSnapshotCoreAsync(proc.Connection, session, tab, ct).ConfigureAwait(false);
+            var screenshot = await TryCaptureViewportJpegAsync(proc.Connection, session, tab.CdpSessionId, ct).ConfigureAwait(false);
+            session.Touch();
+            var summary = string.IsNullOrWhiteSpace(userNote)
+                ? $"人工接管已完成并交回控制权 -> {tab.Url}"
+                : $"人工接管已完成（备注: {SanitizeOneLine(userNote, 80)}）-> {tab.Url}";
+            session.RecordAction("browser_request_takeover", "complete", null, tab.Url, true, summary, 0);
+            await PublishStateAsync(session, force: true, ct: ct).ConfigureAwait(false);
+
+            var formatted = BrowserSnapshotScript.FormatSafeSnapshotForModel(snapshot, maxChars: 6000);
+            return new BrowserOperationResult(
+                Succeeded: true,
+                Output: $"{summary}\n\n{formatted}",
+                Summary: summary,
+                Url: tab.Url,
+                Title: tab.Title,
+                Screenshot: screenshot);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Post-takeover snapshot failed for session {SessionId}", caller.SessionId);
+            return Fail("takeover_post_snapshot_failed", $"人工接管已结束，但采集恢复后页面状态失败：{ex.Message}");
+        }
+        finally
+        {
+            session.ExecutionLock.Release();
+        }
+    }
+
+    public async Task<BrowserOperationResult> StartTakeoverAsync(
+        string sessionId,
+        string? reason = null,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId) ||
+            !_sessions.TryGetValue(sessionId, out var session) ||
+            session.IsClosed)
+        {
+            return Fail("session_not_found", "当前会话尚未启动受管浏览器。");
+        }
+
+        if (session.Headless)
+        {
+            return Fail(
+                "headless_mode_no_takeover",
+                "当前浏览器运行在「无头模式」，不支持唤出窗口人工接管。请在「设置 → 浏览器」中切换到「桌面有头（支持人工接管）」后重新启动浏览器。");
+        }
+
+        if (!await session.ExecutionLock.WaitAsync(TimeSpan.FromSeconds(3), ct).ConfigureAwait(false))
+        {
+            return Fail("browser_busy", "当前浏览器正在执行操作或等待审批，请稍后再试。");
+        }
+
+        try
+        {
+            if (session.IsClosed)
+            {
+                return Fail("session_closed", "当前浏览器会话已关闭。");
+            }
+
+            if (session.TakeoverActive)
+            {
+                return Fail("takeover_already_active", "当前浏览器会话已处于人工接管状态。");
+            }
+
+            var proc = await EnsureProcessAsync(ct).ConfigureAwait(false);
+            var tab = await EnsureActiveTabAsync(proc, session, ct).ConfigureAwait(false);
+            var effectiveReason = string.IsNullOrWhiteSpace(reason) ? "用户主动人工接管" : reason.Trim();
+            _ = session.BeginTakeover(effectiveReason, manual: true);
+            try
+            {
+                await SetWindowVisibleAsync(proc.Connection, tab, visible: true, ct, throwOnShowFailure: true).ConfigureAwait(false);
+            }
+            catch (Exception showEx) when (showEx is not OperationCanceledException)
+            {
+                session.CancelTakeover("window_show_failed");
+                return Fail("takeover_window_failed", $"无法将受管浏览器窗口唤出到前台：{showEx.Message}");
+            }
+
+            session.RecordAction("browser_takeover", "start", SanitizeOneLine(effectiveReason, 120), tab.Url, true, "已将受管浏览器窗口移至前台供人工接管", 0);
+            await PublishStateAsync(session, force: true, ct: ct).ConfigureAwait(false);
+
+            return new BrowserOperationResult(
+                Succeeded: true,
+                Output: "已唤出桌面浏览器窗口进入人工接管状态。",
+                Summary: "已进入人工接管",
+                Url: tab.Url,
+                Title: tab.Title);
+        }
+        finally
+        {
+            session.ExecutionLock.Release();
+        }
+    }
+
+    public async Task<BrowserOperationResult> CompleteTakeoverAsync(
+        string sessionId,
+        string? note = null,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId) ||
+            !_sessions.TryGetValue(sessionId, out var session) ||
+            session.IsClosed)
+        {
+            return Fail("session_not_found", "当前会话没有活跃的受管浏览器。");
+        }
+
+        if (!session.TakeoverActive)
+        {
+            return new BrowserOperationResult(true, "当前会话未处于人工接管状态。", Summary: "无需结束接管");
+        }
+
+        // Hide window FIRST before waking any blocked tool waiter so ExecutionLock contention never leaves the window visible.
+        if (_sharedProcess is { IsAlive: true } proc && session.GetActiveTab() is { } activeTab)
+        {
+            await SetWindowVisibleAsync(proc.Connection, activeTab, visible: false, ct).ConfigureAwait(false);
+        }
+
+        var wasManual = session.IsManualTakeover;
+        _ = session.CompleteTakeover(note);
+
+        // If this was a manual takeover (no RequestTakeoverAsync waiter taking a screenshot), capture refreshed screenshot here.
+        if (wasManual && await session.ExecutionLock.WaitAsync(TimeSpan.FromSeconds(2), ct).ConfigureAwait(false))
+        {
+            try
+            {
+                if (!session.IsClosed && _sharedProcess is { IsAlive: true } liveProc && session.GetActiveTab() is { } tab)
+                {
+                    _ = await CaptureDomSnapshotCoreAsync(liveProc.Connection, session, tab, ct).ConfigureAwait(false);
+                    _ = await TryCaptureViewportJpegAsync(liveProc.Connection, session, tab.CdpSessionId, ct).ConfigureAwait(false);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Best-effort post-takeover snapshot refresh failed for session {SessionId}", sessionId);
+            }
+            finally
+            {
+                session.ExecutionLock.Release();
+            }
+        }
+
+        await PublishStateAsync(session, force: true, ct: ct).ConfigureAwait(false);
+        return new BrowserOperationResult(
+            Succeeded: true,
+            Output: "已结束人工接管并将浏览器控制权交回 Agent。",
+            Summary: "已交回控制权");
+    }
+
+    public void CancelTakeover(string sessionId, string reason)
+    {
+        if (!string.IsNullOrWhiteSpace(sessionId) && _sessions.TryGetValue(sessionId, out var session))
+        {
+            session.CancelTakeover(reason);
+            _ = TryHideSessionWindowAsync(session, _sharedProcess, session.GetActiveTab());
+        }
+    }
+
     public BrowserSessionStateDto GetSessionState(string sessionId)
     {
         if (!string.IsNullOrWhiteSpace(sessionId) && _sessions.TryGetValue(sessionId, out var session) && !session.IsClosed)
         {
-            return session.ToDto("running", _options.CurrentValue.ProfileMode.ToString());
+            return session.ToDto("running");
         }
 
         return new BrowserSessionStateDto(
@@ -796,12 +1234,26 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         }
 
         session.MarkClosed();
+        session.AbortTakeover(reason);
+
+        if (string.Equals(_persistentOwnerSessionId, sessionId, StringComparison.Ordinal))
+        {
+            Interlocked.CompareExchange(ref _persistentOwnerSessionId, null, sessionId);
+        }
 
         foreach (var kvp in _cdpSessionToAppSession)
         {
             if (string.Equals(kvp.Value, sessionId, StringComparison.Ordinal))
             {
                 _cdpSessionToAppSession.TryRemove(kvp.Key, out _);
+            }
+        }
+
+        foreach (var kvp in _trackedTargets)
+        {
+            if (string.Equals(kvp.Value, sessionId, StringComparison.Ordinal))
+            {
+                _trackedTargets.TryRemove(kvp.Key, out _);
             }
         }
 
@@ -812,10 +1264,97 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             {
                 using var disposeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 disposeCts.CancelAfter(TimeSpan.FromSeconds(5));
-                await proc.Connection.SendJsonAsync(
-                    "Target.disposeBrowserContext",
-                    JsonSerializer.Serialize(new { browserContextId = session.BrowserContextId }),
-                    ct: disposeCts.Token).ConfigureAwait(false);
+                if (session.UsesDefaultContext)
+                {
+                    string? keepaliveTargetId = null;
+                    try
+                    {
+                        var createKeepalive = await proc.Connection.SendJsonAsync(
+                            "Target.createTarget",
+                            "{\"url\":\"about:blank\"}",
+                            ct: disposeCts.Token).ConfigureAwait(false);
+                        keepaliveTargetId = createKeepalive.TryGetProperty("targetId", out var kId) ? kId.GetString() : null;
+                        if (!string.IsNullOrWhiteSpace(keepaliveTargetId))
+                        {
+                            _trackedTargets[keepaliveTargetId] = "__keepalive__";
+                            if (!session.Headless)
+                            {
+                                await HideTargetWindowByIdAsync(proc.Connection, keepaliveTargetId, disposeCts.Token).ConfigureAwait(false);
+                            }
+                        }
+                    }
+                    catch (Exception)
+                    {
+                    }
+
+                    var closedIds = new HashSet<string>(StringComparer.Ordinal);
+                    try
+                    {
+                        var targetsRes = await proc.Connection.SendAsync("Target.getTargets", ct: disposeCts.Token).ConfigureAwait(false);
+                        if (targetsRes.TryGetProperty("targetInfos", out var infos) && infos.ValueKind == JsonValueKind.Array)
+                        {
+                            var activeEphemeralCtxIds = _sessions.Values
+                                .Where(static s => !s.UsesDefaultContext && !string.IsNullOrWhiteSpace(s.BrowserContextId))
+                                .Select(static s => s.BrowserContextId)
+                                .ToHashSet(StringComparer.Ordinal);
+
+                            foreach (var info in infos.EnumerateArray())
+                            {
+                                var tType = info.TryGetProperty("type", out var tp) ? tp.GetString() : null;
+                                var tId = info.TryGetProperty("targetId", out var idp) ? idp.GetString() : null;
+                                var ctxId = info.TryGetProperty("browserContextId", out var cp) ? cp.GetString() : null;
+                                if (!string.Equals(tType, "page", StringComparison.OrdinalIgnoreCase) ||
+                                    string.IsNullOrWhiteSpace(tId) ||
+                                    string.Equals(tId, keepaliveTargetId, StringComparison.Ordinal) ||
+                                    (!string.IsNullOrWhiteSpace(ctxId) && activeEphemeralCtxIds.Contains(ctxId)))
+                                {
+                                    continue;
+                                }
+
+                                closedIds.Add(tId);
+                                try
+                                {
+                                    await proc.Connection.SendJsonAsync(
+                                        "Target.closeTarget",
+                                        JsonSerializer.Serialize(new { targetId = tId }),
+                                        ct: disposeCts.Token).ConfigureAwait(false);
+                                }
+                                catch (Exception)
+                                {
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception)
+                    {
+                    }
+
+                    foreach (var tab in session.GetTabsSnapshot())
+                    {
+                        if (closedIds.Contains(tab.TargetId) || string.Equals(tab.TargetId, keepaliveTargetId, StringComparison.Ordinal))
+                        {
+                            continue;
+                        }
+
+                        try
+                        {
+                            await proc.Connection.SendJsonAsync(
+                                "Target.closeTarget",
+                                JsonSerializer.Serialize(new { targetId = tab.TargetId }),
+                                ct: disposeCts.Token).ConfigureAwait(false);
+                        }
+                        catch (Exception)
+                        {
+                        }
+                    }
+                }
+                else
+                {
+                    await proc.Connection.SendJsonAsync(
+                        "Target.disposeBrowserContext",
+                        JsonSerializer.Serialize(new { browserContextId = session.BrowserContextId }),
+                        ct: disposeCts.Token).ConfigureAwait(false);
+                }
             }
         }
         catch (Exception ex)
@@ -853,20 +1392,36 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
 
     public async Task CleanupIdleSessionsAsync(CancellationToken ct = default)
     {
+        var now = DateTimeOffset.UtcNow;
         var timeoutMinutes = Math.Clamp(_options.CurrentValue.IdleTimeoutMinutes, 1, 120);
-        var cutoff = DateTimeOffset.UtcNow - TimeSpan.FromMinutes(timeoutMinutes);
+        var cutoff = now - TimeSpan.FromMinutes(timeoutMinutes);
 
         foreach (var kvp in _sessions)
         {
+            var state = kvp.Value;
+            if (state.TakeoverActive)
+            {
+                // Auto-expire manual takeover if human exceeded 15m hard ceiling so persistent profiles never stay wedged forever.
+                if (state.IsManualTakeover &&
+                    state.TakeoverStartedAtUtc is { } startedAt &&
+                    (now - startedAt) > ManualTakeoverMaxDuration)
+                {
+                    _logger.LogInformation("Auto-completing expired manual takeover for session {SessionId}", kvp.Key);
+                    await CompleteTakeoverAsync(kvp.Key, "人工接管超过 15 分钟自动结束", ct).ConfigureAwait(false);
+                }
+
+                continue;
+            }
+
             // P1-9: Never reap a session that is currently executing a CDP command or awaiting human approval.
-            if (kvp.Value.ExecutionLock.CurrentCount == 0)
+            if (state.ExecutionLock.CurrentCount == 0)
             {
                 continue;
             }
 
-            if (kvp.Value.LastActivityUtc < cutoff)
+            if (state.LastActivityUtc < cutoff)
             {
-                _logger.LogInformation("Closing idle browser session {SessionId} (last active {LastActive})", kvp.Key, kvp.Value.LastActivityUtc);
+                _logger.LogInformation("Closing idle browser session {SessionId} (last active {LastActive})", kvp.Key, state.LastActivityUtc);
                 await CloseSessionAsync(kvp.Key, "idle_timeout", ct).ConfigureAwait(false);
             }
         }
@@ -876,137 +1431,271 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         BrowserTrustedCallerContext caller,
         CancellationToken ct)
     {
-        var opts = _options.CurrentValue;
-        if (!opts.Enabled)
-        {
-            return (null, Fail("browser_disabled", "Web Browser Use 功能当前已关闭，请在「设置 → 浏览器」中启用。"));
-        }
-
-        if (_sessions.TryGetValue(caller.SessionId, out var existing) && !existing.IsClosed)
-        {
-            // P1-1: Keep session WorkMode synchronized with caller so Dev->Daily tightening takes immediate effect.
-            existing.SyncWorkMode(caller.WorkMode);
-            return (existing, null);
-        }
-
-        var maxSessions = Math.Clamp(opts.MaxConcurrentSessions, 1, 8);
-        if (_sessions.Count >= maxSessions)
-        {
-            var oldest = _sessions.Values
-                .OrderBy(static s => s.LastActivityUtc)
-                .FirstOrDefault(static s => s.ExecutionLock.CurrentCount > 0);
-            if (oldest is not null)
-            {
-                await CloseSessionAsync(oldest.SessionId, "capacity_evicted", ct).ConfigureAwait(false);
-            }
-            else
-            {
-                return (null, Fail("browser_capacity_reached", string.Create(CultureInfo.InvariantCulture, $"活跃浏览器会话已达上限 ({maxSessions}) 且均在执行中，请稍后重试或关闭旧会话的浏览器。")));
-            }
-        }
-
-        CdpManagedBrowserProcess proc;
         try
         {
-            proc = await EnsureProcessAsync(ct).ConfigureAwait(false);
+            var opts = _options.CurrentValue;
+            if (!opts.Enabled)
+            {
+                return (null, Fail("browser_disabled", "Web Browser Use 功能当前已关闭，请在「设置 → 浏览器」中启用。"));
+            }
+
+            if (_sessions.TryGetValue(caller.SessionId, out var existing) && !existing.IsClosed)
+            {
+                // P1-1: Keep session WorkMode synchronized with caller so Dev->Daily tightening takes immediate effect.
+                existing.SyncWorkMode(caller.WorkMode);
+                return (existing, null);
+            }
+
+            // P1-7: If Headless or ProfileMode changed since shared process launched, drain idle sessions;
+            // if active busy sessions remain, fail-closed with browser_restart_required instead of silently mixing modes.
+            var activeProc = _sharedProcess;
+            if (activeProc is { IsAlive: true } &&
+                (activeProc.Headless != opts.Headless || activeProc.ProfileMode != opts.ProfileMode))
+            {
+                foreach (var sid in _sessions.Keys.ToArray())
+                {
+                    if (_sessions.TryGetValue(sid, out var staleCandidate) &&
+                        !staleCandidate.TakeoverActive &&
+                        staleCandidate.ExecutionLock.CurrentCount > 0)
+                    {
+                        await CloseSessionAsync(sid, "browser_mode_changed", ct).ConfigureAwait(false);
+                    }
+                }
+
+                if (!_sessions.IsEmpty)
+                {
+                    return (null, Fail(
+                        "browser_restart_required",
+                        "浏览器窗口模式或 Profile 策略已变更，但仍有其他会话正在使用旧配置浏览器。请先关闭当前活跃会话的浏览器以使新配置生效。"));
+                }
+            }
+
+            var isPersistent = opts.ProfileMode == BrowserProfileMode.Persistent;
+            if (isPersistent)
+            {
+                // Single-active session exclusivity for persistent profile (never hijack active or non-idle owner).
+                var existingOwnerId = _persistentOwnerSessionId;
+                if (!string.IsNullOrWhiteSpace(existingOwnerId) &&
+                    !string.Equals(existingOwnerId, caller.SessionId, StringComparison.Ordinal) &&
+                    _sessions.TryGetValue(existingOwnerId, out var ownerSession) &&
+                    !ownerSession.IsClosed)
+                {
+                    var idleThreshold = TimeSpan.FromMinutes(Math.Clamp(opts.IdleTimeoutMinutes, 1, 120));
+                    var isOwnerIdle = (DateTimeOffset.UtcNow - ownerSession.LastActivityUtc) >= idleThreshold;
+                    if (!isOwnerIdle || ownerSession.TakeoverActive || !await ownerSession.ExecutionLock.WaitAsync(0, ct).ConfigureAwait(false))
+                    {
+                        return (null, Fail(
+                            "persistent_profile_busy",
+                            $"持久化浏览器 Profile 当前正被会话 '{existingOwnerId}' 占用，请先完成或关闭该会话的浏览器后再试。"));
+                    }
+
+                    ownerSession.ExecutionLock.Release();
+                    await CloseSessionAsync(existingOwnerId, "persistent_profile_idle_reclaimed", ct).ConfigureAwait(false);
+                }
+            }
+
+            var maxSessions = isPersistent ? 1 : Math.Clamp(opts.MaxConcurrentSessions, 1, 8);
+            if (_sessions.Count >= maxSessions)
+            {
+                var oldest = _sessions.Values
+                    .OrderBy(static s => s.LastActivityUtc)
+                    .FirstOrDefault(static s => s.ExecutionLock.CurrentCount > 0 && !s.TakeoverActive);
+                if (oldest is not null)
+                {
+                    await CloseSessionAsync(oldest.SessionId, "capacity_evicted", ct).ConfigureAwait(false);
+                }
+                else
+                {
+                    return (null, Fail("browser_capacity_reached", string.Create(CultureInfo.InvariantCulture, $"活跃浏览器会话已达上限 ({maxSessions}) 且均在执行中，请稍后重试或关闭旧会话的浏览器。")));
+                }
+            }
+
+            CdpManagedBrowserProcess proc;
+            try
+            {
+                proc = await EnsureProcessAsync(ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                return (null, Fail("browser_launch_failed", ex.Message));
+            }
+
+            // Re-check process capabilities after acquiring/relaunching under lock.
+            if (proc.ProfileMode != opts.ProfileMode || proc.Headless != opts.Headless)
+            {
+                return (null, Fail(
+                    "browser_restart_required",
+                    "浏览器窗口模式或 Profile 策略正在切换中，请关闭旧会话浏览器后重试。"));
+            }
+
+            var sessionStagingDir = Path.Combine(_runtimeBaseDir, "staging", $"{SanitizeFileSegment(caller.SessionId)}-{Guid.NewGuid().ToString("N")[..8]}");
+            var usePersistentDefaultContext = proc.ProfileMode == BrowserProfileMode.Persistent;
+            if (usePersistentDefaultContext)
+            {
+                var priorOwner = Interlocked.CompareExchange(ref _persistentOwnerSessionId, caller.SessionId, null);
+                if (priorOwner is not null && !string.Equals(priorOwner, caller.SessionId, StringComparison.Ordinal))
+                {
+                    return (null, Fail("persistent_profile_busy", "持久化浏览器 Profile 当前正被另一个会话并发占用，请稍后重试。"));
+                }
+
+                try
+                {
+                    await ConfigureDownloadBehaviorAsync(proc.Connection, browserContextId: null, opts, caller.WorkspaceRoot, ct).ConfigureAwait(false);
+
+                    var persistentState = new CdpBrowserSessionState(
+                        caller.SessionId,
+                        browserContextId: string.Empty,
+                        caller.WorkMode,
+                        outboundProxy: null,
+                        headless: proc.Headless,
+                        profileMode: BrowserProfileMode.Persistent,
+                        usesDefaultContext: true,
+                        workspaceRoot: caller.WorkspaceRoot,
+                        stagingDirectory: sessionStagingDir);
+
+                    if (!_sessions.TryAdd(caller.SessionId, persistentState))
+                    {
+                        Interlocked.CompareExchange(ref _persistentOwnerSessionId, null, caller.SessionId);
+                        await persistentState.DisposeAsync().ConfigureAwait(false);
+                        if (_sessions.TryGetValue(caller.SessionId, out var winner) && !winner.IsClosed)
+                        {
+                            winner.SyncWorkMode(caller.WorkMode);
+                            return (winner, null);
+                        }
+
+                        return (null, Fail("browser_session_race", "浏览器会话状态并发变更，请重试。"));
+                    }
+
+                    return (persistentState, null);
+                }
+                catch
+                {
+                    Interlocked.CompareExchange(ref _persistentOwnerSessionId, null, caller.SessionId);
+                    throw;
+                }
+            }
+
+            CdpBrowserSessionState? newState = null;
+            var sessionProxy = new BrowserOutboundProxy(
+                _policyGuard,
+                _portRegistry,
+                () => newState?.WorkMode ?? SessionWorkMode.Daily,
+                () => newState?.GetApprovedLoopbackPortsSnapshot(),
+                _logger);
+
+            string? browserContextId = null;
+            try
+            {
+                var createCtxParams = JsonSerializer.Serialize(new
+                {
+                    disposeOnDetach = true,
+                    proxyServer = sessionProxy.ProxyServerUrl,
+                    proxyBypassList = "<-loopback>"
+                });
+
+                var ctxRes = await proc.Connection.SendJsonAsync("Target.createBrowserContext", createCtxParams, ct: ct).ConfigureAwait(false);
+                browserContextId = ctxRes.GetProperty("browserContextId").GetString()
+                    ?? throw new InvalidOperationException("Target.createBrowserContext 未返回 browserContextId。");
+
+                // P1-13: Fail-closed if download policy cannot be enforced on this BrowserContext.
+                await ConfigureDownloadBehaviorAsync(proc.Connection, browserContextId, opts, caller.WorkspaceRoot, ct).ConfigureAwait(false);
+
+                newState = new CdpBrowserSessionState(
+                    caller.SessionId,
+                    browserContextId,
+                    caller.WorkMode,
+                    sessionProxy,
+                    headless: proc.Headless,
+                    profileMode: BrowserProfileMode.Ephemeral,
+                    usesDefaultContext: false,
+                    workspaceRoot: caller.WorkspaceRoot,
+                    stagingDirectory: sessionStagingDir);
+                if (!_sessions.TryAdd(caller.SessionId, newState))
+                {
+                    try
+                    {
+                        await proc.Connection.SendJsonAsync(
+                            "Target.disposeBrowserContext",
+                            JsonSerializer.Serialize(new { browserContextId }),
+                            ct: ct).ConfigureAwait(false);
+                    }
+                    catch (Exception)
+                    {
+                    }
+
+                    await newState.DisposeAsync().ConfigureAwait(false);
+                    if (_sessions.TryGetValue(caller.SessionId, out var winner) && !winner.IsClosed)
+                    {
+                        winner.SyncWorkMode(caller.WorkMode);
+                        return (winner, null);
+                    }
+
+                    return (null, Fail("browser_session_race", "浏览器会话状态并发变更，请重试。"));
+                }
+
+                return (newState, null);
+            }
+            catch
+            {
+                if (!string.IsNullOrWhiteSpace(browserContextId))
+                {
+                    try
+                    {
+                        await proc.Connection.SendJsonAsync(
+                            "Target.disposeBrowserContext",
+                            JsonSerializer.Serialize(new { browserContextId }),
+                            ct: CancellationToken.None).ConfigureAwait(false);
+                    }
+                    catch (Exception)
+                    {
+                    }
+                }
+
+                await sessionProxy.DisposeAsync().ConfigureAwait(false);
+                throw;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
-            return (null, Fail("browser_launch_failed", ex.Message));
-        }
-
-        CdpBrowserSessionState? newState = null;
-        var sessionProxy = new BrowserOutboundProxy(
-            _policyGuard,
-            _portRegistry,
-            () => newState?.WorkMode ?? SessionWorkMode.Daily,
-            () => newState?.GetApprovedLoopbackPortsSnapshot(),
-            _logger);
-
-        string? browserContextId = null;
-        try
-        {
-            var createCtxParams = JsonSerializer.Serialize(new
-            {
-                disposeOnDetach = true,
-                proxyServer = sessionProxy.ProxyServerUrl,
-                proxyBypassList = "<-loopback>"
-            });
-
-            var ctxRes = await proc.Connection.SendJsonAsync("Target.createBrowserContext", createCtxParams, ct: ct).ConfigureAwait(false);
-            browserContextId = ctxRes.GetProperty("browserContextId").GetString()
-                ?? throw new InvalidOperationException("Target.createBrowserContext 未返回 browserContextId。");
-
-            // P1-13: Fail-closed if download denial cannot be enforced on this BrowserContext.
-            var downloadParams = JsonSerializer.Serialize(new { behavior = "deny", browserContextId });
-            await proc.Connection.SendJsonAsync("Browser.setDownloadBehavior", downloadParams, ct: ct).ConfigureAwait(false);
-
-            newState = new CdpBrowserSessionState(caller.SessionId, browserContextId, caller.WorkMode, sessionProxy);
-            if (!_sessions.TryAdd(caller.SessionId, newState))
-            {
-                try
-                {
-                    await proc.Connection.SendJsonAsync(
-                        "Target.disposeBrowserContext",
-                        JsonSerializer.Serialize(new { browserContextId }),
-                        ct: ct).ConfigureAwait(false);
-                }
-                catch (Exception)
-                {
-                }
-
-                await newState.DisposeAsync().ConfigureAwait(false);
-                if (_sessions.TryGetValue(caller.SessionId, out var winner) && !winner.IsClosed)
-                {
-                    winner.SyncWorkMode(caller.WorkMode);
-                    return (winner, null);
-                }
-
-                return (null, Fail("browser_session_race", "浏览器会话状态并发变更，请重试。"));
-            }
-
-            return (newState, null);
-        }
-        catch
-        {
-            if (!string.IsNullOrWhiteSpace(browserContextId))
-            {
-                try
-                {
-                    await proc.Connection.SendJsonAsync(
-                        "Target.disposeBrowserContext",
-                        JsonSerializer.Serialize(new { browserContextId }),
-                        ct: CancellationToken.None).ConfigureAwait(false);
-                }
-                catch (Exception)
-                {
-                }
-            }
-
-            await sessionProxy.DisposeAsync().ConfigureAwait(false);
-            throw;
+            _logger.LogWarning(ex, "AcquireSessionAsync failed for session {SessionId}", caller.SessionId);
+            return (null, Fail("browser_init_failed", $"初始化受管浏览器会话失败: {ex.Message}"));
         }
     }
 
     private async Task<CdpManagedBrowserProcess> EnsureProcessAsync(CancellationToken ct)
     {
-        if (_sharedProcess is { IsAlive: true } alive)
+        var desiredOpts = _options.CurrentValue;
+        var current = _sharedProcess;
+        if (current is { IsAlive: true } &&
+            (!_sessions.IsEmpty || (current.Headless == desiredOpts.Headless && current.ProfileMode == desiredOpts.ProfileMode)))
         {
-            return alive;
+            return current;
         }
 
         await _processGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            if (_sharedProcess is { IsAlive: true } aliveAgain)
+            desiredOpts = _options.CurrentValue;
+            var currentLocked = _sharedProcess;
+            if (currentLocked is { IsAlive: true } &&
+                (!_sessions.IsEmpty || (currentLocked.Headless == desiredOpts.Headless && currentLocked.ProfileMode == desiredOpts.ProfileMode)))
             {
-                return aliveAgain;
+                return currentLocked;
             }
 
             if (_sharedProcess is not null)
             {
                 await _sharedProcess.DisposeAsync().ConfigureAwait(false);
                 _sharedProcess = null;
+                _persistentOwnerSessionId = null;
                 foreach (var sid in _sessions.Keys.ToArray())
                 {
                     if (_sessions.TryRemove(sid, out var stale))
@@ -1016,14 +1705,35 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                     }
                 }
                 _cdpSessionToAppSession.Clear();
+                _trackedTargets.Clear();
             }
 
-            var detected = _locator.Detect(_options.CurrentValue.ExecutablePath);
+            var detected = _locator.Detect(desiredOpts.ExecutablePath);
             if (!detected.Available || string.IsNullOrWhiteSpace(detected.ExecutablePath))
             {
                 throw new InvalidOperationException(
                     detected.DiagnosticMessage ?? "未检测到可用的本机 Chromium/Chrome/Edge 浏览器。");
             }
+
+            Func<SessionWorkMode> workModeProvider = desiredOpts.ProfileMode == BrowserProfileMode.Persistent
+                ? () =>
+                {
+                    var ownerId = _persistentOwnerSessionId;
+                    return !string.IsNullOrWhiteSpace(ownerId) && _sessions.TryGetValue(ownerId, out var s)
+                        ? s.WorkMode
+                        : SessionWorkMode.Daily;
+                }
+                : static () => SessionWorkMode.Daily;
+
+            Func<IReadOnlySet<int>?> approvedPortsProvider = desiredOpts.ProfileMode == BrowserProfileMode.Persistent
+                ? () =>
+                {
+                    var ownerId = _persistentOwnerSessionId;
+                    return !string.IsNullOrWhiteSpace(ownerId) && _sessions.TryGetValue(ownerId, out var s)
+                        ? s.GetApprovedLoopbackPortsSnapshot()
+                        : null;
+                }
+                : static () => null;
 
             var proc = await CdpManagedBrowserProcess.LaunchAsync(
                 detected.ExecutablePath,
@@ -1031,15 +1741,44 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 _policyGuard,
                 _portRegistry,
                 _logger,
-                ct).ConfigureAwait(false);
+                ct,
+                headless: desiredOpts.Headless,
+                profileMode: desiredOpts.ProfileMode,
+                persistentProfileDir: _persistentProfileDir,
+                processProxyWorkModeProvider: workModeProvider,
+                processProxyApprovedPortsProvider: approvedPortsProvider).ConfigureAwait(false);
 
             proc.Connection.EventReceived += OnCdpEventReceived;
+            proc.Terminated += () => OnManagedProcessTerminated(proc);
+            try
+            {
+                await proc.Connection.SendJsonAsync("Target.setDiscoverTargets", "{\"discover\":true}", ct: ct).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Target.setDiscoverTargets failed during startup.");
+            }
+
             _sharedProcess = proc;
             return proc;
         }
         finally
         {
             _processGate.Release();
+        }
+    }
+
+    private void OnManagedProcessTerminated(CdpManagedBrowserProcess exitedProc)
+    {
+        if (!ReferenceEquals(_sharedProcess, exitedProc))
+        {
+            return;
+        }
+
+        _persistentOwnerSessionId = null;
+        foreach (var state in _sessions.Values)
+        {
+            state.AbortTakeover("browser_process_exited");
         }
     }
 
@@ -1065,18 +1804,26 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
     {
         var opts = _options.CurrentValue;
         // Always start on about:blank so Fetch.enable and auto-attach are active before any remote URL loads.
-        var createParams = JsonSerializer.Serialize(new
-        {
-            url = "about:blank",
-            width = Math.Clamp(opts.DefaultViewportWidth, 640, 1920),
-            height = Math.Clamp(opts.DefaultViewportHeight, 480, 1440),
-            browserContextId = session.BrowserContextId
-        });
+        var createParams = session.UsesDefaultContext
+            ? JsonSerializer.Serialize(new
+            {
+                url = "about:blank",
+                width = Math.Clamp(opts.DefaultViewportWidth, 640, 1920),
+                height = Math.Clamp(opts.DefaultViewportHeight, 480, 1440)
+            })
+            : JsonSerializer.Serialize(new
+            {
+                url = "about:blank",
+                width = Math.Clamp(opts.DefaultViewportWidth, 640, 1920),
+                height = Math.Clamp(opts.DefaultViewportHeight, 480, 1440),
+                browserContextId = session.BrowserContextId
+            });
 
         var createRes = await proc.Connection.SendJsonAsync("Target.createTarget", createParams, ct: ct).ConfigureAwait(false);
         var targetId = createRes.GetProperty("targetId").GetString()
             ?? throw new InvalidOperationException("Target.createTarget 未返回 targetId。");
 
+        _trackedTargets[targetId] = session.SessionId;
         var attachParams = JsonSerializer.Serialize(new { targetId, flatten = true });
         var attachRes = await proc.Connection.SendJsonAsync("Target.attachToTarget", attachParams, ct: ct).ConfigureAwait(false);
         var cdpSessionId = attachRes.GetProperty("sessionId").GetString()
@@ -1094,6 +1841,11 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         session.AddOrUpdateTab(tab, makeActive);
 
         await InitializeTabDomainsAsync(proc.Connection, cdpSessionId, ct).ConfigureAwait(false);
+        if (!session.Headless && !session.TakeoverActive)
+        {
+            await SetWindowVisibleAsync(proc.Connection, tab, visible: false, ct).ConfigureAwait(false);
+        }
+
         return tab;
     }
 
@@ -1103,6 +1855,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         await connection.SendAsync("Page.enable", sessionId: cdpSessionId, ct: ct).ConfigureAwait(false);
         await connection.SendAsync("Runtime.enable", sessionId: cdpSessionId, ct: ct).ConfigureAwait(false);
         await connection.SendAsync("Network.enable", sessionId: cdpSessionId, ct: ct).ConfigureAwait(false);
+        await connection.SendJsonAsync("Page.setInterceptFileChooserDialog", "{\"enabled\":true}", sessionId: cdpSessionId, ct: ct).ConfigureAwait(false);
 
         var metricsParams = JsonSerializer.Serialize(new
         {
@@ -1122,9 +1875,21 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
 
     private void OnCdpEventReceived(CdpEventMessage evt)
     {
+        if (string.Equals(evt.Method, "Target.targetCreated", StringComparison.Ordinal))
+        {
+            _ = HandleTargetCreatedAsync(evt.Params);
+            return;
+        }
+
         if (string.Equals(evt.Method, "Target.targetDestroyed", StringComparison.Ordinal))
         {
             HandleTargetDestroyed(evt.Params);
+            return;
+        }
+
+        if (string.Equals(evt.Method, "Browser.downloadProgress", StringComparison.Ordinal))
+        {
+            _ = HandleDownloadProgressAsync(evt.Params);
             return;
         }
 
@@ -1143,6 +1908,10 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
 
             case "Page.javascriptDialogOpening":
                 _ = HandleJavaScriptDialogAsync(evt.SessionId, session, evt.Params);
+                break;
+
+            case "Page.fileChooserOpened":
+                session.RecordConsoleEntry("warn", "Intercepted OS file chooser dialog in automation mode; use browser_act(action=\"upload_file\") or human takeover.");
                 break;
 
             case "Runtime.consoleAPICalled":
@@ -1167,11 +1936,108 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         }
     }
 
+    private async Task HandleTargetCreatedAsync(JsonElement parameters)
+    {
+        var proc = _sharedProcess;
+        if (proc is null || !proc.IsAlive || !parameters.TryGetProperty("targetInfo", out var info))
+        {
+            return;
+        }
+
+        var targetType = info.TryGetProperty("type", out var tProp) ? tProp.GetString() : null;
+        var targetId = info.TryGetProperty("targetId", out var idProp) ? idProp.GetString() : null;
+        if (!string.Equals(targetType, "page", StringComparison.OrdinalIgnoreCase) ||
+            string.IsNullOrWhiteSpace(targetId) ||
+            !_trackedTargets.TryAdd(targetId, "__pending__"))
+        {
+            return;
+        }
+
+        var ctxId = info.TryGetProperty("browserContextId", out var ctxProp) ? ctxProp.GetString() : null;
+        var owner = !string.IsNullOrWhiteSpace(ctxId)
+            ? _sessions.Values.FirstOrDefault(s => !s.IsClosed && !s.UsesDefaultContext && string.Equals(s.BrowserContextId, ctxId, StringComparison.Ordinal))
+            : null;
+        owner ??= _sessions.Values.FirstOrDefault(static s => !s.IsClosed && s.UsesDefaultContext);
+
+        if (owner is null || owner.HasTab(targetId))
+        {
+            _trackedTargets.TryRemove(targetId, out _);
+            return;
+        }
+
+        try
+        {
+            var attachRes = await proc.Connection.SendJsonAsync(
+                "Target.attachToTarget",
+                JsonSerializer.Serialize(new { targetId, flatten = true }),
+                ct: CancellationToken.None).ConfigureAwait(false);
+            var cdpSessionId = attachRes.TryGetProperty("sessionId", out var sProp) ? sProp.GetString() : null;
+            if (string.IsNullOrWhiteSpace(cdpSessionId))
+            {
+                _trackedTargets.TryRemove(targetId, out _);
+                return;
+            }
+
+            var url = info.TryGetProperty("url", out var urlProp) ? urlProp.GetString() ?? "about:blank" : "about:blank";
+            var title = info.TryGetProperty("title", out var titleProp) ? titleProp.GetString() ?? string.Empty : string.Empty;
+            var tab = new BrowserTabRecord
+            {
+                TargetId = targetId,
+                CdpSessionId = cdpSessionId,
+                Url = url,
+                Title = title
+            };
+
+            _trackedTargets[targetId] = owner.SessionId;
+            _cdpSessionToAppSession[cdpSessionId] = owner.SessionId;
+            owner.AddOrUpdateTab(tab, makeActive: false);
+            await InitializeTabDomainsAsync(proc.Connection, cdpSessionId, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _trackedTargets.TryRemove(targetId, out _);
+            _logger.LogDebug(ex, "Failed auto-attaching popup/created target {TargetId}", targetId);
+        }
+    }
+
+    private async Task HandleDownloadProgressAsync(JsonElement parameters)
+    {
+        var proc = _sharedProcess;
+        if (proc is null || !proc.IsAlive)
+        {
+            return;
+        }
+
+        var guid = parameters.TryGetProperty("guid", out var guidProp) ? guidProp.GetString() : null;
+        if (string.IsNullOrWhiteSpace(guid))
+        {
+            return;
+        }
+
+        var totalBytes = parameters.TryGetProperty("totalBytes", out var tb) && tb.TryGetInt64(out var t) ? t : 0L;
+        var receivedBytes = parameters.TryGetProperty("receivedBytes", out var rb) && rb.TryGetInt64(out var r) ? r : 0L;
+        if (totalBytes > MaxDownloadFileSizeBytes || receivedBytes > MaxDownloadFileSizeBytes)
+        {
+            try
+            {
+                await proc.Connection.SendJsonAsync(
+                    "Browser.cancelDownload",
+                    JsonSerializer.Serialize(new { guid }),
+                    ct: CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Failed cancelling oversized browser download {Guid}", guid);
+            }
+        }
+    }
+
     private void HandleTargetDestroyed(JsonElement parameters)
     {
         var targetId = parameters.TryGetProperty("targetId", out var prop) ? prop.GetString() : null;
         if (string.IsNullOrWhiteSpace(targetId)) return;
 
+        _trackedTargets.TryRemove(targetId, out _);
         foreach (var session in _sessions.Values)
         {
             if (session.RemoveTab(targetId, out var removed) && removed is not null)
@@ -1361,16 +2227,66 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         return outcome;
     }
 
+    private async Task<BrowserOperationResult?> EnforcePersistentNavigationApprovalAsync(
+        CdpBrowserSessionState session,
+        Uri targetUri,
+        CancellationToken ct)
+    {
+        if (session.ProfileMode != BrowserProfileMode.Persistent ||
+            string.Equals(targetUri.AbsoluteUri, "about:blank", StringComparison.OrdinalIgnoreCase) ||
+            NetworkAddressClassifier.IsLoopbackHostname(targetUri.Host))
+        {
+            return null;
+        }
+
+        var origin = BrowserTargetPolicyGuard.GetOriginString(targetUri);
+        if (_approvalCoordinator is not null &&
+            _approvalCoordinator.IsSessionOriginApproved(session.SessionId, origin, "persistent_nav"))
+        {
+            return null;
+        }
+
+        if (_approvalCoordinator is null)
+        {
+            return Fail("approval_unavailable", "持久化登录态模式下访问外部站点需要控制面确认，但审批协调器不可用。");
+        }
+
+        session.Touch();
+        var outcome = await _approvalCoordinator.RequestApprovalAsync(
+            new BrowserApprovalPrompt(
+                SessionId: session.SessionId,
+                Tool: "browser_navigate",
+                Action: "persistent_origin_navigation",
+                TargetUrl: targetUri.AbsoluteUri,
+                TargetOrigin: origin,
+                TargetDescription: $"允许持久化登录态浏览器导航至外部站点 {origin}",
+                RiskReason: "当前处于持久化登录态 Profile，访问外部站点会携带已保存登录 Cookie/状态，请确认站点归属与导航安全性。",
+                ExpressionOrPath: targetUri.AbsoluteUri,
+                AllowSessionScope: true),
+            ct).ConfigureAwait(false);
+        session.Touch();
+
+        if (!outcome.Approved)
+        {
+            return Fail(outcome.ErrorCode ?? "approval_denied", outcome.ErrorMessage ?? "持久化登录态外部导航请求被拒绝或已过期。");
+        }
+
+        return null;
+    }
+
     private async Task<(BrowserOperationResult? Refusal, bool WaitedForApproval)> EnforceInteractionApprovalAsync(
         BrowserTrustedCallerContext caller,
         CdpBrowserSessionState session,
         BrowserTabRecord tab,
+        string liveUrl,
         string action,
         BrowserActRequest request,
         CdpSnapshotElement? targetElement,
         CdpLiveRefProbe? liveProbe,
         CdpActiveElementProbe? activeProbe,
         bool isSensitive,
+        bool isPersistentRemoteWrite,
+        StagedUploadFile? stagedUpload,
         CancellationToken ct)
     {
         if (action is "scroll" or "wait" or "hover")
@@ -1379,11 +2295,11 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         }
 
         var policy = _options.CurrentValue.InteractionApprovalPolicy;
-        var requiresApproval = policy switch
+        var requiresApproval = isSensitive || policy switch
         {
             BrowserInteractionApprovalPolicy.AlwaysAsk => true,
-            BrowserInteractionApprovalPolicy.HighRiskOnly => isSensitive,
-            BrowserInteractionApprovalPolicy.AutoInSession => isSensitive,
+            BrowserInteractionApprovalPolicy.HighRiskOnly => false,
+            BrowserInteractionApprovalPolicy.AutoInSession => false,
             _ => true
         };
 
@@ -1392,7 +2308,8 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             return (null, false);
         }
 
-        var origin = ExtractOrigin(tab.Url);
+        var effectiveUrl = string.IsNullOrWhiteSpace(liveUrl) ? tab.Url : liveUrl;
+        var origin = ExtractOrigin(effectiveUrl);
         if (!isSensitive &&
             _approvalCoordinator is not null &&
             _approvalCoordinator.IsSessionOriginApproved(caller.SessionId, origin, "interact"))
@@ -1406,15 +2323,25 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         }
 
         var elemName = SanitizeOneLine(liveProbe?.Name ?? targetElement?.Name ?? activeProbe?.Name, 80);
-        var desc = targetElement is not null
-            ? $"{action} [{targetElement.Ref}] {liveProbe?.Role ?? targetElement.Role} \"{elemName}\""
-            : $"{action} {SanitizeOneLine(request.Key, 40)} ({elemName})".Trim();
-        var riskReason = isSensitive
-            ? "检测到敏感提交/支付/删除或表单提交操作，需要人工确认。"
-            : "当前浏览器安全策略为 AlwaysAsk，执行页面交互前需要人工确认。";
-        var detail = action is "type" or "select_option" && !string.IsNullOrEmpty(request.Text)
-            ? $"输入内容: {SanitizeOneLine(request.Text, 120)}"
-            : tab.Url;
+        var desc = action == "upload_file" && targetElement is not null
+            ? $"向 [{targetElement.Ref}] 上传本地工作区文件 {Path.GetFileName(stagedUpload?.CanonicalSourcePath)}"
+            : targetElement is not null
+                ? $"{action} [{targetElement.Ref}] {liveProbe?.Role ?? targetElement.Role} \"{elemName}\""
+                : $"{action} {SanitizeOneLine(request.Key, 40)} ({elemName})".Trim();
+
+        var riskReason = action == "upload_file"
+            ? "上传本地工作区文件到目标网站属于数据外发高风险操作，必须单次人工确认（已计算摘要并锁定不可变副本）。"
+            : isPersistentRemoteWrite
+                ? "当前处于持久化登录态 Profile，向非本地网站执行写入/提交操作需要单次人工确认。"
+                : isSensitive
+                    ? "检测到敏感提交/支付/删除或表单提交操作，需要人工确认。"
+                    : "当前浏览器安全策略为 AlwaysAsk，执行页面交互前需要人工确认。";
+
+        var detail = action == "upload_file" && stagedUpload is not null
+            ? string.Create(CultureInfo.InvariantCulture, $"file={stagedUpload.CanonicalSourcePath} ({stagedUpload.SizeBytes} bytes, sha256={stagedUpload.Sha256Hex})")
+            : action is "type" or "select_option" && !string.IsNullOrEmpty(request.Text)
+                ? $"输入内容: {SanitizeOneLine(request.Text, 120)}"
+                : effectiveUrl;
 
         session.Touch();
         var outcome = await _approvalCoordinator.RequestApprovalAsync(
@@ -1422,7 +2349,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 SessionId: caller.SessionId,
                 Tool: "browser_act",
                 Action: action,
-                TargetUrl: tab.Url,
+                TargetUrl: effectiveUrl,
                 TargetOrigin: origin,
                 TargetDescription: desc,
                 RiskReason: riskReason,
@@ -1437,6 +2364,321 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         }
 
         return (null, true);
+    }
+
+    private void OnOptionsChanged(BrowserOptions updated)
+    {
+        if (updated.AllowControlledDownloads)
+        {
+            return;
+        }
+
+        var proc = _sharedProcess;
+        if (proc is null || !proc.IsAlive)
+        {
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await proc.Connection.SendJsonAsync(
+                    "Browser.setDownloadBehavior",
+                    "{\"behavior\":\"deny\"}",
+                    ct: CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+            }
+
+            foreach (var session in _sessions.Values)
+            {
+                if (session.IsClosed || session.UsesDefaultContext || string.IsNullOrWhiteSpace(session.BrowserContextId))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    await proc.Connection.SendJsonAsync(
+                        "Browser.setDownloadBehavior",
+                        JsonSerializer.Serialize(new { behavior = "deny", browserContextId = session.BrowserContextId }),
+                        ct: CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception)
+                {
+                }
+            }
+        });
+    }
+
+    private static async Task ConfigureDownloadBehaviorAsync(
+        CdpConnection connection,
+        string? browserContextId,
+        BrowserOptions opts,
+        string? workspaceRoot,
+        CancellationToken ct)
+    {
+        if (opts.AllowControlledDownloads &&
+            BrowserWorkspacePathGuard.TryPrepareControlledDownloadDirectory(workspaceRoot, out var downloadDir) &&
+            !string.IsNullOrWhiteSpace(downloadDir))
+        {
+            var allowJson = string.IsNullOrWhiteSpace(browserContextId)
+                ? JsonSerializer.Serialize(new { behavior = "allowAndName", downloadPath = downloadDir, eventsEnabled = true })
+                : JsonSerializer.Serialize(new { behavior = "allowAndName", downloadPath = downloadDir, eventsEnabled = true, browserContextId });
+            await connection.SendJsonAsync("Browser.setDownloadBehavior", allowJson, ct: ct).ConfigureAwait(false);
+            return;
+        }
+
+        var denyJson = string.IsNullOrWhiteSpace(browserContextId)
+            ? JsonSerializer.Serialize(new { behavior = "deny" })
+            : JsonSerializer.Serialize(new { behavior = "deny", browserContextId });
+        await connection.SendJsonAsync("Browser.setDownloadBehavior", denyJson, ct: ct).ConfigureAwait(false);
+    }
+
+    private static async Task SetFileInputFilesInIsolatedWorldAsync(
+        CdpConnection connection,
+        BrowserTabRecord tab,
+        string refId,
+        string stagedFilePath,
+        CancellationToken ct)
+    {
+        await connection.SendAsync("DOM.enable", sessionId: tab.CdpSessionId, ct: ct).ConfigureAwait(false);
+        string? objectId = null;
+        try
+        {
+            var contextId = await EnsureIsolatedWorldContextIdAsync(connection, tab, ct).ConfigureAwait(false);
+            var evalParams = JsonSerializer.Serialize(new
+            {
+                expression = BrowserSnapshotScript.BuildResolveRefElementJs(EscapeJsString(refId)),
+                contextId,
+                returnByValue = false,
+                awaitPromise = false
+            });
+
+            var evalRes = await connection.SendJsonAsync("Runtime.evaluate", evalParams, tab.CdpSessionId, ct).ConfigureAwait(false);
+            objectId = evalRes.TryGetProperty("result", out var r) && r.TryGetProperty("objectId", out var oid)
+                ? oid.GetString()
+                : null;
+            if (string.IsNullOrWhiteSpace(objectId))
+            {
+                throw new InvalidOperationException($"无法解析文件上传控件 [{refId}] 的 DOM 对象引用。");
+            }
+
+            var descRes = await connection.SendJsonAsync(
+                "DOM.describeNode",
+                JsonSerializer.Serialize(new { objectId }),
+                tab.CdpSessionId,
+                ct).ConfigureAwait(false);
+            var backendNodeId = descRes.GetProperty("node").GetProperty("backendNodeId").GetInt32();
+            if (backendNodeId <= 0)
+            {
+                throw new InvalidOperationException($"DOM.describeNode 未返回有效 backendNodeId ({backendNodeId})。");
+            }
+
+            // DOM.setFileInputFiles natively fires input + change events on the input element.
+            var setFilesParams = JsonSerializer.Serialize(new
+            {
+                backendNodeId,
+                files = new[] { stagedFilePath }
+            });
+            await connection.SendJsonAsync("DOM.setFileInputFiles", setFilesParams, tab.CdpSessionId, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (!string.IsNullOrWhiteSpace(objectId))
+            {
+                try
+                {
+                    await connection.SendJsonAsync(
+                        "Runtime.releaseObject",
+                        JsonSerializer.Serialize(new { objectId }),
+                        tab.CdpSessionId,
+                        CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception)
+                {
+                }
+            }
+
+            try
+            {
+                await connection.SendAsync("DOM.disable", sessionId: tab.CdpSessionId, ct: CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+            }
+        }
+    }
+
+    private async Task SetWindowVisibleAsync(
+        CdpConnection connection,
+        BrowserTabRecord tab,
+        bool visible,
+        CancellationToken ct,
+        bool throwOnShowFailure = false)
+    {
+        try
+        {
+            var winRes = await connection.SendJsonAsync(
+                "Browser.getWindowForTarget",
+                JsonSerializer.Serialize(new { targetId = tab.TargetId }),
+                ct: ct).ConfigureAwait(false);
+            if (!winRes.TryGetProperty("windowId", out var widProp))
+            {
+                if (visible && throwOnShowFailure)
+                {
+                    throw new InvalidOperationException("Browser.getWindowForTarget 未返回 windowId。");
+                }
+
+                return;
+            }
+
+            var windowId = widProp.GetInt32();
+            if (visible)
+            {
+                // Step 1: restore normal state if user previously minimized/maximized/fullscreened the window.
+                await connection.SendJsonAsync(
+                    "Browser.setWindowBounds",
+                    JsonSerializer.Serialize(new { windowId, bounds = new { windowState = "normal" } }),
+                    ct: ct).ConfigureAwait(false);
+                // Step 2: place window cleanly on primary desktop bounds.
+                await connection.SendJsonAsync(
+                    "Browser.setWindowBounds",
+                    JsonSerializer.Serialize(new { windowId, bounds = new { left = 80, top = 80, width = 1280, height = 820 } }),
+                    ct: ct).ConfigureAwait(false);
+
+                try { await connection.SendAsync("Emulation.clearDeviceMetricsOverride", sessionId: tab.CdpSessionId, ct: ct).ConfigureAwait(false); } catch (Exception) { }
+                try { await connection.SendJsonAsync("Page.setInterceptFileChooserDialog", "{\"enabled\":false}", tab.CdpSessionId, ct).ConfigureAwait(false); } catch (Exception) { }
+                await connection.SendAsync("Page.bringToFront", sessionId: tab.CdpSessionId, ct: ct).ConfigureAwait(false);
+            }
+            else
+            {
+                try
+                {
+                    var opts = _options.CurrentValue;
+                    await connection.SendJsonAsync(
+                        "Emulation.setDeviceMetricsOverride",
+                        JsonSerializer.Serialize(new
+                        {
+                            width = Math.Clamp(opts.DefaultViewportWidth, 640, 1920),
+                            height = Math.Clamp(opts.DefaultViewportHeight, 480, 1440),
+                            deviceScaleFactor = 1,
+                            mobile = false
+                        }),
+                        tab.CdpSessionId,
+                        ct).ConfigureAwait(false);
+                }
+                catch (Exception)
+                {
+                }
+
+                try { await connection.SendJsonAsync("Page.setInterceptFileChooserDialog", "{\"enabled\":true}", tab.CdpSessionId, ct).ConfigureAwait(false); } catch (Exception) { }
+
+                await connection.SendJsonAsync(
+                    "Browser.setWindowBounds",
+                    JsonSerializer.Serialize(new { windowId, bounds = new { windowState = "normal" } }),
+                    ct: ct).ConfigureAwait(false);
+
+                if (OperatingSystem.IsWindows())
+                {
+                    try
+                    {
+                        await connection.SendJsonAsync(
+                            "Browser.setWindowBounds",
+                            JsonSerializer.Serialize(new { windowId, bounds = new { left = -32000, top = -32000, width = 1280, height = 800 } }),
+                            ct: ct).ConfigureAwait(false);
+                        return;
+                    }
+                    catch (Exception)
+                    {
+                    }
+                }
+
+                await connection.SendJsonAsync(
+                    "Browser.setWindowBounds",
+                    JsonSerializer.Serialize(new { windowId, bounds = new { windowState = "minimized" } }),
+                    ct: ct).ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex) when (!(visible && throwOnShowFailure))
+        {
+            _logger.LogDebug(ex, "Browser.setWindowBounds(visible={Visible}) failed for target {TargetId}", visible, tab.TargetId);
+        }
+    }
+
+    private async Task HideTargetWindowByIdAsync(CdpConnection connection, string targetId, CancellationToken ct)
+    {
+        try
+        {
+            var winRes = await connection.SendJsonAsync(
+                "Browser.getWindowForTarget",
+                JsonSerializer.Serialize(new { targetId }),
+                ct: ct).ConfigureAwait(false);
+            if (!winRes.TryGetProperty("windowId", out var widProp))
+            {
+                return;
+            }
+
+            var windowId = widProp.GetInt32();
+            if (OperatingSystem.IsWindows())
+            {
+                await connection.SendJsonAsync(
+                    "Browser.setWindowBounds",
+                    JsonSerializer.Serialize(new { windowId, bounds = new { left = -32000, top = -32000, width = 1280, height = 800 } }),
+                    ct: ct).ConfigureAwait(false);
+            }
+            else
+            {
+                await connection.SendJsonAsync(
+                    "Browser.setWindowBounds",
+                    JsonSerializer.Serialize(new { windowId, bounds = new { windowState = "minimized" } }),
+                    ct: ct).ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "HideTargetWindowByIdAsync failed for target {TargetId}", targetId);
+        }
+    }
+
+    private async Task TryHideSessionWindowAsync(CdpBrowserSessionState session, CdpManagedBrowserProcess? proc, BrowserTabRecord? tab)
+    {
+        if (session.Headless || proc is null || !proc.IsAlive || tab is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await SetWindowVisibleAsync(proc.Connection, tab, visible: false, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+        }
+    }
+
+    private static string SanitizeFileSegment(string raw)
+    {
+        var sb = new StringBuilder(raw.Length);
+        foreach (var ch in raw)
+        {
+            sb.Append(char.IsLetterOrDigit(ch) || ch is '-' or '_' ? ch : '_');
+        }
+
+        var result = sb.ToString();
+        return result.Length > 48 ? result[..48] : result;
+    }
+
+    private static bool IsLoopbackUrl(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        return NetworkAddressClassifier.IsLoopbackHostname(uri.Host);
     }
 
     private static async Task<int> EnsureIsolatedWorldContextIdAsync(
@@ -1718,7 +2960,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         try
         {
             await _eventPublisher
-                .PublishStateUpdatedAsync(session.SessionId, session.ToDto("running", _options.CurrentValue.ProfileMode.ToString()), ct)
+                .PublishStateUpdatedAsync(session.SessionId, session.ToDto("running"), ct)
                 .ConfigureAwait(false);
         }
         catch (Exception ex)
@@ -1757,6 +2999,8 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             return;
         }
 
+        _optionsChangeSubscription?.Dispose();
+
         foreach (var sid in _sessions.Keys.ToArray())
         {
             if (_sessions.TryRemove(sid, out var state))
@@ -1767,6 +3011,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         }
 
         _cdpSessionToAppSession.Clear();
+        _trackedTargets.Clear();
 
         if (_sharedProcess is not null)
         {

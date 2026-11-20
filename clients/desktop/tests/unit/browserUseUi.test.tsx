@@ -105,6 +105,7 @@ describe('Web Browser Use desktop UI & store', () => {
           tabs: [{ tabId: 't1', url: 'http://localhost:5173/dashboard', title: 'Dashboard', active: true }],
           recentActions: [],
           recentConsole: [],
+          takeoverActive: false,
         }}
       />,
     );
@@ -277,6 +278,7 @@ describe('Web Browser Use desktop UI & store', () => {
           tabs: [],
           recentActions: [],
           recentConsole: [],
+          takeoverActive: false,
         }}
       />,
     );
@@ -349,5 +351,100 @@ describe('Web Browser Use desktop UI & store', () => {
     useAppStore.getState().applySseEvent({ id: 12, event: 'browser_approval_requested', data: approvalPayload } as never);
     useAppStore.getState().applySseEvent({ id: 13, event: 'browser_approval_requested', data: approvalPayload } as never);
     expect(useAppStore.getState().pendingBrowserApprovals).toHaveLength(1);
+  });
+
+  it('supports starting and completing human takeover from BrowserPanel in headed mode', async () => {
+    const startTakeover = vi.fn().mockResolvedValue({ ok: true, status: 200, data: { active: true, sessionId: 's-browser-1' } });
+    const completeTakeover = vi.fn().mockResolvedValue({ ok: true, status: 200, data: { active: false, sessionId: 's-browser-1' } });
+    Object.defineProperty(window, 'codexflow', {
+      configurable: true,
+      writable: true,
+      value: {
+        startBrowserTakeover: startTakeover,
+        completeBrowserTakeover: completeTakeover,
+      } as unknown as DesktopBridge,
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          sessionId: 's-browser-1',
+          status: 'takeover',
+          headless: false,
+          profileMode: 'Persistent',
+          url: 'https://login.example/',
+          title: 'Sign In',
+          screenshotSeq: 0,
+          consoleErrorCount: 0,
+          tabs: [],
+          recentActions: [],
+          recentConsole: [],
+          takeoverActive: true,
+          takeoverReason: '请完成登录验证',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const onStateUpdated = vi.fn();
+    const { rerender } = render(
+      <BrowserPanel
+        auth={{ baseUrl: 'http://127.0.0.1:32586', accessToken: 'tok' }}
+        sessionId="s-browser-1"
+        controlPlaneAvailable
+        onStateUpdated={onStateUpdated}
+        browserState={{
+          sessionId: 's-browser-1',
+          status: 'running',
+          headless: false,
+          profileMode: 'Persistent',
+          url: 'https://login.example/',
+          title: 'Sign In',
+          screenshotSeq: 0,
+          consoleErrorCount: 0,
+          tabs: [],
+          recentActions: [],
+          recentConsole: [],
+          takeoverActive: false,
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('browser-start-takeover-btn'));
+    await waitFor(() => {
+      expect(startTakeover).toHaveBeenCalledWith('s-browser-1', expect.any(String));
+    });
+
+    rerender(
+      <BrowserPanel
+        auth={{ baseUrl: 'http://127.0.0.1:32586', accessToken: 'tok' }}
+        sessionId="s-browser-1"
+        controlPlaneAvailable
+        onStateUpdated={onStateUpdated}
+        browserState={{
+          sessionId: 's-browser-1',
+          status: 'takeover',
+          headless: false,
+          profileMode: 'Persistent',
+          url: 'https://login.example/',
+          title: 'Sign In',
+          screenshotSeq: 0,
+          consoleErrorCount: 0,
+          tabs: [],
+          recentActions: [],
+          recentConsole: [],
+          takeoverActive: true,
+          takeoverReason: '请完成登录验证',
+        }}
+      />,
+    );
+
+    expect(screen.getByTestId('browser-takeover-banner')).toBeTruthy();
+    expect(screen.getByTestId('browser-takeover-origin').textContent).toContain('https://login.example');
+    expect(screen.getByText('接管说明：请完成登录验证')).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('browser-complete-takeover-btn'));
+    await waitFor(() => {
+      expect(completeTakeover).toHaveBeenCalledWith('s-browser-1');
+    });
   });
 });

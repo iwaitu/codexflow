@@ -32,6 +32,8 @@ function installMockBridge(overrides: Partial<DesktopBridge> = {}): DesktopBridg
     updateModelSettings: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
     updateBrowserSettings: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
     closeBrowserSession: vi.fn().mockResolvedValue({ ok: true, status: 200, data: { closed: true, sessionId: 's1' } }),
+    startBrowserTakeover: vi.fn().mockResolvedValue({ ok: true, status: 200, data: { active: true, sessionId: 's1' } }),
+    completeBrowserTakeover: vi.fn().mockResolvedValue({ ok: true, status: 200, data: { active: false, sessionId: 's1' } }),
     listPermissionRules: vi.fn().mockResolvedValue({ ok: true, status: 200, data: { count: 0, rules: [] } }),
     deletePermissionRule: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
     openLocalWorkspace: vi.fn().mockResolvedValue({ ok: true, status: 200 }),

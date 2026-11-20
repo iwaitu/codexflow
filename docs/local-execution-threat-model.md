@@ -32,3 +32,36 @@
    - 在未启用跨用户或容器隔离的同一操作系统会话中，已获批准运行的进程理论上可通过操作系统调试接口读取后端或客户端进程内存以窃取内存中的控制凭据。
 
 **建议**：处理不受信任的仓库、第三方脚本或需要防范上述残余风险的场景时，请将执行后端切换为 **`Docker`**（无网络、只读根文件系统、受限用户与资源配额）。
+
+---
+
+## 3. 内置 Web Browser Use 安全边界与残余风险
+
+CodexFlow 通过原生 .NET CDP 引擎管理本机 Chromium 族浏览器（Chrome / Edge / Chromium / Brave），其安全防线与已知边界如下：
+
+### 3.1 安全边界
+
+1. **宿主内置出站 HTTP/CONNECT 代理（`BrowserOutboundProxy` + `BrowserTargetPolicyGuard`）**
+   - 浏览器进程与每个会话的独立 `BrowserContext` 均强制通过本机代理发起网络请求（`--proxy-bypass-list=<-loopback>`、`--disable-quic`、`--force-webrtc-ip-handling-policy=disable_non_proxied_udp`）。
+   - 代理在每次建连前执行 DNS 解析、剥离 IPv6 zone-id、解包 IPv4-mapped / NAT64 / 6to4 / 八进制及十六进制 IPv4，并对已解析 IP 逐一校验后直连已校验 IP：
+     - 永久拦截云元数据（`169.254.169.254`、`100.100.100.200`、`168.63.129.16`、`fd00:ec2::254` 等）、CodexFlow 受保护本地端口（`ProtectedLocalPortRegistry` 中的宿主 API 端口与活跃 CDP 端口）以及非回环外部域名 DNS 重绑定到 `127.0.0.1`/`::1`；
+     - 日常模式（`Daily`）额外拦截 RFC1918 私网、CGNAT、ULA 与默认 `localhost`；开发模式（`Development`）默认仅放行前端开发端口白名单，其余本机端口需经控制面审批；
+     - 拒绝双 `Content-Length`、`Transfer-Encoding + Content-Length` 冲突与裸 CR/LF 请求走私。
+2. **Isolated World DOM 检查与防密码/点击劫持绕过**
+   - 元素编号表（`globalThis.__cfRefMap`）仅驻留于 CDP `Page.createIsolatedWorld` 隔离世界，页面脚本不可读取或篡改；
+   - `browser_act` 的 `type` / `clear` / `press_key` 在执行前通过 Isolated World 校验目标与实时 `activeElement`（含 Shadow DOM 穿透），禁止向密码、OTP、支付卡字段及跨源 `iframe` 输入字符，并对 `file_input` 禁止普通 `click` 触发原生系统文件对话框（强制走受控 `upload_file`）；
+   - 点击前使用 `deepElementFromPoint` 校验元素未被遮挡，并在审批完成后同时复核实时 DOM 属性及 `window.location.href` 防止 TOCTOU 与导航漂移。
+3. **受控文件上传、下载与人工接管**
+   - `upload_file` 由 `BrowserWorkspacePathGuard` 执行 OS 级规范路径解析（Windows `GetFinalPathNameByHandleW` / Unix 逐级符号链接解析，拒绝系统根目录与硬链接数 > 1 文件，大小上限 50MB），在审批前即拷贝生成会话私有只读暂存副本并计算 SHA-256 摘要，随后触发**强制单次控制面审批**（`allow_once`）；
+   - 浏览器下载默认调用 `Browser.setDownloadBehavior(deny)`（fail-closed）并强制限制单文件下载上限（200MB 超限取消）；当通过配置关闭 `AllowControlledDownloads` 时实时向活跃上下文下发 `deny`；仅当显式开启 `AllowControlledDownloads` 时重定向至规范校验后的 `<WorkspaceRoot>/outputs/browser-downloads/`；
+   - 桌面有头模式（`Headless = false`）平时在 Windows 置于屏外负坐标（macOS/Linux 自动回退最小化窗口），支持通过 `browser_request_takeover` 或桌面面板无损唤出窗口进行人工登录/验证码操作；多弹窗经 `Target.setDiscoverTargets` 自动挂载，`RuntimeToolTimeouts` 为人工接管与审批操作分配延长预算（8–16 分钟），接管完成后通过控制面显式交回 Agent。
+4. **配置热加载收紧优先（`BrowserPermissionClamp`）**
+   - 与 `ExecutionPermissionClamp` 一致，运行期磁盘文件重载只能收紧浏览器权限（禁用浏览器、切回无头/临时隔离、关闭受控下载、收紧审批策略或域名白名单），放宽必须走控制面 API。
+
+### 3.2 已知残余风险
+
+1. **同用户本地进程访问受管 CDP 调试端口**
+   - 受管浏览器使用 `--remote-debugging-address=127.0.0.1 --remote-debugging-port=0` 监听随机回环端口。虽然该端口已注册进 `ProtectedLocalPortRegistry`（浏览器自身及宿主受控出站无法访问），但在无跨用户/容器隔离的桌面会话中，同一操作系统用户下已运行的其他恶意本地进程理论上可直接连接该本地 CDP 端口。
+2. **持久化 Profile（`BrowserProfileMode = Persistent`）的凭据暴露面**
+   - 启用持久化模式后，登录态 Cookie/Token 存放在专用目录 `~/.codexflow/browser-profiles/default`（Unix `0700` 权限，通过文件锁与原子所有权锁定保证同一时间仅 1 个会话占用；会话关闭时主动保留守护页并清理非临时标签页）。
+   - CodexFlow 在持久化模式下对**首次导航至非 loopback Origin（`persistent_nav` 类别）**及**所有非 loopback 网站写操作（`interact` 类别，单次审批）**分别执行独立桶审批门禁，但已登录站点的页面读取结果仍会进入模型上下文（受 `<untrusted_data>` 包裹），且持久化目录同样面临同用户本地恶意进程读取的操作系统级风险。建议仅在确需复用登录态的受信任工作流中启用。

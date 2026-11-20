@@ -20,20 +20,30 @@ internal sealed partial class CdpManagedBrowserProcess : IAsyncDisposable
 {
     private const string EphemeralPrefix = "cf-browser-runtime-";
     private const string OwnerPidFileName = ".codexflow.pid";
+    private const string PersistentLockFileName = ".codexflow.profile.lock";
 
     private readonly Process _process;
     private readonly ProcessJobGuard _jobGuard;
     private readonly BrowserOutboundProxy _fallbackStrictProxy;
     private readonly ProtectedLocalPortRegistry _portRegistry;
     private readonly string _userDataDir;
+    private readonly bool _deleteUserDataDirOnDispose;
+    private readonly FileStream? _profileLockStream;
     private readonly ILogger _logger;
     private int _disposed;
+    private int _terminatedNotified;
+
+    public event Action? Terminated;
 
     public CdpConnection Connection { get; }
 
     public int DebugPort { get; }
 
     public string ExecutablePath { get; }
+
+    public bool Headless { get; }
+
+    public BrowserProfileMode ProfileMode { get; }
 
     public bool IsAlive => _disposed == 0 && !_process.HasExited && Connection.IsConnected;
 
@@ -46,6 +56,10 @@ internal sealed partial class CdpManagedBrowserProcess : IAsyncDisposable
         int debugPort,
         string executablePath,
         string userDataDir,
+        bool deleteUserDataDirOnDispose,
+        FileStream? profileLockStream,
+        bool headless,
+        BrowserProfileMode profileMode,
         ILogger logger)
     {
         _process = process;
@@ -56,7 +70,38 @@ internal sealed partial class CdpManagedBrowserProcess : IAsyncDisposable
         DebugPort = debugPort;
         ExecutablePath = executablePath;
         _userDataDir = userDataDir;
+        _deleteUserDataDirOnDispose = deleteUserDataDirOnDispose;
+        _profileLockStream = profileLockStream;
+        Headless = headless;
+        ProfileMode = profileMode;
         _logger = logger;
+
+        _process.Exited += (_, _) => RaiseTerminated();
+        Connection.Disconnected += _ => RaiseTerminated();
+    }
+
+    private void RaiseTerminated()
+    {
+        if (Interlocked.Exchange(ref _terminatedNotified, 1) != 0)
+        {
+            return;
+        }
+
+        var handler = Terminated;
+        if (handler is not null)
+        {
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    handler();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Unhandled exception in browser Terminated callback.");
+                }
+            });
+        }
     }
 
     public static void ReapOrphanedRuntimeDirectories(string runtimeBaseDir, ILogger logger)
@@ -121,23 +166,66 @@ internal sealed partial class CdpManagedBrowserProcess : IAsyncDisposable
         BrowserTargetPolicyGuard policyGuard,
         ProtectedLocalPortRegistry portRegistry,
         ILogger logger,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool headless = true,
+        BrowserProfileMode profileMode = BrowserProfileMode.Ephemeral,
+        string? persistentProfileDir = null,
+        Func<SessionWorkMode>? processProxyWorkModeProvider = null,
+        Func<IReadOnlySet<int>?>? processProxyApprovedPortsProvider = null)
     {
-        Directory.CreateDirectory(runtimeBaseDir);
-        var userDataDir = Path.Combine(runtimeBaseDir, EphemeralPrefix + Guid.NewGuid().ToString("N")[..12]);
-        Directory.CreateDirectory(userDataDir);
-        await File.WriteAllTextAsync(
-            Path.Combine(userDataDir, OwnerPidFileName),
-            Environment.ProcessId.ToString(CultureInfo.InvariantCulture),
-            ct).ConfigureAwait(false);
+        var isPersistent = profileMode == BrowserProfileMode.Persistent;
+        string userDataDir;
+        FileStream? profileLockStream = null;
 
-        // Process-wide fallback proxy runs under strict Daily mode with no approved loopback ports,
-        // ensuring even default-context or background browser traffic can never bypass network controls.
+        if (isPersistent)
+        {
+            userDataDir = string.IsNullOrWhiteSpace(persistentProfileDir)
+                ? Path.Combine(runtimeBaseDir, "persistent-default")
+                : persistentProfileDir;
+            Directory.CreateDirectory(userDataDir);
+            if (!OperatingSystem.IsWindows())
+            {
+                try
+                {
+                    File.SetUnixFileMode(
+                        userDataDir,
+                        UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+                }
+                catch (Exception)
+                {
+                }
+            }
+
+            var lockPath = Path.Combine(userDataDir, PersistentLockFileName);
+            try
+            {
+                profileLockStream = new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            }
+            catch (IOException ex)
+            {
+                throw new InvalidOperationException(
+                    "持久化浏览器 Profile 目录当前正被另一个 CodexFlow 实例独占使用，请先关闭另一个实例的浏览器或切换为会话隔离 Profile。",
+                    ex);
+            }
+        }
+        else
+        {
+            Directory.CreateDirectory(runtimeBaseDir);
+            userDataDir = Path.Combine(runtimeBaseDir, EphemeralPrefix + Guid.NewGuid().ToString("N")[..12]);
+            Directory.CreateDirectory(userDataDir);
+            await File.WriteAllTextAsync(
+                Path.Combine(userDataDir, OwnerPidFileName),
+                Environment.ProcessId.ToString(CultureInfo.InvariantCulture),
+                ct).ConfigureAwait(false);
+        }
+
+        // In Ephemeral mode, the process-wide fallback proxy runs under strict Daily mode with no approved loopback ports.
+        // In Persistent mode, the default context uses the process-wide proxy bound to the single active persistent session.
         var fallbackProxy = new BrowserOutboundProxy(
             policyGuard,
             portRegistry,
-            static () => SessionWorkMode.Daily,
-            static () => null,
+            processProxyWorkModeProvider ?? (static () => SessionWorkMode.Daily),
+            processProxyApprovedPortsProvider ?? (static () => null),
             logger);
 
         var jobGuard = new ProcessJobGuard();
@@ -147,10 +235,23 @@ internal sealed partial class CdpManagedBrowserProcess : IAsyncDisposable
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
-            CreateNoWindow = true
+            CreateNoWindow = headless
         };
 
-        startInfo.ArgumentList.Add("--headless=new");
+        if (headless)
+        {
+            startInfo.ArgumentList.Add("--headless=new");
+            startInfo.ArgumentList.Add("--disable-gpu");
+        }
+        else
+        {
+            // Desktop off-screen headed launch for lossless human takeover (Browser.setWindowBounds brings it on-screen).
+            startInfo.ArgumentList.Add("--window-position=-32000,-32000");
+            startInfo.ArgumentList.Add("--disable-backgrounding-occluded-windows");
+            startInfo.ArgumentList.Add("--disable-renderer-backgrounding");
+            startInfo.ArgumentList.Add("--disable-background-timer-throttling");
+        }
+
         startInfo.ArgumentList.Add("--remote-debugging-port=0");
         startInfo.ArgumentList.Add("--remote-debugging-address=127.0.0.1");
         startInfo.ArgumentList.Add($"--user-data-dir={userDataDir}");
@@ -164,8 +265,9 @@ internal sealed partial class CdpManagedBrowserProcess : IAsyncDisposable
         startInfo.ArgumentList.Add("--disable-sync");
         startInfo.ArgumentList.Add("--disable-extensions");
         startInfo.ArgumentList.Add("--disable-component-update");
-        startInfo.ArgumentList.Add("--disable-features=MediaRouter,DialMediaRouteProvider");
-        startInfo.ArgumentList.Add("--disable-gpu");
+        startInfo.ArgumentList.Add("--disable-features=MediaRouter,DialMediaRouteProvider,CalculateNativeWinOcclusion");
+        startInfo.ArgumentList.Add("--password-store=basic");
+        startInfo.ArgumentList.Add("--hide-crash-restore-bubble");
         startInfo.ArgumentList.Add("--mute-audio");
         startInfo.ArgumentList.Add("--window-size=1280,800");
         startInfo.ArgumentList.Add("about:blank");
@@ -243,7 +345,12 @@ internal sealed partial class CdpManagedBrowserProcess : IAsyncDisposable
             portRegistry.RegisterPort(debugPort, "browser-cdp");
 
             var connection = await CdpConnection.ConnectAsync(wsEndpoint, logger, startupTimeout.Token).ConfigureAwait(false);
-            logger.LogInformation("Managed headless browser started via {Executable} on CDP port {Port}", executablePath, debugPort);
+            logger.LogInformation(
+                "Managed browser started via {Executable} on CDP port {Port} (headless={Headless}, profile={Profile})",
+                executablePath,
+                debugPort,
+                headless,
+                profileMode);
 
             return new CdpManagedBrowserProcess(
                 process,
@@ -254,6 +361,10 @@ internal sealed partial class CdpManagedBrowserProcess : IAsyncDisposable
                 debugPort,
                 executablePath,
                 userDataDir,
+                deleteUserDataDirOnDispose: !isPersistent,
+                profileLockStream,
+                headless,
+                profileMode,
                 logger);
         }
         catch
@@ -279,7 +390,12 @@ internal sealed partial class CdpManagedBrowserProcess : IAsyncDisposable
 
             jobGuard.Dispose();
             await fallbackProxy.DisposeAsync().ConfigureAwait(false);
-            TryDeleteDirectory(userDataDir, logger);
+            profileLockStream?.Dispose();
+            if (!isPersistent)
+            {
+                TryDeleteDirectory(userDataDir, logger);
+            }
+
             throw;
         }
     }
@@ -330,7 +446,11 @@ internal sealed partial class CdpManagedBrowserProcess : IAsyncDisposable
         }
 
         await _fallbackStrictProxy.DisposeAsync().ConfigureAwait(false);
-        TryDeleteDirectory(_userDataDir, _logger);
+        _profileLockStream?.Dispose();
+        if (_deleteUserDataDirOnDispose)
+        {
+            TryDeleteDirectory(_userDataDir, _logger);
+        }
     }
 
     private static void TryDeleteDirectory(string path, ILogger logger)

@@ -19,8 +19,9 @@ public static class BrowserToolNames
     public const string Snapshot = "browser_snapshot";
     public const string Act = "browser_act";
     public const string Tabs = "browser_tabs";
+    public const string RequestTakeover = "browser_request_takeover";
 
-    public static readonly string[] All = [Navigate, Snapshot, Act, Tabs];
+    public static readonly string[] All = [Navigate, Snapshot, Act, Tabs, RequestTakeover];
 }
 
 internal static class BrowserToolHelpers
@@ -229,12 +230,13 @@ public sealed class BrowserActTool(
     public string Name => BrowserToolNames.Act;
 
     public string Description =>
-        "在当前浏览器页面执行交互动作（基于 browser_snapshot 返回的元素 ref 如 \"e3\"）。安全策略禁止直接向密码或验证码/OTP 字段输入；敏感提交操作将触发人工审批。\n" +
+        "在当前浏览器页面执行交互动作（基于 browser_snapshot 返回的元素 ref 如 \"e3\"）。安全策略禁止直接向密码或验证码/OTP 字段输入；敏感提交与 upload_file 将触发人工审批。\n" +
         "参数（JSON object）：\n" +
-        "  - action (string, 必填): click | double_click | hover | type | clear | press_key | select_option | scroll | wait\n" +
-        "  - ref (string, 点击/输入/选择时必填): 元素编号，如 \"e3\"\n" +
+        "  - action (string, 必填): click | double_click | hover | type | clear | press_key | select_option | upload_file | scroll | wait\n" +
+        "  - ref (string, 点击/输入/选择/上传时必填): 元素编号，如 \"e3\"\n" +
         "  - text (string, type 或 select_option 时必填): 要输入的文本或下拉框选项值\n" +
         "  - key (string, press_key 时必填): 按键名，如 \"Enter\"、\"Escape\"、\"Tab\"\n" +
+        "  - file_path (string, upload_file 时必填): 位于当前工作区内的待上传文件相对或绝对路径（强制单次审批）\n" +
         "  - delta_y (int, scroll 可选): 垂直滚动像素，正数向下、负数向上，默认 500\n" +
         "  - timeout_ms (int, wait 可选): 等待毫秒数，默认 1000（范围 100-15000）";
 
@@ -273,7 +275,8 @@ public sealed class BrowserActTool(
             Text: arguments.GetValueOrDefault("text")?.ToString(),
             Key: arguments.GetValueOrDefault("key")?.ToString(),
             DeltaY: BrowserToolHelpers.TryGetInt(arguments.GetValueOrDefault("delta_y")),
-            TimeoutMs: BrowserToolHelpers.TryGetInt(arguments.GetValueOrDefault("timeout_ms")));
+            TimeoutMs: BrowserToolHelpers.TryGetInt(arguments.GetValueOrDefault("timeout_ms")),
+            FilePath: arguments.GetValueOrDefault("file_path")?.ToString());
 
         var result = await manager.ActAsync(caller, req, ct).ConfigureAwait(false);
         return result.Succeeded
@@ -325,5 +328,73 @@ public sealed class BrowserTabsTool(
         return result.Succeeded
             ? CodexToolResult.Succeeded(result.Output, new { result.Url, result.Title }, summary: result.Summary)
             : CodexToolResult.Error(result.Output, new { result.ErrorCode }, summary: result.Summary);
+    }
+}
+
+public sealed class BrowserRequestTakeoverTool(
+    IBrowserSessionManager manager,
+    IModelSettingsService? modelSettings = null,
+    IOptionsMonitor<BrowserOptions>? browserOptions = null) : ICodexTool
+{
+    public string Name => BrowserToolNames.RequestTakeover;
+
+    public string Description =>
+        "当页面需要用户本人完成登录、验证码、2FA 或支付确认时，唤出桌面受管浏览器窗口交由人工接管，并暂停回合计时直至用户在桌面端点击「完成并交回 Agent」（仅桌面有头模式可用）。\n" +
+        "参数（JSON object）：\n" +
+        "  - reason (string, 必填): 向用户说明需要人工操作的具体原因（例如：\"请在弹出的浏览器窗口中完成账号登录与短信验证码校验\"）\n" +
+        "  - timeout_seconds (int, 可选): 最长等待秒数，默认 300（范围 30-900）";
+
+    public ToolCategory Category => ToolCategory.System;
+
+    public ToolCapability Capability => ToolCapability.BrowserInteract;
+
+    public ToolExecutionMetadata Metadata => new(
+        IsConcurrencySafe: false,
+        IsReadOnly: false,
+        IsDestructive: false,
+        InterruptBehavior: ToolInterruptBehavior.RequiresConfirmation,
+        ResultSizeSoftLimitChars: 16_384);
+
+    public IReadOnlyList<int> AllowedStages => [0, 1, 2, 3, 4];
+
+    public async Task<CodexToolResult> ExecuteAsync(Dictionary<string, object?> arguments, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(arguments);
+        ToolArgumentNormalizer.NormalizeInPlace(arguments);
+
+        if (!BrowserToolHelpers.TryResolveCaller(out var caller, out var err))
+        {
+            return err!;
+        }
+
+        if (caller.PlanModeActive)
+        {
+            return CodexToolResult.Error("[plan_mode_active] 当前处于只读 Plan Mode，禁止发起浏览器人工接管。");
+        }
+
+        var reason = arguments.GetValueOrDefault("reason")?.ToString() ?? string.Empty;
+        var timeoutSeconds = BrowserToolHelpers.TryGetInt(arguments.GetValueOrDefault("timeout_seconds")) ?? 300;
+
+        var result = await manager.RequestTakeoverAsync(caller, reason, timeoutSeconds, ct).ConfigureAwait(false);
+        if (!result.Succeeded)
+        {
+            return CodexToolResult.Error(result.Output, new { result.ErrorCode }, summary: result.Summary);
+        }
+
+        var output = result.Output;
+        var visualSuffix = BrowserToolHelpers.TryAttachScreenshotVisual(result.Screenshot, modelSettings, browserOptions);
+        if (!string.IsNullOrEmpty(visualSuffix))
+        {
+            output += visualSuffix;
+        }
+        else if (result.Screenshot is not null)
+        {
+            output += "\n[提示] 接管结束后的最新页面截图已同步至桌面右侧「浏览器」预览面板。";
+        }
+
+        return CodexToolResult.Succeeded(
+            output,
+            new { result.Url, result.Title, screenshotSeq = result.Screenshot?.ScreenshotSeq },
+            summary: result.Summary);
     }
 }

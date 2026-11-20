@@ -301,11 +301,14 @@ public sealed class BrowserUseTests
         Assert.Equal(ToolCapability.BrowserRead, ToolCapabilityCatalog.Resolve(BrowserToolNames.Snapshot));
         Assert.Equal(ToolCapability.BrowserRead, ToolCapabilityCatalog.Resolve(BrowserToolNames.Tabs));
         Assert.Equal(ToolCapability.BrowserInteract, ToolCapabilityCatalog.Resolve(BrowserToolNames.Act));
+        Assert.Equal(ToolCapability.BrowserInteract, ToolCapabilityCatalog.Resolve(BrowserToolNames.RequestTakeover));
 
         Assert.True(PlanSafeToolPolicy.IsToolNameAllowed(BrowserToolNames.Navigate, SessionWorkMode.Development));
         Assert.True(PlanSafeToolPolicy.IsToolNameAllowed(BrowserToolNames.Snapshot, SessionWorkMode.Daily));
         Assert.False(PlanSafeToolPolicy.IsToolNameAllowed(BrowserToolNames.Act, SessionWorkMode.Development));
         Assert.False(PlanSafeToolPolicy.IsToolNameAllowed(BrowserToolNames.Act, SessionWorkMode.Daily));
+        Assert.False(PlanSafeToolPolicy.IsToolNameAllowed(BrowserToolNames.RequestTakeover, SessionWorkMode.Development));
+        Assert.False(PlanSafeToolPolicy.IsToolNameAllowed(BrowserToolNames.RequestTakeover, SessionWorkMode.Daily));
     }
 
     [Fact]
@@ -531,6 +534,243 @@ public sealed class BrowserUseTests
     }
 
     [Fact]
+    public async Task WorkspacePathGuard_BlocksDoubleHopDirectoryAndFileSymlinkEscapeAndStagesImmutableCopy()
+    {
+        var suffix = Guid.NewGuid().ToString("N")[..8];
+        var tempBase = Path.Combine(Path.GetTempPath(), "cf-ws-guard-" + suffix);
+        var workspace = Path.Combine(tempBase, "ws");
+        var stagingRoot = Path.Combine(tempBase, "staging");
+        var outsideDir = Path.Combine(tempBase, "outside-dir");
+        var outsideFile = Path.Combine(tempBase, "outside.txt");
+        Directory.CreateDirectory(workspace);
+        Directory.CreateDirectory(stagingRoot);
+        Directory.CreateDirectory(outsideDir);
+        try
+        {
+            var insideFile = Path.Combine(workspace, "report.txt");
+            await File.WriteAllTextAsync(insideFile, "hello-upload");
+            await File.WriteAllTextAsync(outsideFile, "secret-outside");
+            await File.WriteAllTextAsync(Path.Combine(outsideDir, "secret.txt"), "secret-dir-outside");
+
+            const long maxUploadBytes = 50L * 1024 * 1024;
+            var linkDir = Path.Combine(workspace, "link-dir");
+            var createdLink = TryCreateDirectoryLinkOrJunction(linkDir, outsideDir);
+
+            var (missingStaged, missingErr) = await BrowserWorkspacePathGuard.StageWorkspaceUploadFileAsync(
+                null,
+                "report.txt",
+                stagingRoot,
+                maxUploadBytes,
+                CancellationToken.None);
+            Assert.Null(missingStaged);
+            Assert.NotNull(missingErr);
+            Assert.Equal("workspace_root_missing", missingErr!.ErrorCode);
+
+            var fsRoot = Path.GetPathRoot(workspace);
+            if (!string.IsNullOrEmpty(fsRoot))
+            {
+                var (rootStaged, rootErr) = await BrowserWorkspacePathGuard.StageWorkspaceUploadFileAsync(
+                    fsRoot,
+                    "report.txt",
+                    stagingRoot,
+                    maxUploadBytes,
+                    CancellationToken.None);
+                Assert.Null(rootStaged);
+                Assert.NotNull(rootErr);
+                Assert.Equal("workspace_root_forbidden", rootErr!.ErrorCode);
+            }
+
+            var (traversalStaged, traversalErr) = await BrowserWorkspacePathGuard.StageWorkspaceUploadFileAsync(
+                workspace,
+                Path.Combine("..", Path.GetFileName(outsideFile)),
+                stagingRoot,
+                maxUploadBytes,
+                CancellationToken.None);
+            Assert.Null(traversalStaged);
+            Assert.NotNull(traversalErr);
+            Assert.Equal("upload_path_outside_workspace", traversalErr!.ErrorCode);
+
+            var (absStaged, absErr) = await BrowserWorkspacePathGuard.StageWorkspaceUploadFileAsync(
+                workspace,
+                outsideFile,
+                stagingRoot,
+                maxUploadBytes,
+                CancellationToken.None);
+            Assert.Null(absStaged);
+            Assert.NotNull(absErr);
+            Assert.Equal("upload_path_outside_workspace", absErr!.ErrorCode);
+
+            if (createdLink)
+            {
+                var (escapeStaged, escapeErr) = await BrowserWorkspacePathGuard.StageWorkspaceUploadFileAsync(
+                    workspace,
+                    Path.Combine("link-dir", "secret.txt"),
+                    stagingRoot,
+                    maxUploadBytes,
+                    CancellationToken.None);
+                Assert.Null(escapeStaged);
+                Assert.NotNull(escapeErr);
+                Assert.Equal("upload_symlink_escape", escapeErr!.ErrorCode);
+            }
+
+            var (staged, validErr) = await BrowserWorkspacePathGuard.StageWorkspaceUploadFileAsync(
+                workspace,
+                "report.txt",
+                stagingRoot,
+                maxUploadBytes,
+                CancellationToken.None);
+            Assert.Null(validErr);
+            Assert.NotNull(staged);
+            Assert.Equal("report.txt", Path.GetFileName(staged!.StagedFilePath));
+            Assert.False(string.IsNullOrWhiteSpace(staged.Sha256Hex));
+            Assert.True(staged.SizeBytes > 0);
+
+            // Mutating the workspace source file after staging must not affect the staged immutable copy.
+            await File.WriteAllTextAsync(insideFile, "mutated-after-stage");
+            var stagedText = await File.ReadAllTextAsync(staged.StagedFilePath);
+            Assert.Equal("hello-upload", stagedText);
+        }
+        finally
+        {
+            var linkDir = Path.Combine(workspace, "link-dir");
+            try
+            {
+                if (Directory.Exists(linkDir))
+                {
+                    Directory.Delete(linkDir, recursive: false);
+                }
+            }
+            catch (Exception) { }
+            try { if (Directory.Exists(tempBase)) Directory.Delete(tempBase, recursive: true); } catch (Exception) { }
+        }
+    }
+
+    private static bool TryCreateDirectoryLinkOrJunction(string linkPath, string targetPath)
+    {
+        try
+        {
+            Directory.CreateSymbolicLink(linkPath, targetPath);
+            return true;
+        }
+        catch (Exception) when (OperatingSystem.IsWindows())
+        {
+            try
+            {
+                using var proc = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "cmd.exe",
+                    ArgumentList = { "/c", "mklink", "/J", linkPath, targetPath },
+                    CreateNoWindow = true,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                });
+                proc?.WaitForExit(3000);
+                return proc?.ExitCode == 0 && Directory.Exists(linkPath);
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    [Fact]
+    public void RuntimeToolTimeouts_GrantsExtendedBudgetsForBrowserTakeoverAndApprovals()
+    {
+        Assert.Equal(TimeSpan.FromMinutes(16), RuntimeToolTimeouts.For(BrowserToolNames.RequestTakeover));
+        Assert.Equal(TimeSpan.FromMinutes(8), RuntimeToolTimeouts.For(BrowserToolNames.Act));
+        Assert.Equal(TimeSpan.FromMinutes(8), RuntimeToolTimeouts.For(BrowserToolNames.Navigate));
+        Assert.Equal(TimeSpan.FromMinutes(8), RuntimeToolTimeouts.For(BrowserToolNames.Tabs));
+        Assert.Equal(TimeSpan.FromMinutes(1), RuntimeToolTimeouts.For(BrowserToolNames.Snapshot));
+    }
+
+    [Fact]
+    public async Task BrowserApprovalCoordinator_SupportsPersistentOriginNavigationCategory()
+    {
+        var coord = new BrowserApprovalCoordinator(
+            NullLogger<BrowserApprovalCoordinator>.Instance,
+            gateway: null,
+            controlPlane: new FixedControlPlaneState(available: true));
+
+        var waitTask = coord.RequestApprovalAsync(new BrowserApprovalPrompt(
+            SessionId: "s-pnav",
+            Tool: BrowserToolNames.Navigate,
+            Action: "persistent_origin_navigation",
+            TargetUrl: "https://portal.example/dashboard",
+            TargetOrigin: "https://portal.example",
+            TargetDescription: "Persistent 模式首次访问 https://portal.example",
+            RiskReason: "persistent_origin_navigation",
+            ExpressionOrPath: null,
+            AllowSessionScope: true));
+
+        var item = Assert.Single(coord.GetPendingApprovalsForSession("s-pnav"));
+        var resolved = await coord.TrySubmitDecisionAsync(
+            item.ApprovalId,
+            item.RequestDigest,
+            ExecutionApprovalDecisionKind.AllowSession,
+            "u1",
+            "ok");
+        Assert.NotNull(resolved);
+        Assert.Equal(ApprovalSubmissionOutcome.Resolved, resolved!.Outcome);
+
+        var outcome = await waitTask;
+        Assert.True(outcome.Approved);
+        Assert.True(outcome.GrantedForSession);
+        Assert.True(coord.IsSessionOriginApproved("s-pnav", "https://portal.example", "persistent_nav"));
+        Assert.False(coord.IsSessionOriginApproved("s-pnav", "https://portal.example", "interact"));
+    }
+
+    [Fact]
+    public void PermissionClamp_ClampsAllowControlledDownloadsTightenOnly()
+    {
+        using var clamp1 = new BrowserPermissionClamp();
+        clamp1.PostConfigure(Options.DefaultName, new BrowserOptions { AllowControlledDownloads = false });
+        var tampered = new BrowserOptions { AllowControlledDownloads = true };
+        clamp1.PostConfigure(Options.DefaultName, tampered);
+        Assert.False(tampered.AllowControlledDownloads);
+
+        using var clamp2 = new BrowserPermissionClamp();
+        clamp2.PostConfigure(Options.DefaultName, new BrowserOptions { AllowControlledDownloads = false });
+        clamp2.ApplyControlPlaneUpdate(new BrowserOptions { AllowControlledDownloads = true });
+
+        // Stale disk bind before FileSystemWatcher catches up must preserve control-plane update.
+        var staleBind = new BrowserOptions { AllowControlledDownloads = false };
+        clamp2.PostConfigure(Options.DefaultName, staleBind);
+        Assert.True(staleBind.AllowControlledDownloads);
+
+        // Once disk catches up to true, a later manual edit back to false must tighten.
+        clamp2.PostConfigure(Options.DefaultName, new BrowserOptions { AllowControlledDownloads = true });
+        var tightened = new BrowserOptions { AllowControlledDownloads = false };
+        clamp2.PostConfigure(Options.DefaultName, tightened);
+        Assert.False(tightened.AllowControlledDownloads);
+    }
+
+    [Fact]
+    public async Task RequestTakeover_FailsFastWhenControlPlaneUnavailable()
+    {
+        var opts = new BrowserOptions { Headless = false };
+        var ports = new ProtectedLocalPortRegistry();
+        var guard = new BrowserTargetPolicyGuard(new StaticOptionsMonitor<BrowserOptions>(opts), ports);
+        await using var manager = new BrowserSessionManager(
+            new StaticOptionsMonitor<BrowserOptions>(opts),
+            new BrowserExecutableLocator(static _ => false),
+            guard,
+            ports,
+            NullLogger<BrowserSessionManager>.Instance,
+            controlPlane: new FixedControlPlaneState(available: false));
+
+        var caller = new BrowserTrustedCallerContext("s-tk-1", SessionWorkMode.Development, PlanModeActive: false);
+        var res = await manager.RequestTakeoverAsync(caller, "需要人工登录");
+        Assert.False(res.Succeeded);
+        Assert.Equal("control_plane_unavailable", res.ErrorCode);
+    }
+
+    [Fact]
     [Trait("Category", "BrowserIntegration")]
     public async Task EndToEnd_RealLocalBrowser_NavigateSnapshotActScreenshotAndSecurityControls()
     {
@@ -557,6 +797,8 @@ public sealed class BrowserUseTests
   <input id="nameInput" type="text" placeholder="Your name" />
   <input id="pwdInput" type="password" placeholder="Secret password" />
   <button id="goBtn" onclick="document.getElementById('heading').textContent = 'Hi ' + document.getElementById('nameInput').value; console.error('e2e-console-err');">Greet</button>
+  <input id="fileInput" type="file" onchange="document.getElementById('fileStatus').textContent = 'Uploaded:' + (this.files && this.files[0] ? this.files[0].name : 'none');" />
+  <div id="fileStatus">No file</div>
 </body>
 </html>
 """;
@@ -590,6 +832,11 @@ public sealed class BrowserUseTests
         });
 
         var tempRuntime = Path.Combine(Path.GetTempPath(), "cf-browser-test-" + Guid.NewGuid().ToString("N")[..8]);
+        var tempWorkspace = Path.Combine(Path.GetTempPath(), "cf-browser-ws-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(tempWorkspace);
+        var uploadSamplePath = Path.Combine(tempWorkspace, "sample-doc.txt");
+        await File.WriteAllTextAsync(uploadSamplePath, "p1-upload-payload");
+
         var opts = new BrowserOptions
         {
             Enabled = true,
@@ -599,6 +846,10 @@ public sealed class BrowserUseTests
         var ports = new ProtectedLocalPortRegistry();
         ports.RegisterPort(32586, "host");
 
+        var approvalCoordinator = new BrowserApprovalCoordinator(
+            NullLogger<BrowserApprovalCoordinator>.Instance,
+            gateway: null,
+            controlPlane: new FixedControlPlaneState(available: true));
         var guard = new BrowserTargetPolicyGuard(new StaticOptionsMonitor<BrowserOptions>(opts), ports);
         await using var manager = new BrowserSessionManager(
             new StaticOptionsMonitor<BrowserOptions>(opts),
@@ -606,11 +857,13 @@ public sealed class BrowserUseTests
             guard,
             ports,
             NullLogger<BrowserSessionManager>.Instance,
-            runtimeBaseDir: tempRuntime);
+            approvalCoordinator: approvalCoordinator,
+            runtimeBaseDir: tempRuntime,
+            controlPlane: new FixedControlPlaneState(available: true));
 
         try
         {
-            var caller = new BrowserTrustedCallerContext("e2e-session-1", SessionWorkMode.Development, PlanModeActive: false);
+            var caller = new BrowserTrustedCallerContext("e2e-session-1", SessionWorkMode.Development, PlanModeActive: false, WorkspaceRoot: tempWorkspace);
             var visualStore = new TurnVisualAttachmentStore(isMultimodalEnabled: true);
             using var visualScope = AmbientTurnVisualAttachmentContext.BeginScope(visualStore);
             using var callerScope = AmbientBrowserCallerContext.BeginScope(caller);
@@ -692,6 +945,63 @@ public sealed class BrowserUseTests
             Assert.Equal(ToolResultStatus.Failed, blockedRes.Status);
             Assert.Contains(BrowserTargetPolicyGuard.ReasonProtectedLocalPort, blockedRes.Output, StringComparison.Ordinal);
 
+            // 5b-pre. P1-Hardening: refuse generic click on file_input to prevent unmediated OS file picker dialog
+            var clickFileInputRes = await actTool.ExecuteAsync(new Dictionary<string, object?>
+            {
+                ["action"] = "click",
+                ["ref"] = "e4"
+            });
+            Assert.Equal(ToolResultStatus.Failed, clickFileInputRes.Status);
+            Assert.Contains("use_upload_file_action", clickFileInputRes.Output, StringComparison.Ordinal);
+
+            // 5b. P1 upload_file: reject outside-workspace path & require mandatory allow_once approval for workspace file [e4]
+            var outsideUpload = await actTool.ExecuteAsync(new Dictionary<string, object?>
+            {
+                ["action"] = "upload_file",
+                ["ref"] = "e4",
+                ["file_path"] = "../outside.txt"
+            });
+            Assert.Equal(ToolResultStatus.Failed, outsideUpload.Status);
+            Assert.Contains("upload_path_outside_workspace", outsideUpload.Output, StringComparison.Ordinal);
+
+            var uploadTask = actTool.ExecuteAsync(new Dictionary<string, object?>
+            {
+                ["action"] = "upload_file",
+                ["ref"] = "e4",
+                ["file_path"] = "sample-doc.txt"
+            });
+
+            BrowserApprovalRequestDto? pendingUploadApproval = null;
+            for (var i = 0; i < 40 && pendingUploadApproval is null; i++)
+            {
+                await Task.Delay(50);
+                pendingUploadApproval = approvalCoordinator.GetPendingApprovalsForSession("e2e-session-1").FirstOrDefault();
+            }
+
+            Assert.NotNull(pendingUploadApproval);
+            Assert.DoesNotContain("allow_session", pendingUploadApproval!.AllowedDecisions);
+            var approveUpload = await approvalCoordinator.TrySubmitDecisionAsync(
+                pendingUploadApproval.ApprovalId,
+                pendingUploadApproval.RequestDigest,
+                ExecutionApprovalDecisionKind.AllowOnce,
+                "e2e-user",
+                null);
+            Assert.NotNull(approveUpload);
+            Assert.Equal(ApprovalSubmissionOutcome.Resolved, approveUpload!.Outcome);
+
+            var uploadRes = await uploadTask;
+            Assert.Equal(ToolResultStatus.Success, uploadRes.Status);
+            Assert.Contains("Uploaded:sample-doc.txt", uploadRes.Output, StringComparison.Ordinal);
+
+            // 5c. Headless mode refuses human takeover cleanly with guidance
+            var takeoverTool = new BrowserRequestTakeoverTool(manager);
+            var tkRes = await takeoverTool.ExecuteAsync(new Dictionary<string, object?>
+            {
+                ["reason"] = "测试人工接管"
+            });
+            Assert.Equal(ToolResultStatus.Failed, tkRes.Status);
+            Assert.Contains("headless_mode_no_takeover", tkRes.Output, StringComparison.Ordinal);
+
             // 6. Close browser session cleanly
             var closeRes = await tabsTool.ExecuteAsync(new Dictionary<string, object?> { ["action"] = "close_browser" });
             Assert.Equal(ToolResultStatus.Success, closeRes.Status);
@@ -703,6 +1013,7 @@ public sealed class BrowserUseTests
             server.Stop();
             try { await serverTask; } catch (Exception) { }
             try { if (Directory.Exists(tempRuntime)) Directory.Delete(tempRuntime, recursive: true); } catch (Exception) { }
+            try { if (Directory.Exists(tempWorkspace)) Directory.Delete(tempWorkspace, recursive: true); } catch (Exception) { }
         }
     }
 }

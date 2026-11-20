@@ -19,6 +19,10 @@ internal static class RuntimeToolTimeouts
     private static readonly TimeSpan DailyShell = TimeSpan.FromMinutes(25);
     // run_business_skill: multi-step API pagination + optional interactive write approval wait.
     private static readonly TimeSpan BusinessSkillRun = TimeSpan.FromMinutes(15);
+    // browser_request_takeover: max 15m human takeover wait + post-takeover snapshot/screenshot.
+    private static readonly TimeSpan BrowserTakeover = TimeSpan.FromMinutes(16);
+    // browser_act / navigate / tabs: 5m control-plane approval wait + browser settlement/staging margin.
+    private static readonly TimeSpan BrowserInteractive = TimeSpan.FromMinutes(8);
 
     public static TimeSpan For(string? toolName)
     {
@@ -28,6 +32,8 @@ internal static class RuntimeToolTimeouts
         {
             "run_shell" => DailyShell,
             "run_business_skill" => BusinessSkillRun,
+            "browser_request_takeover" => BrowserTakeover,
+            "browser_act" or "browser_navigate" or "browser_tabs" => BrowserInteractive,
             "run_tests" or "exec_cmd" or "run_command" => BuildOrTest,
             _ => EngineDefault
         };
