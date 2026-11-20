@@ -4,6 +4,8 @@
 
 using System.Collections;
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using System.Text.RegularExpressions;
 
 namespace CodexFlow.Core.Gateway;
@@ -56,7 +58,7 @@ public static partial class ToolEventSanitizer
             sanitized[key] = SanitizeValue(value, maxStringChars, depth: 0, ref truncated);
         }
 
-        var serialized = JsonSerializer.Serialize(sanitized);
+        var serialized = JsonSerializer.Serialize(sanitized, (JsonTypeInfo)ToolEventSanitizerJsonContext.Default.DictionaryStringObject);
         if (serialized.Length > maxTotalJsonChars)
         {
             truncated = true;
@@ -65,7 +67,7 @@ public static partial class ToolEventSanitizer
             var used = 2;
             foreach (var (key, value) in sanitized)
             {
-                var entryJson = JsonSerializer.Serialize(value);
+                var entryJson = JsonSerializer.Serialize(value, (JsonTypeInfo)ToolEventSanitizerJsonContext.Default.Object);
                 var entryCost = key.Length + entryJson.Length + 6;
                 if (used + entryCost <= budget)
                 {
@@ -284,3 +286,23 @@ public static partial class ToolEventSanitizer
     [GeneratedRegex(@"(--?(?:api[-_]?key|access[-_]?token|control[-_]?token|secret|password|passwd|token))(\s+)([^\s'""]+|'[^']*'|\""[^\""]*\"")", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex CliFlagSecretRegex();
 }
+
+// These are the only types emitted by SanitizeValue and SanitizeJsonElement.
+[JsonSourceGenerationOptions(GenerationMode = JsonSourceGenerationMode.Metadata)]
+[JsonSerializable(typeof(Dictionary<string, object>))]
+[JsonSerializable(typeof(List<object>))]
+[JsonSerializable(typeof(object))]
+[JsonSerializable(typeof(string))]
+[JsonSerializable(typeof(bool))]
+[JsonSerializable(typeof(byte))]
+[JsonSerializable(typeof(sbyte))]
+[JsonSerializable(typeof(short))]
+[JsonSerializable(typeof(ushort))]
+[JsonSerializable(typeof(int))]
+[JsonSerializable(typeof(uint))]
+[JsonSerializable(typeof(long))]
+[JsonSerializable(typeof(ulong))]
+[JsonSerializable(typeof(float))]
+[JsonSerializable(typeof(double))]
+[JsonSerializable(typeof(decimal))]
+internal sealed partial class ToolEventSanitizerJsonContext : JsonSerializerContext;
