@@ -2,6 +2,7 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using CodexFlow.Core.Agents.Tools;
 using CodexFlow.Core.Execution;
@@ -160,6 +161,47 @@ public sealed class CommandTaskToolsTests
             Assert.Contains("command_task_id:", result.Output, StringComparison.Ordinal);
             // the verify policy caps the timeout (300s) before it reaches the backend
             Assert.Equal(TimeSpan.FromSeconds(300), fake.Requests.Single().Timeout);
+        }
+        finally
+        {
+            Directory.Delete(workspacePath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task RunCommandTool_NonzeroExit_ShouldPreserveCompletionMetadata()
+    {
+        var workspacePath = CreateWorkspace();
+
+        try
+        {
+            var (runCommand, _, scope) = Isolated(workspacePath, (request, _) =>
+            {
+                request.OnOutput?.Invoke(new CommandOutputLine("stdout", "build started"));
+                request.OnOutput?.Invoke(new CommandOutputLine("stderr", "build failed"));
+                return Task.FromResult(new IsolatedCommandResult(
+                    ExecutionDecision.Allow(), IsolatedCommandStatus.Failed, 17,
+                    "build started", "build failed", false, TimeSpan.Zero, "fake"));
+            });
+            using var _ = scope;
+
+            var result = await runCommand.ExecuteAsync(new Dictionary<string, object?>
+            {
+                ["command"] = new[] { "dotnet", "build" }
+            });
+
+            Assert.Equal(ToolResultStatus.Success, result.Status);
+            Assert.Contains("exit code 17", result.Output, StringComparison.Ordinal);
+            var metadata = Assert.IsType<RunCommandCompletionMetadata>(result.Metadata);
+            var json = JsonSerializer.SerializeToElement(result.Metadata);
+            Assert.Equal(["CommandTaskId", "ExitCode", "Status", "Stdout", "Stderr"],
+                json.EnumerateObject().Select(property => property.Name).ToArray());
+            Assert.Equal(ExtractCommandTaskId(result.Output), json.GetProperty("CommandTaskId").GetString());
+            Assert.Equal(17, metadata.ExitCode);
+            Assert.Equal(17, json.GetProperty("ExitCode").GetInt32());
+            Assert.Equal("Failed", json.GetProperty("Status").GetString());
+            Assert.Equal("build started", json.GetProperty("Stdout").GetString());
+            Assert.Equal("build failed", json.GetProperty("Stderr").GetString());
         }
         finally
         {

@@ -15,6 +15,13 @@ using System.Text.Json;
 
 namespace CodexFlow.Core.Agents.Tools;
 
+internal sealed record RunCommandCompletionMetadata(
+    string CommandTaskId,
+    int? ExitCode,
+    string Status,
+    string Stdout,
+    string Stderr);
+
 /// <summary>
 /// 在工作区执行白名单命令（替代 MCP run_command）。
 /// 仅允许预定义的安全命令。
@@ -255,14 +262,7 @@ public class RunCommandTool(
         if (output.Length > maxChars) output = output[..maxChars] + $"\n... (truncated, total {originalOutputLength} chars)";
         if (errors.Length > maxChars) errors = errors[..maxChars] + $"\n... (truncated, total {originalErrorLength} chars)";
 
-        var result = new
-        {
-            CommandTaskId = commandTaskId,
-            ExitCode = snapshot.ExitCode,
-            Status = snapshot.Status.ToString(),
-            Stdout = output,
-            Stderr = errors
-        };
+        var result = new RunCommandCompletionMetadata(commandTaskId, snapshot.ExitCode, snapshot.Status.ToString(), output, errors);
 
         var environmentNote = BuildEnvironmentNote(executable, image, options.CommandImage) is { } note ? "\n" + note : string.Empty;
         if (BuildStreamText(snapshot, EnvironmentStream) is { Length: > 0 } prepared) environmentNote += "\n" + prepared;

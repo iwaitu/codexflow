@@ -2542,18 +2542,9 @@ public class CodexOrchestrator
     }
 
     private static (int ExitCode, string Stdout, string Stderr) ExtractRunCommandResult(CodexToolResult toolResult)
-    {
-        if (toolResult.Metadata == null)
-        {
-            return (-1, string.Empty, string.Empty);
-        }
-
-        var metadataType = toolResult.Metadata.GetType();
-        var exitCode = metadataType.GetProperty("ExitCode")?.GetValue(toolResult.Metadata) as int? ?? -1;
-        var stdout = metadataType.GetProperty("Stdout")?.GetValue(toolResult.Metadata)?.ToString() ?? string.Empty;
-        var stderr = metadataType.GetProperty("Stderr")?.GetValue(toolResult.Metadata)?.ToString() ?? string.Empty;
-        return (exitCode, stdout, stderr);
-    }
+        => toolResult.Metadata is RunCommandCompletionMetadata metadata
+            ? (metadata.ExitCode ?? -1, metadata.Stdout, metadata.Stderr)
+            : (-1, string.Empty, string.Empty);
 
     private static string SummarizeCommandOutput(string stdout, string stderr, string fallbackOutput)
     {
