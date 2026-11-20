@@ -53,6 +53,33 @@ public class DefaultCodexTestDesignerTests
         Assert.Contains("public class CalculatorTests", plan.TestFiles[0].Content);
     }
 
+    [Theory]
+    [InlineData("", "Auto-generated", false)]
+    [InlineData("{}", "Auto-generated", false)]
+    [InlineData("null", "Auto-generated", false)]
+    [InlineData("{ /* legacy */ 'Reasoning': 1.50, 'ignored': {'x': 1}, 'Files': [{ 'PATH': 'test/CalculatorTests.cs', 'Content': true, },], }", "1.50", true)]
+    public async Task DesignTestsAsync_PreservesLegacyJsonResponses(string json, string expectedReasoning, bool hasFile)
+    {
+        var client = new Mock<IChatClient>();
+        client.Setup(c => c.GetResponseAsync(It.IsAny<IList<ChatMessage>>(), It.IsAny<ChatOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ChatResponse(new[] { new ChatMessage(ChatRole.Assistant, json) }));
+        var designer = new DefaultCodexTestDesigner(client.Object, NullLogger<DefaultCodexTestDesigner>.Instance);
+
+        var plan = await designer.DesignTestsAsync(new CodexTask { Id = "T1" }, new CodexSession { Id = "S1" });
+
+        Assert.Equal(expectedReasoning, plan.Reasoning);
+        if (hasFile)
+        {
+            var file = Assert.Single(plan.TestFiles);
+            Assert.Equal("test/CalculatorTests.cs", file.FilePath);
+            Assert.Equal("true", file.Content);
+        }
+        else
+        {
+            Assert.Empty(plan.TestFiles);
+        }
+    }
+
     [Fact]
     public async Task DesignTestsAsync_Should_Handle_Timeout()
     {

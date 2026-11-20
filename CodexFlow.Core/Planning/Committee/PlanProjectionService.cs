@@ -113,7 +113,7 @@ public class PlanProjectionService
         try
         {
             // 尝试直接解析为数组
-            var tasks = JsonConvert.DeserializeObject<List<ProjectedTask>>(rawText);
+            var tasks = CommitteeJson.ReadProjectedTasks(rawText);
             if (tasks is { Count: > 0 })
             {
                 return tasks;
@@ -126,9 +126,9 @@ public class PlanProjectionService
             {
                 var obj = JObject.Parse(rawText);
                 var arrayProp = obj.Properties().FirstOrDefault(p => p.Value is JArray);
-                if (arrayProp != null)
+                if (arrayProp?.Value is JArray array)
                 {
-                    var tasks = arrayProp.Value.ToObject<List<ProjectedTask>>();
+                    var tasks = CommitteeJson.ReadProjectedTasks(array);
                     if (tasks is { Count: > 0 }) return tasks;
                 }
             }
@@ -275,7 +275,7 @@ public class PlanProjectionService
     /// <summary>
     /// 生成 shadow-plan-diff 数据。
     /// </summary>
-    public static object GenerateShadowDiff(
+    public static JObject GenerateShadowDiff(
         List<CodexTask> baselinePlan, List<CodexTask> committeePlan)
     {
         ArgumentNullException.ThrowIfNull(baselinePlan);
@@ -285,55 +285,66 @@ public class PlanProjectionService
         var committeeIds = committeePlan.Select(t => t.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var sharedIds = baselineIds.Intersect(committeeIds).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList();
 
-        return new
+        return new JObject
         {
-            baseline_plan_source = "DefaultCodexPlanner",
-            committee_plan_source = "CommitteePlanning",
-            baseline_task_count = baselinePlan.Count,
-            committee_task_count = committeePlan.Count,
-            task_diffs = new
+            ["baseline_plan_source"] = "DefaultCodexPlanner",
+            ["committee_plan_source"] = "CommitteePlanning",
+            ["baseline_task_count"] = baselinePlan.Count,
+            ["committee_task_count"] = committeePlan.Count,
+            ["task_diffs"] = new JObject
             {
-                only_in_baseline = baselineIds.Except(committeeIds).ToList(),
-                only_in_committee = committeeIds.Except(baselineIds).ToList(),
-                in_both = sharedIds
+                ["only_in_baseline"] = new JArray(baselineIds.Except(committeeIds)),
+                ["only_in_committee"] = new JArray(committeeIds.Except(baselineIds)),
+                ["in_both"] = new JArray(sharedIds)
             },
-            dependency_diffs = new
+            ["dependency_diffs"] = new JObject
             {
-                changed_tasks = sharedIds
+                ["changed_tasks"] = new JArray(sharedIds
                     .Where(id => HaveDifferentDependencies(
                         FindTaskById(baselinePlan, id),
                         FindTaskById(committeePlan, id)))
-                    .Select(id => new
+                    .Select(id => new JObject
                     {
-                        task_id = id,
-                        baseline = FindTaskById(baselinePlan, id)!.Dependencies.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList(),
-                        committee = FindTaskById(committeePlan, id)!.Dependencies.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList()
-                    })
-                    .ToList()
+                        ["task_id"] = id,
+                        ["baseline"] = new JArray(FindTaskById(baselinePlan, id)!.Dependencies.OrderBy(x => x, StringComparer.OrdinalIgnoreCase)),
+                        ["committee"] = new JArray(FindTaskById(committeePlan, id)!.Dependencies.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
+                    }))
             },
-            validation_diffs = new
+            ["validation_diffs"] = new JObject
             {
-                changed_tasks = sharedIds
+                ["changed_tasks"] = new JArray(sharedIds
                     .Where(id => HaveDifferentValidationSteps(
                         FindTaskById(baselinePlan, id),
                         FindTaskById(committeePlan, id)))
-                    .Select(id => new
+                    .Select(id => new JObject
                     {
-                        task_id = id,
-                        baseline = ExtractValidationSteps(FindTaskById(baselinePlan, id)!.Description),
-                        committee = ExtractValidationSteps(FindTaskById(committeePlan, id)!.Description)
-                    })
-                    .ToList()
+                        ["task_id"] = id,
+                        ["baseline"] = new JArray(ExtractValidationSteps(FindTaskById(baselinePlan, id)!.Description)),
+                        ["committee"] = new JArray(ExtractValidationSteps(FindTaskById(committeePlan, id)!.Description))
+                    }))
             },
-            risk_diffs = new
+            ["risk_diffs"] = new JObject
             {
-                baseline_high_risk = baselinePlan.Count(t => string.Equals(t.RiskLevel, "High", StringComparison.OrdinalIgnoreCase)),
-                committee_high_risk = committeePlan.Count(t => string.Equals(t.RiskLevel, "High", StringComparison.OrdinalIgnoreCase))
+                ["baseline_high_risk"] = baselinePlan.Count(t => string.Equals(t.RiskLevel, "High", StringComparison.OrdinalIgnoreCase)),
+                ["committee_high_risk"] = committeePlan.Count(t => string.Equals(t.RiskLevel, "High", StringComparison.OrdinalIgnoreCase))
             },
-            summary = $"基线 {baselinePlan.Count} 任务 vs 委员会 {committeePlan.Count} 任务",
-            generated_at = DateTime.UtcNow
+            ["summary"] = $"基线 {baselinePlan.Count} 任务 vs 委员会 {committeePlan.Count} 任务",
+            ["generated_at"] = DateTime.UtcNow
         };
     }
+
+    internal static JObject GenerateFailedShadowDiff(int baselineTaskCount, CommitteePlanningResult committeeResult) => new()
+    {
+        ["baseline_plan_source"] = "DefaultCodexPlanner",
+        ["committee_plan_source"] = "CommitteePlanning",
+        ["baseline_task_count"] = baselineTaskCount,
+        ["committee_projection_failed"] = true,
+        ["committee_status"] = committeeResult.Status.ToString(),
+        ["committee_total_rounds"] = committeeResult.TotalRounds,
+        ["committee_unresolved_items"] = CommitteeJson.StringsToken(committeeResult.UnresolvedItems),
+        ["summary"] = $"Shadow 模式：基线 {baselineTaskCount} 任务，委员会蓝图投影失败",
+        ["generated_at"] = DateTime.UtcNow
+    };
 
     #endregion
 

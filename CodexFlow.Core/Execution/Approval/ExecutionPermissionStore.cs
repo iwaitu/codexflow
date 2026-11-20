@@ -399,18 +399,84 @@ public sealed class ExecutionPermissionStore : IExecutionPermissionStore, IDispo
             return [];
         }
 
-        return arr.ToObject<List<PersistedPermissionRule>>() ?? [];
+        return arr.Select(ReadRule).ToList();
     }
+
+    private static PersistedPermissionRule ReadRule(JToken token)
+    {
+        if (token is not JObject rule)
+        {
+            throw new JsonSerializationException("Each committed execution permission must be a JSON object.");
+        }
+
+        var properties = new Dictionary<string, JToken>(StringComparer.OrdinalIgnoreCase);
+        foreach (var property in rule.Properties())
+        {
+            properties[property.Name] = property.Value;
+        }
+
+        return new PersistedPermissionRule(
+            ReadString(properties.GetValueOrDefault(nameof(PersistedPermissionRule.Id)))!,
+            ReadString(properties.GetValueOrDefault(nameof(PersistedPermissionRule.SessionAgnosticDigest)))!,
+            ReadString(properties.GetValueOrDefault(nameof(PersistedPermissionRule.ToolName)))!,
+            ReadString(properties.GetValueOrDefault(nameof(PersistedPermissionRule.Executable)))!,
+            ReadArgv(properties.GetValueOrDefault(nameof(PersistedPermissionRule.Argv)))!,
+            ReadCreatedAt(properties.GetValueOrDefault(nameof(PersistedPermissionRule.CreatedAtUtc))),
+            ReadString(properties.GetValueOrDefault(nameof(PersistedPermissionRule.Note))));
+    }
+
+    private static string? ReadString(JToken? token)
+    {
+        if (token is null)
+        {
+            return null;
+        }
+
+        using var reader = token.CreateReader();
+        return reader.ReadAsString();
+    }
+
+    private static DateTimeOffset ReadCreatedAt(JToken? token)
+    {
+        if (token is null)
+        {
+            return default;
+        }
+
+        using var reader = token.CreateReader();
+        return reader.ReadAsDateTimeOffset()
+            ?? throw new JsonSerializationException("Permission CreatedAtUtc must contain a date.");
+    }
+
+    private static string[]? ReadArgv(JToken? token)
+        => token switch
+        {
+            null or { Type: JTokenType.Null or JTokenType.Undefined } => null,
+            JArray array => array.Select(static item => ReadString(item)!).ToArray(),
+            _ => throw new JsonSerializationException("Permission Argv must be a JSON array.")
+        };
+
+    private static JArray WriteRules(IEnumerable<PersistedPermissionRule> rules)
+        => new(rules.Select(static rule => new JObject
+        {
+            [nameof(PersistedPermissionRule.Id)] = rule.Id,
+            [nameof(PersistedPermissionRule.SessionAgnosticDigest)] = rule.SessionAgnosticDigest,
+            [nameof(PersistedPermissionRule.ToolName)] = rule.ToolName,
+            [nameof(PersistedPermissionRule.Executable)] = rule.Executable,
+            [nameof(PersistedPermissionRule.Argv)] = rule.Argv is null ? JValue.CreateNull() : new JArray(rule.Argv),
+            [nameof(PersistedPermissionRule.CreatedAtUtc)] = rule.CreatedAtUtc,
+            [nameof(PersistedPermissionRule.Note)] = rule.Note
+        }));
 
     private void SaveSnapshotUnsafe(
         IEnumerable<PersistedPermissionRule> committedRules,
         IEnumerable<PersistedPermissionRule> stagedRules)
     {
-        var stagedArray = JArray.FromObject(stagedRules);
+        var stagedArray = WriteRules(stagedRules);
         var root = new JObject
         {
             ["version"] = 1,
-            ["rules"] = JArray.FromObject(committedRules)
+            ["rules"] = WriteRules(committedRules)
         };
         if (stagedArray.Count > 0)
         {

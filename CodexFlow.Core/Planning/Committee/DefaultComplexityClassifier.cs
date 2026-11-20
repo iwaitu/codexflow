@@ -182,18 +182,6 @@ public class DefaultComplexityClassifier : IComplexityClassifier
             "complexity_classifier",
             ct).ConfigureAwait(false);
 
-        var parsed = JsonConvert.DeserializeAnonymousType(text, new
-        {
-            is_complex = false,
-            reason = "",
-            indicators = new List<string>()
-        });
-
-        return new ComplexityClassification
-        {
-            IsComplex = parsed?.is_complex ?? false,
-            Reason = parsed?.reason ?? "LLM 未返回判定理由",
-            TriggeredIndicators = parsed?.indicators ?? []
-        };
+        return CommitteeJson.ReadComplexity(text);
     }
 }

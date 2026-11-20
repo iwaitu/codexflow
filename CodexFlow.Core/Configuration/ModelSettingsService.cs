@@ -171,7 +171,7 @@ public sealed class ModelSettingsService : IModelSettingsService
     {
         if (value is not null)
         {
-            section[name] = JToken.FromObject(value);
+            section[name] = new JValue(value);
         }
     }
 

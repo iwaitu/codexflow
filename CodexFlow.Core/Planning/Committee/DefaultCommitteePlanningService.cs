@@ -270,7 +270,7 @@ public class DefaultCommitteePlanningService : ICommitteePlanningService
         var lintIssues = _planContractLinter.LintBlueprint(initialBlueprint);
         await File.WriteAllTextAsync(
             Path.Combine(state.MeetingDirectory, "phase-a-contract-lint.json"),
-            JsonConvert.SerializeObject(lintIssues, Formatting.Indented),
+            CommitteeJson.LintIssuesToken(lintIssues).ToString(Formatting.Indented),
             ct).ConfigureAwait(false);
 
         var correction = await _planSelfCorrectionService.CorrectAsync(
@@ -385,8 +385,8 @@ public class DefaultCommitteePlanningService : ICommitteePlanningService
         var prompt = CommitteePrompts.Fill(CommitteePrompts.ProjectManagerModeratorPrompt, new Dictionary<string, string>
         {
             ["current_plan"] = TruncateForPrompt(state.CurrentPlan, 6000),
-            ["analyst_feedback"] = JsonConvert.SerializeObject(analystFeedback),
-            ["architect_feedback"] = JsonConvert.SerializeObject(architectFeedback),
+            ["analyst_feedback"] = CommitteeJson.ReviewerFeedbackToken(analystFeedback).ToString(Formatting.None),
+            ["architect_feedback"] = CommitteeJson.ReviewerFeedbackToken(architectFeedback).ToString(Formatting.None),
             ["review_history"] = TruncateForPrompt(reviewHistory, 2000)
         });
 

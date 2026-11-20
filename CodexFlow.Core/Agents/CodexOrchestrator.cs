@@ -673,28 +673,10 @@ public class CodexOrchestrator
                     }
                 }
 
-                // 生成结构化 diff
-                object diffData;
-                if (committeeTasks is { Count: > 0 })
-                {
-                    diffData = PlanProjectionService.GenerateShadowDiff(baselinePlan, committeeTasks);
-                }
-                else
-                {
-                    // 投影失败时仍记录基础对比信息
-                    diffData = new
-                    {
-                        baseline_plan_source = "DefaultCodexPlanner",
-                        committee_plan_source = "CommitteePlanning",
-                        baseline_task_count = baselinePlan.Count,
-                        committee_projection_failed = true,
-                        committee_status = committeeResult.Status.ToString(),
-                        committee_total_rounds = committeeResult.TotalRounds,
-                        committee_unresolved_items = committeeResult.UnresolvedItems,
-                        summary = $"Shadow 模式：基线 {baselinePlan.Count} 任务，委员会蓝图投影失败",
-                        generated_at = DateTime.UtcNow
-                    };
-                }
+                // 投影失败时仍记录基础对比信息
+                var diffData = committeeTasks is { Count: > 0 }
+                    ? PlanProjectionService.GenerateShadowDiff(baselinePlan, committeeTasks)
+                    : PlanProjectionService.GenerateFailedShadowDiff(baselinePlan.Count, committeeResult);
 
                 // 写入 diff 和 metrics 工件
                 if (!string.IsNullOrEmpty(committeeResult.MeetingDirectory) && Directory.Exists(committeeResult.MeetingDirectory))
