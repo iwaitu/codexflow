@@ -5,3 +5,4 @@
 using System.Runtime.CompilerServices;
 
 [assembly: InternalsVisibleTo("CodexFlow.Core.Tests")]
+[assembly: InternalsVisibleTo("CodexFlow.CodeAnalysis.Worker")]

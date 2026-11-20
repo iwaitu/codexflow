@@ -11,10 +11,12 @@ using CodexFlow.Core.Models;
 using System;
 using System.Collections.Concurrent;
 using System.Globalization;
+using System.Runtime.CompilerServices;
+using CodexFlow.Core.CodeAnalysis;
 
 namespace CodexFlow.Core.Agents
 {
-    public class RoslynCodeAnalysisService : ICodeAnalysisService
+    public class RoslynCodeAnalysisService : ICodeAnalysisService, ICancellableSnippetAnalysis
     {
         private const string ReferenceDirectoryVariable = "CODEXFLOW_CSHARP_REFERENCE_DIR";
         private static readonly ConcurrentDictionary<string, MetadataReference[]> ReferenceCache =
@@ -35,21 +37,33 @@ namespace CodexFlow.Core.Agents
         }
 
         public Task<List<CodeDiagnostic>> AnalyzeCodeAsync(string code, string language = "C#")
+            => AnalyzeSnippetAsync(code, CancellationToken.None);
+
+        Task<List<CodeDiagnostic>> ICancellableSnippetAnalysis.AnalyzeSnippetAsync(
+            string code, CancellationToken cancellationToken)
+            => AnalyzeSnippetAsync(code, cancellationToken);
+
+        private Task<List<CodeDiagnostic>> AnalyzeSnippetAsync(string code, CancellationToken cancellationToken)
+            => RuntimeFeature.IsDynamicCodeSupported
+                ? Task.FromResult(AnalyzeInProcess(code, GetReferenceDirectory(_referenceDirectory), cancellationToken))
+                : CodeAnalysisWorkerClient.Shared.AnalyzeAsync(code, GetReferenceDirectory(_referenceDirectory), cancellationToken);
+
+        internal static List<CodeDiagnostic> AnalyzeInProcess(string code, string referenceDirectory, CancellationToken cancellationToken)
         {
             ArgumentNullException.ThrowIfNull(code);
 
-            var syntaxTree = CSharpSyntaxTree.ParseText(code);
-            var outputKind = syntaxTree.GetCompilationUnitRoot().Members.Any(static member => member is GlobalStatementSyntax)
+            var syntaxTree = CSharpSyntaxTree.ParseText(code, cancellationToken: cancellationToken);
+            var outputKind = syntaxTree.GetCompilationUnitRoot(cancellationToken).Members.Any(static member => member is GlobalStatementSyntax)
                 ? OutputKind.ConsoleApplication
                 : OutputKind.DynamicallyLinkedLibrary;
             var compilation = CSharpCompilation.Create(
                 "AgentAnalysis",
                 syntaxTrees: [syntaxTree],
-                references: GetReferences(),
+                references: GetReferences(referenceDirectory),
                 options: new CSharpCompilationOptions(outputKind));
 
             var result = new List<CodeDiagnostic>();
-            foreach (var diagnostic in compilation.GetDiagnostics())
+            foreach (var diagnostic in compilation.GetDiagnostics(cancellationToken))
             {
                 if (diagnostic.Id is "CS0009" or "CS0518")
                 {
@@ -70,15 +84,16 @@ namespace CodexFlow.Core.Agents
                     span.StartLinePosition.Character + 1));
             }
 
-            return Task.FromResult(result);
+            return result;
         }
 
-        private MetadataReference[] GetReferences()
-        {
-            var directory = _referenceDirectory
+        internal static string GetReferenceDirectory(string? referenceDirectory = null)
+            => referenceDirectory
                 ?? Environment.GetEnvironmentVariable(ReferenceDirectoryVariable)
                 ?? Path.Combine(AppContext.BaseDirectory, "code-analysis", "net10.0");
 
+        private static MetadataReference[] GetReferences(string directory)
+        {
             try
             {
                 if (string.IsNullOrWhiteSpace(directory))

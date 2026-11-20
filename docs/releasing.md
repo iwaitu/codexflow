@@ -30,6 +30,15 @@
 | gitleaks 扫当前文件和全部历史，并确认扫描器真的能发现密钥 | 有密钥，或扫描器失效 |
 | 所有包（含间接依赖）没有已知漏洞 | 依赖有漏洞 |
 
+## SQLite 迁移
+
+迁移仍生成在 `CodexFlow.Storage.Sqlite`。EF 工具使用独立的设计时启动项目。
+
+```powershell
+dotnet ef migrations list --project CodexFlow.Storage.Sqlite --startup-project CodexFlow.Storage.Sqlite.Design
+dotnet ef migrations script --project CodexFlow.Storage.Sqlite --startup-project CodexFlow.Storage.Sqlite.Design
+```
+
 ## 第一次要做的设置（只做一次）
 
 发布不在仓库里存任何 NuGet 密钥：nuget.org 用 GitHub 的 OIDC 令牌换一个短期密钥（NuGet 的“受信任发布”）。

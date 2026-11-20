@@ -8,7 +8,7 @@ using Microsoft.EntityFrameworkCore.Design;
 
 namespace CodexFlow.Storage.Sqlite;
 
-/// <summary>Used by <c>dotnet ef migrations</c> only.</summary>
+/// <summary>Creates the SQLite context for the EF command-line tools.</summary>
 internal sealed class DesignTimeDbContextFactory : IDesignTimeDbContextFactory<JobDbContext>
 {
     public JobDbContext CreateDbContext(string[] args)

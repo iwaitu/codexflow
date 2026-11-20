@@ -4,23 +4,30 @@
 
 using System.Globalization;
 using System.Text.Json;
-using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
 namespace CodexFlow.Core.Runtime;
 
-internal readonly struct ToolObservationMetadata(bool isProvided, JObject? value)
+internal readonly struct ToolObservationMetadata
 {
-    public bool IsProvided => isProvided;
-    public bool IsReadable => value is not null;
+    private readonly object? _value;
+
+    private ToolObservationMetadata(object? value)
+    {
+        IsProvided = true;
+        _value = value;
+    }
+
+    public bool IsProvided { get; }
+    public bool IsReadable => _value is not null;
 
     public static ToolObservationMetadata From(object? metadata)
         => metadata switch
         {
             null => default,
-            JObject json => new(true, json),
-            JsonElement element => new(true, ReadObject(element)),
-            _ => new(true, null)
+            JObject json => new(json),
+            JsonElement element => new(CloneObject(element)),
+            _ => new(null)
         };
 
     public string? GetString(params string[] keys) => ReadString(keys, skipBlank: false);
@@ -31,7 +38,7 @@ internal readonly struct ToolObservationMetadata(bool isProvided, JObject? value
     {
         foreach (var key in keys)
         {
-            if (GetToken(key) is JValue { Type: JTokenType.String, Value: string text } &&
+            if (GetField(key).Text is { } text &&
                 (!skipBlank || !string.IsNullOrWhiteSpace(text)))
             {
                 return text;
@@ -45,27 +52,16 @@ internal readonly struct ToolObservationMetadata(bool isProvided, JObject? value
     {
         foreach (var key in keys)
         {
-            if (GetToken(key) is not { } token)
+            var field = GetField(key);
+            if (field.Integer is { } integer)
             {
-                continue;
+                return integer;
             }
 
-            if (token is JValue { Type: JTokenType.String, Value: string text } &&
+            if (field.Text is { } text &&
                 int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
             {
                 return parsed;
-            }
-
-            if (token.Type == JTokenType.Integer)
-            {
-                try
-                {
-                    return (int)token;
-                }
-                catch (OverflowException)
-                {
-                    // An alias may still provide an in-range value.
-                }
             }
         }
 
@@ -76,7 +72,7 @@ internal readonly struct ToolObservationMetadata(bool isProvided, JObject? value
     {
         foreach (var key in keys)
         {
-            if (GetToken(key) is not null)
+            if (GetField(key).IsPresent)
             {
                 return true;
             }
@@ -89,7 +85,7 @@ internal readonly struct ToolObservationMetadata(bool isProvided, JObject? value
     {
         foreach (var key in keys)
         {
-            if (GetToken(key) is { Type: not JTokenType.Null })
+            if (GetField(key).HasValue)
             {
                 return true;
             }
@@ -98,24 +94,77 @@ internal readonly struct ToolObservationMetadata(bool isProvided, JObject? value
         return false;
     }
 
-    private JToken? GetToken(string key) => value?.GetValue(key, StringComparison.OrdinalIgnoreCase);
+    private Field GetField(string key) => _value switch
+    {
+        JsonElement element => ReadField(FindProperty(element, key)),
+        JObject obj => ReadLegacyField(obj.GetValue(key, StringComparison.OrdinalIgnoreCase)),
+        _ => default
+    };
 
-    private static JObject? ReadObject(JsonElement element)
+    private static JsonElement? CloneObject(JsonElement element)
     {
         try
         {
-            if (element.ValueKind != JsonValueKind.Object)
-            {
-                return null;
-            }
-
-            using var input = new StringReader(element.GetRawText());
-            using var reader = new JsonTextReader(input) { DateParseHandling = DateParseHandling.None, MaxDepth = null };
-            return JObject.Load(reader);
+            return element.ValueKind == JsonValueKind.Object ? element.Clone() : null;
         }
-        catch (Exception ex) when (ex is ObjectDisposedException or JsonReaderException)
+        catch (ObjectDisposedException)
         {
             return null;
         }
     }
+
+    private static JsonElement FindProperty(JsonElement element, string key)
+    {
+        if (element.TryGetProperty(key, out var value))
+        {
+            return value;
+        }
+
+        foreach (var property in element.EnumerateObject())
+        {
+            if (string.Equals(property.Name, key, StringComparison.OrdinalIgnoreCase))
+            {
+                // Use the last value for the first spelling, matching the legacy DOM.
+                return element.GetProperty(property.Name);
+            }
+        }
+
+        return default;
+    }
+
+    private static Field ReadField(JsonElement element) => element.ValueKind switch
+    {
+        JsonValueKind.Undefined => default,
+        JsonValueKind.Null => new(true, false),
+        JsonValueKind.String => new(true, true, Text: element.GetString()),
+        JsonValueKind.Number when element.TryGetInt32(out var number) => new(true, true, Integer: number),
+        _ => new(true, true)
+    };
+
+    private static Field ReadLegacyField(JToken? token)
+    {
+        switch (token)
+        {
+            case null:
+                return default;
+            case { Type: JTokenType.Null }:
+                return new(true, false);
+            case JValue { Type: JTokenType.String, Value: string text }:
+                return new(true, true, Text: text);
+            case { Type: JTokenType.Integer }:
+                try
+                {
+                    return new(true, true, Integer: (int)token);
+                }
+                catch (OverflowException)
+                {
+                    // An alias may still provide an in-range value.
+                    return new(true, true);
+                }
+            default:
+                return new(true, true);
+        }
+    }
+
+    private readonly record struct Field(bool IsPresent, bool HasValue, string? Text = null, int? Integer = null);
 }

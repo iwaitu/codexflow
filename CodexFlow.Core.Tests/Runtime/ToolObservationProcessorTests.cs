@@ -548,6 +548,22 @@ public sealed class ToolObservationProcessorTests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
+    public void ObservationMetadata_PreservesPropertyPrecedenceAndIntegerTypes(bool useJsonElement)
+    {
+        const string json = """{"ExitCode":9,"exitCode":3.0,"ExitCode":7,"alternate":" -2 ","exponent":1e0}""";
+        object source = useJsonElement ? ParseJson(json) : JObject.Parse(json);
+        var metadata = ToolObservationMetadata.From(source);
+
+        Assert.Equal(7, metadata.GetInt("ExitCode"));
+        Assert.Equal(7, metadata.GetInt("EXITCODE"));
+        Assert.Null(metadata.GetInt("exitCode"));
+        Assert.Null(metadata.GetInt("exponent"));
+        Assert.Equal(-2, metadata.GetInt("exitCode", "alternate"));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
     public void Observe_ReadsDuplicateGuardHintFromSupportedMetadata(bool useJson)
     {
         var state = new QueryRuntimeState();

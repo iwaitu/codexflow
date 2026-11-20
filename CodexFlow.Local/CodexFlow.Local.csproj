@@ -45,4 +45,6 @@
            Text="The .NET reference assemblies required for C# diagnostics were not resolved." />
   </Target>
 
+  <Import Project="PublishCodeAnalysisWorker.targets" />
+
 </Project>

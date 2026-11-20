@@ -6,6 +6,7 @@ using CodexFlow.AI;
 using CodexFlow.Application.Jobs;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Agents;
+using CodexFlow.Core.CodeAnalysis;
 using CodexFlow.Core.Hashline;
 using CodexFlow.Core.Services;
 using CodexFlow.Core.Services.Infra;
@@ -121,8 +122,7 @@ public static class OrchestrationServiceCollectionExtensions
         services.AddScoped<CodexFlow.Core.Abstractions.IAgentRoleRegistry, CodexFlow.Core.Services.DefaultAgentRoleRegistry>();
         services.AddScoped<CodexFlow.Core.Workers.IWorkerDefinitionRegistry, CodexFlow.Core.Workers.DefaultWorkerDefinitionRegistry>();
         // 瑷诲唺鎵瑰垽鎬ф€濈董鑸囦唬纰煎瑷堟湇鍕?
-        services.AddScoped<CodexFlow.Core.Abstractions.ICodexCritiqueService, CodexFlow.Core.Services.SemanticDependencyScanner>();
-        services.AddScoped<ICodeAnalysisService, SemanticDependencyScanner>();
+        services.AddCodexFlowCodeAnalysis();
         services.AddScoped<IGitService, GitService>();
         services.AddScoped<IArchitectureService, DefaultArchitectureService>();
         services.AddScoped<ICodexTestDesigner, DefaultCodexTestDesigner>();
