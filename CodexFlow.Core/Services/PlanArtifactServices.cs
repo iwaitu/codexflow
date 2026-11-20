@@ -7,7 +7,6 @@ using CodexFlow.Core.Models;
 using CodexFlow.Core.Planning.Artifacts;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using Newtonsoft.Json;
 using System.Collections.Concurrent;
 
 namespace CodexFlow.Core.Services;
@@ -65,7 +64,7 @@ public sealed class InMemoryPlanArtifactStore : IPlanArtifactStore
     private static PlanArtifact? CloneOrNull(PlanArtifact? artifact) => artifact == null ? null : Clone(artifact);
 
     private static PlanArtifact Clone(PlanArtifact artifact)
-        => JsonConvert.DeserializeObject<PlanArtifact>(JsonConvert.SerializeObject(artifact)) ?? new PlanArtifact();
+        => PlanToolJson.Clone(artifact);
 }
 
 public sealed class WorkspacePlanFileService(IOptions<PlanningOptions> options) : IPlanFileService
@@ -329,7 +328,7 @@ public sealed class DefaultPlanProjectionService(
                 "不得只返回 title/description/priority/estimated_effort 摘要。";
             if (artifact.Tasks.Count > 0 && previewErrors.Count > 0)
                 projectionPrompt += "\n旧预投影不满足执行契约，必须修正以下问题（保持已批准范围及原任务 Id，不要改变任务身份）：\n" +
-                    string.Join("\n", previewErrors) + "\n原任务：\n" + JsonConvert.SerializeObject(artifact.Tasks);
+                    string.Join("\n", previewErrors) + "\n原任务：\n" + PlanToolJson.Write(artifact.Tasks);
             tasks = await planner.GeneratePlanAsync(session, projectionPrompt, ct).ConfigureAwait(false);
         }
 
@@ -342,7 +341,7 @@ public sealed class DefaultPlanProjectionService(
             // A syntactically valid model response may still omit the execution contract. Retry once with
             // concrete validation feedback; never synthesize acceptance criteria or relax the gate.
             var correction = "将已批准计划投影为 CodexTask[]；这是一次执行契约纠偏，不是重新规划。保持范围和原任务 Id。\n" +
-                "已批准 Markdown：\n" + artifact.Markdown + "\n无效输出：\n" + JsonConvert.SerializeObject(tasks) +
+                "已批准 Markdown：\n" + artifact.Markdown + "\n无效输出：\n" + PlanToolJson.Write(tasks) +
                 "\n必须修正：\n" + string.Join("\n", errors) +
                 "\n每个代码任务必须含非空 ChecklistItems，每项包含 Id、Text、Status(Pending)，涵盖实际修改及回归验证。";
             tasks = await planner.GeneratePlanAsync(session, correction, ct).ConfigureAwait(false);

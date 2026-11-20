@@ -5,9 +5,9 @@
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Constants;
 using CodexFlow.Core.Models;
+using CodexFlow.Core.Planning.Artifacts;
 using CodexFlow.Core.Planning.Patching;
 using Microsoft.Extensions.Logging;
-using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System.Text.Json;
 
@@ -30,8 +30,8 @@ internal static class TaskCrudToolSupport
         return await sessionManager.GetOrCreateSessionAsync(sessionId, string.Empty, string.Empty, (Uri?)null).ConfigureAwait(false);
     }
 
-    public static string Serialize(object value)
-        => JsonConvert.SerializeObject(value, Formatting.Indented);
+    public static string Serialize<T>(T value)
+        => PlanToolJson.Write(value, indented: true);
 
     public static bool TryParseStatus(object? value, out CodexTaskStatus status)
     {
@@ -118,7 +118,7 @@ internal static class TaskCrudToolSupport
             {
                 if (jsonElement.ValueKind == JsonValueKind.Array)
                 {
-                    return JsonConvert.DeserializeObject<List<TaskChecklistItem>>(jsonElement.GetRawText()) ?? [];
+                    return PlanToolJson.Read<List<TaskChecklistItem>>(jsonElement.GetRawText()) ?? [];
                 }
 
                 if (jsonElement.ValueKind == JsonValueKind.String)
@@ -129,7 +129,7 @@ internal static class TaskCrudToolSupport
 
             if (value is JArray jArray)
             {
-                return jArray.ToObject<List<TaskChecklistItem>>() ?? [];
+                return PlanToolJson.Read<List<TaskChecklistItem>>(jArray.ToString(Newtonsoft.Json.Formatting.None)) ?? [];
             }
 
             var text = value.ToString();
@@ -140,7 +140,7 @@ internal static class TaskCrudToolSupport
 
             if (text.TrimStart()[0] == '[')
             {
-                return JsonConvert.DeserializeObject<List<TaskChecklistItem>>(text) ?? [];
+                return PlanToolJson.Read<List<TaskChecklistItem>>(text) ?? [];
             }
 
             return text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -303,14 +303,7 @@ public sealed class TaskListTool(CodexSessionManager sessionManager, ITaskListSe
             snapshot = await taskListService.GetSnapshotAsync(session.Id, ct).ConfigureAwait(false);
         }
 
-        var payload = new
-        {
-            SessionId = session.Id,
-            PlanVersion = session.PlanVersion,
-            PlanGeneratedAtUtc = session.PlanGeneratedAtUtc,
-            Tasks = session.Plan,
-            SnapshotJson = snapshot
-        };
+        var payload = new PlanTaskListPayload(session.Id, session.PlanVersion, session.PlanGeneratedAtUtc, session.Plan, snapshot);
 
         return CodexToolResult.Succeeded(
             TaskCrudToolSupport.Serialize(payload),
@@ -520,7 +513,7 @@ public sealed class PlanPatchResolveTool(
             var snapshot = await TaskCrudToolSupport.SaveTaskListSnapshotAsync(taskListService, session, ct).ConfigureAwait(false);
 
             return CodexToolResult.Succeeded(
-                $"PLAN_PATCH_RESOLVED\n{TaskCrudToolSupport.Serialize(new { result, CleanupWarnings = cleanupWarnings, SnapshotJson = snapshot, Metadata = session.Metadata })}",
+                $"PLAN_PATCH_RESOLVED\n{TaskCrudToolSupport.Serialize(new PlanPatchResolutionPayload(result, cleanupWarnings, snapshot, session.Metadata))}",
                 new { Result = result, CleanupWarnings = cleanupWarnings, SnapshotJson = snapshot },
                 summary: result.Summary);
         }

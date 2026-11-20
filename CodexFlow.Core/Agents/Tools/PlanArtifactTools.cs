@@ -6,7 +6,6 @@ using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Models;
 using CodexFlow.Core.Planning.Artifacts;
 using Microsoft.Extensions.Logging;
-using Newtonsoft.Json;
 using System.Text.RegularExpressions;
 
 namespace CodexFlow.Core.Agents.Tools;
@@ -607,7 +606,7 @@ public sealed class ProjectPlanToTasksTool(
             }
 
             return CodexToolResult.Succeeded(
-                JsonConvert.SerializeObject(result.Tasks, Formatting.Indented),
+                PlanToolJson.Write(result.Tasks, indented: true),
                 metadata: new { plan_artifact_id = result.Artifact.Id, status = result.Artifact.Status.ToString(), task_count = result.Tasks.Count },
                 systemHint: "计划已投影为待执行任务。下一步必须调用 start_next_task，不要在主会话中直接读取、搜索或修改代码。",
                 requiredToolName: "start_next_task",
@@ -640,7 +639,7 @@ public sealed class PlanDiffTool(IPlanDiffService diffService) : ICodexTool
 
             var from = PlanArtifactToolSupport.ReadString(arguments, "from_plan_artifact_id");
             var diff = await diffService.DiffAsync(from, to, ct).ConfigureAwait(false);
-            return CodexToolResult.Succeeded(JsonConvert.SerializeObject(diff, Formatting.Indented));
+            return CodexToolResult.Succeeded(PlanToolJson.Write(diff, indented: true));
         }
         catch (InvalidOperationException ex)
         {

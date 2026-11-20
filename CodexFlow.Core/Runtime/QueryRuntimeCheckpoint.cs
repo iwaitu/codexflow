@@ -4,7 +4,6 @@
 
 using CodexFlow.Core.Telemetry;
 using Microsoft.Extensions.AI;
-using Newtonsoft.Json;
 
 namespace CodexFlow.Core.Runtime;
 
@@ -167,7 +166,7 @@ public static class QueryRuntimeCheckpointBuilder
         QueryRuntimeCheckpoint? checkpoint;
         try
         {
-            checkpoint = JsonConvert.DeserializeObject<QueryRuntimeCheckpoint>(rawCheckpoint);
+            checkpoint = SessionMetadataJson.ReadCheckpoint(rawCheckpoint);
         }
         catch
         {

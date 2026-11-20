@@ -8,7 +8,6 @@ using CodexFlow.Core.Models;
 using CodexFlow.Core.Planning.Artifacts;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging;
-using Newtonsoft.Json;
 using System.IO;
 using System.Net.Http;
 using System.Text.Json;
@@ -208,7 +207,7 @@ public class GenerateDevPlanTool(
                         return CodexToolResult.Error("规划已生成但 task list snapshot 未成功持久化，系统已回滚到旧计划状态。请检查任务清单存储链路后重试。");
                     }
 
-                    var planJson = JsonConvert.SerializeObject(newPlan, Formatting.Indented);
+                    var planJson = PlanToolJson.Write(newPlan, indented: true);
                     return CodexToolResult.Succeeded($"✅ 任务规划已生成，共计 {newPlan.Count} 个任务：\n\n{planJson}\n\n请审查以上计划，然后调用 start_next_task 开始执行第一个待执行任务。analysis 任务为只读分析任务，不应进入代码执行。");
                 }
                 else

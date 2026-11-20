@@ -561,7 +561,7 @@ public class CodexSessionManager
         ArgumentNullException.ThrowIfNull(checkpoint);
 
         var session = await GetOrCreateSessionAsync(sessionId).ConfigureAwait(false);
-        var serialized = JsonConvert.SerializeObject(ToCheckpointProjection(checkpoint));
+        var serialized = SessionMetadataJson.WriteCheckpoint(ToCheckpointProjection(checkpoint));
         if (SetMetadataValue(session.Metadata, QueryRuntimeCheckpoint.MetadataKey, serialized))
         {
             await UpdateSessionAsync(session).ConfigureAwait(false);
@@ -688,7 +688,7 @@ public class CodexSessionManager
             updates.RemoveRange(MaxRecentExecutionUpdates, updates.Count - MaxRecentExecutionUpdates);
         }
 
-        var serialized = JsonConvert.SerializeObject(updates);
+        var serialized = SessionMetadataJson.WriteExecutionUpdates(updates);
         if (session.Metadata.TryGetValue(RecentExecutionUpdatesMetadataKey, out var existingSerialized) &&
             string.Equals(existingSerialized, serialized, StringComparison.Ordinal))
         {
@@ -1173,9 +1173,8 @@ public class CodexSessionManager
         return true;
     }
 
-    private static object ToCheckpointProjection(QueryRuntimeCheckpoint checkpoint)
-        => new
-        {
+    private static RuntimeCheckpointProjection ToCheckpointProjection(QueryRuntimeCheckpoint checkpoint)
+        => new(
             checkpoint.QueryId,
             checkpoint.SessionId,
             checkpoint.EntryPoint,
@@ -1194,30 +1193,25 @@ public class CodexSessionManager
             checkpoint.WriteToolCalls,
             checkpoint.RecoveryCount,
             checkpoint.LastContinueReason,
-            LastPromptSnapshot = checkpoint.LastPromptAssemblySnapshot == null
+            checkpoint.LastPromptAssemblySnapshot == null
                 ? null
-                : new
-                {
+                : new CheckpointPromptProjection(
                     checkpoint.LastPromptAssemblySnapshot.Round,
                     checkpoint.LastPromptAssemblySnapshot.ToolNames,
                     checkpoint.LastPromptAssemblySnapshot.ToolChoice,
                     checkpoint.LastPromptAssemblySnapshot.RequiredToolName,
                     checkpoint.LastPromptAssemblySnapshot.DroppedFrames,
-                    checkpoint.LastPromptAssemblySnapshot.BudgetDecisions
-                },
-            EvidenceLedger = new
+                    checkpoint.LastPromptAssemblySnapshot.BudgetDecisions),
+            checkpoint.EvidenceLedger with
             {
-                Files = checkpoint.EvidenceLedger.Files.TakeLast(MaxRuntimeCheckpointFiles),
-                ToolResults = checkpoint.EvidenceLedger.ToolResults.TakeLast(MaxRuntimeCheckpointToolResults),
-                ChangedFiles = checkpoint.EvidenceLedger.ChangedFiles.TakeLast(MaxRuntimeCheckpointFiles),
-                DiffChanges = checkpoint.EvidenceLedger.DiffChanges.TakeLast(MaxRuntimeCheckpointFiles),
-                Verifications = checkpoint.EvidenceLedger.Verifications.TakeLast(MaxRuntimeCheckpointFiles),
-                PendingModifications = checkpoint.EvidenceLedger.PendingModifications.TakeLast(MaxRuntimeCheckpointPendingModifications),
-                checkpoint.EvidenceLedger.LastToolBatchSummary,
-                Failures = checkpoint.EvidenceLedger.Failures.TakeLast(MaxRuntimeCheckpointFailures),
-                checkpoint.EvidenceLedger.RepeatedEvidenceKeys
-            }
-        };
+                Files = checkpoint.EvidenceLedger.Files.TakeLast(MaxRuntimeCheckpointFiles).ToArray(),
+                ToolResults = checkpoint.EvidenceLedger.ToolResults.TakeLast(MaxRuntimeCheckpointToolResults).ToArray(),
+                ChangedFiles = checkpoint.EvidenceLedger.ChangedFiles.TakeLast(MaxRuntimeCheckpointFiles).ToArray(),
+                DiffChanges = checkpoint.EvidenceLedger.DiffChanges.TakeLast(MaxRuntimeCheckpointFiles).ToArray(),
+                Verifications = checkpoint.EvidenceLedger.Verifications.TakeLast(MaxRuntimeCheckpointFiles).ToArray(),
+                PendingModifications = checkpoint.EvidenceLedger.PendingModifications.TakeLast(MaxRuntimeCheckpointPendingModifications).ToArray(),
+                Failures = checkpoint.EvidenceLedger.Failures.TakeLast(MaxRuntimeCheckpointFailures).ToArray()
+            });
 
     private static List<string> GetRecentExecutionUpdates(CodexSession session)
     {
@@ -1229,7 +1223,7 @@ public class CodexSessionManager
 
         try
         {
-            return JsonConvert.DeserializeObject<List<string>>(raw)?
+            return SessionMetadataJson.ReadExecutionUpdates(raw)?
                 .Where(static item => !string.IsNullOrWhiteSpace(item))
                 .Select(static item => item.Trim())
                 .Distinct(StringComparer.Ordinal)
@@ -1281,7 +1275,7 @@ public class CodexSessionManager
 
         try
         {
-            var trace = JsonConvert.DeserializeObject<SemanticRecallTrace>(traceRaw);
+            var trace = SessionMetadataJson.ReadRecallTrace(traceRaw);
             if (trace == null)
             {
                 return null;
@@ -1289,7 +1283,7 @@ public class CodexSessionManager
 
             return BuildSemanticRecallContext(trace);
         }
-        catch (JsonException)
+        catch (Exception ex) when (ex is JsonException or System.Text.Json.JsonException)
         {
             return null;
         }
