@@ -285,22 +285,10 @@ public class ReadFileTool : ICodexTool
 
         return CodexToolResult.Succeeded(
             outputBuilder.ToString(),
-            new
-            {
-                FilePath = normalizedPath,
-                Format = docResult.Format.ToString(),
-                TotalPages = docResult.TotalPages,
-                StartPage = docResult.StartPage,
-                EndPage = docResult.EndPage,
-                Lines = totalLines,
-                Size = info.Length,
-                StartLine = selStart,
-                EndLine = selEnd,
-                IsTruncated = isTruncated || docResult.Truncated || selEnd < totalLines,
-                HasImages = docResult.HasImages,
-                IsLikelyScanned = docResult.IsLikelyScanned,
-                AttachedVisualCount = attachedVisualCount
-            });
+            new DocumentReadMetadata(
+                normalizedPath, docResult.Format.ToString(), docResult.TotalPages, docResult.StartPage, docResult.EndPage,
+                totalLines, info.Length, selStart, selEnd, isTruncated || docResult.Truncated || selEnd < totalLines,
+                docResult.HasImages, docResult.IsLikelyScanned, attachedVisualCount));
     }
 
     private async Task<CodexToolResult> ExecuteImageReadAsync(
@@ -341,13 +329,7 @@ public class ReadFileTool : ICodexTool
 
         var output = $"--- Image: {normalizedPath} ({mime}, {FormatSize(info.Length)}) ---\n" +
                      $"图片已加载并将在下一步送入多模态模型：{TurnVisualAttachmentStore.FormatMarker(registered)}";
-        return CodexToolResult.Succeeded(output, new
-        {
-            FilePath = normalizedPath,
-            MimeType = mime,
-            Size = info.Length,
-            VisualId = registered.Id
-        });
+        return CodexToolResult.Succeeded(output, new ImageReadMetadata(normalizedPath, mime, info.Length, registered.Id));
     }
 
     private bool ResolveIsMultimodalEnabled()
@@ -371,7 +353,7 @@ public class ReadFileTool : ICodexTool
 
         return CodexToolResult.Succeeded(
             output,
-            new { FilePath = normalizedPath, Lines = totalLines, Size = fileSizeBytes, StartLine = selStart, EndLine = selEnd, IsTruncated = isTruncated || selEnd < totalLines });
+            new TextReadMetadata(normalizedPath, totalLines, fileSizeBytes, selStart, selEnd, isTruncated || selEnd < totalLines));
     }
 
     private static (string Content, int StartLine, int EndLine, int TotalLines, bool IsAutoTruncated) SliceLines(
@@ -421,21 +403,10 @@ public class ReadFileTool : ICodexTool
                 $"\n" +
                 $"{snapshot.RenderedText}";
 
-            return CodexToolResult.Succeeded(resultContent, new
-            {
-                FilePath = normalizedPath,
-                SnapshotId = snapshot.SnapshotId,
-                FileFingerprint = snapshot.FileFingerprint,
-                Lines = snapshot.Lines.Count,
-                TotalLineCount = snapshot.TotalLineCount,
-                WindowStartLine = snapshot.WindowStartLine,
-                WindowEndLine = snapshot.WindowEndLine,
-                IsPartialWindow = snapshot.IsPartialWindow,
-                EncodingName = snapshot.EncodingName,
-                HasBom = snapshot.HasBom,
-                NewLineStyle = snapshot.NewLineStyle,
-                RenderedText = snapshot.RenderedText
-            });
+            return CodexToolResult.Succeeded(resultContent, new HashlineReadMetadata(
+                normalizedPath, snapshot.SnapshotId, snapshot.FileFingerprint, snapshot.Lines.Count, snapshot.TotalLineCount,
+                snapshot.WindowStartLine, snapshot.WindowEndLine, snapshot.IsPartialWindow, snapshot.EncodingName,
+                snapshot.HasBom, snapshot.NewLineStyle, snapshot.RenderedText));
         }
         catch (HashlineException ex)
         {
@@ -498,3 +469,18 @@ public class ReadFileTool : ICodexTool
         };
     }
 }
+
+internal sealed record TextReadMetadata(
+    string FilePath, int Lines, long Size, int StartLine, int EndLine, bool IsTruncated);
+
+internal sealed record DocumentReadMetadata(
+    string FilePath, string Format, int? TotalPages, int? StartPage, int? EndPage,
+    int Lines, long Size, int StartLine, int EndLine, bool IsTruncated,
+    bool HasImages, bool IsLikelyScanned, int AttachedVisualCount);
+
+internal sealed record ImageReadMetadata(string FilePath, string MimeType, long Size, string VisualId);
+
+internal sealed record HashlineReadMetadata(
+    string FilePath, string SnapshotId, string FileFingerprint, int Lines, int TotalLineCount,
+    int WindowStartLine, int WindowEndLine, bool IsPartialWindow, string EncodingName,
+    bool HasBom, string NewLineStyle, string RenderedText);

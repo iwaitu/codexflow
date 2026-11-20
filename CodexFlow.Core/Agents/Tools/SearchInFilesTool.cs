@@ -172,14 +172,7 @@ public class SearchInFilesTool(ILogger<SearchInFilesTool> logger) : ICodexTool
 
             return CodexToolResult.Succeeded(
                 fallbackHeader + header + sb.ToString() + followUpHint,
-                new
-                {
-                    MatchCount = matchCount,
-                    Pattern = pattern,
-                    RequestedPath = requestedSubPath,
-                    EffectivePath = normalizedSubPath,
-                    FellBackToRoot = fellBackToRoot
-                },
+                new SearchInFilesMetadata(matchCount, pattern, requestedSubPath, normalizedSubPath, fellBackToRoot),
                 summary: BuildMatchSummary(pattern, matchedFiles, requestedSubPath, normalizedSubPath, fellBackToRoot),
                 systemHint: fallbackHint);
         }
@@ -343,3 +336,5 @@ public class SearchInFilesTool(ILogger<SearchInFilesTool> logger) : ICodexTool
     }
 }
 
+internal sealed record SearchInFilesMetadata(
+    int MatchCount, string Pattern, string RequestedPath, string EffectivePath, bool FellBackToRoot);

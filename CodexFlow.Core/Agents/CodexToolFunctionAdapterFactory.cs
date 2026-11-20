@@ -45,7 +45,7 @@ public static class CodexToolFunctionAdapterFactory
 
         return name.ToLowerInvariant() switch
         {
-            "ivilson_read"          => CreateForIvilsonRead(tool, description),
+            "ivilson_read"          => SourceGeneratedToolFunction.ReadFile(tool, description),
             "hs_read"               => CreateForHsRead(tool, description),
             "ivilson_ls"            => CreateForIvilsonLs(tool, description),
             "list_workspace"        => CreateForListWorkspace(tool, description),
@@ -55,7 +55,7 @@ public static class CodexToolFunctionAdapterFactory
             "notebook_edit"         => CreateForNotebookEdit(tool, description),
             "delete_file"           => CreateForDeleteFile(tool, description),
             "create_directory"      => CreateForCreateDirectory(tool, description),
-            "search_in_files"       => CreateForSearchInFiles(tool, description),
+            "search_in_files"       => SourceGeneratedToolFunction.SearchFiles(tool, description),
             "exec_code"             => CreateForExecCode(tool, description),
             "run_command" or "exec_cmd" => CreateForRunCommand(tool, description),
             "run_shell"             => CreateForRunShell(tool, description),
@@ -65,7 +65,7 @@ public static class CodexToolFunctionAdapterFactory
             "search_file_index"     => CreateForSearchFileIndex(tool, description),
             "run_tests"             => CreateForRunTests(tool, description),
             "analyze_project"       => CreateForAnalyzeProject(tool, description),
-            "analyze_code"          => new AnalyzeCodeAIFunction(tool, description),
+            "analyze_code"          => SourceGeneratedToolFunction.AnalyzeCode(tool, description),
             "lsp_get_diagnostics"   => CreateForLspGetDiagnostics(tool, description),
             "lsp_document_symbols"  => CreateForLspDocumentSymbols(tool, description),
             "lsp_workspace_symbols" => CreateForLspWorkspaceSymbols(tool, description),
@@ -117,7 +117,7 @@ public static class CodexToolFunctionAdapterFactory
         };
     }
 
-    private static Dictionary<string, object?> CreateArgs(
+    internal static Dictionary<string, object?> CreateArgs(
         string? session_id = null,
         string? workspace_path = null,
         string? project_root = null)
@@ -173,24 +173,6 @@ public static class CodexToolFunctionAdapterFactory
     // ──────────────────────────────────────────────────────────
     // Per-tool typed factories
     // ──────────────────────────────────────────────────────────
-
-    private static AIFunction CreateForIvilsonRead(ICodexTool tool, string description) =>
-        AIFunctionFactory.Create(
-            async (string path, string? mode = null, int? start_line = null, int? end_line = null,
-                   int? window_start_line = null, int? window_line_count = null,
-                   string? session_id = null, string? workspace_path = null, string? project_root = null,
-                   CancellationToken ct = default) =>
-            {
-                var args = CreateArgs(session_id, workspace_path, project_root);
-                args["path"] = path;
-                if (mode is not null) args["mode"] = mode;
-                if (start_line.HasValue) args["start_line"] = start_line.Value;
-                if (end_line.HasValue) args["end_line"] = end_line.Value;
-                if (window_start_line.HasValue) args["window_start_line"] = window_start_line.Value;
-                if (window_line_count.HasValue) args["window_line_count"] = window_line_count.Value;
-                return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
-            },
-            new AIFunctionFactoryOptions { Name = "ivilson_read", Description = description });
 
     private static AIFunction CreateForHsRead(ICodexTool tool, string description) =>
         AIFunctionFactory.Create(
@@ -323,22 +305,6 @@ public static class CodexToolFunctionAdapterFactory
                 return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
             },
             new AIFunctionFactoryOptions { Name = "create_directory", Description = description });
-
-    private static AIFunction CreateForSearchInFiles(ICodexTool tool, string description) =>
-        AIFunctionFactory.Create(
-            async (string pattern, string? path = null, bool? ignore_case = null,
-                   int? max_results = null,
-                   string? session_id = null, string? workspace_path = null, string? project_root = null,
-                   CancellationToken ct = default) =>
-            {
-                var args = CreateArgs(session_id, workspace_path, project_root);
-                args["pattern"] = pattern;
-                args["path"] = path ?? ".";
-                args["ignore_case"] = ignore_case ?? true;
-                args["max_results"] = max_results ?? 50;
-                return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
-            },
-            new AIFunctionFactoryOptions { Name = "search_in_files", Description = description });
 
     private static AIFunction CreateForExecCode(ICodexTool tool, string description) =>
         AIFunctionFactory.Create(
