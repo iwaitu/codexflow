@@ -7,6 +7,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using CodexFlow.Contracts.Browser;
 using CodexFlow.Core.Configuration;
 using CodexFlow.Core.Execution.Approval;
@@ -193,7 +194,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                     return navRefusal;
                 }
 
-                var navJson = JsonSerializer.Serialize(new { url = eval.NormalizedUri.AbsoluteUri });
+                var navJson = new JsonObject { ["url"] = eval.NormalizedUri.AbsoluteUri }.ToJsonString();
                 var navResult = await proc.Connection.SendJsonAsync("Page.navigate", navJson, tab.CdpSessionId, ct).ConfigureAwait(false);
                 if (navResult.TryGetProperty("errorText", out var errProp) && !string.IsNullOrWhiteSpace(errProp.GetString()))
                 {
@@ -815,7 +816,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
 
                     if (action == "type" && !string.IsNullOrEmpty(request.Text))
                     {
-                        var insertJson = JsonSerializer.Serialize(new { text = request.Text });
+                        var insertJson = new JsonObject { ["text"] = request.Text }.ToJsonString();
                         await proc.Connection.SendJsonAsync("Input.insertText", insertJson, tab.CdpSessionId, ct).ConfigureAwait(false);
                     }
                     break;
@@ -1007,13 +1008,13 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             using var evalCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             evalCts.CancelAfter(TimeSpan.FromSeconds(10));
 
-            var evalParams = JsonSerializer.Serialize(new
+            var evalParams = new JsonObject
             {
-                expression = trimmedExpr,
-                returnByValue = false,
-                awaitPromise,
-                timeout = 8000
-            });
+                ["expression"] = trimmedExpr,
+                ["returnByValue"] = false,
+                ["awaitPromise"] = awaitPromise,
+                ["timeout"] = 8000
+            }.ToJsonString();
             var evalRes = await proc.Connection.SendJsonAsync("Runtime.evaluate", evalParams, tab.CdpSessionId, evalCts.Token).ConfigureAwait(false);
 
             if (evalRes.TryGetProperty("exceptionDetails", out var excDetails))
@@ -1046,13 +1047,13 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 {
                     try
                     {
-                        var callParams = JsonSerializer.Serialize(new
+                        var callParams = new JsonObject
                         {
-                            objectId,
-                            functionDeclaration = BrowserSnapshotScript.BuildSafeSerializeObjectFunctionJs(),
-                            returnByValue = true,
-                            awaitPromise = false
-                        });
+                            ["objectId"] = objectId,
+                            ["functionDeclaration"] = BrowserSnapshotScript.BuildSafeSerializeObjectFunctionJs(),
+                            ["returnByValue"] = true,
+                            ["awaitPromise"] = false
+                        }.ToJsonString();
                         var callRes = await proc.Connection.SendJsonAsync("Runtime.callFunctionOn", callParams, tab.CdpSessionId, evalCts.Token).ConfigureAwait(false);
                         rawOutput = callRes.TryGetProperty("result", out var cr) && cr.TryGetProperty("value", out var cv)
                             ? (cv.ValueKind == JsonValueKind.String ? cv.GetString() ?? "null" : cv.ToString())
@@ -1064,7 +1065,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                         {
                             await proc.Connection.SendJsonAsync(
                                 "Runtime.releaseObject",
-                                JsonSerializer.Serialize(new { objectId }),
+                                new JsonObject { ["objectId"] = objectId }.ToJsonString(),
                                 tab.CdpSessionId,
                                 CancellationToken.None).ConfigureAwait(false);
                         }
@@ -1244,7 +1245,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                     var tab = await CreateAndAttachTabAsync(proc, session, makeActive: true, ct).ConfigureAwait(false);
                     if (targetUri is not null)
                     {
-                        var navJson = JsonSerializer.Serialize(new { url = targetUri.AbsoluteUri });
+                        var navJson = new JsonObject { ["url"] = targetUri.AbsoluteUri }.ToJsonString();
                         await proc.Connection.SendJsonAsync("Page.navigate", navJson, tab.CdpSessionId, ct).ConfigureAwait(false);
                         await WaitForDocumentSettleAsync(proc.Connection, tab, ct).ConfigureAwait(false);
                         var snapshot = await CaptureDomSnapshotCoreAsync(proc.Connection, session, tab, ct).ConfigureAwait(false);
@@ -1274,7 +1275,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                         return Fail("tab_not_found", $"未找到标签页 '{tabId}'。");
                     }
 
-                    await proc.Connection.SendJsonAsync("Target.activateTarget", JsonSerializer.Serialize(new { targetId = targetTab.TargetId }), ct: ct).ConfigureAwait(false);
+                    await proc.Connection.SendJsonAsync("Target.activateTarget", new JsonObject { ["targetId"] = targetTab.TargetId }.ToJsonString(), ct: ct).ConfigureAwait(false);
                     _ = await TryCaptureViewportJpegAsync(proc.Connection, session, targetTab, ct).ConfigureAwait(false);
                     session.RecordAction("browser_tabs", "switch", targetTab.TargetId, targetTab.Url, true, $"切换至 {targetTab.TargetId}", 0);
                     await PublishStateAsync(session, force: true, ct: ct).ConfigureAwait(false);
@@ -1296,7 +1297,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                     }
                     try
                     {
-                        await proc.Connection.SendJsonAsync("Target.closeTarget", JsonSerializer.Serialize(new { targetId = removed.TargetId }), ct: ct).ConfigureAwait(false);
+                        await proc.Connection.SendJsonAsync("Target.closeTarget", new JsonObject { ["targetId"] = removed.TargetId }.ToJsonString(), ct: ct).ConfigureAwait(false);
                     }
                     catch (Exception)
                     {
@@ -1774,7 +1775,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                                 {
                                     await proc.Connection.SendJsonAsync(
                                         "Target.closeTarget",
-                                        JsonSerializer.Serialize(new { targetId = tId }),
+                                        new JsonObject { ["targetId"] = tId }.ToJsonString(),
                                         ct: disposeCts.Token).ConfigureAwait(false);
                                 }
                                 catch (Exception)
@@ -1798,7 +1799,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                         {
                             await proc.Connection.SendJsonAsync(
                                 "Target.closeTarget",
-                                JsonSerializer.Serialize(new { targetId = tab.TargetId }),
+                                new JsonObject { ["targetId"] = tab.TargetId }.ToJsonString(),
                                 ct: disposeCts.Token).ConfigureAwait(false);
                         }
                         catch (Exception)
@@ -1810,7 +1811,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 {
                     await proc.Connection.SendJsonAsync(
                         "Target.disposeBrowserContext",
-                        JsonSerializer.Serialize(new { browserContextId = session.BrowserContextId }),
+                        new JsonObject { ["browserContextId"] = session.BrowserContextId }.ToJsonString(),
                         ct: disposeCts.Token).ConfigureAwait(false);
                 }
             }
@@ -2062,13 +2063,13 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             try
             {
                 var createCtxParams = sessionProxy is null
-                    ? JsonSerializer.Serialize(new { disposeOnDetach = true })
-                    : JsonSerializer.Serialize(new
+                    ? new JsonObject { ["disposeOnDetach"] = true }.ToJsonString()
+                    : new JsonObject
                     {
-                        disposeOnDetach = true,
-                        proxyServer = sessionProxy.ProxyServerUrl,
-                        proxyBypassList = "<-loopback>"
-                    });
+                        ["disposeOnDetach"] = true,
+                        ["proxyServer"] = sessionProxy.ProxyServerUrl,
+                        ["proxyBypassList"] = "<-loopback>"
+                    }.ToJsonString();
 
                 var ctxRes = await proc.Connection.SendJsonAsync("Target.createBrowserContext", createCtxParams, ct: ct).ConfigureAwait(false);
                 browserContextId = ctxRes.GetProperty("browserContextId").GetString()
@@ -2094,7 +2095,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                     {
                         await proc.Connection.SendJsonAsync(
                             "Target.disposeBrowserContext",
-                            JsonSerializer.Serialize(new { browserContextId }),
+                            new JsonObject { ["browserContextId"] = browserContextId }.ToJsonString(),
                             ct: ct).ConfigureAwait(false);
                     }
                     catch (Exception)
@@ -2121,7 +2122,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                     {
                         await proc.Connection.SendJsonAsync(
                             "Target.disposeBrowserContext",
-                            JsonSerializer.Serialize(new { browserContextId }),
+                            new JsonObject { ["browserContextId"] = browserContextId }.ToJsonString(),
                             ct: CancellationToken.None).ConfigureAwait(false);
                     }
                     catch (Exception)
@@ -2313,26 +2314,26 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         var opts = _options.CurrentValue;
         // Always start on about:blank so Fetch.enable and auto-attach are active before any remote URL loads.
         var createParams = session.UsesDefaultContext
-            ? JsonSerializer.Serialize(new
+            ? new JsonObject
             {
-                url = "about:blank",
-                width = Math.Clamp(opts.DefaultViewportWidth, 640, 1920),
-                height = Math.Clamp(opts.DefaultViewportHeight, 480, 1440)
-            })
-            : JsonSerializer.Serialize(new
+                ["url"] = "about:blank",
+                ["width"] = Math.Clamp(opts.DefaultViewportWidth, 640, 1920),
+                ["height"] = Math.Clamp(opts.DefaultViewportHeight, 480, 1440)
+            }.ToJsonString()
+            : new JsonObject
             {
-                url = "about:blank",
-                width = Math.Clamp(opts.DefaultViewportWidth, 640, 1920),
-                height = Math.Clamp(opts.DefaultViewportHeight, 480, 1440),
-                browserContextId = session.BrowserContextId
-            });
+                ["url"] = "about:blank",
+                ["width"] = Math.Clamp(opts.DefaultViewportWidth, 640, 1920),
+                ["height"] = Math.Clamp(opts.DefaultViewportHeight, 480, 1440),
+                ["browserContextId"] = session.BrowserContextId
+            }.ToJsonString();
 
         var createRes = await proc.Connection.SendJsonAsync("Target.createTarget", createParams, ct: ct).ConfigureAwait(false);
         var targetId = createRes.GetProperty("targetId").GetString()
             ?? throw new InvalidOperationException("Target.createTarget 未返回 targetId。");
 
         _trackedTargets[targetId] = session.SessionId;
-        var attachParams = JsonSerializer.Serialize(new { targetId, flatten = true });
+        var attachParams = new JsonObject { ["targetId"] = targetId, ["flatten"] = true }.ToJsonString();
         var attachRes = await proc.Connection.SendJsonAsync("Target.attachToTarget", attachParams, ct: ct).ConfigureAwait(false);
         var cdpSessionId = attachRes.GetProperty("sessionId").GetString()
             ?? throw new InvalidOperationException("Target.attachToTarget 未返回 sessionId。");
@@ -2377,18 +2378,21 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             _logger.LogDebug(ex, "Target.setAutoAttach failed for CDP session {CdpSessionId}", cdpSessionId);
         }
 
-        var metricsParams = JsonSerializer.Serialize(new
+        var metricsParams = new JsonObject
         {
-            width = Math.Clamp(opts.DefaultViewportWidth, 640, 1920),
-            height = Math.Clamp(opts.DefaultViewportHeight, 480, 1440),
-            deviceScaleFactor = 1,
-            mobile = false
-        });
+            ["width"] = Math.Clamp(opts.DefaultViewportWidth, 640, 1920),
+            ["height"] = Math.Clamp(opts.DefaultViewportHeight, 480, 1440),
+            ["deviceScaleFactor"] = 1,
+            ["mobile"] = false
+        }.ToJsonString();
         await connection.SendJsonAsync("Emulation.setDeviceMetricsOverride", metricsParams, cdpSessionId, ct).ConfigureAwait(false);
 
         var fetchParams = isRemote
-            ? JsonSerializer.Serialize(new { patterns = new[] { new { urlPattern = "*" } } })
-            : JsonSerializer.Serialize(new { patterns = new[] { new { urlPattern = "*", resourceType = "Document" } } });
+            ? new JsonObject { ["patterns"] = new JsonArray(new JsonObject { ["urlPattern"] = "*" }) }.ToJsonString()
+            : new JsonObject
+            {
+                ["patterns"] = new JsonArray(new JsonObject { ["urlPattern"] = "*", ["resourceType"] = "Document" })
+            }.ToJsonString();
         await connection.SendJsonAsync("Fetch.enable", fetchParams, cdpSessionId, ct).ConfigureAwait(false);
     }
 
@@ -2579,8 +2583,11 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         }
 
         var fetchParams = isRemote
-            ? JsonSerializer.Serialize(new { patterns = new[] { new { urlPattern = "*" } } })
-            : JsonSerializer.Serialize(new { patterns = new[] { new { urlPattern = "*", resourceType = "Document" } } });
+            ? new JsonObject { ["patterns"] = new JsonArray(new JsonObject { ["urlPattern"] = "*" }) }.ToJsonString()
+            : new JsonObject
+            {
+                ["patterns"] = new JsonArray(new JsonObject { ["urlPattern"] = "*", ["resourceType"] = "Document" })
+            }.ToJsonString();
         await connection.SendJsonAsync("Fetch.enable", fetchParams, cdpSessionId, ct).ConfigureAwait(false);
     }
 
@@ -2617,7 +2624,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         {
             var attachRes = await proc.Connection.SendJsonAsync(
                 "Target.attachToTarget",
-                JsonSerializer.Serialize(new { targetId, flatten = true }),
+                new JsonObject { ["targetId"] = targetId, ["flatten"] = true }.ToJsonString(),
                 ct: CancellationToken.None).ConfigureAwait(false);
             var cdpSessionId = attachRes.TryGetProperty("sessionId", out var sProp) ? sProp.GetString() : null;
             if (string.IsNullOrWhiteSpace(cdpSessionId))
@@ -2670,7 +2677,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             {
                 await proc.Connection.SendJsonAsync(
                     "Browser.cancelDownload",
-                    JsonSerializer.Serialize(new { guid }),
+                    new JsonObject { ["guid"] = guid }.ToJsonString(),
                     ct: CancellationToken.None).ConfigureAwait(false);
             }
             catch (Exception ex)
@@ -2796,7 +2803,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             {
                 await proc.Connection.SendJsonAsync(
                     "Fetch.continueRequest",
-                    JsonSerializer.Serialize(new { requestId }),
+                    new JsonObject { ["requestId"] = requestId }.ToJsonString(),
                     cdpSessionId,
                     CancellationToken.None).ConfigureAwait(false);
             }
@@ -2804,7 +2811,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             {
                 await proc.Connection.SendJsonAsync(
                     "Fetch.failRequest",
-                    JsonSerializer.Serialize(new { requestId, errorReason = "BlockedByClient" }),
+                    new JsonObject { ["requestId"] = requestId, ["errorReason"] = "BlockedByClient" }.ToJsonString(),
                     cdpSessionId,
                     CancellationToken.None).ConfigureAwait(false);
             }
@@ -2829,7 +2836,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             var accept = string.Equals(dialogType, "beforeunload", StringComparison.OrdinalIgnoreCase);
             await proc.Connection.SendJsonAsync(
                 "Page.handleJavaScriptDialog",
-                JsonSerializer.Serialize(new { accept }),
+                new JsonObject { ["accept"] = accept }.ToJsonString(),
                 cdpSessionId,
                 CancellationToken.None).ConfigureAwait(false);
         }
@@ -3121,7 +3128,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 {
                     await proc.Connection.SendJsonAsync(
                         "Browser.setDownloadBehavior",
-                        JsonSerializer.Serialize(new { behavior = "deny", browserContextId = session.BrowserContextId }),
+                        new JsonObject { ["behavior"] = "deny", ["browserContextId"] = session.BrowserContextId }.ToJsonString(),
                         ct: CancellationToken.None).ConfigureAwait(false);
                 }
                 catch (Exception)
@@ -3145,15 +3152,21 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             !string.IsNullOrWhiteSpace(downloadDir))
         {
             var allowJson = string.IsNullOrWhiteSpace(browserContextId)
-                ? JsonSerializer.Serialize(new { behavior = "allowAndName", downloadPath = downloadDir, eventsEnabled = true })
-                : JsonSerializer.Serialize(new { behavior = "allowAndName", downloadPath = downloadDir, eventsEnabled = true, browserContextId });
+                ? new JsonObject { ["behavior"] = "allowAndName", ["downloadPath"] = downloadDir, ["eventsEnabled"] = true }.ToJsonString()
+                : new JsonObject
+                {
+                    ["behavior"] = "allowAndName",
+                    ["downloadPath"] = downloadDir,
+                    ["eventsEnabled"] = true,
+                    ["browserContextId"] = browserContextId
+                }.ToJsonString();
             await connection.SendJsonAsync("Browser.setDownloadBehavior", allowJson, ct: ct).ConfigureAwait(false);
             return;
         }
 
         var denyJson = string.IsNullOrWhiteSpace(browserContextId)
-            ? JsonSerializer.Serialize(new { behavior = "deny" })
-            : JsonSerializer.Serialize(new { behavior = "deny", browserContextId });
+            ? new JsonObject { ["behavior"] = "deny" }.ToJsonString()
+            : new JsonObject { ["behavior"] = "deny", ["browserContextId"] = browserContextId }.ToJsonString();
         await connection.SendJsonAsync("Browser.setDownloadBehavior", denyJson, ct: ct).ConfigureAwait(false);
     }
 
@@ -3171,13 +3184,13 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         try
         {
             var contextId = await EnsureIsolatedWorldContextIdAsync(connection, cdpSessionId, getWorldId, setWorldId, ct).ConfigureAwait(false);
-            var evalParams = JsonSerializer.Serialize(new
+            var evalParams = new JsonObject
             {
-                expression = BrowserSnapshotScript.BuildResolveRefElementJs(EscapeJsString(refId)),
-                contextId,
-                returnByValue = false,
-                awaitPromise = false
-            });
+                ["expression"] = BrowserSnapshotScript.BuildResolveRefElementJs(EscapeJsString(refId)),
+                ["contextId"] = contextId,
+                ["returnByValue"] = false,
+                ["awaitPromise"] = false
+            }.ToJsonString();
 
             var evalRes = await connection.SendJsonAsync("Runtime.evaluate", evalParams, cdpSessionId, ct).ConfigureAwait(false);
             objectId = evalRes.TryGetProperty("result", out var r) && r.TryGetProperty("objectId", out var oid)
@@ -3190,7 +3203,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
 
             var descRes = await connection.SendJsonAsync(
                 "DOM.describeNode",
-                JsonSerializer.Serialize(new { objectId }),
+                new JsonObject { ["objectId"] = objectId }.ToJsonString(),
                 cdpSessionId,
                 ct).ConfigureAwait(false);
             var backendNodeId = descRes.GetProperty("node").GetProperty("backendNodeId").GetInt32();
@@ -3200,11 +3213,11 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             }
 
             // DOM.setFileInputFiles natively fires input + change events on the input element.
-            var setFilesParams = JsonSerializer.Serialize(new
+            var setFilesParams = new JsonObject
             {
-                backendNodeId,
-                files = new[] { stagedFilePath }
-            });
+                ["backendNodeId"] = backendNodeId,
+                ["files"] = new JsonArray(stagedFilePath)
+            }.ToJsonString();
             await connection.SendJsonAsync("DOM.setFileInputFiles", setFilesParams, cdpSessionId, ct).ConfigureAwait(false);
         }
         finally
@@ -3215,7 +3228,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 {
                     await connection.SendJsonAsync(
                         "Runtime.releaseObject",
-                        JsonSerializer.Serialize(new { objectId }),
+                        new JsonObject { ["objectId"] = objectId }.ToJsonString(),
                         cdpSessionId,
                         CancellationToken.None).ConfigureAwait(false);
                 }
@@ -3245,7 +3258,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         {
             var winRes = await connection.SendJsonAsync(
                 "Browser.getWindowForTarget",
-                JsonSerializer.Serialize(new { targetId = tab.TargetId }),
+                new JsonObject { ["targetId"] = tab.TargetId }.ToJsonString(),
                 ct: ct).ConfigureAwait(false);
             if (!winRes.TryGetProperty("windowId", out var widProp))
             {
@@ -3263,12 +3276,16 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 // Step 1: restore normal state if user previously minimized/maximized/fullscreened the window.
                 await connection.SendJsonAsync(
                     "Browser.setWindowBounds",
-                    JsonSerializer.Serialize(new { windowId, bounds = new { windowState = "normal" } }),
+                    new JsonObject { ["windowId"] = windowId, ["bounds"] = new JsonObject { ["windowState"] = "normal" } }.ToJsonString(),
                     ct: ct).ConfigureAwait(false);
                 // Step 2: place window cleanly on primary desktop bounds.
                 await connection.SendJsonAsync(
                     "Browser.setWindowBounds",
-                    JsonSerializer.Serialize(new { windowId, bounds = new { left = 80, top = 80, width = 1280, height = 820 } }),
+                    new JsonObject
+                    {
+                        ["windowId"] = windowId,
+                        ["bounds"] = new JsonObject { ["left"] = 80, ["top"] = 80, ["width"] = 1280, ["height"] = 820 }
+                    }.ToJsonString(),
                     ct: ct).ConfigureAwait(false);
 
                 try { await connection.SendAsync("Emulation.clearDeviceMetricsOverride", sessionId: tab.CdpSessionId, ct: ct).ConfigureAwait(false); } catch (Exception) { }
@@ -3282,13 +3299,13 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                     var opts = _options.CurrentValue;
                     await connection.SendJsonAsync(
                         "Emulation.setDeviceMetricsOverride",
-                        JsonSerializer.Serialize(new
+                        new JsonObject
                         {
-                            width = Math.Clamp(opts.DefaultViewportWidth, 640, 1920),
-                            height = Math.Clamp(opts.DefaultViewportHeight, 480, 1440),
-                            deviceScaleFactor = 1,
-                            mobile = false
-                        }),
+                            ["width"] = Math.Clamp(opts.DefaultViewportWidth, 640, 1920),
+                            ["height"] = Math.Clamp(opts.DefaultViewportHeight, 480, 1440),
+                            ["deviceScaleFactor"] = 1,
+                            ["mobile"] = false
+                        }.ToJsonString(),
                         tab.CdpSessionId,
                         ct).ConfigureAwait(false);
                 }
@@ -3300,7 +3317,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
 
                 await connection.SendJsonAsync(
                     "Browser.setWindowBounds",
-                    JsonSerializer.Serialize(new { windowId, bounds = new { windowState = "normal" } }),
+                    new JsonObject { ["windowId"] = windowId, ["bounds"] = new JsonObject { ["windowState"] = "normal" } }.ToJsonString(),
                     ct: ct).ConfigureAwait(false);
 
                 if (OperatingSystem.IsWindows())
@@ -3309,7 +3326,11 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                     {
                         await connection.SendJsonAsync(
                             "Browser.setWindowBounds",
-                            JsonSerializer.Serialize(new { windowId, bounds = new { left = -32000, top = -32000, width = 1280, height = 800 } }),
+                            new JsonObject
+                            {
+                                ["windowId"] = windowId,
+                                ["bounds"] = new JsonObject { ["left"] = -32000, ["top"] = -32000, ["width"] = 1280, ["height"] = 800 }
+                            }.ToJsonString(),
                             ct: ct).ConfigureAwait(false);
                         return;
                     }
@@ -3320,7 +3341,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
 
                 await connection.SendJsonAsync(
                     "Browser.setWindowBounds",
-                    JsonSerializer.Serialize(new { windowId, bounds = new { windowState = "minimized" } }),
+                    new JsonObject { ["windowId"] = windowId, ["bounds"] = new JsonObject { ["windowState"] = "minimized" } }.ToJsonString(),
                     ct: ct).ConfigureAwait(false);
             }
         }
@@ -3336,7 +3357,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         {
             var winRes = await connection.SendJsonAsync(
                 "Browser.getWindowForTarget",
-                JsonSerializer.Serialize(new { targetId }),
+                new JsonObject { ["targetId"] = targetId }.ToJsonString(),
                 ct: ct).ConfigureAwait(false);
             if (!winRes.TryGetProperty("windowId", out var widProp))
             {
@@ -3348,14 +3369,18 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             {
                 await connection.SendJsonAsync(
                     "Browser.setWindowBounds",
-                    JsonSerializer.Serialize(new { windowId, bounds = new { left = -32000, top = -32000, width = 1280, height = 800 } }),
+                    new JsonObject
+                    {
+                        ["windowId"] = windowId,
+                        ["bounds"] = new JsonObject { ["left"] = -32000, ["top"] = -32000, ["width"] = 1280, ["height"] = 800 }
+                    }.ToJsonString(),
                     ct: ct).ConfigureAwait(false);
             }
             else
             {
                 await connection.SendJsonAsync(
                     "Browser.setWindowBounds",
-                    JsonSerializer.Serialize(new { windowId, bounds = new { windowState = "minimized" } }),
+                    new JsonObject { ["windowId"] = windowId, ["bounds"] = new JsonObject { ["windowState"] = "minimized" } }.ToJsonString(),
                     ct: ct).ConfigureAwait(false);
             }
         }
@@ -3432,7 +3457,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
 
         var worldRes = await connection.SendJsonAsync(
             "Page.createIsolatedWorld",
-            JsonSerializer.Serialize(new { frameId, worldName = IsolatedWorldName, grantUniveralAccess = false }),
+            new JsonObject { ["frameId"] = frameId, ["worldName"] = IsolatedWorldName, ["grantUniveralAccess"] = false }.ToJsonString(),
             cdpSessionId,
             ct).ConfigureAwait(false);
 
@@ -3468,13 +3493,13 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         for (var attempt = 0; attempt < 2; attempt++)
         {
             var contextId = await EnsureIsolatedWorldContextIdAsync(connection, cdpSessionId, getWorldId, setWorldId, ct).ConfigureAwait(false);
-            var evalParams = JsonSerializer.Serialize(new
+            var evalParams = new JsonObject
             {
-                expression,
-                contextId,
-                returnByValue = true,
-                awaitPromise
-            });
+                ["expression"] = expression,
+                ["contextId"] = contextId,
+                ["returnByValue"] = true,
+                ["awaitPromise"] = awaitPromise
+            }.ToJsonString();
 
             try
             {
@@ -3797,12 +3822,12 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 }
             }
 
-            var captureParams = JsonSerializer.Serialize(new
+            var captureParams = new JsonObject
             {
-                format = "jpeg",
-                quality = 78,
-                fromSurface = true
-            });
+                ["format"] = "jpeg",
+                ["quality"] = 78,
+                ["fromSurface"] = true
+            }.ToJsonString();
             var result = await connection.SendJsonAsync("Page.captureScreenshot", captureParams, tab.CdpSessionId, ct).ConfigureAwait(false);
             if (result.TryGetProperty("data", out var dataProp) && dataProp.GetString() is { Length: > 0 } base64)
             {
@@ -3894,7 +3919,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
     private static Task<JsonElement> DispatchMouseMoveAsync(CdpConnection connection, string cdpSessionId, double x, double y, CancellationToken ct)
         => connection.SendJsonAsync(
             "Input.dispatchMouseEvent",
-            JsonSerializer.Serialize(new { type = "mouseMoved", x, y }),
+            new JsonObject { ["type"] = "mouseMoved", ["x"] = x, ["y"] = y }.ToJsonString(),
             cdpSessionId,
             ct);
 
@@ -3904,12 +3929,12 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         {
             await connection.SendJsonAsync(
                 "Input.dispatchMouseEvent",
-                JsonSerializer.Serialize(new { type = "mousePressed", x, y, button = "left", clickCount = i }),
+                new JsonObject { ["type"] = "mousePressed", ["x"] = x, ["y"] = y, ["button"] = "left", ["clickCount"] = i }.ToJsonString(),
                 cdpSessionId,
                 ct).ConfigureAwait(false);
             await connection.SendJsonAsync(
                 "Input.dispatchMouseEvent",
-                JsonSerializer.Serialize(new { type = "mouseReleased", x, y, button = "left", clickCount = i }),
+                new JsonObject { ["type"] = "mouseReleased", ["x"] = x, ["y"] = y, ["button"] = "left", ["clickCount"] = i }.ToJsonString(),
                 cdpSessionId,
                 ct).ConfigureAwait(false);
         }
@@ -3920,20 +3945,39 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         var (code, windowsVirtualKeyCode, text) = MapKey(key);
         await connection.SendJsonAsync(
             "Input.dispatchKeyEvent",
-            JsonSerializer.Serialize(new { type = "rawKeyDown", key, code, windowsVirtualKeyCode }),
+            new JsonObject
+            {
+                ["type"] = "rawKeyDown",
+                ["key"] = key,
+                ["code"] = code,
+                ["windowsVirtualKeyCode"] = windowsVirtualKeyCode
+            }.ToJsonString(),
             cdpSessionId,
             ct).ConfigureAwait(false);
         if (!string.IsNullOrEmpty(text))
         {
             await connection.SendJsonAsync(
                 "Input.dispatchKeyEvent",
-                JsonSerializer.Serialize(new { type = "char", key, code, text, windowsVirtualKeyCode }),
+                new JsonObject
+                {
+                    ["type"] = "char",
+                    ["key"] = key,
+                    ["code"] = code,
+                    ["text"] = text,
+                    ["windowsVirtualKeyCode"] = windowsVirtualKeyCode
+                }.ToJsonString(),
                 cdpSessionId,
                 ct).ConfigureAwait(false);
         }
         await connection.SendJsonAsync(
             "Input.dispatchKeyEvent",
-            JsonSerializer.Serialize(new { type = "keyUp", key, code, windowsVirtualKeyCode }),
+            new JsonObject
+            {
+                ["type"] = "keyUp",
+                ["key"] = key,
+                ["code"] = code,
+                ["windowsVirtualKeyCode"] = windowsVirtualKeyCode
+            }.ToJsonString(),
             cdpSessionId,
             ct).ConfigureAwait(false);
     }
