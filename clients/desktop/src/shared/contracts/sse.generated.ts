@@ -2,7 +2,7 @@
 // AUTO-GENERATED from docs/contracts/sse-events.schema.json by scripts/generate-contracts.mjs
 // Do not edit manually.
 
-export const SSE_SCHEMA_VERSION = "1.2.0" as const;
+export const SSE_SCHEMA_VERSION = "1.3.0" as const;
 
 export const SSE_KNOWN_EVENTS = [
   "heartbeat",
@@ -349,6 +349,7 @@ export interface SseBrowserStateUpdatedPayload {
   takeoverActive?: boolean;
   takeoverReason?: string | null;
   takeoverStartedAtUtc?: string | null;
+  isRemote?: boolean | null;
   [key: string]: unknown;
 }
 

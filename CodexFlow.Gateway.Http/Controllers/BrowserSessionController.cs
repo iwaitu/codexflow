@@ -9,6 +9,7 @@ using CodexFlow.Contracts.Browser;
 using CodexFlow.Core.Browser;
 using CodexFlow.Core.Configuration;
 using CodexFlow.Core.Execution.Approval;
+using CodexFlow.Core.Security;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -37,7 +38,8 @@ public sealed class BrowserSessionController(
     IOptionsMonitor<BrowserOptions> browserOptions,
     BrowserPermissionClamp permissionClamp,
     IBrowserSettingsService? browserSettingsService = null,
-    IControlPlaneStateProvider? controlPlane = null) : ControllerBase
+    IControlPlaneStateProvider? controlPlane = null,
+    ProtectedLocalPortRegistry? portRegistry = null) : ControllerBase
 {
     [HttpGet("api/gateway/session/{sessionId}/browser")]
     [Authorize(Policy = "ActiveUser")]
@@ -258,6 +260,18 @@ public sealed class BrowserSessionController(
             }
         }
 
+        if (!string.IsNullOrWhiteSpace(request.RemoteCdpWsUrl) &&
+            !BrowserRemoteEndpointGuard.ContainsMaskPlaceholder(request.RemoteCdpWsUrl))
+        {
+            var remoteCheck = BrowserRemoteEndpointGuard.ValidateRemoteCdpWsUrlSyntax(request.RemoteCdpWsUrl, portRegistry);
+            if (!remoteCheck.Allowed)
+            {
+                return BadRequest(new BrowserApiErrorDto(
+                    remoteCheck.ErrorCode ?? "invalid_remote_cdp_url",
+                    remoteCheck.ErrorMessage ?? "远端 CDP WebSocket 地址无效。"));
+            }
+        }
+
         try
         {
             var updated = browserSettingsService.Update(request);
@@ -285,5 +299,7 @@ public sealed class BrowserSessionController(
             IdleTimeoutMinutes: opts.IdleTimeoutMinutes,
             MaxConcurrentSessions: opts.MaxConcurrentSessions,
             DetectedBrowser: detected,
-            AllowControlledDownloads: opts.AllowControlledDownloads);
+            AllowControlledDownloads: opts.AllowControlledDownloads,
+            RemoteCdpWsUrl: BrowserRemoteEndpointGuard.MaskRemoteCdpWsUrl(opts.RemoteCdpWsUrl),
+            IsRemoteCdpConfigured: !string.IsNullOrWhiteSpace(opts.RemoteCdpWsUrl));
 }

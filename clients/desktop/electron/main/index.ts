@@ -445,6 +445,31 @@ function registerIpcHandlers(manager: BackendManager): void {
       }
       sanitized.maxConcurrentSessions = raw.maxConcurrentSessions;
     }
+    if (raw.remoteCdpWsUrl !== undefined && raw.remoteCdpWsUrl !== null) {
+      if (typeof raw.remoteCdpWsUrl !== 'string' || raw.remoteCdpWsUrl.length > 2048) {
+        return { ok: false, status: 400, errorCode: 'invalid_browser_settings_payload', errorMessage: 'remoteCdpWsUrl 必须为不超过 2048 字符的字符串。' };
+      }
+      sanitized.remoteCdpWsUrl = raw.remoteCdpWsUrl;
+    }
+    for (const domainField of ['allowedDomains', 'blockedDomains'] as const) {
+      const domainList = raw[domainField];
+      if (domainList !== undefined && domainList !== null) {
+        if (!Array.isArray(domainList) || domainList.length > 200) {
+          return { ok: false, status: 400, errorCode: 'invalid_browser_settings_payload', errorMessage: `${domainField} 必须为不超过 200 项的字符串数组。` };
+        }
+        const cleanedList: string[] = [];
+        for (const entry of domainList) {
+          if (typeof entry !== 'string' || entry.length > 253) {
+            return { ok: false, status: 400, errorCode: 'invalid_browser_settings_payload', errorMessage: `${domainField} 包含无效的域名规则项。` };
+          }
+          const trimmedEntry = entry.trim();
+          if (trimmedEntry.length > 0) {
+            cleanedList.push(trimmedEntry);
+          }
+        }
+        sanitized[domainField] = cleanedList;
+      }
+    }
 
     return callControlPlane(manager.getControlPlaneCredentials(), 'PUT', '/api/settings/browser', sanitized);
   });

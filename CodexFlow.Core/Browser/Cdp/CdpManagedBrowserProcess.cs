@@ -16,7 +16,7 @@ namespace CodexFlow.Core.Browser.Cdp;
 /// Manages the shared headless Chromium-family process, its ephemeral runtime user-data-dir,
 /// Windows Job Object cleanup guard, fallback strict outbound proxy, and CDP WebSocket connection.
 /// </summary>
-internal sealed partial class CdpManagedBrowserProcess : IAsyncDisposable
+internal sealed partial class CdpManagedBrowserProcess : ICdpBrowserRuntime
 {
     private const string EphemeralPrefix = "cf-browser-runtime-";
     private const string OwnerPidFileName = ".codexflow.pid";
@@ -41,9 +41,13 @@ internal sealed partial class CdpManagedBrowserProcess : IAsyncDisposable
 
     public string ExecutablePath { get; }
 
+    public bool IsRemote => false;
+
     public bool Headless { get; }
 
     public BrowserProfileMode ProfileMode { get; }
+
+    public string RuntimeKey => string.Create(CultureInfo.InvariantCulture, $"local:{Headless}:{ProfileMode}:{ExecutablePath}");
 
     public bool IsAlive => _disposed == 0 && !_process.HasExited && Connection.IsConnected;
 

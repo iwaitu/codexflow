@@ -97,6 +97,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
 
     private static readonly string[] DailyDeferredAllowedToolNames =
     [
+        "browser_evaluate",
         "cron_create",
         "cron_delete",
         "cron_list",
@@ -108,6 +109,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
 
     private static readonly string[] GatewayDeferredToolNames =
     [
+        "browser_evaluate",
         "apply_patch",
         "ivilson_smart_patch",
         "write_file",
@@ -6487,7 +6489,8 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                 string.Equals(key, "browser_snapshot", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(key, "browser_act", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(key, "browser_tabs", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(key, "browser_request_takeover", StringComparison.OrdinalIgnoreCase))
+                string.Equals(key, "browser_request_takeover", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(key, "browser_evaluate", StringComparison.OrdinalIgnoreCase))
             {
                 result[key] = tool;
             }

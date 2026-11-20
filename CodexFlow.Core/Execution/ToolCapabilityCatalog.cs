@@ -67,7 +67,7 @@ public static class ToolCapabilityCatalog
             "browser_navigate", "browser_snapshot", "browser_tabs");
 
         Add(ToolCapability.BrowserInteract,
-            "browser_act", "browser_request_takeover");
+            "browser_act", "browser_request_takeover", "browser_evaluate");
 
         return t;
     }

@@ -20,8 +20,9 @@ public static class BrowserToolNames
     public const string Act = "browser_act";
     public const string Tabs = "browser_tabs";
     public const string RequestTakeover = "browser_request_takeover";
+    public const string Evaluate = "browser_evaluate";
 
-    public static readonly string[] All = [Navigate, Snapshot, Act, Tabs, RequestTakeover];
+    public static readonly string[] All = [Navigate, Snapshot, Act, Tabs, RequestTakeover, Evaluate];
 }
 
 internal static class BrowserToolHelpers
@@ -164,7 +165,8 @@ public sealed class BrowserSnapshotTool(
         "  - max_chars (int, 可选): 返回快照字符上限，默认 12000，范围 1000-24000\n" +
         "  - include_console (bool, 可选): 是否附带近期页面 console 日志与未捕获异常（开发调试推荐）\n" +
         "  - include_network_errors (bool, 可选): 是否附带近期失败网络请求\n" +
-        "  - include_screenshot (bool, 可选): 是否截取当前视口截图刷新右侧预览并在多模态模型下注入视觉上下文";
+        "  - include_screenshot (bool, 可选): 是否截取当前视口截图刷新右侧预览并在多模态模型下注入视觉上下文\n" +
+        "  - annotate_screenshot (bool, 可选): 是否在截图上叠加 [e1] 视觉标注框与边界高亮（敏感输入始终自动遮罩；设为 true 时自动附带截图）";
 
     public ToolCategory Category => ToolCategory.Analysis;
 
@@ -192,10 +194,13 @@ public sealed class BrowserSnapshotTool(
         var maxChars = BrowserToolHelpers.TryGetInt(arguments.GetValueOrDefault("max_chars")) ?? 12000;
         var includeConsole = BrowserToolHelpers.TryGetBool(arguments.GetValueOrDefault("include_console"));
         var includeNetErrors = BrowserToolHelpers.TryGetBool(arguments.GetValueOrDefault("include_network_errors"));
-        var includeScreenshot = BrowserToolHelpers.TryGetBool(arguments.GetValueOrDefault("include_screenshot"));
+        var annotateScreenshot = BrowserToolHelpers.TryGetBool(arguments.GetValueOrDefault("annotate_screenshot"))
+            || BrowserToolHelpers.TryGetBool(arguments.GetValueOrDefault("annotate"));
+        var includeScreenshot = BrowserToolHelpers.TryGetBool(arguments.GetValueOrDefault("include_screenshot"))
+            || annotateScreenshot;
 
         var result = await manager
-            .SnapshotAsync(caller, maxChars, includeConsole, includeNetErrors, includeScreenshot, ct)
+            .SnapshotAsync(caller, maxChars, includeConsole, includeNetErrors, includeScreenshot, annotateScreenshot, ct)
             .ConfigureAwait(false);
 
         if (!result.Succeeded)
@@ -396,5 +401,58 @@ public sealed class BrowserRequestTakeoverTool(
             output,
             new { result.Url, result.Title, screenshotSeq = result.Screenshot?.ScreenshotSeq },
             summary: result.Summary);
+    }
+}
+
+public sealed class BrowserEvaluateTool(
+    IBrowserSessionManager manager) : ICodexTool
+{
+    public string Name => BrowserToolNames.Evaluate;
+
+    public string Description =>
+        "在当前活跃浏览器页面的主 JavaScript 上下文中求值表达式或调试脚本（非隔离沙箱：脚本与当前页共享 DOM、本地存储和同源权限，每次调用均强制触发控制面单次审批 allow_once）。禁止在只读 Plan Mode 下使用。\n" +
+        "参数（JSON object）：\n" +
+        "  - expression (string, 必填): 要在页面主上下文求值的 JavaScript 表达式或 IIFE\n" +
+        "  - await_promise (bool, 可选): 若表达式返回 Promise，是否等待其 resolve（默认 false，总执行上限 8 秒）\n" +
+        "  - max_result_chars (int, 可选): 返回序列化结果字符上限，默认 8000（范围 200-24000）";
+
+    public ToolCategory Category => ToolCategory.Analysis;
+
+    public ToolCapability Capability => ToolCapability.BrowserInteract;
+
+    public ToolExecutionMetadata Metadata => new(
+        IsConcurrencySafe: false,
+        IsReadOnly: false,
+        IsDestructive: false,
+        InterruptBehavior: ToolInterruptBehavior.RequiresConfirmation,
+        ResultSizeSoftLimitChars: 24_576);
+
+    public IReadOnlyList<int> AllowedStages => [0, 1, 2, 3, 4];
+
+    public async Task<CodexToolResult> ExecuteAsync(Dictionary<string, object?> arguments, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(arguments);
+        ToolArgumentNormalizer.NormalizeInPlace(arguments);
+
+        if (!BrowserToolHelpers.TryResolveCaller(out var caller, out var err))
+        {
+            return err!;
+        }
+
+        if (caller.PlanModeActive)
+        {
+            return CodexToolResult.Error("[plan_mode_active] 当前处于只读 Plan Mode，禁止执行 browser_evaluate。");
+        }
+
+        var expression = arguments.GetValueOrDefault("expression")?.ToString() ?? string.Empty;
+        var awaitPromise = BrowserToolHelpers.TryGetBool(arguments.GetValueOrDefault("await_promise"));
+        var maxResultChars = BrowserToolHelpers.TryGetInt(arguments.GetValueOrDefault("max_result_chars")) ?? 8000;
+
+        var result = await manager
+            .EvaluateAsync(caller, expression, awaitPromise, maxResultChars, ct)
+            .ConfigureAwait(false);
+        return result.Succeeded
+            ? CodexToolResult.Succeeded(result.Output, new { result.Url, result.Title }, summary: result.Summary)
+            : CodexToolResult.Error(result.Output, new { result.ErrorCode }, summary: result.Summary);
     }
 }

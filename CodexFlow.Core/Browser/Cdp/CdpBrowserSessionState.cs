@@ -7,6 +7,14 @@ using CodexFlow.Core.Models;
 
 namespace CodexFlow.Core.Browser.Cdp;
 
+internal sealed class BrowserChildFrameRecord
+{
+    public required string TargetId { get; init; }
+    public required string CdpSessionId { get; init; }
+    public string Url { get; set; } = string.Empty;
+    public int? IsolatedWorldContextId { get; set; }
+}
+
 internal sealed class BrowserTabRecord
 {
     public required string TargetId { get; init; }
@@ -15,6 +23,8 @@ internal sealed class BrowserTabRecord
     public string Title { get; set; } = string.Empty;
     public int? IsolatedWorldContextId { get; set; }
     public Dictionary<string, CdpSnapshotElement> ElementRefs { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public List<BrowserChildFrameRecord> ChildFrames { get; } = [];
+    public List<CdpBoundingBox> LastSecretRects { get; } = [];
 }
 
 /// <summary>
@@ -52,6 +62,7 @@ internal sealed class CdpBrowserSessionState : IAsyncDisposable
 
     public string SessionId { get; }
     public string BrowserContextId { get; }
+    public bool IsRemote { get; }
     public bool Headless { get; }
     public BrowserProfileMode ProfileMode { get; }
     public bool UsesDefaultContext { get; }
@@ -118,12 +129,14 @@ internal sealed class CdpBrowserSessionState : IAsyncDisposable
         BrowserProfileMode profileMode = BrowserProfileMode.Ephemeral,
         bool usesDefaultContext = false,
         string? workspaceRoot = null,
-        string? stagingDirectory = null)
+        string? stagingDirectory = null,
+        bool isRemote = false)
     {
         SessionId = sessionId;
         BrowserContextId = browserContextId;
         _workMode = workMode;
         OutboundProxy = outboundProxy;
+        IsRemote = isRemote;
         Headless = headless;
         ProfileMode = profileMode;
         UsesDefaultContext = usesDefaultContext;
@@ -330,6 +343,124 @@ internal sealed class CdpBrowserSessionState : IAsyncDisposable
         }
     }
 
+    public BrowserChildFrameRecord? FindChildFrameByCdpSessionId(string cdpSessionId)
+    {
+        lock (_stateLock)
+        {
+            foreach (var tab in _tabs)
+            {
+                var child = tab.ChildFrames.FirstOrDefault(c => string.Equals(c.CdpSessionId, cdpSessionId, StringComparison.Ordinal));
+                if (child is not null)
+                {
+                    return child;
+                }
+            }
+
+            return null;
+        }
+    }
+
+    public void AddOrUpdateChildFrame(string parentTargetId, BrowserChildFrameRecord frame)
+    {
+        lock (_stateLock)
+        {
+            var tab = _tabs.FirstOrDefault(t => string.Equals(t.TargetId, parentTargetId, StringComparison.Ordinal));
+            if (tab is null)
+            {
+                return;
+            }
+
+            var existing = tab.ChildFrames.FindIndex(c => string.Equals(c.CdpSessionId, frame.CdpSessionId, StringComparison.Ordinal));
+            if (existing >= 0)
+            {
+                tab.ChildFrames[existing] = frame;
+            }
+            else
+            {
+                tab.ChildFrames.Add(frame);
+            }
+        }
+    }
+
+    public IReadOnlyList<BrowserChildFrameRecord> GetChildFramesSnapshot(string parentTargetId)
+    {
+        lock (_stateLock)
+        {
+            var tab = _tabs.FirstOrDefault(t => string.Equals(t.TargetId, parentTargetId, StringComparison.Ordinal));
+            return tab is null ? [] : tab.ChildFrames.ToArray();
+        }
+    }
+
+    public void RemoveChildFrameByCdpSessionId(string cdpSessionId)
+    {
+        lock (_stateLock)
+        {
+            foreach (var tab in _tabs)
+            {
+                tab.ChildFrames.RemoveAll(c => string.Equals(c.CdpSessionId, cdpSessionId, StringComparison.Ordinal));
+            }
+        }
+    }
+
+    public void RemoveChildFrameByTargetId(string targetId)
+    {
+        lock (_stateLock)
+        {
+            foreach (var tab in _tabs)
+            {
+                tab.ChildFrames.RemoveAll(c => string.Equals(c.TargetId, targetId, StringComparison.Ordinal));
+            }
+        }
+    }
+
+    public void UpdateChildFrameUrl(string cdpSessionId, string? url)
+    {
+        lock (_stateLock)
+        {
+            foreach (var tab in _tabs)
+            {
+                var child = tab.ChildFrames.FirstOrDefault(c => string.Equals(c.CdpSessionId, cdpSessionId, StringComparison.Ordinal));
+                if (child is not null)
+                {
+                    if (!string.IsNullOrWhiteSpace(url))
+                    {
+                        child.Url = url;
+                    }
+
+                    child.IsolatedWorldContextId = null;
+                    return;
+                }
+            }
+        }
+    }
+
+    public void ReplaceTabSecretRects(string targetId, IEnumerable<CdpBoundingBox>? rects)
+    {
+        lock (_stateLock)
+        {
+            var tab = _tabs.FirstOrDefault(t => string.Equals(t.TargetId, targetId, StringComparison.Ordinal));
+            if (tab is null)
+            {
+                return;
+            }
+
+            tab.LastSecretRects.Clear();
+            if (rects is not null)
+            {
+                tab.LastSecretRects.AddRange(rects);
+            }
+        }
+    }
+
+    public IReadOnlyList<CdpBoundingBox> GetTabSecretRectsSnapshot(string targetId)
+    {
+        lock (_stateLock)
+        {
+            var tab = _tabs.FirstOrDefault(t => string.Equals(t.TargetId, targetId, StringComparison.Ordinal));
+            return tab is null ? [] : tab.LastSecretRects.ToArray();
+        }
+    }
+
     public bool TrySetActiveTab(string targetId, out BrowserTabRecord? tab)
     {
         lock (_stateLock)
@@ -393,6 +524,11 @@ internal sealed class CdpBrowserSessionState : IAsyncDisposable
             {
                 tab.IsolatedWorldContextId = null;
                 tab.ElementRefs.Clear();
+                tab.LastSecretRects.Clear();
+                foreach (var child in tab.ChildFrames)
+                {
+                    child.IsolatedWorldContextId = null;
+                }
             }
 
             UpdatedAtUtc = DateTimeOffset.UtcNow;
@@ -407,7 +543,12 @@ internal sealed class CdpBrowserSessionState : IAsyncDisposable
             if (tab is not null)
             {
                 tab.ElementRefs.Clear();
+                tab.LastSecretRects.Clear();
                 tab.IsolatedWorldContextId = null;
+                foreach (var child in tab.ChildFrames)
+                {
+                    child.IsolatedWorldContextId = null;
+                }
             }
         }
     }
@@ -600,7 +741,8 @@ internal sealed class CdpBrowserSessionState : IAsyncDisposable
                 UpdatedAtUtc: UpdatedAtUtc,
                 TakeoverActive: _takeoverActive,
                 TakeoverReason: _takeoverReason,
-                TakeoverStartedAtUtc: _takeoverStartedAtUtc);
+                TakeoverStartedAtUtc: _takeoverStartedAtUtc,
+                IsRemote: IsRemote);
         }
     }
 

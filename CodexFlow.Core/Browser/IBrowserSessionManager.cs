@@ -54,6 +54,14 @@ public interface IBrowserSessionManager : IAsyncDisposable
         bool includeConsole = false,
         bool includeNetworkErrors = false,
         bool includeScreenshot = false,
+        bool annotateScreenshot = false,
+        CancellationToken ct = default);
+
+    Task<BrowserOperationResult> EvaluateAsync(
+        BrowserTrustedCallerContext caller,
+        string expression,
+        bool awaitPromise = false,
+        int maxResultChars = 8000,
         CancellationToken ct = default);
 
     Task<BrowserOperationResult> ActAsync(

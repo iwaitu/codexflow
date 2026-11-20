@@ -67,6 +67,27 @@ public sealed class BrowserSettingsService : IBrowserSettingsService
                 }
             }
 
+            if (request.RemoteCdpWsUrl is not null)
+            {
+                var trimmedRemote = request.RemoteCdpWsUrl.Trim();
+                if (trimmedRemote.Length == 0)
+                {
+                    current.RemoteCdpWsUrl = null;
+                    section.Remove(nameof(BrowserOptions.RemoteCdpWsUrl));
+                }
+                else if (!BrowserRemoteEndpointGuard.ContainsMaskPlaceholder(trimmedRemote))
+                {
+                    var verified = BrowserRemoteEndpointGuard.ValidateRemoteCdpWsUrlSyntax(trimmedRemote);
+                    if (!verified.Allowed || verified.NormalizedUri is null)
+                    {
+                        throw new ArgumentException(verified.ErrorMessage ?? "RemoteCdpWsUrl must be a valid ws:// or wss:// URL.", nameof(request));
+                    }
+
+                    current.RemoteCdpWsUrl = verified.NormalizedUri.AbsoluteUri;
+                    section[nameof(BrowserOptions.RemoteCdpWsUrl)] = current.RemoteCdpWsUrl;
+                }
+            }
+
             if (request.Headless is { } headless)
             {
                 current.Headless = headless;
@@ -122,14 +143,14 @@ public sealed class BrowserSettingsService : IBrowserSettingsService
 
             if (request.AllowedDomains is not null)
             {
-                var cleaned = NormalizeDomains(request.AllowedDomains);
+                var cleaned = NormalizeDomainsStrict(request.AllowedDomains);
                 current.AllowedDomains = cleaned;
                 section[nameof(BrowserOptions.AllowedDomains)] = new JArray(cleaned.Cast<object>().ToArray());
             }
 
             if (request.BlockedDomains is not null)
             {
-                var cleaned = NormalizeDomains(request.BlockedDomains);
+                var cleaned = NormalizeDomainsStrict(request.BlockedDomains);
                 current.BlockedDomains = cleaned;
                 section[nameof(BrowserOptions.BlockedDomains)] = new JArray(cleaned.Cast<object>().ToArray());
             }
@@ -170,6 +191,17 @@ public sealed class BrowserSettingsService : IBrowserSettingsService
         if (!string.IsNullOrWhiteSpace(execPath))
         {
             opts.ExecutablePath = execPath.Trim();
+        }
+
+        var remoteWs = section.Value<string>(nameof(BrowserOptions.RemoteCdpWsUrl));
+        if (!string.IsNullOrWhiteSpace(remoteWs) &&
+            !BrowserRemoteEndpointGuard.ContainsMaskPlaceholder(remoteWs))
+        {
+            var verified = BrowserRemoteEndpointGuard.ValidateRemoteCdpWsUrlSyntax(remoteWs);
+            if (verified.Allowed && verified.NormalizedUri is not null)
+            {
+                opts.RemoteCdpWsUrl = verified.NormalizedUri.AbsoluteUri;
+            }
         }
 
         if (section[nameof(BrowserOptions.Headless)]?.Type == JTokenType.Boolean)
@@ -236,10 +268,34 @@ public sealed class BrowserSettingsService : IBrowserSettingsService
         return opts;
     }
 
-    private static List<string> NormalizeDomains(IEnumerable<string> raw)
+    private static List<string> NormalizeDomainsStrict(IEnumerable<string> raw)
         => raw
+            .Select(BrowserRemoteEndpointGuard.NormalizeAndValidateDomainPattern)
             .Where(static d => !string.IsNullOrWhiteSpace(d))
-            .Select(static d => d.Trim().TrimEnd('.').ToLowerInvariant())
+            .Select(static d => d!)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+
+    private static List<string> NormalizeDomains(IEnumerable<string> raw)
+    {
+        var list = new List<string>();
+        foreach (var item in raw)
+        {
+            try
+            {
+                var normalized = BrowserRemoteEndpointGuard.NormalizeAndValidateDomainPattern(item);
+                if (!string.IsNullOrWhiteSpace(normalized) &&
+                    !list.Contains(normalized, StringComparer.OrdinalIgnoreCase))
+                {
+                    list.Add(normalized);
+                }
+            }
+            catch (ArgumentException)
+            {
+                // Ignore malformed hand-edited domain entries during read.
+            }
+        }
+
+        return list;
+    }
 }

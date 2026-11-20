@@ -118,12 +118,26 @@ export const BrowserApprovalCard: React.FC<BrowserApprovalCardProps> = ({
           <span className="font-medium">{approval.targetDescription || `${approval.tool} · ${approval.action}`}</span>
         </div>
         {approval.expressionOrPath && (
-          <div className="text-[11px] text-slate-300 break-all">
-            <span className="text-slate-400">操作详情：</span>
-            <span className="font-mono text-slate-200" data-testid="browser-approval-expression">
-              {approval.expressionOrPath}
-            </span>
-          </div>
+          approval.tool === 'browser_evaluate' || approval.expressionOrPath.includes('\n') || approval.expressionOrPath.length > 80 ? (
+            <div className="space-y-1 text-[11px] text-slate-300">
+              <div className="text-slate-400">
+                {approval.tool === 'browser_evaluate' ? '待审页面脚本（将在主上下文非沙箱执行）：' : '操作详情：'}
+              </div>
+              <pre
+                data-testid="browser-approval-expression"
+                className="max-h-40 overflow-auto rounded-md border border-slate-800 bg-slate-900/90 p-2 font-mono text-[11px] leading-relaxed text-amber-100 whitespace-pre-wrap break-all"
+              >
+                {approval.expressionOrPath}
+              </pre>
+            </div>
+          ) : (
+            <div className="text-[11px] text-slate-300 break-all">
+              <span className="text-slate-400">操作详情：</span>
+              <span className="font-mono text-slate-200" data-testid="browser-approval-expression">
+                {approval.expressionOrPath}
+              </span>
+            </div>
+          )
         )}
         {approval.riskReason && (
           <div className="text-amber-200/90">

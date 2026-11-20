@@ -83,6 +83,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [supportsMultimodal, setSupportsMultimodal] = useState(Boolean(modelSettings?.supportsMultimodal));
   const [browserEnabled, setBrowserEnabled] = useState(Boolean(browserSettings?.enabled ?? true));
   const [browserExecutablePath, setBrowserExecutablePath] = useState(browserSettings?.executablePath ?? '');
+  const [browserRemoteCdpWsUrl, setBrowserRemoteCdpWsUrl] = useState(browserSettings?.remoteCdpWsUrl ?? '');
+  const [browserRemoteCdpTouched, setBrowserRemoteCdpTouched] = useState(false);
   const [browserHeadless, setBrowserHeadless] = useState(Boolean(browserSettings?.headless ?? true));
   const [browserProfileMode, setBrowserProfileMode] = useState(browserSettings?.profileMode ?? 'Ephemeral');
   const [browserApprovalPolicy, setBrowserApprovalPolicy] = useState(
@@ -93,6 +95,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   );
   const [browserAllowDownloads, setBrowserAllowDownloads] = useState(
     Boolean(browserSettings?.allowControlledDownloads),
+  );
+  const [browserAllowedDomainsText, setBrowserAllowedDomainsText] = useState(
+    (browserSettings?.allowedDomains ?? []).join('\n'),
+  );
+  const [browserBlockedDomainsText, setBrowserBlockedDomainsText] = useState(
+    (browserSettings?.blockedDomains ?? []).join('\n'),
   );
   const [browserIdleMinutes, setBrowserIdleMinutes] = useState(
     String(browserSettings?.idleTimeoutMinutes ?? 15),
@@ -130,11 +138,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setSupportsMultimodal(Boolean(modelSettings?.supportsMultimodal));
     setBrowserEnabled(Boolean(browserSettings?.enabled ?? true));
     setBrowserExecutablePath(browserSettings?.executablePath ?? '');
+    setBrowserRemoteCdpWsUrl(browserSettings?.remoteCdpWsUrl ?? '');
+    setBrowserRemoteCdpTouched(false);
     setBrowserHeadless(Boolean(browserSettings?.headless ?? true));
     setBrowserProfileMode(browserSettings?.profileMode ?? 'Ephemeral');
     setBrowserApprovalPolicy(browserSettings?.interactionApprovalPolicy ?? 'HighRiskOnly');
     setBrowserAllowLocalhostDaily(Boolean(browserSettings?.allowLocalhostInDailyMode));
     setBrowserAllowDownloads(Boolean(browserSettings?.allowControlledDownloads));
+    setBrowserAllowedDomainsText((browserSettings?.allowedDomains ?? []).join('\n'));
+    setBrowserBlockedDomainsText((browserSettings?.blockedDomains ?? []).join('\n'));
     setBrowserIdleMinutes(String(browserSettings?.idleTimeoutMinutes ?? 15));
     setBrowserMaxSessions(String(browserSettings?.maxConcurrentSessions ?? 3));
     setConfirmRelaxOpen(false);
@@ -691,14 +703,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 try {
                   const parsedIdle = Number.parseInt(browserIdleMinutes, 10);
                   const parsedMax = Number.parseInt(browserMaxSessions, 10);
+                  const parseDomains = (raw: string): string[] =>
+                    raw
+                      .split(/[\r\n,，;；]+/)
+                      .map((entry) => entry.trim())
+                      .filter(Boolean);
                   const res = await window.codexflow.updateBrowserSettings({
                     enabled: browserEnabled,
                     executablePath: browserExecutablePath.trim(),
+                    remoteCdpWsUrl: browserRemoteCdpTouched ? browserRemoteCdpWsUrl.trim() : undefined,
                     headless: browserHeadless,
                     profileMode: browserProfileMode,
                     interactionApprovalPolicy: browserApprovalPolicy,
                     allowLocalhostInDailyMode: browserAllowLocalhostDaily,
                     allowControlledDownloads: browserAllowDownloads,
+                    allowedDomains: parseDomains(browserAllowedDomainsText),
+                    blockedDomains: parseDomains(browserBlockedDomainsText),
                     idleTimeoutMinutes: Number.isFinite(parsedIdle) ? Math.min(120, Math.max(1, parsedIdle)) : 15,
                     maxConcurrentSessions: Number.isFinite(parsedMax) ? Math.min(8, Math.max(1, parsedMax)) : 3,
                   });
@@ -765,6 +785,84 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-slate-100 placeholder:text-slate-600"
                 />
               </label>
+
+              <div className="rounded-xl border border-slate-800 bg-slate-950 p-3.5 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-medium text-slate-200">
+                    远端 CDP Grid 端点（可选，留空使用本机受管浏览器）
+                  </span>
+                  {browserSettings?.isRemoteCdpConfigured && !browserRemoteCdpTouched && (
+                    <span className="rounded-full bg-indigo-500/20 px-2 py-0.5 text-[10px] text-indigo-300">
+                      已配置（凭据已掩码保护）
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    data-testid="browser-remote-cdp-input"
+                    value={browserRemoteCdpWsUrl}
+                    onChange={(e) => {
+                      setBrowserRemoteCdpWsUrl(e.target.value);
+                      setBrowserRemoteCdpTouched(true);
+                    }}
+                    placeholder="wss://grid.example.com/devtools/browser/..."
+                    className="flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-slate-100 placeholder:text-slate-600"
+                  />
+                  {(browserRemoteCdpWsUrl || browserSettings?.isRemoteCdpConfigured) && (
+                    <button
+                      type="button"
+                      data-testid="browser-clear-remote-cdp-btn"
+                      onClick={() => {
+                        setBrowserRemoteCdpWsUrl('');
+                        setBrowserRemoteCdpTouched(true);
+                      }}
+                      className="rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-2 text-[11px] text-slate-300 hover:bg-slate-800"
+                    >
+                      清空切回本机
+                    </button>
+                  )}
+                </div>
+                <div className="text-[11px] text-slate-400">
+                  仅支持直连 <code className="rounded bg-slate-900 px-1">ws://</code> 或 <code className="rounded bg-slate-900 px-1">wss://</code>；远端模式下禁用本机人工接管、文件上传及工作区下载。
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label className="block">
+                  <div className="mb-1 flex items-center justify-between text-slate-300">
+                    <span>允许域名白名单（Allowed Domains）</span>
+                    <span className="text-[10px] text-slate-500">
+                      {browserAllowedDomainsText.split(/[\r\n,，;；]+/).filter((s) => s.trim()).length} 项
+                    </span>
+                  </div>
+                  <textarea
+                    rows={3}
+                    data-testid="browser-allowed-domains-input"
+                    value={browserAllowedDomainsText}
+                    onChange={(e) => setBrowserAllowedDomainsText(e.target.value)}
+                    placeholder={"留空不限公网；每行或逗号分隔\n例如 example.com\n*.corp.internal"}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-[11px] text-slate-100 placeholder:text-slate-600"
+                  />
+                </label>
+
+                <label className="block">
+                  <div className="mb-1 flex items-center justify-between text-slate-300">
+                    <span>禁止域名黑名单（Blocked Domains）</span>
+                    <span className="text-[10px] text-slate-500">
+                      {browserBlockedDomainsText.split(/[\r\n,，;；]+/).filter((s) => s.trim()).length} 项
+                    </span>
+                  </div>
+                  <textarea
+                    rows={3}
+                    data-testid="browser-blocked-domains-input"
+                    value={browserBlockedDomainsText}
+                    onChange={(e) => setBrowserBlockedDomainsText(e.target.value)}
+                    placeholder={"命中优先拦截；每行或逗号分隔\n例如 ads.example.com\n*.untrusted.test"}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-[11px] text-slate-100 placeholder:text-slate-600"
+                  />
+                </label>
+              </div>
 
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <label className="block">

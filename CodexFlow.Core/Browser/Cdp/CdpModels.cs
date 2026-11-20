@@ -62,6 +62,78 @@ public sealed record CdpEventMessage(
     string? SessionId,
     JsonElement Params);
 
+internal sealed class CdpBoundingBox
+{
+    [JsonPropertyName("x")]
+    public double X { get; init; }
+
+    [JsonPropertyName("y")]
+    public double Y { get; init; }
+
+    [JsonPropertyName("width")]
+    public double Width { get; init; }
+
+    [JsonPropertyName("height")]
+    public double Height { get; init; }
+}
+
+internal sealed class CdpCrossOriginFrameSlot
+{
+    [JsonPropertyName("src")]
+    public string? Src { get; init; }
+
+    [JsonPropertyName("url")]
+    public string? Url { get; init; }
+
+    [JsonPropertyName("name")]
+    public string? Name { get; init; }
+
+    [JsonPropertyName("x")]
+    public double X { get; init; }
+
+    [JsonPropertyName("y")]
+    public double Y { get; init; }
+
+    [JsonPropertyName("width")]
+    public double Width { get; init; }
+
+    [JsonPropertyName("height")]
+    public double Height { get; init; }
+}
+
+internal sealed class CdpAnnotationItem
+{
+    [JsonPropertyName("ref")]
+    public string Ref { get; init; } = string.Empty;
+
+    [JsonPropertyName("role")]
+    public string Role { get; init; } = string.Empty;
+
+    [JsonPropertyName("isSensitive")]
+    public bool IsSensitive { get; init; }
+
+    [JsonPropertyName("x")]
+    public double X { get; init; }
+
+    [JsonPropertyName("y")]
+    public double Y { get; init; }
+
+    [JsonPropertyName("width")]
+    public double Width { get; init; }
+
+    [JsonPropertyName("height")]
+    public double Height { get; init; }
+}
+
+internal sealed class CdpVisualOverlaySpec
+{
+    [JsonPropertyName("secretRects")]
+    public List<CdpBoundingBox> SecretRects { get; init; } = [];
+
+    [JsonPropertyName("annotations")]
+    public List<CdpAnnotationItem> Annotations { get; init; } = [];
+}
+
 internal sealed class CdpSnapshotPayload
 {
     [JsonPropertyName("url")]
@@ -75,12 +147,18 @@ internal sealed class CdpSnapshotPayload
 
     [JsonPropertyName("elements")]
     public List<CdpSnapshotElement>? Elements { get; init; }
+
+    [JsonPropertyName("secretRects")]
+    public List<CdpBoundingBox>? SecretRects { get; init; }
+
+    [JsonPropertyName("crossOriginFrames")]
+    public List<CdpCrossOriginFrameSlot>? CrossOriginFrames { get; init; }
 }
 
 internal sealed class CdpSnapshotElement
 {
     [JsonPropertyName("ref")]
-    public string Ref { get; init; } = string.Empty;
+    public string Ref { get; set; } = string.Empty;
 
     [JsonPropertyName("role")]
     public string Role { get; init; } = string.Empty;
@@ -107,16 +185,31 @@ internal sealed class CdpSnapshotElement
     public bool IsSensitiveSubmit { get; init; }
 
     [JsonPropertyName("x")]
-    public double X { get; init; }
+    public double X { get; set; }
 
     [JsonPropertyName("y")]
-    public double Y { get; init; }
+    public double Y { get; set; }
 
     [JsonPropertyName("width")]
     public double Width { get; init; }
 
     [JsonPropertyName("height")]
     public double Height { get; init; }
+
+    [JsonPropertyName("frameLabel")]
+    public string? FrameLabel { get; set; }
+
+    [JsonIgnore]
+    public string? FrameCdpSessionId { get; set; }
+
+    [JsonIgnore]
+    public string? FrameOrigin { get; set; }
+
+    [JsonIgnore]
+    public double FrameOffsetX { get; set; }
+
+    [JsonIgnore]
+    public double FrameOffsetY { get; set; }
 }
 
 internal sealed class CdpLiveRefProbe
@@ -182,6 +275,11 @@ internal sealed class CdpActiveElementProbe
 [JsonSerializable(typeof(CdpCommandRequest))]
 [JsonSerializable(typeof(CdpIncomingMessage))]
 [JsonSerializable(typeof(CdpErrorPayload))]
+[JsonSerializable(typeof(CdpBoundingBox))]
+[JsonSerializable(typeof(List<CdpBoundingBox>))]
+[JsonSerializable(typeof(CdpCrossOriginFrameSlot))]
+[JsonSerializable(typeof(CdpAnnotationItem))]
+[JsonSerializable(typeof(CdpVisualOverlaySpec))]
 [JsonSerializable(typeof(CdpSnapshotPayload))]
 [JsonSerializable(typeof(CdpSnapshotElement))]
 [JsonSerializable(typeof(CdpLiveRefProbe))]

@@ -33,7 +33,7 @@ internal static class RuntimeToolTimeouts
             "run_shell" => DailyShell,
             "run_business_skill" => BusinessSkillRun,
             "browser_request_takeover" => BrowserTakeover,
-            "browser_act" or "browser_navigate" or "browser_tabs" => BrowserInteractive,
+            "browser_act" or "browser_navigate" or "browser_tabs" or "browser_evaluate" => BrowserInteractive,
             "run_tests" or "exec_cmd" or "run_command" => BuildOrTest,
             _ => EngineDefault
         };

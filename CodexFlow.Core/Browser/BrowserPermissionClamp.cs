@@ -35,6 +35,7 @@ public sealed class BrowserPermissionClamp :
     // Authoritative effective values.
     private bool _effectiveEnabled;
     private string? _effectiveExecutablePath;
+    private string? _effectiveRemoteCdpWsUrl;
     private bool _effectiveHeadless = true;
     private BrowserProfileMode _effectiveProfileMode = BrowserProfileMode.Ephemeral;
     private BrowserInteractionApprovalPolicy _effectiveApprovalPolicy = BrowserInteractionApprovalPolicy.HighRiskOnly;
@@ -70,6 +71,7 @@ public sealed class BrowserPermissionClamp :
             {
                 _effectiveEnabled = _lastRawEnabled = options.Enabled;
                 _effectiveExecutablePath = NormalizePath(options.ExecutablePath);
+                _effectiveRemoteCdpWsUrl = NormalizeRemoteCdpUrl(options.RemoteCdpWsUrl);
                 _effectiveHeadless = _lastRawHeadless = options.Headless;
                 _effectiveProfileMode = _lastRawProfileMode = options.ProfileMode;
                 _effectiveApprovalPolicy = _lastRawApprovalPolicy = options.InteractionApprovalPolicy;
@@ -186,6 +188,7 @@ public sealed class BrowserPermissionClamp :
             // and never misinterprets the stale disk value as a new tightening edit.
             _effectiveEnabled = updated.Enabled;
             _effectiveExecutablePath = NormalizePath(updated.ExecutablePath);
+            _effectiveRemoteCdpWsUrl = NormalizeRemoteCdpUrl(updated.RemoteCdpWsUrl);
             _effectiveHeadless = updated.Headless;
             _effectiveProfileMode = updated.ProfileMode;
             _effectiveApprovalPolicy = updated.InteractionApprovalPolicy;
@@ -216,6 +219,7 @@ public sealed class BrowserPermissionClamp :
     {
         options.Enabled = _effectiveEnabled;
         options.ExecutablePath = _effectiveExecutablePath;
+        options.RemoteCdpWsUrl = _effectiveRemoteCdpWsUrl;
         options.Headless = _effectiveHeadless;
         options.ProfileMode = _effectiveProfileMode;
         options.InteractionApprovalPolicy = _effectiveApprovalPolicy;
@@ -230,6 +234,17 @@ public sealed class BrowserPermissionClamp :
 
     private static string? NormalizePath(string? raw)
         => string.IsNullOrWhiteSpace(raw) ? null : Path.GetFullPath(raw.Trim());
+
+    private static string? NormalizeRemoteCdpUrl(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw) || BrowserRemoteEndpointGuard.ContainsMaskPlaceholder(raw))
+        {
+            return null;
+        }
+
+        var check = BrowserRemoteEndpointGuard.ValidateRemoteCdpWsUrlSyntax(raw);
+        return check.Allowed && check.NormalizedUri is not null ? check.NormalizedUri.AbsoluteUri : null;
+    }
 
     private static List<int> NormalizePorts(IEnumerable<int>? ports)
         => ports is null

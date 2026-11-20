@@ -3,6 +3,8 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 using System.Collections.Concurrent;
+using System.Net;
+using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
@@ -22,6 +24,7 @@ public sealed class CdpConnection : IAsyncDisposable
     private static readonly TimeSpan DefaultCommandTimeout = TimeSpan.FromSeconds(30);
 
     private readonly ClientWebSocket _socket;
+    private readonly HttpMessageInvoker? _httpInvoker;
     private readonly ILogger _logger;
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private readonly ConcurrentDictionary<int, TaskCompletionSource<JsonElement>> _pending = new();
@@ -37,10 +40,11 @@ public sealed class CdpConnection : IAsyncDisposable
 
     public bool IsConnected => _disposed == 0 && !_faulted && _socket.State == WebSocketState.Open;
 
-    private CdpConnection(ClientWebSocket socket, ILogger logger)
+    private CdpConnection(ClientWebSocket socket, ILogger logger, HttpMessageInvoker? httpInvoker = null)
     {
         _socket = socket;
         _logger = logger;
+        _httpInvoker = httpInvoker;
         _receiveLoop = Task.Run(() => ReceiveLoopAsync(_receiveCts.Token));
     }
 
@@ -60,6 +64,71 @@ public sealed class CdpConnection : IAsyncDisposable
         catch
         {
             socket.Dispose();
+            throw;
+        }
+    }
+
+    public static async Task<CdpConnection> ConnectVerifiedAsync(
+        Uri wsEndpoint,
+        IReadOnlyList<IPAddress> verifiedAddresses,
+        ILogger logger,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(wsEndpoint);
+        ArgumentNullException.ThrowIfNull(verifiedAddresses);
+        ArgumentNullException.ThrowIfNull(logger);
+
+        if (verifiedAddresses.Count == 0)
+        {
+            throw new ArgumentException("At least one verified IP address is required.", nameof(verifiedAddresses));
+        }
+
+        var handler = new SocketsHttpHandler
+        {
+            UseProxy = false,
+            AllowAutoRedirect = false,
+            ConnectCallback = async (context, token) =>
+            {
+                Exception? lastEx = null;
+                foreach (var ip in verifiedAddresses)
+                {
+                    var sock = new Socket(ip.AddressFamily, SocketType.Stream, ProtocolType.Tcp)
+                    {
+                        NoDelay = true
+                    };
+                    try
+                    {
+                        await sock.ConnectAsync(new IPEndPoint(ip, context.DnsEndPoint.Port), token).ConfigureAwait(false);
+                        return new NetworkStream(sock, ownsSocket: true);
+                    }
+                    catch (Exception ex) when (ex is SocketException or OperationCanceledException)
+                    {
+                        sock.Dispose();
+                        if (token.IsCancellationRequested)
+                        {
+                            throw;
+                        }
+
+                        lastEx = ex;
+                    }
+                }
+
+                throw lastEx ?? new SocketException((int)SocketError.HostNotFound);
+            }
+        };
+
+        var invoker = new HttpMessageInvoker(handler, disposeHandler: true);
+        var socket = new ClientWebSocket();
+        socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
+        try
+        {
+            await socket.ConnectAsync(wsEndpoint, invoker, ct).ConfigureAwait(false);
+            return new CdpConnection(socket, logger, invoker);
+        }
+        catch
+        {
+            socket.Dispose();
+            invoker.Dispose();
             throw;
         }
     }
@@ -350,6 +419,7 @@ public sealed class CdpConnection : IAsyncDisposable
         FailAllPending(new ObjectDisposedException(nameof(CdpConnection)));
         NotifyDisconnected(null);
         _socket.Dispose();
+        _httpInvoker?.Dispose();
         _sendLock.Dispose();
         _receiveCts.Dispose();
     }

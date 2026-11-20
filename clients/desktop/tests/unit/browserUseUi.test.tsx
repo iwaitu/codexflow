@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { BrowserApprovalCard } from '../../src/renderer/components/BrowserApprovalCard';
 import { BrowserPanel } from '../../src/renderer/components/BrowserPanel';
+import { SettingsModal } from '../../src/renderer/components/SettingsModal';
 import { useAppStore } from '../../src/renderer/stores/useAppStore';
 import type { DesktopBridge } from '../../src/shared/ipc';
 
@@ -98,6 +99,7 @@ describe('Web Browser Use desktop UI & store', () => {
           status: 'running',
           headless: true,
           profileMode: 'Ephemeral',
+          isRemote: false,
           url: 'http://localhost:5173/dashboard',
           title: 'Dashboard',
           screenshotSeq: 3,
@@ -271,6 +273,7 @@ describe('Web Browser Use desktop UI & store', () => {
           status: 'running',
           headless: true,
           profileMode: 'Ephemeral',
+          isRemote: false,
           url: 'http://localhost:5173/',
           title: 'Slow Shot',
           screenshotSeq: 5,
@@ -371,6 +374,7 @@ describe('Web Browser Use desktop UI & store', () => {
           status: 'takeover',
           headless: false,
           profileMode: 'Persistent',
+          isRemote: false,
           url: 'https://login.example/',
           title: 'Sign In',
           screenshotSeq: 0,
@@ -397,6 +401,7 @@ describe('Web Browser Use desktop UI & store', () => {
           status: 'running',
           headless: false,
           profileMode: 'Persistent',
+          isRemote: false,
           url: 'https://login.example/',
           title: 'Sign In',
           screenshotSeq: 0,
@@ -425,6 +430,7 @@ describe('Web Browser Use desktop UI & store', () => {
           status: 'takeover',
           headless: false,
           profileMode: 'Persistent',
+          isRemote: false,
           url: 'https://login.example/',
           title: 'Sign In',
           screenshotSeq: 0,
@@ -445,6 +451,142 @@ describe('Web Browser Use desktop UI & store', () => {
     fireEvent.click(screen.getByTestId('browser-complete-takeover-btn'));
     await waitFor(() => {
       expect(completeTakeover).toHaveBeenCalledWith('s-browser-1');
+    });
+  });
+
+  it('renders preformatted script preview without allow_session for browser_evaluate approvals', () => {
+    render(
+      <BrowserApprovalCard
+        controlPlaneAvailable
+        onResolved={vi.fn()}
+        approval={{
+          approvalId: 'brapr-eval-1',
+          requestDigest: 'dig-eval-1',
+          sessionId: 's-browser-1',
+          tool: 'browser_evaluate',
+          action: 'evaluate',
+          targetUrl: 'https://app.example/dashboard',
+          targetOrigin: 'https://app.example',
+          targetDescription: '在页面主上下文中执行 JavaScript 表达式',
+          riskReason: '必须单次人工确认（allow_once）',
+          expressionOrPath: '(() => ({ tokenPresent: Boolean(window.__STATE__) }))()',
+          expiresAtUtc: new Date(Date.now() + 60_000).toISOString(),
+          allowedDecisions: ['allow_once', 'deny'],
+          controlPlaneAvailable: true,
+          selfApprovalProtection: true,
+        }}
+      />,
+    );
+
+    const codePre = screen.getByTestId('browser-approval-expression');
+    expect(codePre.tagName.toLowerCase()).toBe('pre');
+    expect(codePre.textContent).toContain('window.__STATE__');
+    expect(screen.getByText('允许一次')).toBeTruthy();
+    expect(screen.queryByText('本会话允许')).toBeNull();
+  });
+
+  it('hides human takeover button and shows remote CDP label when isRemote is true', () => {
+    render(
+      <BrowserPanel
+        auth={{ baseUrl: 'http://127.0.0.1:32586', accessToken: 'tok' }}
+        sessionId="s-browser-1"
+        controlPlaneAvailable
+        onStateUpdated={vi.fn()}
+        browserState={{
+          sessionId: 's-browser-1',
+          status: 'running',
+          headless: false,
+          profileMode: 'Ephemeral',
+          isRemote: true,
+          url: 'https://grid.example/',
+          title: 'Remote Session',
+          screenshotSeq: 0,
+          consoleErrorCount: 0,
+          tabs: [],
+          recentActions: [],
+          recentConsole: [],
+          takeoverActive: false,
+        }}
+      />,
+    );
+
+    expect(screen.getByText(/远端 CDP/)).toBeTruthy();
+    expect(screen.queryByTestId('browser-start-takeover-btn')).toBeNull();
+  });
+
+  it('preserves masked remoteCdpWsUrl until edited and saves domain allow/block lists in SettingsModal', async () => {
+    const updateBrowserSettings = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    Object.defineProperty(window, 'codexflow', {
+      configurable: true,
+      writable: true,
+      value: {
+        updateBrowserSettings,
+      } as unknown as DesktopBridge,
+    });
+
+    const onUpdated = vi.fn();
+    render(
+      <SettingsModal
+        open
+        initialTab="browser"
+        systemStatus={null}
+        executionSettings={null}
+        modelSettings={null}
+        controlPlaneAvailable
+        onClose={vi.fn()}
+        onUpdated={onUpdated}
+        browserSettings={{
+          enabled: true,
+          executablePath: null,
+          headless: true,
+          profileMode: 'Ephemeral',
+          interactionApprovalPolicy: 'HighRiskOnly',
+          allowLocalhostInDailyMode: false,
+          allowControlledDownloads: false,
+          developmentAllowedLoopbackPorts: [5173],
+          allowedDomains: ['example.com'],
+          blockedDomains: ['ads.example.com'],
+          idleTimeoutMinutes: 15,
+          maxConcurrentSessions: 3,
+          remoteCdpWsUrl: 'wss://grid.example.com/devtools/browser/abc?***',
+          isRemoteCdpConfigured: true,
+          detectedBrowser: {
+            available: true,
+            browserName: 'Chrome',
+            executablePath: '/usr/bin/google-chrome',
+            version: '131.0.0.0',
+            source: 'auto',
+          },
+        }}
+      />,
+    );
+
+    fireEvent.change(screen.getByTestId('browser-allowed-domains-input'), {
+      target: { value: 'example.com\n*.docs.example.com' },
+    });
+    fireEvent.change(screen.getByTestId('browser-blocked-domains-input'), {
+      target: { value: 'tracker.example.com' },
+    });
+
+    // Save without touching remoteCdpWsUrl -> undefined preserves masked secret on backend.
+    fireEvent.click(screen.getByText('保存浏览器设置'));
+    await waitFor(() => {
+      expect(updateBrowserSettings).toHaveBeenCalledTimes(1);
+    });
+    expect(updateBrowserSettings.mock.calls[0]?.[0]).toMatchObject({
+      remoteCdpWsUrl: undefined,
+      allowedDomains: ['example.com', '*.docs.example.com'],
+      blockedDomains: ['tracker.example.com'],
+    });
+
+    // Click clear button -> explicitly sends empty string to clear remote endpoint.
+    fireEvent.click(screen.getByTestId('browser-clear-remote-cdp-btn'));
+    fireEvent.click(screen.getByText('保存浏览器设置'));
+    await waitFor(() => {
+      expect(updateBrowserSettings).toHaveBeenCalledTimes(2);
+    });
+    expect(updateBrowserSettings.mock.calls[1]?.[0]).toMatchObject({
+      remoteCdpWsUrl: '',
     });
   });
 });

@@ -388,6 +388,13 @@ public class ToolSearchMetaTool : ICodexTool
                 [
                     "Bring the managed desktop browser window on-screen for human login/CAPTCHA takeover and wait until control is returned."
                 ]),
+            "browser_evaluate" => new(
+                ["browser", "web", "javascript", "eval", "debug", "state"],
+                ["main"],
+                "high",
+                [
+                    "Evaluate a JavaScript expression in the active page main context (requires explicit single-use allow_once approval)."
+                ]),
             "apply_patch" => new(
                 ["patch", "edit", "diff", "code-change"],
                 ["forge-worker"],

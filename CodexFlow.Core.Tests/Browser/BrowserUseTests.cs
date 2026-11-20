@@ -6,11 +6,13 @@ using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using System.Text.RegularExpressions;
 using CodexFlow.Contracts.Browser;
 using CodexFlow.Core.Agents;
 using CodexFlow.Core.Agents.Tools;
 using CodexFlow.Core.Browser;
 using CodexFlow.Core.Browser.Cdp;
+using CodexFlow.Core.Configuration;
 using CodexFlow.Core.Execution;
 using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Core.Models;
@@ -771,6 +773,103 @@ public sealed class BrowserUseTests
     }
 
     [Fact]
+    public async Task RemoteEndpointGuard_ValidatesMasksAndNormalizesDomainsAndClampBlocksReload()
+    {
+        var masked = BrowserRemoteEndpointGuard.MaskRemoteCdpWsUrl("wss://user:secret-pass@grid.example.com:9443/devtools/browser/123?token=topsecret");
+        Assert.Equal("wss://grid.example.com:9443/devtools/browser/123?***", masked);
+        Assert.True(BrowserRemoteEndpointGuard.ContainsMaskPlaceholder(masked));
+
+        var tempDir = Path.Combine(Path.GetTempPath(), "cf-remote-settings-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var settingsPath = Path.Combine(tempDir, "appsettings.json");
+            var svc = new BrowserSettingsService(settingsPath);
+            var saved = svc.Update(new UpdateBrowserSettingsRequest(
+                RemoteCdpWsUrl: "wss://grid.example.com/devtools/browser/abc?token=real-secret",
+                AllowedDomains: ["https://Sub.Example.COM/path", "*.docs.example.com"]));
+            Assert.Equal("wss://grid.example.com/devtools/browser/abc?token=real-secret", saved.RemoteCdpWsUrl);
+            Assert.Equal(["sub.example.com", "*.docs.example.com"], saved.AllowedDomains);
+
+            // Echoing masked URL back must NOT clobber persisted token.
+            var afterMaskedSave = svc.Update(new UpdateBrowserSettingsRequest(
+                RemoteCdpWsUrl: BrowserRemoteEndpointGuard.MaskRemoteCdpWsUrl(saved.RemoteCdpWsUrl)));
+            Assert.Equal("wss://grid.example.com/devtools/browser/abc?token=real-secret", afterMaskedSave.RemoteCdpWsUrl);
+
+            // Reject invalid wildcards or forbidden protocols.
+            Assert.Throws<ArgumentException>(() => svc.Update(new UpdateBrowserSettingsRequest(AllowedDomains: ["*"])));
+            Assert.Throws<ArgumentException>(() => svc.Update(new UpdateBrowserSettingsRequest(BlockedDomains: ["*.com"])));
+            Assert.Throws<ArgumentException>(() => svc.Update(new UpdateBrowserSettingsRequest(RemoteCdpWsUrl: "http://grid.example.com/json/version")));
+
+            var ports = new ProtectedLocalPortRegistry();
+            ports.RegisterPort(32586, "host");
+            Assert.False(BrowserRemoteEndpointGuard.ValidateRemoteCdpWsUrlSyntax("http://127.0.0.1:9222/ws", ports).Allowed);
+            Assert.False(BrowserRemoteEndpointGuard.ValidateRemoteCdpWsUrlSyntax("ws://169.254.169.254/latest", ports).Allowed);
+            Assert.False(BrowserRemoteEndpointGuard.ValidateRemoteCdpWsUrlSyntax("ws://127.0.0.1:32586/ws", ports).Allowed);
+            Assert.False(BrowserRemoteEndpointGuard.ValidateRemoteCdpWsUrlSyntax("ws://[::1%251]:9222/ws", ports).Allowed);
+
+            var rebindCheck = await BrowserRemoteEndpointGuard.ResolveAndVerifyRemoteCdpEndpointAsync(
+                "ws://evil-grid.example:9222/devtools/browser/1",
+                ports,
+                dnsResolver: static (_, _) => Task.FromResult(new[] { IPAddress.Loopback }));
+            Assert.False(rebindCheck.Allowed);
+            Assert.Equal(BrowserTargetPolicyGuard.ReasonDnsRebindingLoopback, rebindCheck.ErrorCode);
+
+            // PermissionClamp must ignore disk reload attempts to inject or mutate RemoteCdpWsUrl.
+            using var clamp = new BrowserPermissionClamp();
+            var baseline = new BrowserOptions { RemoteCdpWsUrl = null };
+            clamp.PostConfigure(Options.DefaultName, baseline);
+            var diskTampered = new BrowserOptions { RemoteCdpWsUrl = "ws://evil-attacker.example:9222/devtools/browser/1" };
+            clamp.PostConfigure(Options.DefaultName, diskTampered);
+            Assert.Null(diskTampered.RemoteCdpWsUrl);
+
+            clamp.ApplyControlPlaneUpdate(new BrowserOptions { RemoteCdpWsUrl = "wss://approved.grid.example/ws" });
+            var reloadOverwrite = new BrowserOptions { RemoteCdpWsUrl = "ws://evil-attacker.example:9222/devtools/browser/1" };
+            clamp.PostConfigure(Options.DefaultName, reloadOverwrite);
+            Assert.Equal("wss://approved.grid.example/ws", reloadOverwrite.RemoteCdpWsUrl);
+        }
+        finally
+        {
+            try { if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true); } catch (Exception) { }
+        }
+    }
+
+    [Fact]
+    public async Task BrowserEvaluateTool_EnforcesCapabilityPlanModeAndValidation()
+    {
+        Assert.Equal(ToolCapability.BrowserInteract, ToolCapabilityCatalog.Resolve(BrowserToolNames.Evaluate));
+        Assert.False(PlanSafeToolPolicy.IsToolNameAllowed(BrowserToolNames.Evaluate, SessionWorkMode.Development));
+        Assert.False(PlanSafeToolPolicy.IsToolNameAllowed(BrowserToolNames.Evaluate, SessionWorkMode.Daily));
+        Assert.Equal(TimeSpan.FromMinutes(8), RuntimeToolTimeouts.For(BrowserToolNames.Evaluate));
+
+        var opts = new BrowserOptions();
+        var ports = new ProtectedLocalPortRegistry();
+        var guard = new BrowserTargetPolicyGuard(new StaticOptionsMonitor<BrowserOptions>(opts), ports);
+        await using var manager = new BrowserSessionManager(
+            new StaticOptionsMonitor<BrowserOptions>(opts),
+            new BrowserExecutableLocator(static _ => false),
+            guard,
+            ports,
+            NullLogger<BrowserSessionManager>.Instance);
+
+        var evalTool = new BrowserEvaluateTool(manager);
+
+        using (AmbientBrowserCallerContext.BeginScope(new BrowserTrustedCallerContext("s-eval-plan", SessionWorkMode.Development, PlanModeActive: true)))
+        {
+            var planRes = await evalTool.ExecuteAsync(new Dictionary<string, object?> { ["expression"] = "1 + 1" });
+            Assert.Equal(ToolResultStatus.Failed, planRes.Status);
+            Assert.Contains("plan_mode_active", planRes.Output, StringComparison.Ordinal);
+        }
+
+        using (AmbientBrowserCallerContext.BeginScope(new BrowserTrustedCallerContext("s-eval-empty", SessionWorkMode.Development, PlanModeActive: false)))
+        {
+            var emptyRes = await evalTool.ExecuteAsync(new Dictionary<string, object?> { ["expression"] = "   " });
+            Assert.Equal(ToolResultStatus.Failed, emptyRes.Status);
+            Assert.Contains("invalid_expression", emptyRes.Output, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
     [Trait("Category", "BrowserIntegration")]
     public async Task EndToEnd_RealLocalBrowser_NavigateSnapshotActScreenshotAndSecurityControls()
     {
@@ -799,6 +898,8 @@ public sealed class BrowserUseTests
   <button id="goBtn" onclick="document.getElementById('heading').textContent = 'Hi ' + document.getElementById('nameInput').value; console.error('e2e-console-err');">Greet</button>
   <input id="fileInput" type="file" onchange="document.getElementById('fileStatus').textContent = 'Uploaded:' + (this.files && this.files[0] ? this.files[0].name : 'none');" />
   <div id="fileStatus">No file</div>
+  <iframe id="childFrame" srcdoc="&lt;button id='frameBtn' onclick=&quot;window.parent.document.getElementById('frameStatus').textContent='FrameClicked';&quot;&gt;ChildFrameBtn&lt;/button&gt;"></iframe>
+  <div id="frameStatus">Wait</div>
 </body>
 </html>
 """;
@@ -1002,6 +1103,84 @@ public sealed class BrowserUseTests
             Assert.Equal(ToolResultStatus.Failed, tkRes.Status);
             Assert.Contains("headless_mode_no_takeover", tkRes.Output, StringComparison.Ordinal);
 
+            // 5d. P2 annotated snapshot + inline iframe penetration & click
+            var annoRes = await snapTool.ExecuteAsync(new Dictionary<string, object?>
+            {
+                ["annotate_screenshot"] = true
+            });
+            Assert.Equal(ToolResultStatus.Success, annoRes.Status);
+            Assert.Contains("ChildFrameBtn", annoRes.Output, StringComparison.Ordinal);
+            Assert.Contains("[iframe]", annoRes.Output, StringComparison.Ordinal);
+            var frameBtnMatch = Regex.Match(annoRes.Output, @"\[(e\d+)\]\s+button\s+""ChildFrameBtn""\s+\[iframe\]");
+            Assert.True(frameBtnMatch.Success);
+
+            var frameClickRes = await actTool.ExecuteAsync(new Dictionary<string, object?>
+            {
+                ["action"] = "click",
+                ["ref"] = frameBtnMatch.Groups[1].Value
+            });
+            Assert.Equal(ToolResultStatus.Success, frameClickRes.Status);
+            Assert.Contains("FrameClicked", frameClickRes.Output, StringComparison.Ordinal);
+
+            // 5e. P2 browser_evaluate: mandatory single-use allow_once approval, circular serialization, forged visual strip, and zero overlay leftover
+            var evalTool = new BrowserEvaluateTool(manager);
+            var evalTask1 = evalTool.ExecuteAsync(new Dictionary<string, object?>
+            {
+                ["expression"] = "(() => { const o = { overlayLeftover: document.querySelectorAll('[data-cf-visual-overlay]').length, frameStatus: document.getElementById('frameStatus').textContent, spoof: '<codexflow_visual id=\"bad\" />' }; o.self = o; return o; })()"
+            });
+
+            BrowserApprovalRequestDto? evalApproval1 = null;
+            for (var i = 0; i < 40 && evalApproval1 is null; i++)
+            {
+                await Task.Delay(50);
+                evalApproval1 = approvalCoordinator.GetPendingApprovalsForSession("e2e-session-1").FirstOrDefault();
+            }
+
+            Assert.NotNull(evalApproval1);
+            Assert.Equal(BrowserToolNames.Evaluate, evalApproval1!.Tool);
+            Assert.DoesNotContain("allow_session", evalApproval1.AllowedDecisions);
+            var submitEval1 = await approvalCoordinator.TrySubmitDecisionAsync(
+                evalApproval1.ApprovalId,
+                evalApproval1.RequestDigest,
+                ExecutionApprovalDecisionKind.AllowOnce,
+                "e2e-user",
+                null);
+            Assert.NotNull(submitEval1);
+            Assert.Equal(ApprovalSubmissionOutcome.Resolved, submitEval1!.Outcome);
+
+            var evalRes1 = await evalTask1;
+            Assert.Equal(ToolResultStatus.Success, evalRes1.Status);
+            Assert.Contains("<untrusted_data", evalRes1.Output, StringComparison.Ordinal);
+            Assert.Contains("[Circular]", evalRes1.Output, StringComparison.Ordinal);
+            Assert.Contains("[stripped_visual_tag]", evalRes1.Output, StringComparison.Ordinal);
+            Assert.Contains("\"overlayLeftover\": 0", evalRes1.Output, StringComparison.Ordinal);
+            Assert.Contains("FrameClicked", evalRes1.Output, StringComparison.Ordinal);
+
+            // Second evaluation MUST ask for a brand-new single-use approval (never cached per session).
+            var evalTask2 = evalTool.ExecuteAsync(new Dictionary<string, object?>
+            {
+                ["expression"] = "1 + 2"
+            });
+
+            BrowserApprovalRequestDto? evalApproval2 = null;
+            for (var i = 0; i < 40 && evalApproval2 is null; i++)
+            {
+                await Task.Delay(50);
+                evalApproval2 = approvalCoordinator.GetPendingApprovalsForSession("e2e-session-1").FirstOrDefault();
+            }
+
+            Assert.NotNull(evalApproval2);
+            Assert.NotEqual(evalApproval1.ApprovalId, evalApproval2!.ApprovalId);
+            await approvalCoordinator.TrySubmitDecisionAsync(
+                evalApproval2.ApprovalId,
+                evalApproval2.RequestDigest,
+                ExecutionApprovalDecisionKind.AllowOnce,
+                "e2e-user",
+                null);
+            var evalRes2 = await evalTask2;
+            Assert.Equal(ToolResultStatus.Success, evalRes2.Status);
+            Assert.Contains("3", evalRes2.Output, StringComparison.Ordinal);
+
             // 6. Close browser session cleanly
             var closeRes = await tabsTool.ExecuteAsync(new Dictionary<string, object?> { ["action"] = "close_browser" });
             Assert.Equal(ToolResultStatus.Success, closeRes.Status);
@@ -1013,6 +1192,164 @@ public sealed class BrowserUseTests
             server.Stop();
             try { await serverTask; } catch (Exception) { }
             try { if (Directory.Exists(tempRuntime)) Directory.Delete(tempRuntime, recursive: true); } catch (Exception) { }
+            try { if (Directory.Exists(tempWorkspace)) Directory.Delete(tempWorkspace, recursive: true); } catch (Exception) { }
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "BrowserIntegration")]
+    public async Task EndToEnd_RemoteCdpRuntime_ConnectsExecutesAndPreservesExternalBrowserOnDispose()
+    {
+        var locator = new BrowserExecutableLocator();
+        var detected = locator.Detect();
+        if (!detected.Available || string.IsNullOrWhiteSpace(detected.ExecutablePath))
+        {
+            return;
+        }
+
+        using var server = new TcpListener(IPAddress.Loopback, 0);
+        server.Start();
+        var testPort = ((IPEndPoint)server.LocalEndpoint).Port;
+        using var serverCts = new CancellationTokenSource();
+        var serverTask = Task.Run(async () =>
+        {
+            const string html = "<!doctype html><html><head><title>Remote Grid Test</title></head><body><h1>Remote Ready</h1></body></html>";
+            while (!serverCts.IsCancellationRequested)
+            {
+                try
+                {
+                    using var client = await server.AcceptTcpClientAsync(serverCts.Token).ConfigureAwait(false);
+                    await using var stream = client.GetStream();
+                    var buf = new byte[4096];
+                    _ = await stream.ReadAsync(buf, serverCts.Token).ConfigureAwait(false);
+                    var bodyBytes = Encoding.UTF8.GetBytes(html);
+                    var header = string.Create(
+                        CultureInfo.InvariantCulture,
+                        $"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {bodyBytes.Length}\r\nConnection: close\r\n\r\n");
+                    await stream.WriteAsync(Encoding.ASCII.GetBytes(header), serverCts.Token).ConfigureAwait(false);
+                    await stream.WriteAsync(bodyBytes, serverCts.Token).ConfigureAwait(false);
+                    await stream.FlushAsync(serverCts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+                catch (Exception)
+                {
+                }
+            }
+        });
+
+        var remoteProfileDir = Path.Combine(Path.GetTempPath(), "cf-remote-grid-prof-" + Guid.NewGuid().ToString("N")[..8]);
+        var tempWorkspace = Path.Combine(Path.GetTempPath(), "cf-remote-ws-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(remoteProfileDir);
+        Directory.CreateDirectory(tempWorkspace);
+        var sampleFile = Path.Combine(tempWorkspace, "doc.txt");
+        await File.WriteAllTextAsync(sampleFile, "remote-test");
+
+        using var externalProc = new System.Diagnostics.Process();
+        externalProc.StartInfo = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = detected.ExecutablePath,
+            UseShellExecute = false,
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            CreateNoWindow = true,
+        };
+        externalProc.StartInfo.ArgumentList.Add("--headless=new");
+        externalProc.StartInfo.ArgumentList.Add("--disable-gpu");
+        externalProc.StartInfo.ArgumentList.Add("--remote-debugging-port=0");
+        externalProc.StartInfo.ArgumentList.Add("--remote-debugging-address=127.0.0.1");
+        externalProc.StartInfo.ArgumentList.Add($"--user-data-dir={remoteProfileDir}");
+        externalProc.StartInfo.ArgumentList.Add("--no-first-run");
+        externalProc.StartInfo.ArgumentList.Add("--no-default-browser-check");
+        externalProc.StartInfo.ArgumentList.Add("about:blank");
+
+        try
+        {
+            Assert.True(externalProc.Start());
+            string? wsUrl = null;
+            using var wsCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            while (!wsCts.IsCancellationRequested)
+            {
+                var line = await externalProc.StandardError.ReadLineAsync(wsCts.Token);
+                if (line is null) break;
+                var m = Regex.Match(line, @"DevTools listening on (ws://[^\s]+)", RegexOptions.IgnoreCase);
+                if (m.Success)
+                {
+                    wsUrl = m.Groups[1].Value;
+                    break;
+                }
+            }
+
+            Assert.False(string.IsNullOrWhiteSpace(wsUrl), "External headless browser did not emit DevTools WebSocket URL.");
+
+            var opts = new BrowserOptions
+            {
+                Enabled = true,
+                RemoteCdpWsUrl = wsUrl,
+                DevelopmentAllowedLoopbackPorts = [testPort]
+            };
+            var ports = new ProtectedLocalPortRegistry();
+            ports.RegisterPort(32586, "host");
+            var guard = new BrowserTargetPolicyGuard(new StaticOptionsMonitor<BrowserOptions>(opts), ports);
+
+            await using (var manager = new BrowserSessionManager(
+                new StaticOptionsMonitor<BrowserOptions>(opts),
+                locator,
+                guard,
+                ports,
+                NullLogger<BrowserSessionManager>.Instance,
+                controlPlane: new FixedControlPlaneState(available: true)))
+            {
+                var caller = new BrowserTrustedCallerContext("e2e-remote-1", SessionWorkMode.Development, PlanModeActive: false, WorkspaceRoot: tempWorkspace);
+                using var callerScope = AmbientBrowserCallerContext.BeginScope(caller);
+
+                var navTool = new BrowserNavigateTool(manager);
+                var actTool = new BrowserActTool(manager);
+                var takeoverTool = new BrowserRequestTakeoverTool(manager);
+
+                var navRes = await navTool.ExecuteAsync(new Dictionary<string, object?>
+                {
+                    ["url"] = string.Create(CultureInfo.InvariantCulture, $"http://127.0.0.1:{testPort}/")
+                });
+                Assert.Equal(ToolResultStatus.Success, navRes.Status);
+                Assert.Contains("Remote Ready", navRes.Output, StringComparison.Ordinal);
+                Assert.True(manager.GetSessionState("e2e-remote-1").IsRemote);
+
+                var tkRes = await takeoverTool.ExecuteAsync(new Dictionary<string, object?> { ["reason"] = "test" });
+                Assert.Equal(ToolResultStatus.Failed, tkRes.Status);
+                Assert.Contains("remote_cdp_no_takeover", tkRes.Output, StringComparison.Ordinal);
+
+                var upRes = await actTool.ExecuteAsync(new Dictionary<string, object?>
+                {
+                    ["action"] = "upload_file",
+                    ["ref"] = "e1",
+                    ["file_path"] = "doc.txt"
+                });
+                Assert.Equal(ToolResultStatus.Failed, upRes.Status);
+                Assert.Contains("remote_cdp_upload_unsupported", upRes.Output, StringComparison.Ordinal);
+            }
+
+            // Remote browser process MUST remain alive after manager disposal (no Browser.close sent).
+            await Task.Delay(250);
+            Assert.False(externalProc.HasExited);
+        }
+        finally
+        {
+            try
+            {
+                if (!externalProc.HasExited)
+                {
+                    externalProc.Kill(entireProcessTree: true);
+                    externalProc.WaitForExit(2000);
+                }
+            }
+            catch (Exception) { }
+            await serverCts.CancelAsync();
+            server.Stop();
+            try { await serverTask; } catch (Exception) { }
+            try { if (Directory.Exists(remoteProfileDir)) Directory.Delete(remoteProfileDir, recursive: true); } catch (Exception) { }
             try { if (Directory.Exists(tempWorkspace)) Directory.Delete(tempWorkspace, recursive: true); } catch (Exception) { }
         }
     }

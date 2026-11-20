@@ -34,6 +34,8 @@ public sealed class BrowserOptions
 
     public string? ExecutablePath { get; set; }
 
+    public string? RemoteCdpWsUrl { get; set; }
+
     public bool Headless { get; set; } = true;
 
     public BrowserProfileMode ProfileMode { get; set; } = BrowserProfileMode.Ephemeral;

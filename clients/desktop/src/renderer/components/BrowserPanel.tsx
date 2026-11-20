@@ -62,9 +62,11 @@ export const BrowserPanel: React.FC<BrowserPanelProps> = ({
   const actions = browserState?.recentActions ?? [];
   const consoleLogs = browserState?.recentConsole ?? [];
   const consoleErrorCount = Number(browserState?.consoleErrorCount ?? 0);
-  const modeLabel = `${browserState?.headless === false ? '有头窗口' : '无头'}${
-    browserState?.profileMode === 'Persistent' ? '·持久化' : '·隔离'
-  }`;
+  const modeLabel = browserState?.isRemote
+    ? '远端 CDP·隔离'
+    : `${browserState?.headless === false ? '有头窗口' : '无头'}${
+        browserState?.profileMode === 'Persistent' ? '·持久化' : '·隔离'
+      }`;
 
   const revokeCurrentObjectUrl = useCallback(() => {
     if (activeObjectUrlRef.current) {
@@ -292,7 +294,7 @@ export const BrowserPanel: React.FC<BrowserPanelProps> = ({
             >
               <RefreshCw className={`h-3.5 w-3.5 ${loadingShot ? 'animate-spin' : ''}`} />
             </button>
-            {isRunning && !takeoverActive && browserState?.headless === false && (
+            {isRunning && !takeoverActive && !browserState?.isRemote && browserState?.headless === false && (
               <button
                 type="button"
                 data-testid="browser-start-takeover-btn"

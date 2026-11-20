@@ -3,7 +3,7 @@
   "info": {
     "title": "CodexFlow Local Gateway API",
     "description": "HTTP & SSE contract for CodexFlow.Local and the Electron desktop client.",
-    "version": "1.2.0"
+    "version": "1.3.0"
   },
   "paths": {
     "/api/jobs": {
@@ -6407,6 +6407,10 @@
               "string"
             ],
             "format": "date-time"
+          },
+          "isRemote": {
+            "type": "boolean",
+            "default": false
           }
         }
       },
@@ -6491,6 +6495,16 @@
             "$ref": "#/components/schemas/BrowserExecutableStatusDto"
           },
           "allowControlledDownloads": {
+            "type": "boolean",
+            "default": false
+          },
+          "remoteCdpWsUrl": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "isRemoteCdpConfigured": {
             "type": "boolean",
             "default": false
           }
@@ -11092,6 +11106,12 @@
             "type": [
               "null",
               "boolean"
+            ]
+          },
+          "remoteCdpWsUrl": {
+            "type": [
+              "null",
+              "string"
             ]
           }
         }

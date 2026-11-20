@@ -4466,6 +4466,8 @@ export type components = {
             /** Format: int32 */
             consoleErrorCount: number | string;
             headless: boolean;
+            /** @default false */
+            isRemote: boolean;
             profileMode: string;
             recentActions: components["schemas"]["BrowserActionRecordDto"][];
             recentConsole: components["schemas"]["BrowserConsoleEntryDto"][];
@@ -4498,9 +4500,12 @@ export type components = {
             /** Format: int32 */
             idleTimeoutMinutes: number | string;
             interactionApprovalPolicy: string;
+            /** @default false */
+            isRemoteCdpConfigured: boolean;
             /** Format: int32 */
             maxConcurrentSessions: number | string;
             profileMode: string;
+            remoteCdpWsUrl?: null | string;
         };
         BrowserTabDto: {
             active: boolean;
@@ -5612,6 +5617,7 @@ export type components = {
             /** Format: int32 */
             maxConcurrentSessions?: null | number | string;
             profileMode?: null | string;
+            remoteCdpWsUrl?: null | string;
         };
         UpdateCapabilityRiskRequest: {
             capabilityId: string;
