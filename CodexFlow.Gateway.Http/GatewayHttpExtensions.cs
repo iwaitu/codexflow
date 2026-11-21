@@ -34,6 +34,7 @@ public static class GatewayHttpExtensions
 
         services.TryAddScoped<BackgroundJobController>();
         services.TryAddScoped<BrowserSessionController>();
+        services.TryAddScoped<ComputerSessionController>();
         services.TryAddScoped<BusinessPluginsController>();
         services.TryAddScoped<BusinessSkillsController>();
         services.TryAddScoped<CodexGatewayController>();

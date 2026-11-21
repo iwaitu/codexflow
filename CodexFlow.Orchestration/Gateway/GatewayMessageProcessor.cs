@@ -68,6 +68,10 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         "browser_act",
         "browser_tabs",
         "browser_request_takeover",
+        "computer_screen_info",
+        "computer_screenshot",
+        "computer_act",
+        "computer_request_takeover",
         "glob",
         "user_learn_preference"
     ];
@@ -83,6 +87,10 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         "browser_act",
         "browser_tabs",
         "browser_request_takeover",
+        "computer_screen_info",
+        "computer_screenshot",
+        "computer_act",
+        "computer_request_takeover",
         "glob",
         "ivilson_read",
         "ivilson_ls",
@@ -200,6 +208,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
     private readonly IControlPlaneStateProvider? _controlPlaneStateProvider;
     private readonly IOptionsMonitor<ExecutionOptions>? _executionOptions;
     private readonly IOptionsMonitor<BusinessSkillsOptions>? _businessSkillsOptions;
+    private readonly CodexFlow.Core.ComputerUse.IComputerSessionManager? _computerSessionManager;
     private readonly DocumentReaderRouter _documentReaderRouter;
     private readonly ContextCompressionOptions _compressionOptions;
     private readonly OpenSpecExecutionOptions _openSpecExecutionOptions;
@@ -252,7 +261,8 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         ITrustedExecutionContextAccessor? trustedExecutionContextAccessor = null,
         IControlPlaneStateProvider? controlPlaneStateProvider = null,
         IOptionsMonitor<ExecutionOptions>? executionOptions = null,
-        IOptionsMonitor<BusinessSkillsOptions>? businessSkillsOptions = null)
+        IOptionsMonitor<BusinessSkillsOptions>? businessSkillsOptions = null,
+        CodexFlow.Core.ComputerUse.IComputerSessionManager? computerSessionManager = null)
     {
         _jobStore = jobStore;
         _jobReadStore = jobReadStore;
@@ -279,6 +289,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         _controlPlaneStateProvider = controlPlaneStateProvider;
         _executionOptions = executionOptions;
         _businessSkillsOptions = businessSkillsOptions;
+        _computerSessionManager = computerSessionManager;
         _documentReaderRouter = documentReaderRouter ?? DocumentReaderRouter.CreateDefault();
         _approvalGate = new GatewayApprovalGate(scopeFactory);
     }
@@ -982,10 +993,23 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             // 5. 工具调用循环流式对话
             try
             {
+                if (message.Source == GatewayMessageSource.UserChat)
+                {
+                    _computerSessionManager?.ResetEmergencyStopForNewTurn(message.SessionId);
+                }
+
                 using var visualScope = AmbientTurnVisualAttachmentContext.BeginScope(visualStore);
                 using var browserScope = message.Source == GatewayMessageSource.UserChat
                     ? CodexFlow.Core.Browser.AmbientBrowserCallerContext.BeginScope(
                         new CodexFlow.Core.Browser.BrowserTrustedCallerContext(
+                            message.SessionId,
+                            turnPolicy.WorkMode,
+                            turnPolicy.PlanModeActive,
+                            session?.WorkspacePath))
+                    : null;
+                using var computerScope = message.Source == GatewayMessageSource.UserChat
+                    ? CodexFlow.Core.ComputerUse.AmbientComputerCallerContext.BeginScope(
+                        new CodexFlow.Core.ComputerUse.ComputerTrustedCallerContext(
                             message.SessionId,
                             turnPolicy.WorkMode,
                             turnPolicy.PlanModeActive,
@@ -1725,6 +1749,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             sb.AppendLine("- 进入陌生仓库时，不要先猜 `src`/`app`/`lib`/`server`；优先使用 `search_file_index`、`ivilson_ls`、`search_in_files` 从 `.` 或已确认存在的真实目录开始。");
             sb.AppendLine("- 当需要把关键代码直接展示到前端预览区时，调用 `ui_show_file` 或 `ui_show_diff`。优先展示最相关的 1 到 2 个文件，不要在聊天中粘贴大段代码。");
             sb.AppendLine("- 当用户询问实时信息、外部资料、最新价格或给定网页链接，且当前工具面包含 `web_search` / `fetch_webpage` 时，直接调用相应工具查证后再回答，不要凭记忆猜测；需要保存个人长期偏好时可使用 `user_learn_preference`，需要定时任务/MCP资源/LSP分析等辅助能力时可通过 `tool_search` 搜索激活。");
+            sb.AppendLine("- 网页浏览、Web 站点测试或 localhost 前端联调优先使用 `browser_*` 工具；当需要操作本地原生桌面软件或对构建产出的桌面应用（Electron/WPF/WinForms/macOS App）进行端到端 GUI 验收时，使用 `computer_*` 工具（先 `computer_screen_info` 锁定目标窗口，再 `computer_screenshot` 查看网格坐标，之后执行 `computer_act`）。");
             return AppendGatewayToolCatalog(sb.ToString(), gatewayTools);
         }
 
@@ -2104,6 +2129,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         }
 
         sb.AppendLine("- 需要展示工作区文本/数据文件给用户预览时，可使用 `ui_show_file`。");
+        sb.AppendLine("- 网页浏览与网页系统操作优先使用 `browser_*` 工具；需要操作本地原生桌面应用程序（或自动化办公软件界面）时，使用 `computer_*` 工具（先 `computer_screen_info` 锁定目标窗口，再 `computer_screenshot` 查看网格坐标后执行 `computer_act`）。");
         return AppendGatewayToolCatalog(sb.ToString(), gatewayTools);
     }
 
@@ -6386,7 +6412,11 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                 string.Equals(key, "browser_act", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(key, "browser_tabs", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(key, "browser_request_takeover", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(key, "browser_evaluate", StringComparison.OrdinalIgnoreCase))
+                string.Equals(key, "browser_evaluate", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(key, "computer_screen_info", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(key, "computer_screenshot", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(key, "computer_act", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(key, "computer_request_takeover", StringComparison.OrdinalIgnoreCase))
             {
                 result[key] = tool;
             }

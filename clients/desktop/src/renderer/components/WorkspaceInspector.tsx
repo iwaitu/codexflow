@@ -1,6 +1,6 @@
 import React from 'react';
-import { Cpu, FileDiff, FolderTree, Globe, X } from 'lucide-react';
-import type { BrowserSessionStateDto } from '@shared/ipc';
+import { Cpu, FileDiff, FolderTree, Globe, Monitor, X } from 'lucide-react';
+import type { BrowserSessionStateDto, ComputerSessionStateDto } from '@shared/ipc';
 import type {
   ApiAuthContext,
   BackgroundJob,
@@ -10,6 +10,7 @@ import type {
 } from '../lib/apiClient';
 import type { InspectorTab } from '../stores/useAppStore';
 import { BrowserPanel } from './BrowserPanel';
+import { ComputerPanel } from './ComputerPanel';
 import { JobsPanel } from './JobsPanel';
 import { WorkspaceChangesPanel } from './WorkspaceChangesPanel';
 import { WorkspaceFilesPanel } from './WorkspaceFilesPanel';
@@ -30,8 +31,11 @@ interface WorkspaceInspectorProps {
   verificationReceipts: Record<string, VerificationReceipt>;
   executionBackend: string | null;
   browserState?: BrowserSessionStateDto | null;
+  computerState?: ComputerSessionStateDto | null;
   controlPlaneAvailable?: boolean;
   onBrowserStateUpdated?: (next: BrowserSessionStateDto) => void;
+  onComputerStateUpdated?: (next: ComputerSessionStateDto) => void;
+  onComputerEmergencyStopped?: () => void;
   onSelectTab: (tab: InspectorTab) => void;
   onClose: () => void;
   onRefreshChanges: () => void;
@@ -56,8 +60,11 @@ export const WorkspaceInspector: React.FC<WorkspaceInspectorProps> = ({
   verificationReceipts,
   executionBackend,
   browserState = null,
+  computerState = null,
   controlPlaneAvailable = false,
   onBrowserStateUpdated,
+  onComputerStateUpdated,
+  onComputerEmergencyStopped,
   onSelectTab,
   onClose,
   onRefreshChanges,
@@ -71,6 +78,7 @@ export const WorkspaceInspector: React.FC<WorkspaceInspectorProps> = ({
 
   const changedCount = changes?.files?.length ?? 0;
   const isBrowserRunning = browserState?.status === 'running';
+  const isComputerRunning = Boolean(computerState?.active && !computerState?.emergencyStopped);
   const showEngineeringTabs = workMode !== 'Daily';
 
   return (
@@ -134,6 +142,20 @@ export const WorkspaceInspector: React.FC<WorkspaceInspectorProps> = ({
             <span>浏览器</span>
             {isBrowserRunning && <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />}
           </button>
+          <button
+            type="button"
+            data-testid="inspector-tab-computer"
+            onClick={() => onSelectTab('computer')}
+            className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium ${
+              activeTab === 'computer'
+                ? 'bg-slate-800 text-slate-100'
+                : 'text-slate-400 hover:bg-slate-900 hover:text-slate-200'
+            }`}
+          >
+            <Monitor className="h-3.5 w-3.5" />
+            <span>桌面</span>
+            {isComputerRunning && <span className="h-1.5 w-1.5 rounded-full bg-rose-400 animate-pulse" />}
+          </button>
         </div>
 
         <button
@@ -185,6 +207,16 @@ export const WorkspaceInspector: React.FC<WorkspaceInspectorProps> = ({
             browserState={browserState}
             controlPlaneAvailable={controlPlaneAvailable}
             onStateUpdated={(next) => onBrowserStateUpdated?.(next)}
+          />
+        )}
+        {activeTab === 'computer' && (
+          <ComputerPanel
+            auth={auth}
+            sessionId={sessionId}
+            computerState={computerState}
+            controlPlaneAvailable={controlPlaneAvailable}
+            onStateUpdated={(next) => onComputerStateUpdated?.(next)}
+            onEmergencyStopped={onComputerEmergencyStopped}
           />
         )}
       </div>

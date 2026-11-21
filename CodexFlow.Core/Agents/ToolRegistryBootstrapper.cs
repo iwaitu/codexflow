@@ -5,6 +5,7 @@
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Agents.Tools;
 using CodexFlow.Core.Browser;
+using CodexFlow.Core.ComputerUse;
 using CodexFlow.Core.Configuration;
 using CodexFlow.Core.Constants;
 using CodexFlow.Core.Documents;
@@ -78,6 +79,8 @@ public sealed class ToolRegistryBootstrapper
     private readonly IWorkspaceSettingsService? _workspaceSettingsService;
     private readonly IBrowserSessionManager? _browserSessionManager;
     private readonly IOptionsMonitor<BrowserOptions>? _browserOptions;
+    private readonly IComputerSessionManager? _computerSessionManager;
+    private readonly IOptionsMonitor<ComputerOptions>? _computerOptions;
     private readonly ILogger<ToolRegistryBootstrapper> _logger;
 
     public ToolRegistryBootstrapper(
@@ -128,7 +131,9 @@ public sealed class ToolRegistryBootstrapper
         IPlanModeHostBridge? planModeHostBridge = null,
         IWorkspaceSettingsService? workspaceSettingsService = null,
         IBrowserSessionManager? browserSessionManager = null,
-        IOptionsMonitor<BrowserOptions>? browserOptions = null)
+        IOptionsMonitor<BrowserOptions>? browserOptions = null,
+        IComputerSessionManager? computerSessionManager = null,
+        IOptionsMonitor<ComputerOptions>? computerOptions = null)
     {
         _gitService = gitService;
         _orchestrator = orchestrator;
@@ -178,6 +183,8 @@ public sealed class ToolRegistryBootstrapper
         _workspaceSettingsService = workspaceSettingsService;
         _browserSessionManager = browserSessionManager;
         _browserOptions = browserOptions;
+        _computerSessionManager = computerSessionManager;
+        _computerOptions = computerOptions;
     }
 
     public void EnsureRegistered(IToolRegistry toolRegistry)
@@ -419,6 +426,14 @@ public sealed class ToolRegistryBootstrapper
             toolRegistry.RegisterTool(new BrowserTabsTool(_browserSessionManager), ToolLoading.Deferred);
             toolRegistry.RegisterTool(new BrowserRequestTakeoverTool(_browserSessionManager, _modelSettingsService, _browserOptions), ToolLoading.Deferred);
             toolRegistry.RegisterTool(new BrowserEvaluateTool(_browserSessionManager), ToolLoading.Deferred);
+        }
+
+        if (_computerSessionManager != null)
+        {
+            toolRegistry.RegisterTool(new ComputerScreenInfoTool(_computerSessionManager), ToolLoading.Deferred);
+            toolRegistry.RegisterTool(new ComputerScreenshotTool(_computerSessionManager, _modelSettingsService, _computerOptions), ToolLoading.Deferred);
+            toolRegistry.RegisterTool(new ComputerActTool(_computerSessionManager, _modelSettingsService, _computerOptions), ToolLoading.Deferred);
+            toolRegistry.RegisterTool(new ComputerRequestTakeoverTool(_computerSessionManager, _modelSettingsService, _computerOptions), ToolLoading.Deferred);
         }
 
         // Archive

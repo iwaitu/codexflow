@@ -1,12 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { AlertTriangle, ArrowDown, Bot, CheckCircle2, ChevronDown, ChevronUp, Cpu, FolderPlus, Loader2, Plus, RefreshCw, Search, ShieldCheck, X } from 'lucide-react';
-import type { BrowserApprovalRequestDto, BusinessApprovalRequestDto } from '@shared/ipc';
+import type { BrowserApprovalRequestDto, BusinessApprovalRequestDto, ComputerApprovalRequestDto } from '@shared/ipc';
 import type { BackgroundJob, PlanModeExitRequestState, SessionPlan, SessionWorkMode, VerificationReceipt } from '../lib/apiClient';
 import { applyCssHighlightsForSearch, clearCssHighlightsForSearch, findSessionSearchMatches } from '../lib/chatSearch';
 import type { UiMessage, UiPendingApproval, UiToolCall, WorkerBarState } from '../lib/sessionRecovery';
 import { BrowserApprovalCard } from './BrowserApprovalCard';
 import { BusinessSkillApprovalCard } from './BusinessSkillApprovalCard';
+import { ComputerApprovalCard } from './ComputerApprovalCard';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { MessageItem } from './MessageItem';
 import { PlanApprovalCard } from './PlanApprovalCard';
@@ -27,6 +28,7 @@ interface ChatViewProps {
   pendingApprovals: UiPendingApproval[];
   pendingBusinessApprovals?: BusinessApprovalRequestDto[];
   pendingBrowserApprovals?: BrowserApprovalRequestDto[];
+  pendingComputerApprovals?: ComputerApprovalRequestDto[];
   currentPlan: SessionPlan | null;
   jobs: BackgroundJob[];
   verificationReceipts: Record<string, VerificationReceipt>;
@@ -46,6 +48,7 @@ interface ChatViewProps {
   onApprovalResolved: (approvalId: string) => void;
   onBusinessApprovalResolved?: (approvalId: string) => void;
   onBrowserApprovalResolved?: (approvalId: string) => void;
+  onComputerApprovalResolved?: (approvalId: string) => void;
   onPlanActionSubmitted: () => void;
   onConfirmExitPlanMode?: () => Promise<void>;
   onDismissPlanModeExitRequest?: () => void;
@@ -69,6 +72,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   pendingApprovals,
   pendingBusinessApprovals = [],
   pendingBrowserApprovals = [],
+  pendingComputerApprovals = [],
   currentPlan,
   jobs,
   verificationReceipts,
@@ -88,6 +92,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onApprovalResolved,
   onBusinessApprovalResolved,
   onBrowserApprovalResolved,
+  onComputerApprovalResolved,
   onPlanActionSubmitted,
   onConfirmExitPlanMode,
   onDismissPlanModeExitRequest,
@@ -551,6 +556,19 @@ export const ChatView: React.FC<ChatViewProps> = ({
               approval={approval}
               controlPlaneAvailable={controlPlaneAvailable}
               onResolved={(approvalId) => onBrowserApprovalResolved?.(approvalId)}
+            />
+          ))}
+        </div>
+      )}
+
+      {pendingComputerApprovals.length > 0 && (
+        <div className="mt-4 space-y-3" data-testid="pending-computer-approvals">
+          {pendingComputerApprovals.map((approval, idx) => (
+            <ComputerApprovalCard
+              key={approval.approvalId ?? `computer-${idx}`}
+              approval={approval}
+              controlPlaneAvailable={controlPlaneAvailable}
+              onResolved={(approvalId) => onComputerApprovalResolved?.(approvalId)}
             />
           ))}
         </div>

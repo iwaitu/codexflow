@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using CodexFlow.Contracts.Browser;
 using CodexFlow.Contracts.BusinessSkills;
+using CodexFlow.Contracts.ComputerUse;
 using CodexFlow.Controllers;
 using CodexFlow.Core.BusinessSkills;
 using CodexFlow.Core.Execution.Approval;
@@ -32,6 +33,7 @@ internal static class BusinessGatewayEndpoints
         var skills = endpoints.MapGroup("").RequireAuthorization(bearer).WithTags("BusinessSkills");
         skills.AddEndpointFilter(CheckBusinessSkillsAsync);
         var browser = endpoints.MapGroup("").RequireAuthorization(bearer).WithTags("BrowserSession");
+        var computer = endpoints.MapGroup("").RequireAuthorization(bearer).WithTags("ComputerSession");
 
         plugins.MapGet(
             "/api/plugins",
@@ -626,6 +628,143 @@ internal static class BusinessGatewayEndpoints
             .Produces<BrowserApiErrorDto>(StatusCodes.Status400BadRequest, "application/json", "text/json", "text/plain")
             .Produces<ProblemDetails>(StatusCodes.Status403Forbidden, "application/json", "text/json", "text/plain")
             .Produces<BrowserApiErrorDto>(StatusCodes.Status503ServiceUnavailable, "application/json", "text/json", "text/plain");
+
+        computer.MapGet(
+            "/api/gateway/session/{sessionId}/computer",
+            static (
+                [FromServices] ComputerSessionController handler,
+                HttpContext httpContext,
+                [FromRoute] string sessionId,
+                CancellationToken ct) =>
+            {
+                handler.Bind(httpContext);
+                return handler.GetComputerState(sessionId, ct);
+            })
+            .RequireAuthorization("ActiveUser")
+            .Produces<ComputerSessionStateDto>(StatusCodes.Status200OK, "application/json", "text/json", "text/plain")
+            .Produces<ComputerApiErrorDto>(StatusCodes.Status404NotFound, "application/json", "text/json", "text/plain");
+
+        computer.MapGet(
+            "/api/gateway/session/{sessionId}/computer/screenshot",
+            static (
+                [FromServices] ComputerSessionController handler,
+                HttpContext httpContext,
+                [FromRoute] string sessionId,
+                CancellationToken ct) =>
+            {
+                handler.Bind(httpContext);
+                return handler.GetComputerScreenshot(sessionId, ct);
+            })
+            .RequireAuthorization("ActiveUser")
+            .Produces(StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status204NoContent)
+            .Produces(StatusCodes.Status304NotModified)
+            .Produces<ComputerApiErrorDto>(StatusCodes.Status404NotFound, "application/json", "text/json", "text/plain");
+
+        computer.MapPost(
+            "/api/gateway/session/{sessionId}/computer/close",
+            static (
+                [FromServices] ComputerSessionController handler,
+                HttpContext httpContext,
+                [FromRoute] string sessionId,
+                CancellationToken ct) =>
+            {
+                handler.Bind(httpContext);
+                return handler.CloseComputerSession(sessionId, ct);
+            })
+            .RequireAuthorization(ControlPlaneAuthConstants.ControlPlanePolicy)
+            .Produces<ComputerSessionCloseResponse>(StatusCodes.Status200OK, "application/json", "text/json", "text/plain")
+            .Produces<ComputerApiErrorDto>(StatusCodes.Status404NotFound, "application/json", "text/json", "text/plain");
+
+        computer.MapPost(
+            "/api/gateway/session/{sessionId}/computer/takeover/start",
+            static (
+                [FromServices] ComputerSessionController handler,
+                HttpContext httpContext,
+                [FromRoute] string sessionId,
+                CancellationToken ct,
+                [FromBody] ComputerTakeoverStartRequest? request = null) =>
+            {
+                handler.Bind(httpContext);
+                return handler.StartComputerTakeover(sessionId, request, ct);
+            })
+            .RequireAuthorization(ControlPlaneAuthConstants.ControlPlanePolicy)
+            .Produces<ComputerTakeoverResponse>(StatusCodes.Status200OK, "application/json", "text/json", "text/plain")
+            .Produces<ComputerApiErrorDto>(StatusCodes.Status400BadRequest, "application/json", "text/json", "text/plain")
+            .Produces<ComputerApiErrorDto>(StatusCodes.Status404NotFound, "application/json", "text/json", "text/plain");
+
+        computer.MapPost(
+            "/api/gateway/session/{sessionId}/computer/takeover/complete",
+            static (
+                [FromServices] ComputerSessionController handler,
+                HttpContext httpContext,
+                [FromRoute] string sessionId,
+                CancellationToken ct,
+                [FromBody] ComputerTakeoverCompleteRequest? request = null) =>
+            {
+                handler.Bind(httpContext);
+                return handler.CompleteComputerTakeover(sessionId, request, ct);
+            })
+            .RequireAuthorization(ControlPlaneAuthConstants.ControlPlanePolicy)
+            .Produces<ComputerTakeoverResponse>(StatusCodes.Status200OK, "application/json", "text/json", "text/plain")
+            .Produces<ComputerApiErrorDto>(StatusCodes.Status404NotFound, "application/json", "text/json", "text/plain");
+
+        computer.MapPost(
+            "/api/gateway/computer/emergency-stop",
+            static (
+                [FromServices] ComputerSessionController handler,
+                HttpContext httpContext,
+                CancellationToken ct,
+                [FromBody] ComputerEmergencyStopRequest? request = null) =>
+            {
+                handler.Bind(httpContext);
+                return handler.EmergencyStop(request, ct);
+            })
+            .RequireAuthorization(ControlPlaneAuthConstants.ControlPlanePolicy)
+            .Produces<ComputerEmergencyStopResponse>(StatusCodes.Status200OK, "application/json", "text/json", "text/plain")
+            .Produces<ComputerApiErrorDto>(StatusCodes.Status404NotFound, "application/json", "text/json", "text/plain");
+
+        computer.MapPost(
+            "/api/gateway/computer/protected-windows",
+            static (
+                [FromServices] ComputerSessionController handler,
+                HttpContext httpContext,
+                [FromBody] RegisterProtectedWindowsRequest request) =>
+            {
+                handler.Bind(httpContext);
+                return handler.RegisterProtectedWindows(request);
+            })
+            .RequireAuthorization(ControlPlaneAuthConstants.ControlPlanePolicy)
+            .Produces<RegisterProtectedWindowsResponse>(StatusCodes.Status200OK, "application/json", "text/json", "text/plain")
+            .Produces<ComputerApiErrorDto>(StatusCodes.Status400BadRequest, "application/json", "text/json", "text/plain");
+
+        computer.MapGet(
+            "/api/settings/computer",
+            static (
+                [FromServices] ComputerSessionController handler,
+                HttpContext httpContext) =>
+            {
+                handler.Bind(httpContext);
+                return handler.GetComputerSettings();
+            })
+            .RequireAuthorization("ActiveUser")
+            .Produces<ComputerSettingsDto>(StatusCodes.Status200OK, "application/json", "text/json", "text/plain");
+
+        computer.MapPut(
+            "/api/settings/computer",
+            static (
+                [FromServices] ComputerSessionController handler,
+                HttpContext httpContext,
+                [FromBody] UpdateComputerSettingsRequest request) =>
+            {
+                handler.Bind(httpContext);
+                return handler.UpdateComputerSettings(request);
+            })
+            .RequireAuthorization(ControlPlaneAuthConstants.ControlPlanePolicy)
+            .Produces<ComputerSettingsDto>(StatusCodes.Status200OK, "application/json", "text/json", "text/plain")
+            .Produces<ComputerApiErrorDto>(StatusCodes.Status400BadRequest, "application/json", "text/json", "text/plain")
+            .Produces<ProblemDetails>(StatusCodes.Status403Forbidden, "application/json", "text/json", "text/plain")
+            .Produces<ComputerApiErrorDto>(StatusCodes.Status503ServiceUnavailable, "application/json", "text/json", "text/plain");
 
     }
 
