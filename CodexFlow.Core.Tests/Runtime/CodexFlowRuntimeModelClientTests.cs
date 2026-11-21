@@ -4,7 +4,10 @@
 
 using System.Net;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using CodexFlow.Core.Abstractions;
+using CodexFlow.Core.Agents;
+using CodexFlow.Core.ComputerUse;
 using CodexFlow.Core.Models;
 using CodexFlow.Core.Runtime;
 using CodexFlow.Core.Telemetry;
@@ -257,6 +260,55 @@ public sealed class CodexFlowRuntimeModelClientTests
 
         Assert.Equal(2, exec.Requests.Count);
         Assert.True(coreReq.Options!.AdditionalProperties!.ContainsKey("sampling_flag"));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task StreamAsync_AttachesScreenshotReferencedByToolResult(bool wrappedResult)
+    {
+        var png = ComputerVisualProcessor.EncodePng([10, 20, 30, 255], 1, 1);
+        var store = new TurnVisualAttachmentStore(isMultimodalEnabled: true);
+        using var scope = AmbientTurnVisualAttachmentContext.BeginScope(store);
+        var image = store.Register("computer-screenshot-1.png", "image/png", png)!;
+        var marker = TurnVisualAttachmentStore.FormatMarker(image);
+        var output = $"Screenshot captured. {marker}";
+        var resultText = wrappedResult
+            ? CodexToolFunctionAdapterFactory.MarkResult(CodexToolResult.Succeeded(output)).ToJsonString()
+            : output;
+        if (wrappedResult)
+        {
+            Assert.DoesNotContain(marker, resultText, StringComparison.Ordinal);
+        }
+
+        const string toolName = "computer_screenshot";
+        var tool = CreateTestTool(toolName);
+        var callId = new QreProtocol.RuntimeInvocationId("screenshot-1");
+        using var args = JsonDocument.Parse("{}");
+        var request = CreateProtocolRequest([CreateDescriptor(tool)],
+        [
+            new(QreProtocol.RuntimeMessageRole.User, [new QreProtocol.RuntimeTextItem("Read the current desktop.")]),
+            new(QreProtocol.RuntimeMessageRole.Assistant,
+                [new QreProtocol.RuntimeToolCallItem(new QreProtocol.RuntimeToolCall(callId, toolName, args.RootElement))]),
+            new(QreProtocol.RuntimeMessageRole.Tool,
+                [new QreProtocol.RuntimeToolResultItem(new QreProtocol.RuntimeToolResult(callId, resultText, true))]),
+        ]);
+        var executor = new RecordingExecutor((_, _) => YieldUpdates(
+            new ChatResponseUpdate(ChatRole.Assistant, [new TextContent("ok")]) { FinishReason = ChatFinishReason.Stop }));
+        var client = new CodexFlowRuntimeModelClient(
+            executor, CreateCoreRequest(), [tool], TimeSpan.FromSeconds(5), NullLogger.Instance);
+
+        await DrainAsync(client.StreamAsync(request));
+
+        var messages = Assert.Single(executor.Requests).Messages;
+        var imageMessage = messages.Last();
+        Assert.Equal(ChatRole.User, imageMessage.Role);
+        var attached = Assert.Single(imageMessage.Contents.OfType<DataContent>());
+        Assert.Equal("image/png", attached.MediaType);
+        Assert.Equal(png, attached.Data.ToArray());
+        var toolResult = Assert.Single(messages.Where(m => m.Role == ChatRole.Tool).SelectMany(m => m.Contents)
+            .OfType<FunctionResultContent>());
+        Assert.Equal(resultText, toolResult.Result);
     }
 
     [Fact]

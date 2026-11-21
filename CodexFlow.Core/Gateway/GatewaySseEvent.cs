@@ -43,6 +43,9 @@ public static class GatewaySseEventType
     public const string BrowserStateUpdated = "browser_state_updated";
     public const string BrowserApprovalRequested = "browser_approval_requested";
     public const string BrowserApprovalResolved = "browser_approval_resolved";
+    public const string ComputerStateUpdated = "computer_state_updated";
+    public const string ComputerApprovalRequested = "computer_approval_requested";
+    public const string ComputerApprovalResolved = "computer_approval_resolved";
     public const string Error = "error";
     public const string Heartbeat = "heartbeat";
     public const string Done = "done";

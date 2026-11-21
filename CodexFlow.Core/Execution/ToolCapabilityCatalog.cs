@@ -69,6 +69,12 @@ public static class ToolCapabilityCatalog
         Add(ToolCapability.BrowserInteract,
             "browser_act", "browser_request_takeover", "browser_evaluate");
 
+        Add(ToolCapability.ComputerRead,
+            "computer_screen_info", "computer_screenshot");
+
+        Add(ToolCapability.ComputerInteract,
+            "computer_act", "computer_request_takeover");
+
         return t;
     }
 }

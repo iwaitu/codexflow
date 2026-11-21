@@ -7,7 +7,9 @@ using System.Security.Claims;
 using CodexFlow.Application;
 using CodexFlow.Contracts.Browser;
 using CodexFlow.Contracts.BusinessSkills;
+using CodexFlow.Contracts.ComputerUse;
 using CodexFlow.Core.Browser;
+using CodexFlow.Core.ComputerUse;
 using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Orchestration.BusinessSkills;
 
@@ -37,7 +39,8 @@ public sealed record PendingApprovalsResponse(
     bool ControlPlaneAvailable,
     bool SelfApprovalProtection,
     IReadOnlyList<BusinessApprovalRequestDto>? BusinessApprovals = null,
-    IReadOnlyList<BrowserApprovalRequestDto>? BrowserApprovals = null);
+    IReadOnlyList<BrowserApprovalRequestDto>? BrowserApprovals = null,
+    IReadOnlyList<ComputerApprovalRequestDto>? ComputerApprovals = null);
 
 /// <summary>
 /// Interactive execution approval reconciliation (normal plane) and decision submission (control plane).
@@ -48,7 +51,8 @@ public sealed class GatewayApprovalController(
     IChatService chatService,
     IControlPlaneStateProvider? controlPlane = null,
     IBusinessSkillApprovalCoordinator? businessApprovalCoordinator = null,
-    IBrowserApprovalCoordinator? browserApprovalCoordinator = null) : GatewayEndpointHandler
+    IBrowserApprovalCoordinator? browserApprovalCoordinator = null,
+    IComputerApprovalCoordinator? computerApprovalCoordinator = null) : GatewayEndpointHandler
 {
     /// <summary>
     /// Returns all currently pending execution approval items for the owned session so clients can reconcile
@@ -79,6 +83,9 @@ public sealed class GatewayApprovalController(
         IReadOnlyList<BrowserApprovalRequestDto> browserApprovals = browserApprovalCoordinator is not null
             ? browserApprovalCoordinator.GetPendingApprovalsForSession(sessionId)
             : [];
+        IReadOnlyList<ComputerApprovalRequestDto> computerApprovals = computerApprovalCoordinator is not null
+            ? computerApprovalCoordinator.GetPendingApprovalsForSession(sessionId)
+            : [];
         return Ok(new PendingApprovalsResponse(
             sessionId,
             items.Count,
@@ -86,7 +93,8 @@ public sealed class GatewayApprovalController(
             controlPlane?.IsControlPlaneAvailable ?? true,
             controlPlane?.SelfApprovalProtection ?? true,
             businessApprovals,
-            browserApprovals));
+            browserApprovals,
+            computerApprovals));
     }
 
     /// <summary>
@@ -228,6 +236,39 @@ public sealed class GatewayApprovalController(
             if (brOutcome is not null)
             {
                 return MapSubmissionResult(approvalId, decisionKind, brOutcome);
+            }
+
+            return NotFound(new ExecutionApprovalErrorResponse(
+                false,
+                "approval_not_found",
+                "Approval request was not found or has expired."));
+        }
+        else if (computerApprovalCoordinator is not null && computerApprovalCoordinator.HasApproval(approvalId))
+        {
+            var cuSessionId = computerApprovalCoordinator.TryGetApprovalSessionId(approvalId);
+            if (string.IsNullOrWhiteSpace(cuSessionId))
+            {
+                return NotFound(new ExecutionApprovalErrorResponse(
+                    false,
+                    "approval_not_found",
+                    "Approval request was not found or has expired."));
+            }
+
+            var cuSession = await chatService.GetSession(cuSessionId).ConfigureAwait(false);
+            if (cuSession is null || !string.Equals(cuSession.UserId, userId, StringComparison.Ordinal))
+            {
+                return NotFound(new ExecutionApprovalErrorResponse(
+                    false,
+                    "approval_not_found",
+                    "Approval request was not found or is not owned by the caller."));
+            }
+
+            var cuOutcome = await computerApprovalCoordinator
+                .TrySubmitDecisionAsync(approvalId, request.RequestDigest, decisionKind, userId, request.Note, ct)
+                .ConfigureAwait(false);
+            if (cuOutcome is not null)
+            {
+                return MapSubmissionResult(approvalId, decisionKind, cuOutcome);
             }
 
             return NotFound(new ExecutionApprovalErrorResponse(

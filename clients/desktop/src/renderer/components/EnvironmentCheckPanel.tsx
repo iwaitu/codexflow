@@ -13,6 +13,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import type {
+  ComputerDriverStatusDto,
   EnvironmentDependencyId,
   EnvironmentDependencyItem,
   EnvironmentInstallEvent,
@@ -23,6 +24,7 @@ import { useI18n } from '../lib/i18n';
 export interface EnvironmentCheckPanelProps {
   active: boolean;
   compact?: boolean;
+  computerDriverStatus?: ComputerDriverStatusDto | null;
   onReportUpdated?: (report: EnvironmentReport) => void;
 }
 
@@ -31,6 +33,7 @@ const MAX_LOG_CHARS = 16_000;
 export const EnvironmentCheckPanel: React.FC<EnvironmentCheckPanelProps> = ({
   active,
   compact = false,
+  computerDriverStatus = null,
   onReportUpdated,
 }) => {
   const { t } = useI18n();
@@ -403,6 +406,63 @@ export const EnvironmentCheckPanel: React.FC<EnvironmentCheckPanelProps> = ({
           );
         })}
       </div>
+
+      {computerDriverStatus && (
+        <div
+          data-testid="env-item-computer-driver"
+          className="rounded-xl border border-slate-800 bg-slate-950/60 p-3"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-medium text-slate-100">本机桌面操控驱动（Computer Use）</span>
+              <span
+                className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                  computerDriverStatus.available
+                    ? 'bg-emerald-500/15 text-emerald-300'
+                    : 'bg-amber-500/15 text-amber-300'
+                }`}
+              >
+                {computerDriverStatus.available ? (
+                  <CheckCircle2 className="h-3 w-3" />
+                ) : (
+                  <AlertTriangle className="h-3 w-3" />
+                )}
+                {computerDriverStatus.available ? '已就绪' : '需要权限或不受支持'}
+              </span>
+              <span className="rounded bg-slate-900 px-1.5 py-0.5 font-mono text-[10px] text-slate-300">
+                {computerDriverStatus.platform} · {computerDriverStatus.driverName}
+              </span>
+            </div>
+            <span className="text-[11px] text-slate-400">
+              显示器：{computerDriverStatus.displayCount}
+            </span>
+          </div>
+          <div className="mt-1.5 flex flex-wrap gap-3 text-[11px] text-slate-300">
+            <span>
+              屏幕录制权限：
+              <strong className={computerDriverStatus.screenCaptureGranted ? 'text-emerald-300' : 'text-amber-300'}>
+                {computerDriverStatus.screenCaptureGranted ? '已授权' : '未授权'}
+              </strong>
+            </span>
+            <span>
+              辅助功能/键鼠注入权限：
+              <strong className={computerDriverStatus.accessibilityGranted ? 'text-emerald-300' : 'text-amber-300'}>
+                {computerDriverStatus.accessibilityGranted ? '已授权' : '未授权'}
+              </strong>
+            </span>
+          </div>
+          {computerDriverStatus.diagnosticMessage && (
+            <div className="mt-1 text-[11px] text-slate-300">
+              {computerDriverStatus.diagnosticMessage}
+            </div>
+          )}
+          {computerDriverStatus.permissionGuide && (
+            <div className="mt-1 rounded-md border border-amber-500/30 bg-amber-950/25 px-2.5 py-1.5 text-[11px] text-amber-200">
+              {computerDriverStatus.permissionGuide}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };

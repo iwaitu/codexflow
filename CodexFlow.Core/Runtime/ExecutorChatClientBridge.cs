@@ -4,6 +4,7 @@
 
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Models;
 using Microsoft.Extensions.AI;
@@ -129,8 +130,8 @@ internal sealed class ExecutorChatClientBridge : IChatClient
             {
                 if (content is FunctionResultContent fnResult)
                 {
-                    var raw = fnResult.Result?.ToString();
-                    foreach (var item in store.ExtractReferencedAttachments(raw))
+                    var output = ReadToolOutput(fnResult.Result?.ToString());
+                    foreach (var item in store.ExtractReferencedAttachments(output))
                     {
                         if (seenIds.Add(item.Id))
                         {
@@ -145,7 +146,7 @@ internal sealed class ExecutorChatClientBridge : IChatClient
         {
             var contents = new List<AIContent>(1 + trailingToolVisuals.Count * 2)
             {
-                new TextContent("[系统附带视觉图像（文档页面或浏览器网页截图）- 请严格依据每张图标注的来源信息进行识别]")
+                new TextContent("[系统附带视觉图像（文档页面、浏览器网页或桌面屏幕截图）- 请严格依据每张图标注的来源信息进行识别]")
             };
 
             foreach (var item in trailingToolVisuals)
@@ -158,6 +159,36 @@ internal sealed class ExecutorChatClientBridge : IChatClient
         }
 
         return result;
+    }
+
+    private static string? ReadToolOutput(string? text)
+    {
+        if (text is null || !text.Contains("codexflow_visual", StringComparison.Ordinal) ||
+            !text.AsSpan().TrimStart().StartsWith("{", StringComparison.Ordinal))
+        {
+            return text;
+        }
+
+        // The QRE tool result is JSON. Its escaped marker can only be resolved after decoding the output field.
+        try
+        {
+            using var document = JsonDocument.Parse(text);
+            var root = document.RootElement;
+            if (root.TryGetProperty("__icodex_tool_result", out var marker) &&
+                marker.ValueKind == JsonValueKind.True &&
+                (root.TryGetProperty("output", out var output) ||
+                 root.TryGetProperty(nameof(CodexToolResult.Output), out output)) &&
+                output.ValueKind == JsonValueKind.String)
+            {
+                return output.GetString();
+            }
+        }
+        catch (JsonException)
+        {
+            // Tool results can also be plain text.
+        }
+
+        return text;
     }
 
     private static ChatMessage HydrateUserMessage(ChatMessage msg, TurnVisualAttachmentStore store)
@@ -217,6 +248,11 @@ internal sealed class ExecutorChatClientBridge : IChatClient
             return string.Create(
                 CultureInfo.InvariantCulture,
                 $"[图片信息] 文件: {item.FileName} | 所属页码: 第 {item.PageNumber.Value} 页 | 图片 #{idx}");
+        }
+
+        if (item.FileName.StartsWith("computer-screenshot-", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"[桌面屏幕截图] 文件: {item.FileName}（请基于截图中的坐标标尺/准星识别最新界面状态）";
         }
 
         return $"[用户附带图片] 文件: {item.FileName}";

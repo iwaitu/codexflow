@@ -29,6 +29,8 @@ public sealed class TurnVisualAttachmentStore
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private readonly ConcurrentDictionary<string, TurnVisualAttachment> _items = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Queue<string>> _slidingCategories = new(StringComparer.Ordinal);
+    private readonly object _slidingGate = new();
     private int _count;
 
     public TurnVisualAttachmentStore(bool isMultimodalEnabled)
@@ -67,6 +69,54 @@ public sealed class TurnVisualAttachmentStore
             bytes);
         _items[id] = item;
         return item;
+    }
+
+    /// <summary>
+    /// Registers a visual attachment under a sliding retention window for the given category.
+    /// When the retained count reaches <paramref name="maxRetained"/>, the oldest item in that
+    /// category is evicted and its turn slot is freed so multi-step GUI loops remain bounded.
+    /// </summary>
+    public TurnVisualAttachment? RegisterSliding(
+        string category,
+        int maxRetained,
+        string fileName,
+        string mimeType,
+        ReadOnlyMemory<byte> bytes,
+        int? pageNumber = null,
+        int? imageIndexOnPage = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(category);
+        if (bytes.IsEmpty)
+        {
+            return null;
+        }
+
+        var cap = Math.Clamp(maxRetained, 1, MaxStoredVisualsPerTurn);
+        lock (_slidingGate)
+        {
+            if (!_slidingCategories.TryGetValue(category, out var queue))
+            {
+                queue = new Queue<string>();
+                _slidingCategories[category] = queue;
+            }
+
+            while (queue.Count >= cap)
+            {
+                var evictedId = queue.Dequeue();
+                if (_items.TryRemove(evictedId, out _))
+                {
+                    Interlocked.Decrement(ref _count);
+                }
+            }
+
+            var created = Register(fileName, mimeType, bytes, pageNumber, imageIndexOnPage);
+            if (created is not null)
+            {
+                queue.Enqueue(created.Id);
+            }
+
+            return created;
+        }
     }
 
     public bool TryGet(string id, out TurnVisualAttachment? attachment)

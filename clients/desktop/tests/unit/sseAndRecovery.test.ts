@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { SessionSnapshot } from '../../src/renderer/lib/apiClient';
 import { apiClient } from '../../src/renderer/lib/apiClient';
+import { buildRecoveredSessionState, toChatMessages } from '../../src/renderer/lib/sessionRecovery';
 import { parseSseFrames, SessionSseClient, SseStreamParser } from '../../src/renderer/lib/sseClient';
 import { useAppStore } from '../../src/renderer/stores/useAppStore';
 
@@ -134,6 +135,27 @@ function makeBaseSnapshot(overrides: Partial<SessionSnapshot> = {}): SessionSnap
 }
 
 describe('SSE parser and recovery scenarios', () => {
+  it('omits tool-only records and stored tool details when opening a conversation or recovering a snapshot', () => {
+    const message = makeBaseSnapshot().messages[0]!;
+    const toolOnly = {
+      ...message,
+      id: 'tool-only',
+      content: '',
+      thinkingContent: null,
+      toolCallResult: 'stored failed result',
+    };
+    const reply = { ...message, toolCallResult: 'stored successful result' };
+    const snapshot = makeBaseSnapshot({ messages: [toolOnly, reply] });
+    const state = buildRecoveredSessionState(snapshot);
+
+    expect(state.isTurnRunning).toBe(false);
+    expect(state.toolCalls).toEqual([]);
+    expect(state.messages.map((item) => item.id)).toEqual(['m1']);
+    expect(state.messages[0]).not.toHaveProperty('toolCallResult');
+    expect(state.messages[0]).not.toHaveProperty('toolHistory');
+    expect(toChatMessages(snapshot.messages)).toEqual(state.messages);
+  });
+
   it('parses chunked SSE frames and tolerates unknown events/fields', () => {
     const raw =
       'id: 1\nevent: future_unknown_event\ndata: {"extraField":true}\n\n' +
@@ -234,8 +256,9 @@ describe('SSE parser and recovery scenarios', () => {
     expect(reasons).toContain('epoch_changed');
   });
 
-  it('restores messages, approvals, plan, tool results/outputs and truncated flags from snapshot', () => {
-    const snapshot = makeBaseSnapshot();
+  it('restores messages, approvals, plan and active tool results/outputs from a running snapshot', () => {
+    const base = makeBaseSnapshot();
+    const snapshot = makeBaseSnapshot({ activeTurn: { ...base.activeTurn, isRunning: true } });
     useAppStore.getState().setActiveSession('sess-1');
     useAppStore.getState().applySnapshot(snapshot);
 

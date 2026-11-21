@@ -253,6 +253,30 @@ export type BrowserSessionStateDto = components['schemas']['BrowserSessionStateD
 export type BrowserApprovalRequestDto = components['schemas']['BrowserApprovalRequestDto'];
 export type BrowserSessionCloseResponse = components['schemas']['BrowserSessionCloseResponse'];
 export type BrowserTakeoverResponse = components['schemas']['BrowserTakeoverResponse'];
+export type ComputerDriverStatusDto = components['schemas']['ComputerDriverStatusDto'];
+export type ComputerSettingsDto = components['schemas']['ComputerSettingsDto'];
+export type UpdateComputerSettingsRequest = components['schemas']['UpdateComputerSettingsRequest'];
+export type ComputerActionRecordDto = components['schemas']['ComputerActionRecordDto'];
+export type ComputerSessionStateDto = components['schemas']['ComputerSessionStateDto'];
+export type ComputerApprovalRequestDto = components['schemas']['ComputerApprovalRequestDto'];
+export type ComputerSessionCloseResponse = components['schemas']['ComputerSessionCloseResponse'];
+export type ComputerTakeoverResponse = components['schemas']['ComputerTakeoverResponse'];
+export type ComputerEmergencyStopResponse = components['schemas']['ComputerEmergencyStopResponse'];
+export type RegisterProtectedWindowsResponse = components['schemas']['RegisterProtectedWindowsResponse'];
+
+export interface ComputerControlOverlayState {
+  active: boolean;
+  sessionId: string | null;
+  status?: string | null;
+  summary?: string | null;
+  shortcut?: string | null;
+  hostWindowMinimized?: boolean;
+}
+
+export interface ComputerEmergencyStoppedEvent {
+  sessionId: string | null;
+  reason: string;
+}
 
 export type CredentialSlotKind = 'document' | 'execution';
 
@@ -397,6 +421,18 @@ export interface DesktopBridge {
   closeBrowserSession(sessionId: string): Promise<ControlPlaneCallResult<BrowserSessionCloseResponse>>;
   startBrowserTakeover(sessionId: string, reason?: string): Promise<ControlPlaneCallResult<BrowserTakeoverResponse>>;
   completeBrowserTakeover(sessionId: string, note?: string): Promise<ControlPlaneCallResult<BrowserTakeoverResponse>>;
+  updateComputerSettings(payload: UpdateComputerSettingsRequest): Promise<ControlPlaneCallResult<ComputerSettingsDto>>;
+  closeComputerSession(sessionId: string): Promise<ControlPlaneCallResult<ComputerSessionCloseResponse>>;
+  startComputerTakeover(sessionId: string, reason?: string): Promise<ControlPlaneCallResult<ComputerTakeoverResponse>>;
+  completeComputerTakeover(sessionId: string, note?: string): Promise<ControlPlaneCallResult<ComputerTakeoverResponse>>;
+  emergencyStopComputer(payload?: {
+    sessionId?: string;
+    reason?: string;
+  }): Promise<ControlPlaneCallResult<ComputerEmergencyStopResponse>>;
+  avoidHostWindowForComputer(): Promise<{ avoided: boolean }>;
+  restoreHostWindowForComputer(): Promise<{ restored: boolean }>;
+  setComputerControlActive(state: ComputerControlOverlayState): Promise<void>;
+  onComputerEmergencyStopped(listener: (event: ComputerEmergencyStoppedEvent) => void): () => void;
   listPermissionRules(): Promise<ControlPlaneCallResult<PermissionRuleListResult>>;
   deletePermissionRule(ruleId: string): Promise<ControlPlaneCallResult<DeletePermissionRuleResult>>;
   openLocalWorkspace(payload: OpenLocalWorkspacePayload): Promise<ControlPlaneCallResult<OpenLocalWorkspaceResult>>;
@@ -484,6 +520,15 @@ export const IPC_CHANNELS = {
   closeBrowserSession: 'codexflow:close-browser-session',
   startBrowserTakeover: 'codexflow:start-browser-takeover',
   completeBrowserTakeover: 'codexflow:complete-browser-takeover',
+  updateComputerSettings: 'codexflow:update-computer-settings',
+  closeComputerSession: 'codexflow:close-computer-session',
+  startComputerTakeover: 'codexflow:start-computer-takeover',
+  completeComputerTakeover: 'codexflow:complete-computer-takeover',
+  emergencyStopComputer: 'codexflow:emergency-stop-computer',
+  avoidHostWindowForComputer: 'codexflow:avoid-host-window-for-computer',
+  restoreHostWindowForComputer: 'codexflow:restore-host-window-for-computer',
+  setComputerControlActive: 'codexflow:set-computer-control-active',
+  computerEmergencyStopped: 'codexflow:computer-emergency-stopped',
   listPermissionRules: 'codexflow:list-permission-rules',
   deletePermissionRule: 'codexflow:delete-permission-rule',
   openLocalWorkspace: 'codexflow:open-local-workspace',

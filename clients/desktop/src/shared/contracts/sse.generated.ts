@@ -40,6 +40,9 @@ export const SSE_KNOWN_EVENTS = [
   "browser_state_updated",
   "browser_approval_requested",
   "browser_approval_resolved",
+  "computer_state_updated",
+  "computer_approval_requested",
+  "computer_approval_resolved",
 ] as const;
 
 export type KnownSseEventName = (typeof SSE_KNOWN_EVENTS)[number];
@@ -381,6 +384,59 @@ export interface SseBrowserApprovalResolvedPayload {
   [key: string]: unknown;
 }
 
+export interface SseComputerStateUpdatedPayload {
+  sessionId: string;
+  status: string;
+  active: boolean;
+  enabled: boolean;
+  pinnedWindowHandle?: string | null;
+  pinnedProcessName?: string | null;
+  pinnedWindowTitle?: string | null;
+  screenshotSeq: number;
+  imageWidth?: number | null;
+  imageHeight?: number | null;
+  coordinateMode: string;
+  lastActionSummary?: string | null;
+  takeoverPending?: boolean;
+  takeoverReason?: string | null;
+  takeoverStartedAtUtc?: string | null;
+  emergencyStopped?: boolean;
+  hostWindowAvoidanceRequested?: boolean;
+  updatedAtUtc?: string | null;
+  [key: string]: unknown;
+}
+
+export interface SseComputerApprovalRequestedPayload {
+  approvalId: string;
+  requestDigest: string;
+  sessionId: string;
+  tool: string;
+  action: string;
+  targetProcessName: string;
+  targetWindowTitle: string;
+  targetWindowHandle: string;
+  actionSummary: string;
+  riskReason: string;
+  targetX?: number | null;
+  targetY?: number | null;
+  expiresAtUtc: string;
+  allowedDecisions: Array<string>;
+  controlPlaneAvailable: boolean;
+  selfApprovalProtection: boolean;
+  previewImageBase64?: string | null;
+  [key: string]: unknown;
+}
+
+export interface SseComputerApprovalResolvedPayload {
+  approvalId: string;
+  sessionId: string;
+  decision: string;
+  decidedBy?: string | null;
+  note?: string | null;
+  resolvedAtUtc: string;
+  [key: string]: unknown;
+}
+
 export interface SseEventPayloadMap {
   "heartbeat": SseHeartbeatPayload;
   "content": SseContentPayload;
@@ -417,6 +473,9 @@ export interface SseEventPayloadMap {
   "browser_state_updated": SseBrowserStateUpdatedPayload;
   "browser_approval_requested": SseBrowserApprovalRequestedPayload;
   "browser_approval_resolved": SseBrowserApprovalResolvedPayload;
+  "computer_state_updated": SseComputerStateUpdatedPayload;
+  "computer_approval_requested": SseComputerApprovalRequestedPayload;
+  "computer_approval_resolved": SseComputerApprovalResolvedPayload;
 }
 
 export type KnownSseEvent = {

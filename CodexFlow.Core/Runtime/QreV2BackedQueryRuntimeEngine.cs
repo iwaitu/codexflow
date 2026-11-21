@@ -36,6 +36,8 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
     private readonly CodexFlow.Core.Execution.Approval.IExecutionApprovalBroker? _approvalBroker;
     private readonly CodexFlow.Core.Browser.IBrowserApprovalCoordinator? _browserApprovalCoordinator;
     private readonly CodexFlow.Core.Browser.IBrowserSessionManager? _browserSessionManager;
+    private readonly CodexFlow.Core.ComputerUse.IComputerApprovalCoordinator? _computerApprovalCoordinator;
+    private readonly CodexFlow.Core.ComputerUse.IComputerSessionManager? _computerSessionManager;
 
     public QreV2BackedQueryRuntimeEngine(
         ILLMExecutor llmExecutor,
@@ -48,7 +50,9 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
         QreV2.IRuntimeAuditSink? auditSink = null,
         CodexFlow.Core.Execution.Approval.IExecutionApprovalBroker? approvalBroker = null,
         CodexFlow.Core.Browser.IBrowserApprovalCoordinator? browserApprovalCoordinator = null,
-        CodexFlow.Core.Browser.IBrowserSessionManager? browserSessionManager = null)
+        CodexFlow.Core.Browser.IBrowserSessionManager? browserSessionManager = null,
+        CodexFlow.Core.ComputerUse.IComputerApprovalCoordinator? computerApprovalCoordinator = null,
+        CodexFlow.Core.ComputerUse.IComputerSessionManager? computerSessionManager = null)
     {
         _llmExecutor = llmExecutor ?? throw new ArgumentNullException(nameof(llmExecutor));
         _contextWindowManager = contextWindowManager;
@@ -63,6 +67,8 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
         _approvalBroker = approvalBroker;
         _browserApprovalCoordinator = browserApprovalCoordinator;
         _browserSessionManager = browserSessionManager;
+        _computerApprovalCoordinator = computerApprovalCoordinator;
+        _computerSessionManager = computerSessionManager;
     }
 
     public async Task<QueryRuntimeResult> ExecuteAsync(
@@ -260,6 +266,8 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
             }
             _browserApprovalCoordinator?.CancelSessionApprovals(request.SessionId, "Turn cancelled.");
             _browserSessionManager?.CancelTakeover(request.SessionId, "Turn cancelled.");
+            _computerApprovalCoordinator?.CancelSessionApprovals(request.SessionId, "Turn cancelled.");
+            _computerSessionManager?.CancelTakeover(request.SessionId, "Turn cancelled.");
             return BuildFailureResult(
                 request,
                 queryId,

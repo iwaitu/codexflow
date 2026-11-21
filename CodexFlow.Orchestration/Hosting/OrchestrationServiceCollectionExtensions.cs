@@ -321,6 +321,45 @@ public static class OrchestrationServiceCollectionExtensions
                 sp.GetService<CodexFlow.Core.Browser.IBrowserStateEventPublisher>(),
                 controlPlane: sp.GetService<CodexFlow.Core.Execution.Approval.IControlPlaneStateProvider>()));
         services.AddHostedService<CodexFlow.Orchestration.Browser.BrowserIdleReaperHostedService>();
+
+        // Desktop Computer Use (Windows x64 & macOS native drivers, self-UI protection, exclusive desktop lease)
+        services.Configure<CodexFlow.Core.ComputerUse.ComputerOptions>(
+            configuration.GetSection(CodexFlow.Core.ComputerUse.ComputerOptions.SectionName));
+        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<
+            CodexFlow.Core.ComputerUse.ComputerPermissionClamp>(services);
+        services.AddSingleton<Microsoft.Extensions.Options.IPostConfigureOptions<CodexFlow.Core.ComputerUse.ComputerOptions>>(
+            sp => sp.GetRequiredService<CodexFlow.Core.ComputerUse.ComputerPermissionClamp>());
+        services.AddSingleton<Microsoft.Extensions.Options.IOptionsChangeTokenSource<CodexFlow.Core.ComputerUse.ComputerOptions>>(
+            sp => sp.GetRequiredService<CodexFlow.Core.ComputerUse.ComputerPermissionClamp>());
+        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<
+            CodexFlow.Core.ComputerUse.IComputerDriver>(
+            services,
+            _ => CodexFlow.Core.ComputerUse.ComputerDriverFactory.CreateDefault());
+        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<
+            CodexFlow.Core.ComputerUse.IComputerStateEventPublisher,
+            CodexFlow.Orchestration.ComputerUse.GatewayComputerStateEventPublisher>(services);
+        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<
+            CodexFlow.Core.ComputerUse.IComputerApprovalCoordinator,
+            CodexFlow.Orchestration.ComputerUse.ComputerApprovalCoordinator>(services);
+        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<
+            CodexFlow.Core.ComputerUse.IComputerSessionApprovalFreezeProbe,
+            CodexFlow.Orchestration.ComputerUse.CompositeComputerApprovalFreezeProbe>(services);
+        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<
+            CodexFlow.Core.ComputerUse.ComputerSecurityGuard>(services);
+        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<
+            CodexFlow.Core.ComputerUse.IComputerSessionManager>(
+            services,
+            sp => new CodexFlow.Core.ComputerUse.ComputerSessionManager(
+                sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<CodexFlow.Core.ComputerUse.ComputerOptions>>(),
+                sp.GetRequiredService<CodexFlow.Core.ComputerUse.IComputerDriver>(),
+                sp.GetRequiredService<CodexFlow.Core.ComputerUse.ComputerSecurityGuard>(),
+                sp.GetRequiredService<ILogger<CodexFlow.Core.ComputerUse.ComputerSessionManager>>(),
+                sp.GetService<CodexFlow.Core.Configuration.IModelSettingsService>(),
+                sp.GetService<CodexFlow.Core.ComputerUse.IComputerApprovalCoordinator>(),
+                sp.GetService<CodexFlow.Core.ComputerUse.IComputerStateEventPublisher>(),
+                controlPlane: sp.GetService<CodexFlow.Core.Execution.Approval.IControlPlaneStateProvider>(),
+                executionOptions: sp.GetService<Microsoft.Extensions.Options.IOptionsMonitor<CodexFlow.Core.Execution.ExecutionOptions>>()));
+        services.AddHostedService<CodexFlow.Orchestration.ComputerUse.ComputerIdleReaperHostedService>();
         Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<CodexFlow.Core.BusinessSkills.OpenApiBusinessPluginAdapter>(services);
         Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<CodexFlow.Core.BusinessSkills.McpBusinessPluginAdapter>(services);
         Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<CodexFlow.Core.BusinessSkills.IBusinessCapabilityExecutor>(

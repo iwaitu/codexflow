@@ -15,6 +15,7 @@ namespace CodexFlow.Application
         private readonly ILogger<ChatService> _logger;
         private readonly IWorkspaceRootProvider? _workspaceRootProvider;
         private readonly CodexFlow.Core.Browser.IBrowserSessionManager? _browserSessionManager;
+        private readonly CodexFlow.Core.ComputerUse.IComputerSessionManager? _computerSessionManager;
 
         private readonly IConversationMessageStore _conversationMessages;
 
@@ -23,13 +24,15 @@ namespace CodexFlow.Application
             ILogger<ChatService> logger,
             IWorkspaceRootProvider? workspaceRootProvider,
             IConversationMessageStore conversationMessages,
-            CodexFlow.Core.Browser.IBrowserSessionManager? browserSessionManager = null)
+            CodexFlow.Core.Browser.IBrowserSessionManager? browserSessionManager = null,
+            CodexFlow.Core.ComputerUse.IComputerSessionManager? computerSessionManager = null)
         {
             _persistence = persistence;
             _logger = logger;
             _workspaceRootProvider = workspaceRootProvider;
             _conversationMessages = conversationMessages;
             _browserSessionManager = browserSessionManager;
+            _computerSessionManager = computerSessionManager;
         }
 
         private string ResolveManagedWorkspacesRoot()
@@ -432,6 +435,18 @@ namespace CodexFlow.Application
                     catch (Exception ex)
                     {
                         _logger.LogWarning(ex, "删除会话 {SessionId} 时关闭浏览器上下文失败，继续清理工作区。", sessionId);
+                    }
+                }
+
+                if (_computerSessionManager is not null)
+                {
+                    try
+                    {
+                        await _computerSessionManager.CloseSessionAsync(sessionId, "session_deleted").ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "删除会话 {SessionId} 时关闭桌面 Computer Use 会话失败，继续清理工作区。", sessionId);
                     }
                 }
 

@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using CodexFlow.Contracts.Browser;
 using CodexFlow.Contracts.BusinessSkills;
+using CodexFlow.Contracts.ComputerUse;
 using CodexFlow.Controllers;
 
 namespace CodexFlow.Gateway.Http;
@@ -48,6 +49,20 @@ namespace CodexFlow.Gateway.Http;
 [JsonSerializable(typeof(SkillRunDto))]
 [JsonSerializable(typeof(StartSkillRunRequest))]
 [JsonSerializable(typeof(UpdateBrowserSettingsRequest))]
+[JsonSerializable(typeof(ComputerApiErrorDto))]
+[JsonSerializable(typeof(ComputerActionRecordDto))]
+[JsonSerializable(typeof(ComputerDriverStatusDto))]
+[JsonSerializable(typeof(ComputerEmergencyStopRequest))]
+[JsonSerializable(typeof(ComputerEmergencyStopResponse))]
+[JsonSerializable(typeof(ComputerSessionCloseResponse))]
+[JsonSerializable(typeof(ComputerSessionStateDto))]
+[JsonSerializable(typeof(ComputerSettingsDto))]
+[JsonSerializable(typeof(ComputerTakeoverCompleteRequest))]
+[JsonSerializable(typeof(ComputerTakeoverResponse))]
+[JsonSerializable(typeof(ComputerTakeoverStartRequest))]
+[JsonSerializable(typeof(RegisterProtectedWindowsRequest))]
+[JsonSerializable(typeof(RegisterProtectedWindowsResponse))]
+[JsonSerializable(typeof(UpdateComputerSettingsRequest))]
 [JsonSerializable(typeof(UpdateCapabilityRiskRequest))]
 [JsonSerializable(typeof(UpdatePluginConnectionRequest))]
 [JsonSerializable(typeof(UpdateSkillDraftRequest))]

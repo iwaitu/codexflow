@@ -160,6 +160,114 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/gateway/computer/emergency-stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/*+json": null | components["schemas"]["ComputerEmergencyStopRequest"];
+                    "application/json": null | components["schemas"]["ComputerEmergencyStopRequest"];
+                    "text/json": null | components["schemas"]["ComputerEmergencyStopRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ComputerEmergencyStopResponse"];
+                        "text/json": components["schemas"]["ComputerEmergencyStopResponse"];
+                        "text/plain": components["schemas"]["ComputerEmergencyStopResponse"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ComputerApiErrorDto"];
+                        "text/json": components["schemas"]["ComputerApiErrorDto"];
+                        "text/plain": components["schemas"]["ComputerApiErrorDto"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/gateway/computer/protected-windows": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/*+json": components["schemas"]["RegisterProtectedWindowsRequest"];
+                    "application/json": components["schemas"]["RegisterProtectedWindowsRequest"];
+                    "text/json": components["schemas"]["RegisterProtectedWindowsRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RegisterProtectedWindowsResponse"];
+                        "text/json": components["schemas"]["RegisterProtectedWindowsResponse"];
+                        "text/plain": components["schemas"]["RegisterProtectedWindowsResponse"];
+                    };
+                };
+                /** @description Bad Request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ComputerApiErrorDto"];
+                        "text/json": components["schemas"]["ComputerApiErrorDto"];
+                        "text/plain": components["schemas"]["ComputerApiErrorDto"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/gateway/conversations/{conversationId}": {
         parameters: {
             query?: never;
@@ -988,6 +1096,289 @@ export type paths = {
                         "application/json": components["schemas"]["GatewayErrorResponse"];
                         "text/json": components["schemas"]["GatewayErrorResponse"];
                         "text/plain": components["schemas"]["GatewayErrorResponse"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/gateway/session/{sessionId}/computer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    sessionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ComputerSessionStateDto"];
+                        "text/json": components["schemas"]["ComputerSessionStateDto"];
+                        "text/plain": components["schemas"]["ComputerSessionStateDto"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ComputerApiErrorDto"];
+                        "text/json": components["schemas"]["ComputerApiErrorDto"];
+                        "text/plain": components["schemas"]["ComputerApiErrorDto"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/gateway/session/{sessionId}/computer/close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    sessionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ComputerSessionCloseResponse"];
+                        "text/json": components["schemas"]["ComputerSessionCloseResponse"];
+                        "text/plain": components["schemas"]["ComputerSessionCloseResponse"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ComputerApiErrorDto"];
+                        "text/json": components["schemas"]["ComputerApiErrorDto"];
+                        "text/plain": components["schemas"]["ComputerApiErrorDto"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/gateway/session/{sessionId}/computer/screenshot": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    sessionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description No Content */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Not Modified */
+                304: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ComputerApiErrorDto"];
+                        "text/json": components["schemas"]["ComputerApiErrorDto"];
+                        "text/plain": components["schemas"]["ComputerApiErrorDto"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/gateway/session/{sessionId}/computer/takeover/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    sessionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/*+json": null | components["schemas"]["ComputerTakeoverCompleteRequest"];
+                    "application/json": null | components["schemas"]["ComputerTakeoverCompleteRequest"];
+                    "text/json": null | components["schemas"]["ComputerTakeoverCompleteRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ComputerTakeoverResponse"];
+                        "text/json": components["schemas"]["ComputerTakeoverResponse"];
+                        "text/plain": components["schemas"]["ComputerTakeoverResponse"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ComputerApiErrorDto"];
+                        "text/json": components["schemas"]["ComputerApiErrorDto"];
+                        "text/plain": components["schemas"]["ComputerApiErrorDto"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/gateway/session/{sessionId}/computer/takeover/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    sessionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/*+json": null | components["schemas"]["ComputerTakeoverStartRequest"];
+                    "application/json": null | components["schemas"]["ComputerTakeoverStartRequest"];
+                    "text/json": null | components["schemas"]["ComputerTakeoverStartRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ComputerTakeoverResponse"];
+                        "text/json": components["schemas"]["ComputerTakeoverResponse"];
+                        "text/plain": components["schemas"]["ComputerTakeoverResponse"];
+                    };
+                };
+                /** @description Bad Request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ComputerApiErrorDto"];
+                        "text/json": components["schemas"]["ComputerApiErrorDto"];
+                        "text/plain": components["schemas"]["ComputerApiErrorDto"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ComputerApiErrorDto"];
+                        "text/json": components["schemas"]["ComputerApiErrorDto"];
+                        "text/plain": components["schemas"]["ComputerApiErrorDto"];
                     };
                 };
             };
@@ -3011,6 +3402,103 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/settings/computer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ComputerSettingsDto"];
+                        "text/json": components["schemas"]["ComputerSettingsDto"];
+                        "text/plain": components["schemas"]["ComputerSettingsDto"];
+                    };
+                };
+            };
+        };
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/*+json": components["schemas"]["UpdateComputerSettingsRequest"];
+                    "application/json": components["schemas"]["UpdateComputerSettingsRequest"];
+                    "text/json": components["schemas"]["UpdateComputerSettingsRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ComputerSettingsDto"];
+                        "text/json": components["schemas"]["ComputerSettingsDto"];
+                        "text/plain": components["schemas"]["ComputerSettingsDto"];
+                    };
+                };
+                /** @description Bad Request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ComputerApiErrorDto"];
+                        "text/json": components["schemas"]["ComputerApiErrorDto"];
+                        "text/plain": components["schemas"]["ComputerApiErrorDto"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ProblemDetails"];
+                        "text/json": components["schemas"]["ProblemDetails"];
+                        "text/plain": components["schemas"]["ProblemDetails"];
+                    };
+                };
+                /** @description Service Unavailable */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ComputerApiErrorDto"];
+                        "text/json": components["schemas"]["ComputerApiErrorDto"];
+                        "text/plain": components["schemas"]["ComputerApiErrorDto"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/settings/execution": {
         parameters: {
             query?: never;
@@ -4756,6 +5244,133 @@ export type components = {
             /** Format: int64 */
             summaryChars?: number | string;
         };
+        ComputerActionRecordDto: {
+            action: string;
+            /** Format: int64 */
+            durationMs: number | string;
+            /** Format: int64 */
+            seq: number | string;
+            succeeded: boolean;
+            summary: null | string;
+            targetProcessName: null | string;
+            targetWindowTitle: null | string;
+            /** Format: int32 */
+            targetX: null | number | string;
+            /** Format: int32 */
+            targetY: null | number | string;
+            /** Format: date-time */
+            timestampUtc: string;
+            tool: string;
+        };
+        ComputerApiErrorDto: {
+            code: string;
+            message: string;
+        };
+        ComputerApprovalRequestDto: {
+            action: string;
+            actionSummary: string;
+            allowedDecisions: string[];
+            approvalId: string;
+            controlPlaneAvailable: boolean;
+            /** Format: date-time */
+            expiresAtUtc: string;
+            previewImageBase64?: null | string;
+            requestDigest: string;
+            riskReason: string;
+            selfApprovalProtection: boolean;
+            sessionId: string;
+            targetProcessName: string;
+            targetWindowHandle: string;
+            targetWindowTitle: string;
+            /** Format: int32 */
+            targetX: null | number | string;
+            /** Format: int32 */
+            targetY: null | number | string;
+            tool: string;
+        };
+        ComputerDriverStatusDto: {
+            accessibilityGranted: boolean;
+            available: boolean;
+            diagnosticMessage?: null | string;
+            /** Format: int32 */
+            displayCount: number | string;
+            driverName: string;
+            /** @default CommandOrControl+. */
+            emergencyStopShortcut: string;
+            permissionGuide?: null | string;
+            platform: string;
+            screenCaptureGranted: boolean;
+        };
+        ComputerEmergencyStopRequest: {
+            reason?: null | string;
+            sessionId?: null | string;
+        };
+        ComputerEmergencyStopResponse: {
+            /** Format: int32 */
+            cancelledSessions: number | string;
+            message: string;
+            stopped: boolean;
+        };
+        ComputerSessionCloseResponse: {
+            closed: boolean;
+            sessionId: string;
+        };
+        ComputerSessionStateDto: {
+            active: boolean;
+            coordinateMode: string;
+            /** @default false */
+            emergencyStopped: boolean;
+            enabled: boolean;
+            /** @default false */
+            hostWindowAvoidanceRequested: boolean;
+            /** Format: int32 */
+            imageHeight: null | number | string;
+            /** Format: int32 */
+            imageWidth: null | number | string;
+            lastActionSummary: null | string;
+            pinnedProcessName: null | string;
+            pinnedWindowHandle: null | string;
+            pinnedWindowTitle: null | string;
+            recentActions: components["schemas"]["ComputerActionRecordDto"][];
+            /** Format: int64 */
+            screenshotSeq: number | string;
+            sessionId: string;
+            status: string;
+            /** @default false */
+            takeoverPending: boolean;
+            takeoverReason?: null | string;
+            /** Format: date-time */
+            takeoverStartedAtUtc?: null | string;
+            /** Format: date-time */
+            updatedAtUtc?: null | string;
+        };
+        ComputerSettingsDto: {
+            autoMinimizeHostWindow: boolean;
+            blockedProcessNames: string[];
+            coordinateMode: string;
+            driverStatus: components["schemas"]["ComputerDriverStatusDto"];
+            emergencyStopShortcut: string;
+            enabled: boolean;
+            enableGridOverlay: boolean;
+            /** Format: int32 */
+            idleTimeoutMinutes: number | string;
+            interactionApprovalPolicy: string;
+            /** Format: int32 */
+            maxImageLongEdge: number | string;
+            /** Format: int32 */
+            maxScreenshotsPerTurn: number | string;
+        };
+        ComputerTakeoverCompleteRequest: {
+            note?: null | string;
+        };
+        ComputerTakeoverResponse: {
+            active: boolean;
+            message?: null | string;
+            sessionId: string;
+        };
+        ComputerTakeoverStartRequest: {
+            reason?: null | string;
+        };
         ContinueWorkerHttpRequest: {
             prompt?: null | string;
             resumeToken?: null | string;
@@ -4997,6 +5612,7 @@ export type components = {
         PendingApprovalsResponse: {
             browserApprovals?: null | components["schemas"]["BrowserApprovalRequestDto"][];
             businessApprovals?: null | components["schemas"]["BusinessApprovalRequestDto"][];
+            computerApprovals?: null | components["schemas"]["ComputerApprovalRequestDto"][];
             controlPlaneAvailable: boolean;
             /** Format: int32 */
             count: number | string;
@@ -5123,6 +5739,17 @@ export type components = {
             /** Format: int32 */
             expectedRevision: number | string;
             selectedCapabilityIds: string[];
+        };
+        RegisterProtectedWindowsRequest: {
+            /** Format: int32 */
+            processId: number | string;
+            windowHandles?: null | string[];
+        };
+        RegisterProtectedWindowsResponse: {
+            /** Format: int32 */
+            registeredProcessCount: number | string;
+            /** Format: int32 */
+            registeredWindowCount: number | string;
         };
         ResumeJobRequest: {
             payloadJson?: null | string;
@@ -5621,6 +6248,21 @@ export type components = {
             capabilityId: string;
             note?: null | string;
             risk: components["schemas"]["CapabilityRiskLevel"];
+        };
+        UpdateComputerSettingsRequest: {
+            autoMinimizeHostWindow?: null | boolean;
+            blockedProcessNames?: null | string[];
+            coordinateMode?: null | string;
+            emergencyStopShortcut?: null | string;
+            enabled?: null | boolean;
+            enableGridOverlay?: null | boolean;
+            /** Format: int32 */
+            idleTimeoutMinutes?: null | number | string;
+            interactionApprovalPolicy?: null | string;
+            /** Format: int32 */
+            maxImageLongEdge?: null | number | string;
+            /** Format: int32 */
+            maxScreenshotsPerTurn?: null | number | string;
         };
         UpdateConversationRequest: {
             isArchived?: null | boolean;

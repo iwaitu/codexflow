@@ -191,6 +191,8 @@ builder.Services.AddSingleton<CodexFlow.Core.Configuration.IWorkspaceSettingsSer
     new CodexFlow.Core.Configuration.WorkspaceSettingsService(globalSettingsPath));
 builder.Services.AddSingleton<CodexFlow.Core.Configuration.IBrowserSettingsService>(_ =>
     new CodexFlow.Core.Configuration.BrowserSettingsService(globalSettingsPath));
+builder.Services.AddSingleton<CodexFlow.Core.Configuration.IComputerSettingsService>(_ =>
+    new CodexFlow.Core.Configuration.ComputerSettingsService(globalSettingsPath));
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddScheme<AuthenticationSchemeOptions, LocalTokenAuthenticationHandler>(JwtBearerDefaults.AuthenticationScheme, null);

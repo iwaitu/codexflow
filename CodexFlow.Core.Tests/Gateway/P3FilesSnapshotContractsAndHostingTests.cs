@@ -11,6 +11,7 @@ using CodexFlow.Application.Jobs;
 using CodexFlow.Application.Jobs.Dtos;
 using CodexFlow.Controllers;
 using CodexFlow.Core.Abstractions;
+using CodexFlow.Core.ComputerUse;
 using CodexFlow.Core.Execution;
 using CodexFlow.Core.Gateway;
 using CodexFlow.Core.Models;
@@ -432,11 +433,50 @@ public sealed class P3FilesSnapshotContractsAndHostingTests : IDisposable
     }
 
     [Fact]
+    public async Task SnapshotEndpoint_KeepsLongToolHistoryStructuredAndRetainsFailures()
+    {
+        await using var host = await P3TestHost.StartAsync(
+            _root, Path.Combine(_root, "snapshot-tool-history", "appsettings.json"),
+            ExecutionBackend.Local, ExecutionPermissionMode.Ask);
+        using var client = host.CreateNormalClient();
+        var created = await client.PostAsync("/api/gateway/session?name=ToolHistory", null);
+        var sessionId = (await created.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["sessionId"];
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var chat = scope.ServiceProvider.GetRequiredService<IChatService>();
+        var conversationId = await chat.CreateConversationInSession(LocalUser.Id, sessionId, name: "Tool history");
+        var largeHistory = JsonSerializer.Serialize(new
+        {
+            results = Enumerable.Range(0, 15).Select(i => new GatewayChannelToolResultSnapshot(
+                "computer_act", $"c{i}", i != 14, i == 14 ? "window drift" : new string('x', 4200), false)),
+            resultsTruncated = false,
+            outputs = Array.Empty<GatewayChannelToolOutputSnapshot>(),
+            outputsTruncated = false
+        });
+        await chat.AddMessageWithToolcall(LocalUser.Id, conversationId, "u", "", 0, largeHistory, "codex-v2", "", "", null);
+        await chat.AddMessage(LocalUser.Id, conversationId, "u2", "newer answer", 0, "codex-v2", "", "", null);
+
+        var snapshot = await client.GetFromJsonAsync<SessionSnapshotDto>(
+            $"/api/gateway/session/{sessionId}/snapshot?conversationId={conversationId}");
+        var stored = Assert.Single(snapshot!.Messages, message => message.ToolCallResult is not null);
+        Assert.True(stored.Truncated);
+        Assert.True(stored.ToolCallResult!.Length <= 32_768);
+        using var history = JsonDocument.Parse(stored.ToolCallResult);
+        Assert.True(history.RootElement.GetProperty("resultsTruncated").GetBoolean());
+        var results = history.RootElement.GetProperty("results").EnumerateArray().ToArray();
+        Assert.Equal(15, results.Length);
+        Assert.Equal("window drift", results[^1].GetProperty("Result").GetString());
+        Assert.False(results[^1].GetProperty("Success").GetBoolean());
+    }
+
+    [Fact]
     public async Task RealGatewayMessageProcessor_PersistsToolOutputsResultsAndLateOutputsAcrossRealRestartAndSseReconnect()
     {
         var globalSettings = Path.Combine(_root, "global-real-proc", "appsettings.json");
         var turnCompletedTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var scenario = 1; // 1 = capacity overflow (105 results, 55 outputs), 2 = single result + late output
+        var computer = new Mock<IComputerSessionManager>();
+        computer.Setup(x => x.EndTurnAsync(It.IsAny<string>(), CancellationToken.None)).Returns(Task.CompletedTask);
 
         string sessionId;
         string overflowSessionId;
@@ -449,6 +489,7 @@ public sealed class P3FilesSnapshotContractsAndHostingTests : IDisposable
             {
                 services.AddSingleton(Mock.Of<IChatClient>());
                 services.AddCodexFlowRuntime(cfg);
+                services.AddSingleton(computer.Object);
                 services.RemoveAll<IHostedService>();
                 services.RemoveAll<ILLMExecutor>();
                 services.AddScoped<ILLMExecutor>(_ => new SimpleStubLlmExecutor());
@@ -482,6 +523,7 @@ public sealed class P3FilesSnapshotContractsAndHostingTests : IDisposable
             }
 
             Assert.NotNull(snap1);
+            computer.Verify(x => x.EndTurnAsync(overflowSessionId, CancellationToken.None), Times.Once);
             Assert.True(snap1!.ToolResultsTruncated);
             Assert.Equal(100, snap1.ActiveToolResults.Count);
 
@@ -576,6 +618,8 @@ public sealed class P3FilesSnapshotContractsAndHostingTests : IDisposable
     {
         var globalSettings = Path.Combine(_root, "global-legacy-cancel", "appsettings.json");
         var streamingEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var computer = new Mock<IComputerSessionManager>();
+        computer.Setup(x => x.EndTurnAsync(It.IsAny<string>(), CancellationToken.None)).Returns(Task.CompletedTask);
 
         await using var host = await P3TestHost.StartAsync(
             _root,
@@ -586,6 +630,7 @@ public sealed class P3FilesSnapshotContractsAndHostingTests : IDisposable
             {
                 services.AddSingleton(Mock.Of<IChatClient>());
                 services.AddCodexFlowRuntime(cfg);
+                services.AddSingleton(computer.Object);
                 services.RemoveAll<IHostedService>();
                 services.RemoveAll<IQueryRuntimeEngine>(); // Force legacy StreamWithToolLoopAsync path
                 services.RemoveAll<ILLMExecutor>();
@@ -619,6 +664,7 @@ public sealed class P3FilesSnapshotContractsAndHostingTests : IDisposable
 
         Assert.NotNull(snap);
         Assert.Contains(snap!.Messages, m => m.Role == "assistant" && m.Content.Contains("[已取消]", StringComparison.Ordinal));
+        computer.Verify(x => x.EndTurnAsync(sessionId, CancellationToken.None), Times.Once);
     }
 
     private sealed class SimpleStubLlmExecutor : ILLMExecutor

@@ -179,7 +179,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
               </div>
             )}
           </div>
-        ) : (
+        ) : message.content && (
           <div data-search-markdown-id={message.id}>
             <MarkdownRenderer content={message.content} />
           </div>

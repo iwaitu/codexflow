@@ -29,6 +29,7 @@ export type PendingApprovalsResponse = {
   selfApprovalProtection: boolean;
   businessApprovals?: BusinessApprovalRequestDto[];
   browserApprovals?: components['schemas']['BrowserApprovalRequestDto'][];
+  computerApprovals?: components['schemas']['ComputerApprovalRequestDto'][];
 };
 export type BackgroundJob = components['schemas']['BackgroundJobDto'];
 export type WorkspaceFileEntry = components['schemas']['WorkspaceFileEntryDto'];
@@ -601,5 +602,59 @@ export const apiClient = {
     const seq = seqRaw ? Number(seqRaw) : 0;
     const blob = await response.blob();
     return { blob, seq: Number.isFinite(seq) ? seq : 0 };
+  },
+
+  getComputerSettings(auth: ApiAuthContext): Promise<components['schemas']['ComputerSettingsDto']> {
+    return requestJson<components['schemas']['ComputerSettingsDto']>(auth, 'GET', '/api/settings/computer');
+  },
+
+  getComputerState(
+    auth: ApiAuthContext,
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<components['schemas']['ComputerSessionStateDto']> {
+    return requestJson<components['schemas']['ComputerSessionStateDto']>(
+      auth,
+      'GET',
+      `/api/gateway/session/${encodeURIComponent(sessionId)}/computer`,
+      undefined,
+      signal,
+    );
+  },
+
+  async getComputerScreenshotBlob(
+    auth: ApiAuthContext,
+    sessionId: string,
+    signal?: AbortSignal,
+    ifNoneMatch?: string | null,
+  ): Promise<{ notModified: true } | { notModified?: false; blob: Blob; seq: number; etag: string | null } | null> {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${auth.accessToken}`,
+    };
+    if (ifNoneMatch) {
+      headers['If-None-Match'] = ifNoneMatch;
+    }
+    const response = await fetch(
+      `${auth.baseUrl}/api/gateway/session/${encodeURIComponent(sessionId)}/computer/screenshot`,
+      {
+        method: 'GET',
+        headers,
+        signal,
+      },
+    );
+    if (response.status === 204) {
+      return null;
+    }
+    if (response.status === 304) {
+      return { notModified: true };
+    }
+    if (!response.ok) {
+      throw new ApiError(response.status, 'computer_screenshot_failed', `获取桌面截图失败 (${response.status})`);
+    }
+    const seqRaw = response.headers.get('X-Screenshot-Seq');
+    const seq = seqRaw ? Number(seqRaw) : 0;
+    const etag = response.headers.get('ETag');
+    const blob = await response.blob();
+    return { blob, seq: Number.isFinite(seq) ? seq : 0, etag };
   },
 };

@@ -29,6 +29,7 @@ export default defineConfig({
       rollupOptions: {
         input: {
           index: resolve(__dirname, 'electron/preload/index.ts'),
+          computerOverlay: resolve(__dirname, 'electron/preload/computerOverlay.ts'),
         },
         output: {
           format: 'cjs',

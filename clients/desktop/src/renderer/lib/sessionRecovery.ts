@@ -8,7 +8,6 @@ export interface UiMessage {
   thinkingContent?: string | null;
   messageType?: string | null;
   notificationMeta?: string | null;
-  toolCallResult?: string | null;
   truncated?: boolean;
   streaming?: boolean;
   createdUtc?: string;
@@ -25,7 +24,6 @@ export interface UiToolCall {
   outputStderr: string;
   outputTruncated: boolean;
   suppressedLines: number;
-  result?: string;
 }
 
 export interface UiPendingApproval {
@@ -134,35 +132,12 @@ export function normalizeApprovalFromSse(payload: SseToolApprovalRequestPayload)
   };
 }
 
-export function buildRecoveredSessionState(snapshot: SessionSnapshot): {
-  asOfEventId: number;
-  channelEpoch: string | null;
-  activeConversationId: string | null;
-  isTurnRunning: boolean;
-  activeMessageId: string | null;
-  streamingContent: string;
-  streamingThinking: string;
-  streamingTruncated: boolean;
-  messagesTruncated: boolean;
-  messages: UiMessage[];
-  pendingApprovals: UiPendingApproval[];
-  currentPlan: SessionPlan | null;
-  toolCalls: UiToolCall[];
-} {
-  const messages: UiMessage[] = (snapshot.messages ?? []).map((m) => ({
-    id: m.id,
-    role: m.role === 'user' || m.role === 'assistant' ? m.role : 'system',
-    content: m.content,
-    thinkingContent: m.thinkingContent ?? null,
-    messageType: m.messageType ?? null,
-    notificationMeta: m.notificationMeta ?? null,
-    toolCallResult: m.toolCallResult ?? null,
-    truncated: m.truncated,
-    createdUtc: m.createdUtc,
-  }));
+type ToolResult = NonNullable<SessionSnapshot['activeToolResults']>[number];
+type ToolOutput = NonNullable<SessionSnapshot['activeToolOutputs']>[number];
 
+function recoverToolCalls(results: ToolResult[], outputs: ToolOutput[]): UiToolCall[] {
   const toolCalls: UiToolCall[] = [];
-  for (const r of snapshot.activeToolResults ?? []) {
+  for (const r of results) {
     toolCalls.push({
       key: r.callId || `snap-result-${toolCalls.length}`,
       callId: r.callId ?? null,
@@ -172,11 +147,10 @@ export function buildRecoveredSessionState(snapshot: SessionSnapshot): {
       outputStderr: '',
       outputTruncated: r.truncated,
       suppressedLines: 0,
-      result: r.result,
     });
   }
 
-  for (const o of snapshot.activeToolOutputs ?? []) {
+  for (const o of outputs) {
     const taskId = o.commandTaskId ?? null;
     const byId = taskId ? toolCalls.find((t) => t.callId === taskId) : undefined;
     const runningSameName = !byId
@@ -203,19 +177,55 @@ export function buildRecoveredSessionState(snapshot: SessionSnapshot): {
     }
   }
 
+  return toolCalls;
+}
+
+export function toChatMessages(messages: readonly (Omit<UiMessage, 'role'> & { role: string })[]): UiMessage[] {
+  return messages
+    .filter((message) => message.role !== 'assistant' || Boolean(message.content || message.thinkingContent))
+    .map((message) => ({
+      id: message.id,
+      role: message.role === 'user' || message.role === 'assistant' ? message.role : 'system',
+      content: message.content,
+      thinkingContent: message.thinkingContent ?? null,
+      messageType: message.messageType ?? null,
+      notificationMeta: message.notificationMeta ?? null,
+      truncated: message.truncated,
+      createdUtc: message.createdUtc,
+    }));
+}
+
+export function buildRecoveredSessionState(snapshot: SessionSnapshot): {
+  asOfEventId: number;
+  channelEpoch: string | null;
+  activeConversationId: string | null;
+  isTurnRunning: boolean;
+  activeMessageId: string | null;
+  streamingContent: string;
+  streamingThinking: string;
+  streamingTruncated: boolean;
+  messagesTruncated: boolean;
+  messages: UiMessage[];
+  pendingApprovals: UiPendingApproval[];
+  currentPlan: SessionPlan | null;
+  toolCalls: UiToolCall[];
+} {
+  const messages = toChatMessages(snapshot.messages ?? []);
+
+  const isTurnRunning = Boolean(snapshot.activeTurn?.isRunning);
   return {
     asOfEventId: Number(snapshot.asOfEventId ?? 0),
     channelEpoch: snapshot.channelEpoch ?? null,
     activeConversationId: snapshot.activeConversationId ?? null,
-    isTurnRunning: Boolean(snapshot.activeTurn?.isRunning),
+    isTurnRunning,
     activeMessageId: snapshot.activeTurn?.messageId ?? null,
     streamingContent: snapshot.activeTurn?.partialContent ?? '',
     streamingThinking: snapshot.activeTurn?.partialThinking ?? '',
     streamingTruncated: Boolean(snapshot.activeTurn?.contentTruncated),
-    messagesTruncated: Boolean(snapshot.toolResultsTruncated || snapshot.toolOutputsTruncated || messages.some((m) => m.truncated)),
+    messagesTruncated: messages.some((m) => m.truncated),
     messages,
     pendingApprovals: (snapshot.pendingApprovals ?? []).map(normalizeApprovalFromRest),
     currentPlan: snapshot.currentPlan ?? null,
-    toolCalls,
+    toolCalls: isTurnRunning ? recoverToolCalls(snapshot.activeToolResults ?? [], snapshot.activeToolOutputs ?? []) : [],
   };
 }

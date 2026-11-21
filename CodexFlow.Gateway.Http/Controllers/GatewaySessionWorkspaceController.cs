@@ -2,6 +2,8 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Security.Claims;
 using CodexFlow.Application;
 using CodexFlow.Application.Jobs;
@@ -692,7 +694,7 @@ public sealed class GatewaySessionWorkspaceController(
                 {
                     var (boundedAi, aiTruncated) = ToolEventSanitizer.TruncateText(m.AiContent, MaxSnapshotMessageContentChars);
                     var (boundedThinking, thinkTruncated) = ToolEventSanitizer.TruncateText(m.ThinkingContent, MaxSnapshotMessageContentChars);
-                    var (boundedTool, toolTruncated) = ToolEventSanitizer.TruncateText(m.ToolCallResult, MaxSnapshotMessageContentChars);
+                    var (boundedTool, toolTruncated) = BoundSnapshotToolHistory(m.ToolCallResult);
                     if (!string.IsNullOrWhiteSpace(m.ToolCallResult))
                     {
                         latestPersistedToolEnvelope = m.ToolCallResult;
@@ -837,6 +839,90 @@ public sealed class GatewaySessionWorkspaceController(
 
         return ([], rawTextTruncated, [], true);
     }
+
+    private static (string Text, bool Truncated) BoundSnapshotToolHistory(string? stored)
+    {
+        if (stored is null || stored.Length <= MaxSnapshotMessageContentChars)
+        {
+            return (stored ?? string.Empty, false);
+        }
+
+        try
+        {
+            if (JsonNode.Parse(stored) is JsonObject envelope && envelope["results"] is JsonArray results)
+            {
+                var outputs = envelope["outputs"] as JsonArray ?? [];
+                // Reserve room for the envelope and delimiters. Keep failures first when the budget runs out.
+                var remaining = MaxSnapshotMessageContentChars - 128;
+                var retainedResults = new List<(int Index, JsonObject Result)>();
+                var resultsTruncated = envelope["resultsTruncated"]?.GetValue<bool>() == true;
+                foreach (var (node, index) in results.Select((node, index) => (node, index))
+                             .OrderBy(item => ResultSucceeded(item.node)))
+                {
+                    if (node is not JsonObject result)
+                    {
+                        resultsTruncated = true;
+                        continue;
+                    }
+
+                    var copy = (JsonObject)result.DeepClone();
+                    var messageKey = copy.ContainsKey("Result") ? "Result" : "result";
+                    if (copy[messageKey] is JsonValue value && value.TryGetValue<string>(out var resultText))
+                    {
+                        var (excerpt, cropped) = ToolEventSanitizer.TruncateText(
+                            resultText, ResultSucceeded(copy) ? 180 : 1024);
+                        if (cropped)
+                        {
+                            copy[messageKey] = excerpt;
+                            copy[copy.ContainsKey("Truncated") ? "Truncated" : "truncated"] = true;
+                            resultsTruncated = true;
+                        }
+                    }
+
+                    var size = copy.ToJsonString().Length + 1;
+                    if (size > remaining)
+                    {
+                        resultsTruncated = true;
+                        continue;
+                    }
+
+                    remaining -= size;
+                    retainedResults.Add((index, copy));
+                }
+
+                var retainedOutputs = new JsonArray();
+                foreach (var output in outputs)
+                {
+                    if (output is null) continue;
+                    var size = output.ToJsonString().Length + 1;
+                    if (size > remaining) continue;
+                    retainedOutputs.Add(output.DeepClone());
+                    remaining -= size;
+                }
+
+                return (new JsonObject
+                {
+                    ["results"] = new JsonArray(retainedResults.OrderBy(item => item.Index)
+                        .Select(item => (JsonNode)item.Result).ToArray()),
+                    ["resultsTruncated"] = resultsTruncated,
+                    ["outputs"] = retainedOutputs,
+                    ["outputsTruncated"] = retainedOutputs.Count != outputs.Count ||
+                        envelope["outputsTruncated"]?.GetValue<bool>() == true
+                }.ToJsonString(), true);
+            }
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
+        {
+            // A legacy text result or an invalid envelope can still be shown as an excerpt.
+        }
+
+        return ToolEventSanitizer.TruncateText(stored, MaxSnapshotMessageContentChars);
+    }
+
+    private static bool ResultSucceeded(JsonNode? result)
+        => result is JsonObject row &&
+           (row["Success"] ?? row["success"]) is JsonValue value &&
+           value.TryGetValue<bool>(out var succeeded) && succeeded;
 
     private async Task<SessionPlanDto?> ResolveCurrentPlanDtoAsync(IvilsonSession dbSession, CancellationToken ct)
     {

@@ -6,6 +6,7 @@ import {
   IPC_CHANNELS,
   type AppUpdateState,
   type ClassifiedDroppedFile,
+  type ComputerControlOverlayState,
   type ConnectStandalonePayload,
   type CreateBusinessPluginRequest,
   type CredentialSlotKind,
@@ -22,12 +23,14 @@ import {
   type PlanChatControlPayload,
   type PublishSkillDraftRequest,
   type PutDraftSelectionRequest,
+  type RegisterProtectedWindowsResponse,
   type SetPlanModePayload,
   type SetPluginCredentialRequest,
   type StartSkillRunRequest,
   type SubmitToolApprovalPayload,
   type UpdateBrowserSettingsRequest,
   type UpdateCapabilityRiskRequest,
+  type UpdateComputerSettingsRequest,
   type UpdateExecutionSettingsPayload,
   type UpdateModelSettingsPayload,
   type UpdatePluginConnectionRequest,
@@ -40,6 +43,7 @@ import {
   buildWorkspaceFileContextMenuTemplate,
 } from './appMenu';
 import { BackendManager } from './backendManager';
+import { ComputerOverlayManager } from './computerOverlayManager';
 import { callControlPlane } from './controlPlaneProxy';
 import { EnvironmentManager, isValidEnvironmentDependencyId } from './environmentManager';
 import { LocalBackendProxy } from './localBackendProxy';
@@ -68,6 +72,9 @@ let gatewayProxy: LocalBackendProxy | null = null;
 let trayManager: TrayManager | null = null;
 let updaterManager: UpdaterManager | null = null;
 let environmentManager: EnvironmentManager | null = null;
+let computerOverlayManager: ComputerOverlayManager | null = null;
+let hostAvoidedByComputer = false;
+let lastProtectedWindowsSignature = '';
 let isQuitting = false;
 const desktopPreferences: {
   theme: DesktopTheme;
@@ -204,12 +211,84 @@ function broadcastEnvironmentInstallEvent(payload: EnvironmentInstallEvent): voi
   mainWindow.webContents.send(IPC_CHANNELS.environmentInstallEvent, payload);
 }
 
-function broadcastConnectionChange(): void {
-  trayManager?.refreshMenu();
-  if (!backendManager || !mainWindow || mainWindow.isDestroyed()) {
+function formatNativeWindowHandle(win: BrowserWindow | null): string | null {
+  if (!win || win.isDestroyed() || process.platform !== 'win32') {
+    return null;
+  }
+  try {
+    const buf = win.getNativeWindowHandle();
+    if (!buf || buf.length === 0) {
+      return null;
+    }
+    if (buf.length >= 8) {
+      const value = buf.readBigUInt64LE(0);
+      return value > 0n ? `0x${value.toString(16).toUpperCase()}` : null;
+    }
+    if (buf.length >= 4) {
+      const value = buf.readUInt32LE(0);
+      return value > 0 ? `0x${value.toString(16).toUpperCase()}` : null;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function syncProtectedWindowsToBackend(force = false): Promise<void> {
+  if (!backendManager) {
     return;
   }
-  mainWindow.webContents.send(IPC_CHANNELS.backendConnectionChanged, backendManager.getPublicInfo());
+  const info = backendManager.getPublicInfo();
+  if (info.status !== 'ready' || !info.controlPlaneAvailable) {
+    lastProtectedWindowsSignature = '';
+    return;
+  }
+
+  const handles = new Set<string>();
+  const mainHandle = formatNativeWindowHandle(mainWindow);
+  if (mainHandle) {
+    handles.add(mainHandle);
+  }
+  const overlayHandle = formatNativeWindowHandle(computerOverlayManager?.getOverlayWindow() ?? null);
+  if (overlayHandle) {
+    handles.add(overlayHandle);
+  }
+
+  const sortedHandles = [...handles].sort();
+  const signature = `${process.pid}|${sortedHandles.join(',')}`;
+  if (!force && signature === lastProtectedWindowsSignature) {
+    return;
+  }
+
+  const res = await callControlPlane<RegisterProtectedWindowsResponse>(
+    backendManager.getControlPlaneCredentials(),
+    'POST',
+    '/api/gateway/computer/protected-windows',
+    {
+      processId: process.pid,
+      windowHandles: sortedHandles,
+    },
+  );
+  if (res.ok) {
+    lastProtectedWindowsSignature = signature;
+  }
+}
+
+function broadcastConnectionChange(): void {
+  trayManager?.refreshMenu();
+  if (!backendManager) {
+    return;
+  }
+  const info = backendManager.getPublicInfo();
+  if (info.status === 'ready') {
+    void syncProtectedWindowsToBackend(true);
+  } else {
+    lastProtectedWindowsSignature = '';
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  mainWindow.webContents.send(IPC_CHANNELS.backendConnectionChanged, info);
 }
 
 function createMainWindow(): BrowserWindow {
@@ -268,6 +347,7 @@ function createMainWindow(): BrowserWindow {
   win.once('ready-to-show', () => {
     win.show();
     trayManager?.refreshMenu();
+    void syncProtectedWindowsToBackend(true);
   });
 
   win.on('show', () => {
@@ -369,11 +449,14 @@ function registerIpcHandlers(manager: BackendManager): void {
     const allowedKeys = new Set([
       'enabled',
       'executablePath',
+      'remoteCdpWsUrl',
       'headless',
       'profileMode',
       'interactionApprovalPolicy',
       'allowLocalhostInDailyMode',
       'allowControlledDownloads',
+      'allowedDomains',
+      'blockedDomains',
       'idleTimeoutMinutes',
       'maxConcurrentSessions',
     ]);
@@ -540,6 +623,245 @@ function registerIpcHandlers(manager: BackendManager): void {
       `/api/gateway/session/${encodeURIComponent(sessionId.trim())}/browser/takeover/complete`,
       cleanNote ? { note: cleanNote } : {},
     );
+  });
+
+  ipcMain.handle(IPC_CHANNELS.updateComputerSettings, async (event, payload: unknown) => {
+    assertTrustedIpcSender(event);
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      return {
+        ok: false,
+        status: 400,
+        errorCode: 'invalid_computer_settings_payload',
+        errorMessage: '桌面操控设置参数必须是有效对象。',
+      };
+    }
+
+    const raw = payload as Record<string, unknown>;
+    const allowedKeys = new Set([
+      'enabled',
+      'interactionApprovalPolicy',
+      'coordinateMode',
+      'maxImageLongEdge',
+      'maxScreenshotsPerTurn',
+      'enableGridOverlay',
+      'autoMinimizeHostWindow',
+      'blockedProcessNames',
+      'emergencyStopShortcut',
+      'idleTimeoutMinutes',
+    ]);
+    for (const key of Object.keys(raw)) {
+      if (!allowedKeys.has(key)) {
+        return {
+          ok: false,
+          status: 400,
+          errorCode: 'unexpected_computer_settings_field',
+          errorMessage: `不允许提交未授权的桌面操控配置字段：${key}`,
+        };
+      }
+    }
+
+    const sanitized: UpdateComputerSettingsRequest = {};
+    if (raw.enabled !== undefined) {
+      if (typeof raw.enabled !== 'boolean') {
+        return { ok: false, status: 400, errorCode: 'invalid_computer_settings_payload', errorMessage: 'enabled 必须为布尔值。' };
+      }
+      sanitized.enabled = raw.enabled;
+    }
+    if (raw.interactionApprovalPolicy !== undefined && raw.interactionApprovalPolicy !== null) {
+      const validPolicies = new Set(['AlwaysAsk', 'AppScopedInSession', 'HighRiskOnly']);
+      if (typeof raw.interactionApprovalPolicy !== 'string' || !validPolicies.has(raw.interactionApprovalPolicy)) {
+        return { ok: false, status: 400, errorCode: 'invalid_computer_settings_payload', errorMessage: 'interactionApprovalPolicy 取值无效。' };
+      }
+      sanitized.interactionApprovalPolicy = raw.interactionApprovalPolicy;
+    }
+    if (raw.coordinateMode !== undefined && raw.coordinateMode !== null) {
+      const validModes = new Set(['Auto', 'ScreenshotPixels', 'Normalized1000']);
+      if (typeof raw.coordinateMode !== 'string' || !validModes.has(raw.coordinateMode)) {
+        return { ok: false, status: 400, errorCode: 'invalid_computer_settings_payload', errorMessage: 'coordinateMode 取值无效。' };
+      }
+      sanitized.coordinateMode = raw.coordinateMode;
+    }
+    if (raw.maxImageLongEdge !== undefined && raw.maxImageLongEdge !== null) {
+      if (typeof raw.maxImageLongEdge !== 'number' || !Number.isInteger(raw.maxImageLongEdge) || raw.maxImageLongEdge < 640 || raw.maxImageLongEdge > 2560) {
+        return { ok: false, status: 400, errorCode: 'invalid_computer_settings_payload', errorMessage: 'maxImageLongEdge 必须为 640-2560 的整数。' };
+      }
+      sanitized.maxImageLongEdge = raw.maxImageLongEdge;
+    }
+    if (raw.maxScreenshotsPerTurn !== undefined && raw.maxScreenshotsPerTurn !== null) {
+      if (typeof raw.maxScreenshotsPerTurn !== 'number' || !Number.isInteger(raw.maxScreenshotsPerTurn) || raw.maxScreenshotsPerTurn < 1 || raw.maxScreenshotsPerTurn > 30) {
+        return { ok: false, status: 400, errorCode: 'invalid_computer_settings_payload', errorMessage: 'maxScreenshotsPerTurn 必须为 1-30 的整数。' };
+      }
+      sanitized.maxScreenshotsPerTurn = raw.maxScreenshotsPerTurn;
+    }
+    if (raw.enableGridOverlay !== undefined) {
+      if (typeof raw.enableGridOverlay !== 'boolean') {
+        return { ok: false, status: 400, errorCode: 'invalid_computer_settings_payload', errorMessage: 'enableGridOverlay 必须为布尔值。' };
+      }
+      sanitized.enableGridOverlay = raw.enableGridOverlay;
+    }
+    if (raw.autoMinimizeHostWindow !== undefined) {
+      if (typeof raw.autoMinimizeHostWindow !== 'boolean') {
+        return { ok: false, status: 400, errorCode: 'invalid_computer_settings_payload', errorMessage: 'autoMinimizeHostWindow 必须为布尔值。' };
+      }
+      sanitized.autoMinimizeHostWindow = raw.autoMinimizeHostWindow;
+    }
+    if (raw.blockedProcessNames !== undefined && raw.blockedProcessNames !== null) {
+      if (!Array.isArray(raw.blockedProcessNames) || raw.blockedProcessNames.length > 200) {
+        return { ok: false, status: 400, errorCode: 'invalid_computer_settings_payload', errorMessage: 'blockedProcessNames 必须为不超过 200 项的数组。' };
+      }
+      const cleaned: string[] = [];
+      for (const entry of raw.blockedProcessNames) {
+        if (typeof entry !== 'string' || entry.length > 128) {
+          return { ok: false, status: 400, errorCode: 'invalid_computer_settings_payload', errorMessage: 'blockedProcessNames 包含无效进程名。' };
+        }
+        const trimmed = entry.trim();
+        if (trimmed.length > 0) {
+          cleaned.push(trimmed);
+        }
+      }
+      sanitized.blockedProcessNames = cleaned;
+    }
+    if (raw.emergencyStopShortcut !== undefined && raw.emergencyStopShortcut !== null) {
+      if (typeof raw.emergencyStopShortcut !== 'string' || raw.emergencyStopShortcut.trim().length === 0 || raw.emergencyStopShortcut.trim().length > 64) {
+        return { ok: false, status: 400, errorCode: 'invalid_computer_settings_payload', errorMessage: 'emergencyStopShortcut 必须为 1-64 字符的快捷键字符串。' };
+      }
+      sanitized.emergencyStopShortcut = raw.emergencyStopShortcut.trim();
+    }
+    if (raw.idleTimeoutMinutes !== undefined && raw.idleTimeoutMinutes !== null) {
+      if (typeof raw.idleTimeoutMinutes !== 'number' || !Number.isInteger(raw.idleTimeoutMinutes) || raw.idleTimeoutMinutes < 1 || raw.idleTimeoutMinutes > 120) {
+        return { ok: false, status: 400, errorCode: 'invalid_computer_settings_payload', errorMessage: 'idleTimeoutMinutes 必须为 1-120 的整数。' };
+      }
+      sanitized.idleTimeoutMinutes = raw.idleTimeoutMinutes;
+    }
+
+    return callControlPlane(manager.getControlPlaneCredentials(), 'PUT', '/api/settings/computer', sanitized);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.closeComputerSession, async (event, sessionId: unknown) => {
+    assertTrustedIpcSender(event);
+    if (!isValidBrowserSessionId(sessionId)) {
+      return {
+        ok: false,
+        status: 400,
+        errorCode: 'invalid_session_id',
+        errorMessage: '无效的桌面操控会话 ID。',
+      };
+    }
+
+    return callControlPlane(
+      manager.getControlPlaneCredentials(),
+      'POST',
+      `/api/gateway/session/${encodeURIComponent(sessionId.trim())}/computer/close`,
+      {},
+    );
+  });
+
+  ipcMain.handle(IPC_CHANNELS.startComputerTakeover, async (event, sessionId: unknown, reason: unknown) => {
+    assertTrustedIpcSender(event);
+    if (!isValidBrowserSessionId(sessionId)) {
+      return {
+        ok: false,
+        status: 400,
+        errorCode: 'invalid_session_id',
+        errorMessage: '无效的桌面操控会话 ID。',
+      };
+    }
+    const cleanReason = typeof reason === 'string' && reason.trim().length > 0 ? reason.trim().slice(0, 300) : undefined;
+    return callControlPlane(
+      manager.getControlPlaneCredentials(),
+      'POST',
+      `/api/gateway/session/${encodeURIComponent(sessionId.trim())}/computer/takeover/start`,
+      cleanReason ? { reason: cleanReason } : {},
+    );
+  });
+
+  ipcMain.handle(IPC_CHANNELS.completeComputerTakeover, async (event, sessionId: unknown, note: unknown) => {
+    assertTrustedIpcSender(event);
+    if (!isValidBrowserSessionId(sessionId)) {
+      return {
+        ok: false,
+        status: 400,
+        errorCode: 'invalid_session_id',
+        errorMessage: '无效的桌面操控会话 ID。',
+      };
+    }
+    const cleanNote = typeof note === 'string' && note.trim().length > 0 ? note.trim().slice(0, 300) : undefined;
+    return callControlPlane(
+      manager.getControlPlaneCredentials(),
+      'POST',
+      `/api/gateway/session/${encodeURIComponent(sessionId.trim())}/computer/takeover/complete`,
+      cleanNote ? { note: cleanNote } : {},
+    );
+  });
+
+  ipcMain.handle(IPC_CHANNELS.emergencyStopComputer, async (event, payload: unknown) => {
+    assertTrustedIpcSender(event);
+    const raw = (payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {}) as Record<string, unknown>;
+    const cleanSessionId =
+      typeof raw.sessionId === 'string' && isValidBrowserSessionId(raw.sessionId) ? raw.sessionId.trim() : undefined;
+    const cleanReason =
+      typeof raw.reason === 'string' && raw.reason.trim().length > 0 ? raw.reason.trim().slice(0, 200) : 'user_emergency_stop';
+
+    const res = await callControlPlane(
+      manager.getControlPlaneCredentials(),
+      'POST',
+      '/api/gateway/computer/emergency-stop',
+      {
+        ...(cleanSessionId ? { sessionId: cleanSessionId } : {}),
+        reason: cleanReason,
+      },
+    );
+    computerOverlayManager?.updateState({ active: false, sessionId: cleanSessionId ?? null });
+    if (hostAvoidedByComputer) {
+      restoreMainWindow();
+      hostAvoidedByComputer = false;
+    }
+    return res;
+  });
+
+  ipcMain.handle(IPC_CHANNELS.avoidHostWindowForComputer, (event) => {
+    assertTrustedIpcSender(event);
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return { avoided: false };
+    }
+    if (!mainWindow.isMinimized() && mainWindow.isVisible()) {
+      mainWindow.minimize();
+      hostAvoidedByComputer = true;
+      return { avoided: true };
+    }
+    return { avoided: false };
+  });
+
+  ipcMain.handle(IPC_CHANNELS.restoreHostWindowForComputer, (event) => {
+    assertTrustedIpcSender(event);
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      hostAvoidedByComputer = false;
+      return { restored: false };
+    }
+    const shouldRestore = hostAvoidedByComputer || mainWindow.isMinimized() || !mainWindow.isVisible();
+    hostAvoidedByComputer = false;
+    if (shouldRestore) {
+      restoreMainWindow();
+      return { restored: true };
+    }
+    return { restored: false };
+  });
+
+  ipcMain.handle(IPC_CHANNELS.setComputerControlActive, (event, state: unknown) => {
+    assertTrustedIpcSender(event);
+    if (!state || typeof state !== 'object' || Array.isArray(state)) {
+      return;
+    }
+    const raw = state as Partial<ComputerControlOverlayState>;
+    const normalized: ComputerControlOverlayState = {
+      active: Boolean(raw.active),
+      sessionId: typeof raw.sessionId === 'string' ? raw.sessionId : null,
+      status: typeof raw.status === 'string' ? raw.status : null,
+      summary: typeof raw.summary === 'string' ? raw.summary : null,
+      shortcut: typeof raw.shortcut === 'string' ? raw.shortcut : null,
+      hostWindowMinimized: Boolean(raw.hostWindowMinimized),
+    };
+    computerOverlayManager?.updateState(normalized);
   });
 
   ipcMain.handle(IPC_CHANNELS.listPermissionRules, async (event) => {
@@ -1109,6 +1431,34 @@ if (!singleInstanceLock) {
       onInstallEvent: (payload) => broadcastEnvironmentInstallEvent(payload),
     });
 
+    computerOverlayManager = new ComputerOverlayManager({
+      onEmergencyStopTriggered: async (sessionId, reason) => {
+        if (backendManager) {
+          await callControlPlane(
+            backendManager.getControlPlaneCredentials(),
+            'POST',
+            '/api/gateway/computer/emergency-stop',
+            {
+              ...(sessionId ? { sessionId } : {}),
+              reason,
+            },
+          );
+        }
+        hostAvoidedByComputer = false;
+        restoreMainWindow();
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send(IPC_CHANNELS.computerEmergencyStopped, {
+            sessionId,
+            reason,
+          });
+        }
+      },
+      onProtectedWindowsChanged: () => {
+        void syncProtectedWindowsToBackend(true);
+      },
+    });
+    computerOverlayManager.initialize();
+
     gatewayProxy = new LocalBackendProxy(
       () => backendManager?.getUpstreamState() ?? { targetBaseUrl: null, expectedAccessToken: null, controlToken: null },
       getAllowedRendererOrigins(),
@@ -1174,6 +1524,7 @@ if (!singleInstanceLock) {
   let isDisposing = false;
   app.on('before-quit', (event) => {
     isQuitting = true;
+    computerOverlayManager?.dispose();
     environmentManager?.dispose();
     updaterManager?.dispose();
     trayManager?.dispose();

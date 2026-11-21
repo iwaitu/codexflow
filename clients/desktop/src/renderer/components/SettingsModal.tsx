@@ -3,6 +3,7 @@ import * as Dialog from '@radix-ui/react-dialog';
 import { AlertTriangle, Trash2, X } from 'lucide-react';
 import type {
   BrowserSettingsDto,
+  ComputerSettingsDto,
   ExecutionBackendKind,
   ExecutionPermissionModeKind,
   PersistedPermissionRule,
@@ -18,7 +19,7 @@ import { MaxContextField } from './MaxContextField';
 
 export { isRelaxingPermission };
 
-export type SettingsTabKind = 'execution' | 'model' | 'browser' | 'rules' | 'environment' | 'preferences';
+export type SettingsTabKind = 'execution' | 'model' | 'browser' | 'computer' | 'rules' | 'environment' | 'preferences';
 
 interface SettingsModalProps {
   open: boolean;
@@ -28,6 +29,7 @@ interface SettingsModalProps {
   executionSettings: ExecutionSettings | null;
   modelSettings: ModelSettings | null;
   browserSettings?: BrowserSettingsDto | null;
+  computerSettings?: ComputerSettingsDto | null;
   controlPlaneAvailable: boolean;
   onClose: () => void;
   onUpdated: () => void;
@@ -41,6 +43,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   executionSettings,
   modelSettings,
   browserSettings = null,
+  computerSettings = null,
   controlPlaneAvailable,
   onClose,
   onUpdated,
@@ -108,6 +111,34 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [browserMaxSessions, setBrowserMaxSessions] = useState(
     String(browserSettings?.maxConcurrentSessions ?? 3),
   );
+  const [computerEnabled, setComputerEnabled] = useState(Boolean(computerSettings?.enabled ?? false));
+  const [computerApprovalPolicy, setComputerApprovalPolicy] = useState(
+    computerSettings?.interactionApprovalPolicy ?? 'AlwaysAsk',
+  );
+  const [computerCoordinateMode, setComputerCoordinateMode] = useState(
+    computerSettings?.coordinateMode ?? 'Auto',
+  );
+  const [computerMaxLongEdge, setComputerMaxLongEdge] = useState(
+    String(computerSettings?.maxImageLongEdge ?? 1280),
+  );
+  const [computerMaxScreenshots, setComputerMaxScreenshots] = useState(
+    String(computerSettings?.maxScreenshotsPerTurn ?? 10),
+  );
+  const [computerEnableGrid, setComputerEnableGrid] = useState(
+    Boolean(computerSettings?.enableGridOverlay ?? true),
+  );
+  const [computerAutoMinimizeHost, setComputerAutoMinimizeHost] = useState(
+    Boolean(computerSettings?.autoMinimizeHostWindow ?? true),
+  );
+  const [computerStopShortcut, setComputerStopShortcut] = useState(
+    computerSettings?.emergencyStopShortcut ?? 'CommandOrControl+.',
+  );
+  const [computerIdleMinutes, setComputerIdleMinutes] = useState(
+    String(computerSettings?.idleTimeoutMinutes ?? 15),
+  );
+  const [computerBlockedProcessesText, setComputerBlockedProcessesText] = useState(
+    (computerSettings?.blockedProcessNames ?? []).join('\n'),
+  );
 
   const [rules, setRules] = useState<PersistedPermissionRule[]>([]);
   const [riskReasons, setRiskReasons] = useState<string[]>([]);
@@ -149,10 +180,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setBrowserBlockedDomainsText((browserSettings?.blockedDomains ?? []).join('\n'));
     setBrowserIdleMinutes(String(browserSettings?.idleTimeoutMinutes ?? 15));
     setBrowserMaxSessions(String(browserSettings?.maxConcurrentSessions ?? 3));
+    setComputerEnabled(Boolean(computerSettings?.enabled ?? false));
+    setComputerApprovalPolicy(computerSettings?.interactionApprovalPolicy ?? 'AlwaysAsk');
+    setComputerCoordinateMode(computerSettings?.coordinateMode ?? 'Auto');
+    setComputerMaxLongEdge(String(computerSettings?.maxImageLongEdge ?? 1280));
+    setComputerMaxScreenshots(String(computerSettings?.maxScreenshotsPerTurn ?? 10));
+    setComputerEnableGrid(Boolean(computerSettings?.enableGridOverlay ?? true));
+    setComputerAutoMinimizeHost(Boolean(computerSettings?.autoMinimizeHostWindow ?? true));
+    setComputerStopShortcut(computerSettings?.emergencyStopShortcut ?? 'CommandOrControl+.');
+    setComputerIdleMinutes(String(computerSettings?.idleTimeoutMinutes ?? 15));
+    setComputerBlockedProcessesText((computerSettings?.blockedProcessNames ?? []).join('\n'));
     setConfirmRelaxOpen(false);
     setNotice(null);
     setError(null);
-  }, [open, initialTab, currentBackend, currentMode, modelSettings, browserSettings]);
+  }, [open, initialTab, currentBackend, currentMode, modelSettings, browserSettings, computerSettings]);
 
   const loadRules = async () => {
     if (!controlPlaneAvailable) return;
@@ -290,6 +331,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 ['execution', t('settings.tab.execution')],
                 ['model', t('settings.tab.model')],
                 ['browser', language === 'en-US' ? 'Browser' : '浏览器'],
+                ['computer', t('settings.tab.computer')],
                 ['rules', t('settings.tab.rules')],
                 ['environment', t('settings.tab.environment')],
                 ['preferences', t('settings.tab.preferences')],
@@ -689,7 +731,269 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           )}
 
           {tab === 'environment' && (
-            <EnvironmentCheckPanel active={open && tab === 'environment'} />
+            <EnvironmentCheckPanel
+              active={open && tab === 'environment'}
+              computerDriverStatus={computerSettings?.driverStatus ?? null}
+            />
+          )}
+
+          {tab === 'computer' && (
+            <form
+              data-testid="settings-computer-form"
+              onSubmit={async (e) => {
+                e.preventDefault();
+                if (!controlPlaneAvailable || !window.codexflow) return;
+                setSaving(true);
+                setError(null);
+                setNotice(null);
+                try {
+                  const parsedLongEdge = Number.parseInt(computerMaxLongEdge, 10);
+                  const parsedMaxShots = Number.parseInt(computerMaxScreenshots, 10);
+                  const parsedIdle = Number.parseInt(computerIdleMinutes, 10);
+                  const blockedList = computerBlockedProcessesText
+                    .split(/[\r\n,，;；]+/)
+                    .map((entry) => entry.trim())
+                    .filter(Boolean);
+                  const shortcutTrimmed = computerStopShortcut.trim() || 'CommandOrControl+.';
+                  const res = await window.codexflow.updateComputerSettings({
+                    enabled: computerEnabled,
+                    interactionApprovalPolicy: computerApprovalPolicy,
+                    coordinateMode: computerCoordinateMode,
+                    maxImageLongEdge: Number.isFinite(parsedLongEdge)
+                      ? Math.min(2560, Math.max(640, parsedLongEdge))
+                      : 1280,
+                    maxScreenshotsPerTurn: Number.isFinite(parsedMaxShots)
+                      ? Math.min(30, Math.max(1, parsedMaxShots))
+                      : 10,
+                    enableGridOverlay: computerEnableGrid,
+                    autoMinimizeHostWindow: computerAutoMinimizeHost,
+                    blockedProcessNames: blockedList,
+                    emergencyStopShortcut: shortcutTrimmed,
+                    idleTimeoutMinutes: Number.isFinite(parsedIdle)
+                      ? Math.min(120, Math.max(1, parsedIdle))
+                      : 15,
+                  });
+                  if (!res.ok) {
+                    setError(res.errorMessage || `保存桌面操控设置失败 (${res.status})`);
+                    return;
+                  }
+                  setNotice('桌面操控（Computer Use）设置已保存并立即生效。');
+                  onUpdated();
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : '保存桌面操控设置失败');
+                } finally {
+                  setSaving(false);
+                }
+              }}
+              className="mt-4 space-y-4 text-xs"
+            >
+              <div className="rounded-xl border border-slate-800 bg-slate-950 p-3.5 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="font-medium text-slate-200">本机原生驱动与系统权限状态</div>
+                  {computerSettings?.driverStatus && (
+                    <span className="rounded bg-slate-900 px-2 py-0.5 font-mono text-[10px] text-slate-300">
+                      {computerSettings.driverStatus.platform} · {computerSettings.driverStatus.driverName}
+                    </span>
+                  )}
+                </div>
+                {computerSettings?.driverStatus ? (
+                  <div className="space-y-1.5 text-slate-300">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <div className="flex items-center gap-1.5">
+                        <span
+                          className={`h-2 w-2 rounded-full ${
+                            computerSettings.driverStatus.available ? 'bg-emerald-400' : 'bg-amber-400'
+                          }`}
+                        />
+                        <span
+                          className={`font-medium ${
+                            computerSettings.driverStatus.available ? 'text-emerald-300' : 'text-amber-300'
+                          }`}
+                        >
+                          {computerSettings.driverStatus.available
+                            ? `驱动就绪（检测到 ${computerSettings.driverStatus.displayCount} 个显示器）`
+                            : '驱动不可用或缺少系统授权'}
+                        </span>
+                      </div>
+                      <span className="text-[11px] text-slate-400">
+                        屏幕录制：{computerSettings.driverStatus.screenCaptureGranted ? '已授权' : '未授权'} · 辅助功能：
+                        {computerSettings.driverStatus.accessibilityGranted ? '已授权' : '未授权'}
+                      </span>
+                    </div>
+                    {computerSettings.driverStatus.diagnosticMessage && (
+                      <div className="text-[11px] text-slate-400">
+                        {computerSettings.driverStatus.diagnosticMessage}
+                      </div>
+                    )}
+                    {computerSettings.driverStatus.permissionGuide && (
+                      <div className="rounded-lg border border-amber-500/40 bg-amber-950/30 px-3 py-2 text-[11px] text-amber-200">
+                        {computerSettings.driverStatus.permissionGuide}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="text-slate-400">正在等待宿主返回桌面驱动状态…</div>
+                )}
+              </div>
+
+              <label className="flex cursor-pointer items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950 p-3.5">
+                <div>
+                  <div className="font-medium text-slate-200">启用本机桌面视觉操控（Computer Use）</div>
+                  <div className="mt-0.5 text-[11px] text-slate-400">
+                    开启后，助手可在日常模式和开发模式下（需多模态模型）观测桌面并执行受控键鼠交互，支持物理 Esc×2 与全局热键急停。
+                  </div>
+                </div>
+                <input
+                  type="checkbox"
+                  data-testid="computer-enabled-toggle"
+                  checked={computerEnabled}
+                  onChange={(e) => setComputerEnabled(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-700 accent-indigo-600"
+                />
+              </label>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label className="block">
+                  <span className="mb-1 block text-slate-300">桌面交互审批策略</span>
+                  <select
+                    data-testid="computer-approval-policy-select"
+                    value={computerApprovalPolicy}
+                    onChange={(e) => setComputerApprovalPolicy(e.target.value)}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+                  >
+                    <option value="HighRiskOnly">HighRiskOnly（文本输入、组合键和拖拽需审批）</option>
+                    <option value="AlwaysAsk">AlwaysAsk（每次键鼠动作均弹窗询问）</option>
+                    <option value="AppScopedInSession">AppScopedInSession（本会话按应用进程授信）</option>
+                  </select>
+                  <span className="mt-1 block text-xs text-slate-400">
+                    受管桌面使用 FullAuto 时自动放行常规键鼠动作。Deny 禁止键鼠输入。
+                  </span>
+                </label>
+
+                <label className="block">
+                  <span className="mb-1 block text-slate-300">默认坐标系模式</span>
+                  <select
+                    data-testid="computer-coordinate-mode-select"
+                    value={computerCoordinateMode}
+                    onChange={(e) => setComputerCoordinateMode(e.target.value)}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+                  >
+                    <option value="Auto">Auto（按屏幕缩放图自动适配像素）</option>
+                    <option value="ScreenshotPixels">ScreenshotPixels（截图像素坐标）</option>
+                    <option value="Normalized1000">Normalized1000（0-1000 归一化坐标）</option>
+                  </select>
+                </label>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <label className="block">
+                  <span className="mb-1 block text-slate-300">图像长边上限 (px)</span>
+                  <input
+                    type="number"
+                    min={640}
+                    max={2560}
+                    value={computerMaxLongEdge}
+                    onChange={(e) => setComputerMaxLongEdge(e.target.value)}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-slate-300">单轮截屏上限</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={30}
+                    value={computerMaxScreenshots}
+                    onChange={(e) => setComputerMaxScreenshots(e.target.value)}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-slate-300">空闲超时 (分钟)</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={120}
+                    value={computerIdleMinutes}
+                    onChange={(e) => setComputerIdleMinutes(e.target.value)}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-slate-300">操控期急停热键</span>
+                  <input
+                    type="text"
+                    value={computerStopShortcut}
+                    onChange={(e) => setComputerStopShortcut(e.target.value)}
+                    placeholder="CommandOrControl+."
+                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-slate-100"
+                  />
+                </label>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label className="flex cursor-pointer items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950 p-3">
+                  <div>
+                    <div className="font-medium text-slate-200">坐标网格标尺与十字准星辅助</div>
+                    <div className="mt-0.5 text-[11px] text-slate-400">
+                      在截图上绘制像素/归一化标尺与当前指针双色准星，提高视觉点击精度。
+                    </div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={computerEnableGrid}
+                    onChange={(e) => setComputerEnableGrid(e.target.checked)}
+                    className="h-4 w-4 rounded border-slate-700 accent-indigo-600"
+                  />
+                </label>
+
+                <label className="flex cursor-pointer items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950 p-3">
+                  <div>
+                    <div className="font-medium text-slate-200">操控期自动避让最小化主窗口</div>
+                    <div className="mt-0.5 text-[11px] text-slate-400">
+                      开始执行全屏或桌面操控时自动最小化宿主窗口，审批或结束时自动恢复。
+                    </div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={computerAutoMinimizeHost}
+                    onChange={(e) => setComputerAutoMinimizeHost(e.target.checked)}
+                    className="h-4 w-4 rounded border-slate-700 accent-indigo-600"
+                  />
+                </label>
+              </div>
+
+              <label className="block">
+                <div className="mb-1 flex items-center justify-between text-slate-300">
+                  <span>屏蔽高敏进程黑名单（Blocked Processes）</span>
+                  <span className="text-[10px] text-slate-500">
+                    {computerBlockedProcessesText.split(/[\r\n,，;；]+/).filter((s) => s.trim()).length} 项
+                  </span>
+                </div>
+                <textarea
+                  rows={3}
+                  data-testid="computer-blocked-processes-input"
+                  value={computerBlockedProcessesText}
+                  onChange={(e) => setComputerBlockedProcessesText(e.target.value)}
+                  placeholder={"每行或逗号分隔，命中进程严禁视觉点击/输入\n例如 1password\nkeepass\nbitwarden"}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-[11px] text-slate-100 placeholder:text-slate-600"
+                />
+              </label>
+
+              {error && <div className="rounded-lg border border-rose-500/40 bg-rose-950/40 p-2.5 text-rose-200">{error}</div>}
+              {notice && <div className="rounded-lg border border-emerald-500/40 bg-emerald-950/40 p-2.5 text-emerald-200">{notice}</div>}
+
+              <div className="flex justify-end">
+                <button
+                  type="submit"
+                  data-testid="computer-save-settings-btn"
+                  disabled={!controlPlaneAvailable || saving}
+                  className="rounded-lg bg-indigo-600 px-4 py-2 font-medium text-white hover:bg-indigo-500 disabled:opacity-40"
+                >
+                  {saving ? '保存中…' : '保存桌面操控设置'}
+                </button>
+              </div>
+            </form>
           )}
 
           {tab === 'browser' && (

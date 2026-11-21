@@ -16,6 +16,8 @@ const ZH_CN = {
   'workspace.changesAria': '代码变更',
   'workspace.jobs': '作业',
   'workspace.jobsAria': '后台作业',
+  'workspace.computer': '桌面',
+  'workspace.computerAria': '打开或收起桌面操控面板',
   'workspace.newSessionDefaultName': '工作区 {time}',
 
   // Sidebar
@@ -88,6 +90,7 @@ const ZH_CN = {
   'settings.close': '关闭设置',
   'settings.tab.execution': '执行与权限',
   'settings.tab.model': '模型设置',
+  'settings.tab.computer': '桌面操控',
   'settings.tab.rules': '始终允许规则',
   'settings.tab.environment': '环境与依赖',
   'settings.tab.preferences': '外观与桌面',
@@ -215,6 +218,8 @@ const EN_US: Record<I18nKey, string> = {
   'workspace.changesAria': 'Code Changes',
   'workspace.jobs': 'Jobs',
   'workspace.jobsAria': 'Background Jobs',
+  'workspace.computer': 'Desktop',
+  'workspace.computerAria': 'Toggle Computer Use panel',
   'workspace.newSessionDefaultName': 'Workspace {time}',
 
   'sidebar.workspaces': 'Workspaces',
@@ -282,6 +287,7 @@ const EN_US: Record<I18nKey, string> = {
   'settings.close': 'Close Settings',
   'settings.tab.execution': 'Execution & Permissions',
   'settings.tab.model': 'Model Endpoint',
+  'settings.tab.computer': 'Computer Use',
   'settings.tab.rules': 'Always-Allow Rules',
   'settings.tab.environment': 'Environment',
   'settings.tab.preferences': 'Appearance & Desktop',
