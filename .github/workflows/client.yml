@@ -209,10 +209,16 @@ jobs:
         if: matrix.platform != 'win'
         shell: bash
         run: |
+          aot_args=()
+          if [ "${{ matrix.rid }}" = "osx-arm64" ]; then
+            aot_args=(-p:PublishAot=true -p:RuntimeFrameworkVersion=10.0.15 -p:TrimmerSingleWarn=false
+                      -p:TreatWarningsAsErrors=true -p:ILLinkTreatWarningsAsErrors=true -warnaserror)
+          fi
           dotnet publish CodexFlow.Local/CodexFlow.Local.csproj \
             -c Release \
             -r "${{ matrix.rid }}" \
             --self-contained true \
+            "${aot_args[@]}" \
             -p:PublishSingleFile=false \
             -p:SatelliteResourceLanguages=en \
             -p:DebugType=none \
