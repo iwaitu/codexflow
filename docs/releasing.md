@@ -30,17 +30,17 @@
 | gitleaks 扫当前文件和全部历史，并确认扫描器真的能发现密钥 | 有密钥，或扫描器失效 |
 | 所有包（含间接依赖）没有已知漏洞 | 依赖有漏洞 |
 
-## Windows x64 桌面后端
+## 桌面 Native AOT 后端
 
 在装有 `global.json` 指定的 .NET SDK、Visual Studio C++ x64 构建工具、Git、curl 和 tar 的 Windows 上，从仓库执行严格发布。
 
 ```powershell
-./scripts/ci/publish-windows-native-aot.ps1 -OutputDirectory ./artifacts/local-win-x64
+powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\scripts\ci\publish-windows-native-aot.ps1 -OutputDirectory .\artifacts\local-win-x64
 ```
 
-发布目录包含 Native AOT `CodexFlow.Local.exe`、SQLite 原生库、`code-analysis/worker` 下的自包含托管 Roslyn Worker 和 `third-party-licenses`。Windows 桌面 CI 使用同一命令。Linux 和 macOS 桌面采用原有的自包含托管发布。
+桌面 CI 为 Windows x64、macOS arm64 和 Linux x64 严格发布 Native AOT 后端。发布目录包含原生 `CodexFlow.Local`（Windows 上为 `CodexFlow.Local.exe`）、SQLite 原生库、`code-analysis/worker` 下的自包含托管 Roslyn Worker 和 `third-party-licenses`。macOS 和 Linux 的发布任务还会验证包内后端启动及 Roslyn Worker 诊断。
 
-首次构建会下载锁定提交的 ExcelDataReader 和 Json.NET 官方源码归档，验证 SHA-256 后应用目录内的最小补丁。以后可复用校验通过的中间产物。补丁程序集只进入 Windows x64 Native AOT 主进程的链接输入。托管 Roslyn Worker 和 NuGet 消费者继续使用官方依赖。上游发布修复版后，更新锁定版本并通过同样的严格发布、网关契约、桌面启动和工具回归，再撤掉对应补丁。[补丁和版本锁](../CodexFlow.Local/NativeAotDependencies/)
+首次构建会下载锁定提交的 ExcelDataReader 和 Json.NET 官方源码归档，验证 SHA-256 后应用目录内的最小补丁。以后可复用校验通过的中间产物。补丁程序集仅用于桌面 Native AOT 主进程的链接。托管 Roslyn Worker 和 NuGet 消费者使用官方依赖。上游发布修复版后，更新锁定版本并通过同样的严格发布、网关契约、桌面启动和工具回归，再撤掉对应补丁。[补丁和版本锁](../CodexFlow.Local/NativeAotDependencies/)
 
 若发行出现回归，暂停当前版本分发，恢复上一份已验证安装包，必要时恢复数据库的升级前备份。
 
