@@ -9,6 +9,9 @@ $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSHOME 'Modules/Microsoft.PowerShell.Management')
 Import-Module (Join-Path $PSHOME 'Modules/Microsoft.PowerShell.Utility')
 
+$curl = (Get-Command curl -CommandType Application | Select-Object -First 1).Source
+$tar = (Get-Command tar -CommandType Application | Select-Object -First 1).Source
+
 function Invoke-Checked([string]$Executable, [string[]]$Arguments) {
     & $Executable @Arguments
     if ($LASTEXITCODE -ne 0) {
@@ -76,7 +79,7 @@ foreach ($dependency in $dependencies) {
     if (-not (Test-FileHash $archive $dependency.ArchiveSha256)) {
         $download = Join-Path $stage "$name.tar.gz"
         $uri = "https://codeload.github.com/$($dependency.Repository)/tar.gz/$($dependency.Commit)"
-        Invoke-Checked 'curl.exe' @('--fail', '--location', '--silent', '--show-error', '--retry', '2',
+        Invoke-Checked $curl @('--fail', '--location', '--silent', '--show-error', '--retry', '2',
             '--connect-timeout', '20', '--max-time', '120', '--output', $download, $uri)
         if (-not (Test-FileHash $download $dependency.ArchiveSha256)) {
             throw "The downloaded source archive for $name does not match its locked SHA-256."
@@ -86,7 +89,7 @@ foreach ($dependency in $dependencies) {
 
     $source = Join-Path $stage $name
     New-Item -ItemType Directory -Path $source | Out-Null
-    Invoke-Checked 'tar.exe' @('-xzf', $archive, '-C', $source, '--strip-components', '1')
+    Invoke-Checked $tar @('-xzf', $archive, '-C', $source, '--strip-components', '1')
     $patch = Join-Path $PSScriptRoot $dependency.Patch
     $previousGitCeiling = $env:GIT_CEILING_DIRECTORIES
     try {
