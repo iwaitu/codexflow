@@ -210,10 +210,12 @@ jobs:
         shell: bash
         run: |
           aot_args=()
-          if [ "${{ matrix.rid }}" = "osx-arm64" ]; then
-            aot_args=(-p:PublishAot=true -p:RuntimeFrameworkVersion=10.0.15 -p:TrimmerSingleWarn=false
-                      -p:TreatWarningsAsErrors=true -p:ILLinkTreatWarningsAsErrors=true -warnaserror)
-          fi
+          case "${{ matrix.rid }}" in
+            osx-arm64|linux-x64)
+              aot_args=(-p:PublishAot=true -p:RuntimeFrameworkVersion=10.0.15 -p:TrimmerSingleWarn=false
+                        -p:TreatWarningsAsErrors=true -p:ILLinkTreatWarningsAsErrors=true -warnaserror)
+              ;;
+          esac
           dotnet publish CodexFlow.Local/CodexFlow.Local.csproj \
             -c Release \
             -r "${{ matrix.rid }}" \
@@ -265,15 +267,19 @@ jobs:
           fi
           npx electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish never
 
-      - name: Verify macOS bundle signature, backend startup and Roslyn worker
-        if: matrix.platform == 'mac'
+      - name: Verify bundled backend startup and Roslyn worker on macOS and Linux
+        if: matrix.platform == 'mac' || matrix.platform == 'linux'
         shell: bash
         working-directory: clients/desktop
         run: |
-          app_path="dist/mac-${{ matrix.arch }}/CodexFlow Desktop.app"
-          test -d "$app_path"
-          codesign --verify --deep --strict --verbose=2 "$app_path"
-          backend_bin="$(pwd)/$app_path/Contents/Resources/backend/CodexFlow.Local"
+          if [ "${{ matrix.platform }}" = "mac" ]; then
+            app_path="dist/mac-${{ matrix.arch }}/CodexFlow Desktop.app"
+            test -d "$app_path"
+            codesign --verify --deep --strict --verbose=2 "$app_path"
+            backend_bin="$(pwd)/$app_path/Contents/Resources/backend/CodexFlow.Local"
+          else
+            backend_bin="$(pwd)/dist/linux-unpacked/resources/backend/CodexFlow.Local"
+          fi
           test -x "$backend_bin"
           smoke_dir="$(mktemp -d)"
           trap 'rm -rf "$smoke_dir"' EXIT
@@ -305,7 +311,7 @@ jobs:
               if (output.includes("CODEXFLOW_READY ")) {
                 clearTimeout(timer);
                 child.kill("SIGTERM");
-                console.log("Bundled macOS CodexFlow.Local reported CODEXFLOW_READY.");
+                console.log("Bundled CodexFlow.Local reported CODEXFLOW_READY.");
                 process.exit(0);
               }
             });
@@ -339,7 +345,7 @@ jobs:
             assert.equal(code, 0, 'Bundled Roslyn worker failed or timed out');
             assert.equal(reply?.id, 1);
             assert.ok(reply.diagnostics?.some(diagnostic => diagnostic.id === 'CS0029'));
-            console.log('Bundled macOS Roslyn worker returned CS0029.');
+            console.log('Bundled Roslyn worker returned CS0029.');
           });
           worker.stdin.write(JSON.stringify({
             version: 1, id: 1, referenceDirectory, code: 'class Probe { int Run() => "wrong"; }',

@@ -1,7 +1,7 @@
 <Project>
   <Target Name="PublishCodeAnalysisWorker"
           AfterTargets="Publish"
-          Condition="'$(PublishAot)' == 'true' and ('$(RuntimeIdentifier)' == 'win-x64' or '$(RuntimeIdentifier)' == 'osx-arm64')">
+          Condition="'$(PublishAot)' == 'true' and ('$(RuntimeIdentifier)' == 'win-x64' or '$(RuntimeIdentifier)' == 'osx-arm64' or '$(RuntimeIdentifier)' == 'linux-x64')">
     <PropertyGroup>
       <_WorkerProject>$(MSBuildThisFileDirectory)../CodexFlow.CodeAnalysis.Worker/CodexFlow.CodeAnalysis.Worker.csproj</_WorkerProject>
       <_WorkerArtifacts>$([System.IO.Path]::GetFullPath('$(BaseIntermediateOutputPath)code-analysis-worker', '$(MSBuildProjectDirectory)'))</_WorkerArtifacts>
