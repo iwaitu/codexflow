@@ -1,7 +1,7 @@
 <Project>
   <Target Name="PrepareNativeAotDependencyInputs"
           AfterTargets="ComputeIlcCompileInputs"
-          Condition="'$(PublishAot)' == 'true' and ('$(RuntimeIdentifier)' == 'win-x64' or '$(RuntimeIdentifier)' == 'osx-arm64')">
+          Condition="'$(PublishAot)' == 'true' and ('$(RuntimeIdentifier)' == 'win-x64' or '$(RuntimeIdentifier)' == 'osx-arm64' or '$(RuntimeIdentifier)' == 'linux-x64')">
     <PropertyGroup>
       <_NativeAotDependencyDirectory>$([System.IO.Path]::GetFullPath('$(IntermediateOutputPath)native-aot-dependencies', '$(MSBuildProjectDirectory)'))</_NativeAotDependencyDirectory>
       <_NativeAotDependencyShell>pwsh -NoLogo -NoProfile -NonInteractive</_NativeAotDependencyShell>
@@ -31,7 +31,7 @@
 
   <Target Name="PublishNativeAotDependencyLicenses"
           AfterTargets="Publish"
-          Condition="'$(PublishAot)' == 'true' and ('$(RuntimeIdentifier)' == 'win-x64' or '$(RuntimeIdentifier)' == 'osx-arm64')">
+          Condition="'$(PublishAot)' == 'true' and ('$(RuntimeIdentifier)' == 'win-x64' or '$(RuntimeIdentifier)' == 'osx-arm64' or '$(RuntimeIdentifier)' == 'linux-x64')">
     <ItemGroup>
       <_NativeAotDependencyLicense Include="$(_NativeAotDependencyDirectory)/ExcelDataReader.LICENSE.txt;$(_NativeAotDependencyDirectory)/Newtonsoft.Json.LICENSE.txt" />
     </ItemGroup>
