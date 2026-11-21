@@ -113,10 +113,10 @@ public sealed class MacOsComputerDriver : IComputerDriver
         MacOsComputerNative.MoveMouse(x, y);
     }
 
-    public void PerformMouseDrag(int startX, int startY, int endX, int endY, string button)
+    public void PerformMouseDrag(int startX, int startY, int endX, int endY, string button, CancellationToken ct)
     {
         EnsureAccessibility();
-        MacOsComputerNative.DragMouse(startX, startY, endX, endY, button);
+        MacOsComputerNative.DragMouse(startX, startY, endX, endY, button, ct);
     }
 
     public void PerformMouseScroll(int x, int y, int deltaX, int deltaY)

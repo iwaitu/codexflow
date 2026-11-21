@@ -59,7 +59,9 @@ internal static unsafe class Win32ComputerNative
 
     private const int WhKeyboardLl = 13;
     private const int WmKeyDown = 0x0100;
+    private const int WmKeyUp = 0x0101;
     private const int WmSysKeyDown = 0x0104;
+    private const int WmSysKeyUp = 0x0105;
     private const uint WmQuit = 0x0012;
     private const uint VkEscape = 0x1B;
     private const uint LlkhfInjected = 0x10;
@@ -76,7 +78,7 @@ internal static unsafe class Win32ComputerNative
     private static readonly object HookGate = new();
     private static Action<string>? s_activeInterruptCallback;
     private static nint s_activeHookHandle;
-    private static long s_lastPhysicalEscTicks;
+    private static PhysicalEscDoubleTapTracker s_escTaps;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct POINT
@@ -904,14 +906,15 @@ internal static unsafe class Win32ComputerNative
         SendInputArray([input]);
     }
 
-    public static void MouseClickAbsolute(int physX, int physY, string button, int clickCount)
+    public static void ClickAtCursor(int expectedX, int expectedY, string button, int clickCount)
     {
-        MoveMouseAbsolute(physX, physY);
+        if (!TryGetCursorPos(out var x, out var y) || x != expectedX || y != expectedY)
+        {
+            throw new InvalidOperationException("光标在点击前已离开确认位置，已取消点击。请重新截图后重试。");
+        }
+
         var (downFlag, upFlag) = ResolveMouseButtonFlags(button);
         var count = Math.Clamp(clickCount, 1, 3);
-
-        var (vLeft, vTop, vWidth, vHeight) = GetVirtualDesktopBounds();
-        var abs = CoordinateMapper.ToWin32VirtualDesktopAbsolute(physX, physY, vLeft, vTop, vWidth, vHeight);
 
         var inputs = new INPUT[count * 2];
         for (var i = 0; i < count; i++)
@@ -923,9 +926,7 @@ internal static unsafe class Win32ComputerNative
                 {
                     mi = new MOUSEINPUT
                     {
-                        dx = abs.NormalizedX,
-                        dy = abs.NormalizedY,
-                        dwFlags = downFlag | MouseEventfAbsolute | MouseEventfVirtualDesk
+                        dwFlags = downFlag
                     }
                 }
             };
@@ -936,9 +937,7 @@ internal static unsafe class Win32ComputerNative
                 {
                     mi = new MOUSEINPUT
                     {
-                        dx = abs.NormalizedX,
-                        dy = abs.NormalizedY,
-                        dwFlags = upFlag | MouseEventfAbsolute | MouseEventfVirtualDesk
+                        dwFlags = upFlag
                     }
                 }
             };
@@ -947,8 +946,9 @@ internal static unsafe class Win32ComputerNative
         SendInputArray(inputs);
     }
 
-    public static void MouseDragAbsolute(int startX, int startY, int endX, int endY, string button)
+    public static void MouseDragAbsolute(int startX, int startY, int endX, int endY, string button, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         using var dpiScope = EnterPerMonitorDpiScope();
         var (downFlag, upFlag) = ResolveMouseButtonFlags(button);
         var (vLeft, vTop, vWidth, vHeight) = GetVirtualDesktopBounds();
@@ -975,6 +975,7 @@ internal static unsafe class Win32ComputerNative
             const int steps = 10;
             for (var step = 1; step <= steps; step++)
             {
+                ct.ThrowIfCancellationRequested();
                 var ix = startX + (int)Math.Round((endX - startX) * (step / (double)steps));
                 var iy = startY + (int)Math.Round((endY - startY) * (step / (double)steps));
                 var abs = CoordinateMapper.ToWin32VirtualDesktopAbsolute(ix, iy, vLeft, vTop, vWidth, vHeight);
@@ -998,7 +999,6 @@ internal static unsafe class Win32ComputerNative
         }
         finally
         {
-            var endAbs = CoordinateMapper.ToWin32VirtualDesktopAbsolute(endX, endY, vLeft, vTop, vWidth, vHeight);
             SendInputArray([
                 new INPUT
                 {
@@ -1007,9 +1007,7 @@ internal static unsafe class Win32ComputerNative
                     {
                         mi = new MOUSEINPUT
                         {
-                            dx = endAbs.NormalizedX,
-                            dy = endAbs.NormalizedY,
-                            dwFlags = upFlag | MouseEventfAbsolute | MouseEventfVirtualDesk
+                        dwFlags = upFlag
                         }
                     }
                 }
@@ -1204,7 +1202,7 @@ internal static unsafe class Win32ComputerNative
 
     private sealed class Win32KeyboardHookMonitor : IDisposable
     {
-        private readonly ManualResetEventSlim _ready = new(false);
+        private readonly TaskCompletionSource<int> _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly Thread _pumpThread;
         private uint _pumpThreadId;
         private int _disposed;
@@ -1213,18 +1211,34 @@ internal static unsafe class Win32ComputerNative
         {
             _pumpThread = new Thread(() =>
             {
+                MSG msg;
+                // Create the message queue before publishing the thread ID to Dispose.
+                _ = PeekMessageW(&msg, 0, 0, 0, 0);
                 _pumpThreadId = GetCurrentThreadId();
-                nint hook = 0;
-                lock (HookGate)
+                if (Volatile.Read(ref _disposed) != 0)
                 {
-                    s_activeInterruptCallback = onPhysicalInterrupt;
-                    s_lastPhysicalEscTicks = 0;
-                    var hMod = GetModuleHandleW(null);
-                    hook = SetWindowsHookExW(WhKeyboardLl, &LowLevelKeyboardProc, hMod, 0);
-                    s_activeHookHandle = hook;
+                    return;
                 }
 
-                _ready.Set();
+                nint hook;
+                var error = 0;
+                lock (HookGate)
+                {
+                    var hMod = GetModuleHandleW(null);
+                    hook = SetWindowsHookExW(WhKeyboardLl, &LowLevelKeyboardProc, hMod, 0);
+                    if (hook != 0)
+                    {
+                        s_activeInterruptCallback = onPhysicalInterrupt;
+                        s_escTaps = default;
+                        s_activeHookHandle = hook;
+                    }
+                    else
+                    {
+                        error = Marshal.GetLastWin32Error();
+                    }
+                }
+
+                _ready.TrySetResult(hook != 0 ? 0 : Math.Max(1, error));
                 if (hook == 0)
                 {
                     return;
@@ -1232,8 +1246,7 @@ internal static unsafe class Win32ComputerNative
 
                 try
                 {
-                    MSG msg;
-                    while (GetMessageW(&msg, 0, 0, 0) > 0)
+                    while (Volatile.Read(ref _disposed) == 0 && GetMessageW(&msg, 0, 0, 0) > 0)
                     {
                         _ = TranslateMessage(&msg);
                         _ = DispatchMessageW(&msg);
@@ -1258,7 +1271,17 @@ internal static unsafe class Win32ComputerNative
                 Name = "CodexFlow-Win32-EscMonitor"
             };
             _pumpThread.Start();
-            _ready.Wait(TimeSpan.FromMilliseconds(500));
+            if (!_ready.Task.Wait(TimeSpan.FromMilliseconds(500)))
+            {
+                Dispose();
+                throw new TimeoutException("Timed out starting the Windows Esc monitor.");
+            }
+
+            if (_ready.Task.Result is > 0 and var error)
+            {
+                Dispose();
+                throw new Win32Exception(error, "Could not install the Windows Esc monitor.");
+            }
         }
 
         public void Dispose()
@@ -1274,32 +1297,30 @@ internal static unsafe class Win32ComputerNative
             }
 
             _pumpThread.Join(TimeSpan.FromMilliseconds(400));
-            _ready.Dispose();
         }
     }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvStdcall)])]
     private static nint LowLevelKeyboardProc(int nCode, nuint wParam, nint lParam)
     {
-        if (nCode >= 0 && (wParam == WmKeyDown || wParam == WmSysKeyDown) && lParam != 0)
+        if (nCode >= 0 && (wParam is WmKeyDown or WmSysKeyDown or WmKeyUp or WmSysKeyUp) && lParam != 0)
         {
             var kb = (KBDLLHOOKSTRUCT*)lParam;
-            if (kb->vkCode == VkEscape && (kb->flags & LlkhfInjected) == 0)
+            if (kb->vkCode == VkEscape)
             {
-                var now = Environment.TickCount64;
-                var prev = Interlocked.Exchange(ref s_lastPhysicalEscTicks, now);
-                if (prev > 0 && now - prev <= 450)
+                Action<string>? callback = null;
+                lock (HookGate)
                 {
-                    Interlocked.Exchange(ref s_lastPhysicalEscTicks, 0);
-                    var cb = s_activeInterruptCallback;
-                    if (cb is not null)
+                    if (s_escTaps.Observe(wParam is WmKeyDown or WmSysKeyDown,
+                            (kb->flags & LlkhfInjected) != 0, Environment.TickCount64))
                     {
-                        ThreadPool.QueueUserWorkItem(static state =>
-                        {
-                            var action = (Action<string>)state!;
-                            action("physical_double_esc");
-                        }, cb);
+                        callback = s_activeInterruptCallback;
                     }
+                }
+
+                if (callback is not null)
+                {
+                    ThreadPool.QueueUserWorkItem(static cb => cb("physical_double_esc"), callback, preferLocal: false);
                 }
             }
         }
@@ -1608,6 +1629,10 @@ internal static unsafe class Win32ComputerNative
     [DllImport("user32.dll")]
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     private static extern int GetMessageW(MSG* lpMsg, nint hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
+
+    [DllImport("user32.dll")]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static extern int PeekMessageW(MSG* lpMsg, nint hWnd, uint minMessage, uint maxMessage, uint removeMessage);
 
     [DllImport("user32.dll")]
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]

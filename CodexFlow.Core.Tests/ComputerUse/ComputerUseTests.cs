@@ -3,6 +3,7 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 using System.Buffers.Binary;
+using System.Diagnostics;
 using CodexFlow.Contracts.ComputerUse;
 using CodexFlow.Core.Agents;
 using CodexFlow.Core.Agents.Tools;
@@ -38,11 +39,21 @@ public sealed class ComputerUseTests
         public ModelSettingsView Update(ModelSettingsUpdate update) => Read();
     }
 
-    private sealed class FixedControlPlane(bool available = true) : IControlPlaneStateProvider
+    private sealed class FixedControlPlane(bool available = true, string tokenDeliveryMode = "Pipe") : IControlPlaneStateProvider
     {
         public bool IsControlPlaneAvailable => available;
         public bool SelfApprovalProtection => true;
-        public string TokenDeliveryMode => "Pipe";
+        public string TokenDeliveryMode => tokenDeliveryMode;
+    }
+
+    private sealed class TestStatePublisher(Action<ComputerSessionStateDto> publish) : IComputerStateEventPublisher
+    {
+        public ValueTask PublishStateUpdatedAsync(
+            string sessionId, ComputerSessionStateDto state, CancellationToken ct = default)
+        {
+            publish(state);
+            return ValueTask.CompletedTask;
+        }
     }
 
     private sealed class StubFreezeProbe(bool frozen) : IComputerSessionApprovalFreezeProbe
@@ -63,7 +74,14 @@ public sealed class ComputerUseTests
         public Func<ComputerWindowInfoDto?>? ForegroundWindowResolver { get; set; }
         public int CursorX { get; set; } = 100;
         public int CursorY { get; set; } = 100;
+        public bool CursorPositionAvailable { get; set; } = true;
         public List<string> ExecutedActions { get; } = [];
+        public Action? BeforeCapture { get; set; }
+        public Action<string>? PhysicalInterrupt { get; private set; }
+        public int StartedInterruptMonitors { get; private set; }
+        public Action? AfterMouseMove { get; set; }
+        public Action? BeforeMouseClick { get; set; }
+        public Action? DuringMouseDrag { get; set; }
 
         public ComputerDriverStatusDto GetStatus(string emergencyStopShortcut = "CommandOrControl+.")
             => new(true, "win-x64", "FakeComputerDriver", true, true, Displays.Count, "ok", null, emergencyStopShortcut);
@@ -82,7 +100,7 @@ public sealed class ComputerUseTests
         {
             x = CursorX;
             y = CursorY;
-            return true;
+            return CursorPositionAvailable;
         }
 
         public bool TryGetParentProcess(int pid, out int parentPid, out string? parentProcessName)
@@ -134,6 +152,7 @@ public sealed class ComputerUseTests
 
         public RawCapturedFrame CaptureRegion(int x, int y, int width, int height)
         {
+            BeforeCapture?.Invoke();
             var bgra = new byte[width * height * 4];
             for (var i = 0; i < bgra.Length; i += 4)
             {
@@ -154,8 +173,7 @@ public sealed class ComputerUseTests
 
         public void PerformMouseClick(int x, int y, string button, int clickCount)
         {
-            CursorX = x;
-            CursorY = y;
+            BeforeMouseClick?.Invoke();
             ExecutedActions.Add($"click:{button}:{clickCount}@{x},{y}");
         }
 
@@ -164,10 +182,13 @@ public sealed class ComputerUseTests
             CursorX = x;
             CursorY = y;
             ExecutedActions.Add($"move@{x},{y}");
+            AfterMouseMove?.Invoke();
         }
 
-        public void PerformMouseDrag(int startX, int startY, int endX, int endY, string button)
+        public void PerformMouseDrag(int startX, int startY, int endX, int endY, string button, CancellationToken ct)
         {
+            DuringMouseDrag?.Invoke();
+            ct.ThrowIfCancellationRequested();
             CursorX = endX;
             CursorY = endY;
             ExecutedActions.Add($"drag@{startX},{startY}->{endX},{endY}");
@@ -183,12 +204,15 @@ public sealed class ComputerUseTests
             => ExecutedActions.Add($"combo:{string.Join('+', keys)}");
 
         public IDisposable StartPhysicalInterruptMonitor(Action<string> onPhysicalInterrupt)
-            => NoopDisposable.Instance;
-
-        private sealed class NoopDisposable : IDisposable
         {
-            public static readonly NoopDisposable Instance = new();
-            public void Dispose() { }
+            StartedInterruptMonitors++;
+            PhysicalInterrupt = onPhysicalInterrupt;
+            return new InterruptMonitor(this);
+        }
+
+        private sealed class InterruptMonitor(FakeComputerDriver driver) : IDisposable
+        {
+            public void Dispose() => driver.PhysicalInterrupt = null;
         }
     }
 
@@ -226,7 +250,7 @@ public sealed class ComputerUseTests
     }
 
     [Fact]
-    public void VisualProcessor_MasksProtectedRectanglesDrawsOverlaysAndEncodesPngAndBmp()
+    public void VisualProcessor_DrawsOverlaysAndEncodesPngAndBmp()
     {
         const int w = 320;
         const int h = 240;
@@ -238,11 +262,6 @@ public sealed class ComputerUseTests
             bgra[i + 2] = 240;
             bgra[i + 3] = 255;
         }
-
-        ComputerVisualProcessor.ApplyProtectedRectMasks(bgra, w, h, [new ComputerProtectedRect(40, 40, 120, 80)]);
-        // Inside protected rectangle interior, original light pixel (240,240,240) must be completely overwritten.
-        var interiorIdx = (80 * w + 80) * 4;
-        Assert.True(bgra[interiorIdx] < 40 && bgra[interiorIdx + 1] < 40);
 
         ComputerVisualProcessor.DrawCoordinateGrid(bgra, w, h, ComputerCoordinateMode.Normalized1000);
         ComputerVisualProcessor.DrawCursorCrosshair(bgra, w, h, 200, 120);
@@ -261,6 +280,39 @@ public sealed class ComputerUseTests
         Assert.Equal(120, decoded[1]);
         Assert.Equal(230, decoded[2]);
         Assert.Equal(255, decoded[3]);
+    }
+
+    [Fact]
+    public async Task Screenshot_PreservesPixelsInProtectedWindowBoundsAndBlocksInputToHost()
+    {
+        const int width = 800;
+        const int height = 600;
+        var options = new StaticOptionsMonitor<ComputerOptions>(new()
+        {
+            AutoMinimizeHostWindow = false,
+            EnableGridOverlay = false
+        });
+        var driver = new FakeComputerDriver { CursorX = -1, CursorY = -1 };
+        driver.Displays.Clear();
+        driver.Displays.Add(new ComputerDisplayInfoDto("DISPLAY-1", true, 0, 0, width, height, width, height, 1.0));
+        var host = new ComputerWindowInfoDto("0x100", 4242, "electron", "CodexFlow", 0, 0, width, 560, false, true, false);
+        driver.Windows.Add(host);
+        var guard = new ComputerSecurityGuard(options, driver);
+        guard.RegisterProtectedWindows(host.ProcessId, [host.WindowHandle]);
+        await using var manager = new ComputerSessionManager(options, driver, guard,
+            NullLogger<ComputerSessionManager>.Instance);
+        var caller = new ComputerTrustedCallerContext("sess-visible-host", SessionWorkMode.Daily, PlanModeActive: false);
+
+        var raw = driver.CaptureRegion(0, 0, width, height);
+        var expected = ComputerVisualProcessor.EncodePng(raw.BgraBytes.Span, width, height);
+        var observed = await manager.CaptureScreenshotAsync(caller);
+
+        Assert.True(observed.Succeeded, observed.Output);
+        Assert.Equal(expected, Assert.IsType<ComputerScreenshotData>(observed.Screenshot).Bytes.ToArray());
+
+        var click = await manager.ActAsync(caller, new ComputerActRequest("click", X: 200, Y: 200, CoordinateSpace: "pixels"));
+        Assert.Equal("self_ui_interaction_forbidden", click.ErrorCode);
+        Assert.Empty(driver.ExecutedActions);
     }
 
     [Fact]
@@ -402,16 +454,8 @@ public sealed class ComputerUseTests
         var caller = new ComputerTrustedCallerContext("sess-toctou", SessionWorkMode.Daily, PlanModeActive: false);
         var actTask = manager.ActAsync(caller, new ComputerActRequest("click", X: 300, Y: 300));
 
-        // Wait briefly for pending approval registration.
-        ComputerApprovalRequestDto? pending = null;
-        for (var i = 0; i < 40 && pending is null; i++)
-        {
-            pending = coordinator.GetPendingApprovalsForSession("sess-toctou").FirstOrDefault();
-            if (pending is null) await Task.Delay(25);
-        }
-
-        Assert.NotNull(pending);
-        Assert.Equal(["allow_once", "deny"], pending!.AllowedDecisions);
+        var pending = Assert.Single(coordinator.GetPendingApprovalsForSession(caller.SessionId));
+        Assert.Equal(["allow_once", "deny"], pending.AllowedDecisions);
 
         // AlwaysAsk forbids allow_session.
         var rejectSessionScope = await coordinator.TrySubmitDecisionAsync(
@@ -435,6 +479,394 @@ public sealed class ComputerUseTests
         var actResult = await actTask;
         Assert.False(actResult.Succeeded);
         Assert.Equal("toctou_window_drift", actResult.ErrorCode);
+        Assert.Empty(driver.ExecutedActions);
+    }
+
+    [Theory]
+    [InlineData("Pipe", true, ExecutionPermissionMode.FullAuto, null)]
+    [InlineData("File", true, ExecutionPermissionMode.FullAuto, "control_plane_unavailable")]
+    [InlineData("Pipe", false, ExecutionPermissionMode.FullAuto, "control_plane_unavailable")]
+    [InlineData("Pipe", true, ExecutionPermissionMode.Deny, "execution_permission_denied")]
+    public async Task Act_UsesEffectiveExecutionModeForManagedDesktop(
+        string delivery, bool available, ExecutionPermissionMode mode, string? expectedError)
+    {
+        var options = new StaticOptionsMonitor<ComputerOptions>(new()
+        {
+            CoordinateMode = ComputerCoordinateMode.ScreenshotPixels,
+            MaxImageLongEdge = 1920
+        });
+        var driver = new FakeComputerDriver();
+        var target = new ComputerWindowInfoDto("0x300", 7777, "notepad", "Notes", 0, 0, 1200, 900, false, true, false);
+        driver.Windows.Add(target);
+        var guard = new ComputerSecurityGuard(options, driver);
+        await using var manager = new ComputerSessionManager(options, driver, guard,
+            NullLogger<ComputerSessionManager>.Instance,
+            controlPlane: new FixedControlPlane(available, delivery),
+            executionOptions: new StaticOptionsMonitor<ExecutionOptions>(new() { PermissionMode = mode }));
+
+        var caller = new ComputerTrustedCallerContext("sess-policy", SessionWorkMode.Daily, PlanModeActive: false);
+        var result = await manager.ActAsync(caller, new ComputerActRequest("click", X: 72, Y: 61));
+        Assert.Equal(expectedError, result.ErrorCode);
+        Assert.Equal(expectedError is null, result.Succeeded);
+        if (expectedError is null)
+        {
+            Assert.Equal(["move@72,61", "click:left:1@72,61"], driver.ExecutedActions);
+            driver.WindowAtPointResolver = (_, _) => target with { ProcessName = "keepass" };
+            var blocked = await manager.ActAsync(caller, new ComputerActRequest("click", X: 72, Y: 61));
+            Assert.Equal("blocked_sensitive_application", blocked.ErrorCode);
+            Assert.Equal(2, driver.ExecutedActions.Count);
+        }
+        else
+        {
+            Assert.Empty(driver.ExecutedActions);
+        }
+    }
+
+    [Theory]
+    [InlineData(250, true, null)]
+    [InlineData(100, true, "cursor_position_mismatch")]
+    [InlineData(250, false, "cursor_position_unavailable")]
+    public async Task Act_ReportsMoveSuccessOnlyWhenCursorReachesTarget(
+        int actualX, bool cursorPositionAvailable, string? expectedError)
+    {
+        var options = new StaticOptionsMonitor<ComputerOptions>(new() { MaxImageLongEdge = 1920 });
+        var driver = new FakeComputerDriver();
+        driver.AfterMouseMove = () =>
+        {
+            driver.CursorX = actualX;
+            driver.CursorPositionAvailable = cursorPositionAvailable;
+        };
+        var guard = new ComputerSecurityGuard(options, driver);
+        await using var manager = new ComputerSessionManager(options, driver, guard,
+            NullLogger<ComputerSessionManager>.Instance, controlPlane: new FixedControlPlane(),
+            executionOptions: new StaticOptionsMonitor<ExecutionOptions>(new() { PermissionMode = ExecutionPermissionMode.FullAuto }));
+
+        var caller = new ComputerTrustedCallerContext("sess-move-verification", SessionWorkMode.Daily, PlanModeActive: false);
+        var result = await manager.ActAsync(caller,
+            new ComputerActRequest("move", X: 250, Y: 250, CoordinateSpace: "pixels"));
+
+        Assert.Equal(expectedError, result.ErrorCode);
+        Assert.Equal(expectedError is null, result.Succeeded);
+        Assert.Equal("move@250,250", Assert.Single(driver.ExecutedActions));
+        if (expectedError is not null)
+        {
+            Assert.Contains("目标 (250, 250)", result.Output);
+            Assert.Contains("computer_request_takeover", result.Output);
+            Assert.Null(result.Screenshot);
+        }
+        if (expectedError == "cursor_position_mismatch")
+        {
+            Assert.Contains("实际位置 (100, 250)", result.Output);
+        }
+    }
+
+    [Fact]
+    public async Task Act_WaitsAfterMovingBeforeClicking()
+    {
+        var options = new StaticOptionsMonitor<ComputerOptions>(new() { MaxImageLongEdge = 1920 });
+        var driver = new FakeComputerDriver();
+        var movedAt = 0L;
+        var settleTime = TimeSpan.Zero;
+        driver.AfterMouseMove = () => movedAt = Stopwatch.GetTimestamp();
+        driver.BeforeMouseClick = () => settleTime = Stopwatch.GetElapsedTime(movedAt);
+        var guard = new ComputerSecurityGuard(options, driver);
+        await using var manager = new ComputerSessionManager(options, driver, guard,
+            NullLogger<ComputerSessionManager>.Instance, controlPlane: new FixedControlPlane(),
+            executionOptions: new StaticOptionsMonitor<ExecutionOptions>(new() { PermissionMode = ExecutionPermissionMode.FullAuto }));
+
+        var caller = new ComputerTrustedCallerContext("sess-click-pacing", SessionWorkMode.Daily, PlanModeActive: false);
+        var result = await manager.ActAsync(caller,
+            new ComputerActRequest("right_click", X: 250, Y: 250, CoordinateSpace: "pixels"));
+
+        Assert.True(result.Succeeded, result.Output);
+        Assert.Equal(["move@250,250", "click:right:1@250,250"], driver.ExecutedActions);
+        Assert.True(settleTime.TotalMilliseconds >= 45, $"Only waited {settleTime.TotalMilliseconds}ms.");
+    }
+
+    [Theory]
+    [InlineData("cursor_position_mismatch")]
+    [InlineData("toctou_window_drift")]
+    [InlineData("execution_permission_changed")]
+    public async Task Act_AbortsClickWhenStateChangesAfterMoving(string expectedError)
+    {
+        var options = new StaticOptionsMonitor<ComputerOptions>(new() { MaxImageLongEdge = 1920 });
+        var driver = new FakeComputerDriver();
+        var target = new ComputerWindowInfoDto("0x310", 7777, "notepad", "Notes", 0, 0, 1200, 900, false, true, false);
+        driver.Windows.Add(target);
+        var execution = new ExecutionOptions { PermissionMode = ExecutionPermissionMode.FullAuto };
+        driver.AfterMouseMove = () =>
+        {
+            switch (expectedError)
+            {
+                case "cursor_position_mismatch":
+                    driver.CursorX = 100;
+                    break;
+                case "toctou_window_drift":
+                    driver.WindowAtPointResolver = (_, _) => target with { WindowHandle = "0x320" };
+                    break;
+                case "execution_permission_changed":
+                    execution.PermissionMode = ExecutionPermissionMode.Ask;
+                    break;
+            }
+        };
+        var guard = new ComputerSecurityGuard(options, driver);
+        await using var manager = new ComputerSessionManager(options, driver, guard,
+            NullLogger<ComputerSessionManager>.Instance, controlPlane: new FixedControlPlane(),
+            executionOptions: new StaticOptionsMonitor<ExecutionOptions>(execution));
+
+        var caller = new ComputerTrustedCallerContext("sess-click-revalidate", SessionWorkMode.Daily, PlanModeActive: false);
+        var result = await manager.ActAsync(caller,
+            new ComputerActRequest("click", X: 250, Y: 250, CoordinateSpace: "pixels"));
+
+        Assert.Equal(expectedError, result.ErrorCode);
+        Assert.Equal("move@250,250", Assert.Single(driver.ExecutedActions));
+    }
+
+    [Fact]
+    public void PhysicalEscDoubleTap_IgnoresInjectedEventsAndKeyRepeat()
+    {
+        var tracker = new PhysicalEscDoubleTapTracker();
+        Assert.False(tracker.Observe(pressed: true, injected: true, timestampMs: 100));
+        Assert.False(tracker.Observe(pressed: true, injected: false, timestampMs: 110));
+        Assert.False(tracker.Observe(pressed: false, injected: true, timestampMs: 150));
+        Assert.False(tracker.Observe(pressed: true, injected: false, timestampMs: 160));
+        Assert.False(tracker.Observe(pressed: false, injected: false, timestampMs: 200));
+        Assert.False(tracker.Observe(pressed: true, injected: false, timestampMs: 600));
+        Assert.False(tracker.Observe(pressed: false, injected: false, timestampMs: 650));
+        Assert.True(tracker.Observe(pressed: true, injected: false, timestampMs: 800));
+    }
+
+    [Fact]
+    public async Task DesktopLease_HandlesPhysicalStopBetweenActionsAndIgnoresOldCallback()
+    {
+        var options = new StaticOptionsMonitor<ComputerOptions>(new());
+        var driver = new FakeComputerDriver();
+        var published = new List<ComputerSessionStateDto>();
+        await using var manager = new ComputerSessionManager(options, driver, new ComputerSecurityGuard(options, driver),
+            NullLogger<ComputerSessionManager>.Instance, statePublisher: new TestStatePublisher(published.Add));
+        var caller = new ComputerTrustedCallerContext("esc-between-actions", SessionWorkMode.Daily, PlanModeActive: false);
+        var other = caller with { SessionId = "next-lease-owner" };
+
+        Assert.True((await manager.CaptureScreenshotAsync(caller)).Succeeded);
+        var stoppedLease = Assert.IsType<Action<string>>(driver.PhysicalInterrupt);
+        Assert.True((await manager.CaptureScreenshotAsync(caller)).Succeeded);
+        Assert.Same(stoppedLease, driver.PhysicalInterrupt);
+        Assert.Equal(1, driver.StartedInterruptMonitors);
+
+        stoppedLease("physical_double_esc");
+        Assert.True(published[^1].EmergencyStopped);
+        Assert.False(published[^1].Active);
+        Assert.Null(driver.PhysicalInterrupt);
+        Assert.Equal("emergency_stopped", (await manager.CaptureScreenshotAsync(caller)).ErrorCode);
+        Assert.Equal("emergency_stopped", (await manager.GetScreenInfoAsync(caller, unpin: true)).ErrorCode);
+        Assert.Equal("emergency_stopped", (await manager.ActAsync(caller, new ComputerActRequest("wait"))).ErrorCode);
+        Assert.True((await manager.CaptureScreenshotAsync(other)).Succeeded);
+        Assert.True(manager.GetSessionState(other.SessionId).Active);
+
+        var previousLease = Assert.IsType<Action<string>>(driver.PhysicalInterrupt);
+        await manager.EndTurnAsync(other.SessionId);
+        Assert.False(published[^1].Active);
+        Assert.Equal("idle", published[^1].Status);
+        Assert.Null(driver.PhysicalInterrupt);
+
+        manager.ResetEmergencyStopForNewTurn(caller.SessionId);
+        Assert.True((await manager.CaptureScreenshotAsync(caller)).Succeeded);
+        previousLease("physical_double_esc");
+        stoppedLease("physical_double_esc");
+        Assert.True(manager.GetSessionState(caller.SessionId).Active);
+        Assert.False(manager.GetSessionState(caller.SessionId).EmergencyStopped);
+    }
+
+    [Fact]
+    public async Task PhysicalStop_CancelsWaitAndReleasesLease()
+    {
+        var options = new StaticOptionsMonitor<ComputerOptions>(new());
+        var driver = new FakeComputerDriver();
+        await using var manager = new ComputerSessionManager(options, driver, new ComputerSecurityGuard(options, driver),
+            NullLogger<ComputerSessionManager>.Instance);
+        var caller = new ComputerTrustedCallerContext("esc-during-wait", SessionWorkMode.Daily, PlanModeActive: false);
+
+        var waiting = manager.ActAsync(caller, new ComputerActRequest("wait", DurationMs: 15_000));
+        Assert.False(waiting.IsCompleted);
+        Assert.IsType<Action<string>>(driver.PhysicalInterrupt)("physical_double_esc");
+
+        Assert.Equal("emergency_stopped", (await waiting.WaitAsync(TimeSpan.FromSeconds(2))).ErrorCode);
+        Assert.Null(driver.PhysicalInterrupt);
+        Assert.True((await manager.CaptureScreenshotAsync(caller with { SessionId = "after-wait" })).Succeeded);
+    }
+
+    [Fact]
+    public async Task PhysicalStop_CancelsPendingApprovalAndPreventsInput()
+    {
+        var options = new StaticOptionsMonitor<ComputerOptions>(new());
+        var driver = new FakeComputerDriver();
+        var controlPlane = new FixedControlPlane();
+        var coordinator = new ComputerApprovalCoordinator(NullLogger<ComputerApprovalCoordinator>.Instance,
+            gateway: null, controlPlane);
+        await using var manager = new ComputerSessionManager(options, driver, new ComputerSecurityGuard(options, driver),
+            NullLogger<ComputerSessionManager>.Instance, approvalCoordinator: coordinator, controlPlane: controlPlane);
+        var caller = new ComputerTrustedCallerContext("esc-during-approval", SessionWorkMode.Daily, PlanModeActive: false);
+
+        var waiting = manager.ActAsync(caller, new ComputerActRequest("click", X: 100, Y: 100));
+        Assert.Single(coordinator.GetPendingApprovalsForSession(caller.SessionId));
+        Assert.IsType<Action<string>>(driver.PhysicalInterrupt)("physical_double_esc");
+
+        Assert.Equal("emergency_stopped", (await waiting.WaitAsync(TimeSpan.FromSeconds(2))).ErrorCode);
+        Assert.Empty(coordinator.GetPendingApprovalsForSession(caller.SessionId));
+        Assert.Empty(driver.ExecutedActions);
+        Assert.Null(driver.PhysicalInterrupt);
+    }
+
+    [Fact]
+    public async Task PhysicalStop_KeepsLeaseUntilInterruptedDragReturns()
+    {
+        var options = new StaticOptionsMonitor<ComputerOptions>(new());
+        var driver = new FakeComputerDriver();
+        await using var manager = new ComputerSessionManager(options, driver, new ComputerSecurityGuard(options, driver),
+            NullLogger<ComputerSessionManager>.Instance, controlPlane: new FixedControlPlane(),
+            executionOptions: new StaticOptionsMonitor<ExecutionOptions>(new() { PermissionMode = ExecutionPermissionMode.FullAuto }));
+        var caller = new ComputerTrustedCallerContext("esc-during-drag", SessionWorkMode.Daily, PlanModeActive: false);
+        var other = caller with { SessionId = "after-interrupted-drag" };
+        Task<ComputerOperationResult>? competing = null;
+        driver.DuringMouseDrag = () =>
+        {
+            Assert.IsType<Action<string>>(driver.PhysicalInterrupt)("physical_double_esc");
+            competing = manager.CaptureScreenshotAsync(other);
+        };
+
+        var result = await manager.ActAsync(caller, new ComputerActRequest("drag", X: 100, Y: 100, EndX: 200, EndY: 200));
+
+        Assert.Equal("emergency_stopped", result.ErrorCode);
+        Assert.NotNull(competing);
+        Assert.Equal("desktop_busy_by_other_session", (await competing).ErrorCode);
+        Assert.True((await manager.CaptureScreenshotAsync(other)).Succeeded);
+    }
+
+    [Fact]
+    public async Task Act_AbortsBeforeInputWhenFullAutoIsRevoked()
+    {
+        var options = new StaticOptionsMonitor<ComputerOptions>(new() { AutoMinimizeHostWindow = true, MaxImageLongEdge = 1920 });
+        var driver = new FakeComputerDriver();
+        var guard = new ComputerSecurityGuard(options, driver);
+        var execution = new ExecutionOptions { PermissionMode = ExecutionPermissionMode.FullAuto };
+        var targetChecks = 0;
+        driver.WindowAtPointResolver = (x, y) =>
+        {
+            if (x == 20 && y == 20 && ++targetChecks == 2)
+            {
+                execution.PermissionMode = ExecutionPermissionMode.Ask;
+            }
+
+            return null;
+        };
+        await using var manager = new ComputerSessionManager(options, driver, guard,
+            NullLogger<ComputerSessionManager>.Instance, controlPlane: new FixedControlPlane(),
+            executionOptions: new StaticOptionsMonitor<ExecutionOptions>(execution));
+
+        var caller = new ComputerTrustedCallerContext("sess-tightened", SessionWorkMode.Daily, PlanModeActive: false);
+        var result = await manager.ActAsync(caller, new ComputerActRequest("click", X: 20, Y: 20, CoordinateSpace: "pixels"));
+
+        Assert.Equal("execution_permission_changed", result.ErrorCode);
+        Assert.Empty(driver.ExecutedActions);
+    }
+
+    [Theory]
+    [InlineData("click", false)]
+    [InlineData("type_text", false)]
+    [InlineData("click", true)]
+    public async Task ApprovalPointerMovement_UsesOriginalTargetAndKeepsHostAwayThroughInput(
+        string action, bool moveAfterApproval)
+    {
+        var options = new StaticOptionsMonitor<ComputerOptions>(new()
+        {
+            CoordinateMode = ComputerCoordinateMode.ScreenshotPixels,
+            MaxImageLongEdge = 1920
+        });
+        var driver = new FakeComputerDriver();
+        var host = new ComputerWindowInfoDto("0x100", 4242, "electron", "CodexFlow", 0, 0, 850, 850, false, true, true);
+        var target = new ComputerWindowInfoDto("0x300", 7777, "notepad", "Notes", 0, 0, 1200, 900, false, true, false);
+        var hostVisible = false;
+        driver.WindowAtPointResolver = (_, _) => hostVisible ? host : target;
+        driver.ForegroundWindowResolver = () => hostVisible ? host : target;
+        var publisher = new TestStatePublisher(state =>
+        {
+            hostVisible = !state.HostWindowAvoidanceRequested;
+            if (!hostVisible && moveAfterApproval) driver.CursorX = 1100;
+        });
+        var controlPlane = new FixedControlPlane();
+        var coordinator = new ComputerApprovalCoordinator(NullLogger<ComputerApprovalCoordinator>.Instance,
+            gateway: null, controlPlane);
+        var guard = new ComputerSecurityGuard(options, driver);
+        guard.RegisterProtectedWindows(host.ProcessId, [host.WindowHandle]);
+        await using var manager = new ComputerSessionManager(options, driver, guard,
+            NullLogger<ComputerSessionManager>.Instance, approvalCoordinator: coordinator,
+            statePublisher: publisher, controlPlane: controlPlane);
+
+        var caller = new ComputerTrustedCallerContext("sess-pointer", SessionWorkMode.Daily, PlanModeActive: false);
+        var request = new ComputerActRequest(action, X: 170, Y: 185, Text: "hello");
+        var actTask = manager.ActAsync(caller, request);
+        var approval = Assert.Single(coordinator.GetPendingApprovalsForSession(caller.SessionId));
+
+        // The user clicks the approval card far from the requested target, and the chat window takes focus.
+        hostVisible = true;
+        driver.CursorX = 810;
+        driver.CursorY = 615;
+        var echoesWhileHidden = false;
+        driver.BeforeCapture = () => echoesWhileHidden = !hostVisible;
+        var decision = await coordinator.TrySubmitDecisionAsync(approval.ApprovalId, approval.RequestDigest,
+            ExecutionApprovalDecisionKind.AllowOnce, "user", null);
+        Assert.Equal(ApprovalSubmissionOutcome.Resolved, decision!.Outcome);
+
+        var result = await actTask;
+        Assert.True(hostVisible);
+        if (moveAfterApproval)
+        {
+            Assert.Equal("physical_mouse_override_detected", result.ErrorCode);
+            Assert.Empty(driver.ExecutedActions);
+            Assert.False(echoesWhileHidden);
+        }
+        else
+        {
+            Assert.True(result.Succeeded, result.Output);
+            if (action == "click")
+            {
+                Assert.Equal(["move@170,185", "click:left:1@170,185"], driver.ExecutedActions);
+            }
+            else
+            {
+                Assert.Equal("type:hello", Assert.Single(driver.ExecutedActions));
+            }
+            Assert.True(echoesWhileHidden);
+        }
+    }
+
+    [Fact]
+    public async Task ApprovalRejectsDragWhenOnlyDestinationMoves()
+    {
+        var options = new StaticOptionsMonitor<ComputerOptions>(new()
+        {
+            CoordinateMode = ComputerCoordinateMode.ScreenshotPixels,
+            MaxImageLongEdge = 1920
+        });
+        var driver = new FakeComputerDriver();
+        var start = new ComputerWindowInfoDto("0x300", 7777, "notepad", "Notes", 0, 0, 600, 900, false, true, false);
+        var end = new ComputerWindowInfoDto("0x400", 8888, "calc", "Calculator", 600, 0, 600, 900, false, false, false);
+        driver.WindowAtPointResolver = (x, _) => x < 600 ? start : end;
+        var controlPlane = new FixedControlPlane();
+        var coordinator = new ComputerApprovalCoordinator(NullLogger<ComputerApprovalCoordinator>.Instance,
+            gateway: null, controlPlane);
+        var guard = new ComputerSecurityGuard(options, driver);
+        await using var manager = new ComputerSessionManager(options, driver, guard,
+            NullLogger<ComputerSessionManager>.Instance, approvalCoordinator: coordinator, controlPlane: controlPlane);
+
+        var caller = new ComputerTrustedCallerContext("sess-drag", SessionWorkMode.Daily, PlanModeActive: false);
+        var task = manager.ActAsync(caller, new ComputerActRequest("drag", X: 120, Y: 145, EndX: 720, EndY: 145));
+        var approval = Assert.Single(coordinator.GetPendingApprovalsForSession(caller.SessionId));
+        end = end with { X = 630 };
+        await coordinator.TrySubmitDecisionAsync(approval.ApprovalId, approval.RequestDigest,
+            ExecutionApprovalDecisionKind.AllowOnce, "user", null);
+
+        Assert.Equal("toctou_window_drift", (await task).ErrorCode);
         Assert.Empty(driver.ExecutedActions);
     }
 

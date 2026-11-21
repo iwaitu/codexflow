@@ -53,11 +53,12 @@ public interface IComputerDriver
 
     byte[] EncodeScreenshot(ReadOnlySpan<byte> bgra, int width, int height, out string mimeType);
 
+    /// <summary>Sends button events after the caller has moved the pointer to the specified point.</summary>
     void PerformMouseClick(int x, int y, string button, int clickCount);
 
     void PerformMouseMove(int x, int y);
 
-    void PerformMouseDrag(int startX, int startY, int endX, int endY, string button);
+    void PerformMouseDrag(int startX, int startY, int endX, int endY, string button, CancellationToken ct);
 
     void PerformMouseScroll(int x, int y, int deltaX, int deltaY);
 

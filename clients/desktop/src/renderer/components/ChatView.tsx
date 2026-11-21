@@ -234,6 +234,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
     el.scrollTop = el.scrollHeight;
   };
 
+  const activeToolCalls = toolCalls.filter((tool) => tool.status === 'called' || tool.status === 'running');
+
   return (
     <div className="relative flex-1 overflow-hidden">
       {searchOpen && (
@@ -486,10 +488,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
       {(isTurnRunning || streamingContent || streamingThinking) && (
         <div className="mt-3 space-y-3">
-          {isTurnRunning && toolCalls.length > 0 && (
+          {isTurnRunning && activeToolCalls.length > 0 && (
             <div className="space-y-2">
-              {toolCalls.map((t) => (
-                <ToolCallCard key={t.key} tool={t} />
+              {activeToolCalls.map((tool) => (
+                <ToolCallCard key={tool.key} tool={tool} />
               ))}
             </div>
           )}

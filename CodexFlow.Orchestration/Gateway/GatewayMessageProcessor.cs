@@ -1015,7 +1015,24 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                             turnPolicy.PlanModeActive,
                             session?.WorkspacePath))
                     : null;
-                (answer, usedRuntime) = await StreamWithToolLoopAsync(chatMessages, chatOptions, message, session, TrackedEmitAsync, ct);
+                try
+                {
+                    (answer, usedRuntime) = await StreamWithToolLoopAsync(chatMessages, chatOptions, message, session, TrackedEmitAsync, ct);
+                }
+                finally
+                {
+                    if (message.Source == GatewayMessageSource.UserChat && _computerSessionManager is { } computer)
+                    {
+                        try
+                        {
+                            await computer.EndTurnAsync(message.SessionId, CancellationToken.None);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "Failed to release Computer Use after turn {MessageId}", message.MessageId);
+                        }
+                    }
+                }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -1050,6 +1067,25 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                         "",
                         persistedThinking);
                 }
+                throw;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                try
+                {
+                    if (BuildPersistedToolEnvelope() is { } failedTurnHistory)
+                    {
+                        await _chatService.AddMessageWithToolcall(
+                            message.UserId, conversationId!, userContent, streamedAnswer.ToString(),
+                            0, failedTurnHistory, "codex-v2", message.Meta.ReplyId ?? "", "",
+                            streamedThinking.Length > 0 ? streamedThinking.ToString() : null);
+                    }
+                }
+                catch (Exception saveError)
+                {
+                    _logger.LogWarning(saveError, "Failed to persist tool history for failed turn {MessageId}", message.MessageId);
+                }
+
                 throw;
             }
         }

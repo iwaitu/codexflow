@@ -8,16 +8,9 @@ using System.IO.Compression;
 
 namespace CodexFlow.Core.ComputerUse;
 
-public readonly record struct ComputerProtectedRect(
-    int X,
-    int Y,
-    int Width,
-    int Height,
-    string Label = "CODEXFLOW PROTECTED");
-
 /// <summary>
 /// Pure managed BGRA32 image processing pipeline: bilinear resize, coordinate grid ruler,
-/// dual-tone cursor crosshair, action echo reticle/drag arrow, self-UI/sensitive occlusion masking,
+/// dual-tone cursor crosshair, action echo reticle/drag arrow,
 /// BMP24/32 decoder, and zero-dependency PNG encoder (Native AOT safe, 100% cross-platform testable).
 /// </summary>
 public static class ComputerVisualProcessor
@@ -89,45 +82,6 @@ public static class ComputerVisualProcessor
         }
 
         return dst;
-    }
-
-    public static void ApplyProtectedRectMasks(
-        Span<byte> bgra,
-        int width,
-        int height,
-        IReadOnlyList<ComputerProtectedRect> rects)
-    {
-        ArgumentNullException.ThrowIfNull(rects);
-        if (width <= 0 || height <= 0 || bgra.Length < checked(width * height * 4))
-        {
-            return;
-        }
-
-        foreach (var rect in rects)
-        {
-            var x0 = Math.Max(0, rect.X);
-            var y0 = Math.Max(0, rect.Y);
-            var x1 = Math.Min(width, rect.X + rect.Width);
-            var y1 = Math.Min(height, rect.Y + rect.Height);
-            if (x1 <= x0 || y1 <= y0)
-            {
-                continue;
-            }
-
-            FillRect(bgra, width, height, x0, y0, x1 - x0, y1 - y0, 14, 14, 18);
-            DrawRectOutline(bgra, width, height, x0, y0, x1 - x0, y1 - y0, 2, 60, 76, 231);
-
-            var label = string.IsNullOrWhiteSpace(rect.Label) ? "CODEXFLOW PROTECTED" : rect.Label.Trim();
-            if (x1 - x0 >= 32 && y1 - y0 >= 16)
-            {
-                var scale = (x1 - x0) >= 240 ? 2 : 1;
-                var textW = MeasureTextWidth(label, scale);
-                var textH = 7 * scale;
-                var tx = x0 + Math.Max(6, ((x1 - x0) - textW) / 2);
-                var ty = y0 + Math.Max(6, ((y1 - y0) - textH) / 2);
-                DrawText(bgra, width, height, tx, ty, label, scale, 240, 244, 255);
-            }
-        }
     }
 
     public static void DrawCoordinateGrid(
@@ -449,14 +403,6 @@ public static class ComputerVisualProcessor
                 SetPixel(bgra, width, x, y, b, g, r);
             }
         }
-    }
-
-    private static void DrawRectOutline(Span<byte> bgra, int width, int height, int rx, int ry, int rw, int rh, int thickness, byte b, byte g, byte r)
-    {
-        FillRect(bgra, width, height, rx, ry, rw, thickness, b, g, r);
-        FillRect(bgra, width, height, rx, ry + rh - thickness, rw, thickness, b, g, r);
-        FillRect(bgra, width, height, rx, ry, thickness, rh, b, g, r);
-        FillRect(bgra, width, height, rx + rw - thickness, ry, thickness, rh, b, g, r);
     }
 
     private static void BlendVerticalLine(Span<byte> bgra, int width, int height, int x, int y0, int y1, byte b, byte g, byte r, float alpha)

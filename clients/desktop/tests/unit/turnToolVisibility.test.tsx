@@ -16,7 +16,6 @@ function createSampleToolCalls(): UiToolCall[] {
       outputStderr: '',
       outputTruncated: false,
       suppressedLines: 0,
-      result: 'ok',
     },
     {
       key: 'call-2',
@@ -27,7 +26,6 @@ function createSampleToolCalls(): UiToolCall[] {
       outputStderr: '',
       outputTruncated: false,
       suppressedLines: 0,
-      result: '0',
     },
   ];
 }
@@ -78,20 +76,26 @@ describe('turn tool visibility lifecycle', () => {
     const afterDone = useAppStore.getState();
     expect(afterDone.isTurnRunning).toBe(false);
     expect(afterDone.toolCalls).toEqual([]);
-    expect(afterDone.messages.some((m) => m.role === 'assistant' && m.content === '实测完成')).toBe(true);
+    const answer = afterDone.messages.find((m) => m.role === 'assistant' && m.content === '实测完成');
+    expect(answer).toBeDefined();
+    expect(answer).not.toHaveProperty('toolHistory');
   });
 
-  it('clears tool calls when SSE error terminates a turn', () => {
+  it('keeps the turn error notice without creating a tool history message', () => {
     const store = useAppStore.getState();
 
     store.applySseEvent({
-      id: 10,
+      id: 9,
       event: 'tool_started',
       data: { callId: 'c-err', name: 'run_shell' },
     });
+    store.applySseEvent({
+      id: 10,
+      event: 'task_status',
+      data: { type: 'tool_result', callId: 'c-err', name: 'run_shell', success: false, result: 'process failed' },
+    });
     expect(useAppStore.getState().isTurnRunning).toBe(true);
     expect(useAppStore.getState().toolCalls).toHaveLength(1);
-
     store.applySseEvent({
       id: 11,
       event: 'error',
@@ -101,10 +105,29 @@ describe('turn tool visibility lifecycle', () => {
     const afterError = useAppStore.getState();
     expect(afterError.isTurnRunning).toBe(false);
     expect(afterError.toolCalls).toEqual([]);
+    expect(afterError.messages).toEqual([]);
+    expect(afterError.turnNotice).toBe('模型调用失败');
   });
 
-  it('renders ToolCallCard only while isTurnRunning is true and hides stale snapshot tool calls after turn finishes', () => {
-    const toolCalls = createSampleToolCalls();
+  it('clears cancelled tools without creating a tool history message', () => {
+    const store = useAppStore.getState();
+    store.applySseEvent({
+      id: 20, event: 'tool_started', data: { callId: 'c-cancel', name: 'computer_act' },
+    });
+    store.applySseEvent({ id: 21, event: 'done', data: { source: 'cancelled' } });
+    const state = useAppStore.getState();
+    expect(state.toolCalls).toEqual([]);
+    expect(state.messages).toEqual([]);
+    expect(state.turnNotice).toBe('本回合已取消。');
+  });
+
+  it('renders only pending and running tools and removes them as soon as they finish', () => {
+    const toolCalls: UiToolCall[] = [
+      ...createSampleToolCalls(),
+      { ...createSampleToolCalls()[0]!, key: 'in-flight', name: 'computer_act', status: 'running' },
+      { ...createSampleToolCalls()[0]!, key: 'asked', name: 'computer_screen_info', status: 'called' },
+      { ...createSampleToolCalls()[0]!, key: 'failed', name: 'computer_screenshot', status: 'failed', outputStderr: 'capture failed' },
+    ];
     const baseProps = {
       sessionId: 'sess-tool-test',
       conversationId: 'conv-1',
@@ -134,11 +157,22 @@ describe('turn tool visibility lifecycle', () => {
     };
 
     const { rerender } = render(<ChatView {...baseProps} isTurnRunning={true} />);
-    expect(screen.getByText('ivilson_read')).toBeInTheDocument();
-    expect(screen.getByText('run_shell')).toBeInTheDocument();
+    expect(screen.queryByText('ivilson_read')).not.toBeInTheDocument();
+    expect(screen.queryByText('run_shell')).not.toBeInTheDocument();
+    expect(screen.getByText('computer_act')).toBeVisible();
+    expect(screen.getByText('computer_screen_info')).toBeVisible();
+    expect(screen.queryByText('computer_screenshot')).not.toBeInTheDocument();
+    expect(screen.queryByText('capture failed')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /工具历史/ })).not.toBeInTheDocument();
+
+    const finished = toolCalls.map((tool) => ({ ...tool, status: 'completed' as const }));
+    rerender(<ChatView {...baseProps} toolCalls={finished} isTurnRunning={true} />);
+    expect(screen.queryByText('computer_act')).not.toBeInTheDocument();
+    expect(screen.queryByText('computer_screen_info')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /工具历史/ })).not.toBeInTheDocument();
 
     rerender(<ChatView {...baseProps} isTurnRunning={false} />);
     expect(screen.queryByText('ivilson_read')).not.toBeInTheDocument();
-    expect(screen.queryByText('run_shell')).not.toBeInTheDocument();
+    expect(screen.queryByText('computer_act')).not.toBeInTheDocument();
   });
 });

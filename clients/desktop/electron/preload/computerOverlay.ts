@@ -1,5 +1,6 @@
 import { ipcRenderer } from 'electron';
-import { IPC_CHANNELS, type ComputerControlOverlayState } from '../../src/shared/ipc';
+import { COMPUTER_OVERLAY_IPC_CHANNELS } from '../../src/shared/computerOverlayIpc';
+import type { ComputerControlOverlayState } from '../../src/shared/ipc';
 
 interface OverlayElementLike {
   textContent: string | null;
@@ -42,7 +43,7 @@ function applyOverlayDomState(state: ComputerControlOverlayState): void {
   }
 }
 
-ipcRenderer.on(IPC_CHANNELS.computerOverlayStateUpdated, (_event, state: ComputerControlOverlayState) => {
+ipcRenderer.on(COMPUTER_OVERLAY_IPC_CHANNELS.stateUpdated, (_event, state: ComputerControlOverlayState) => {
   latestState = state;
   applyOverlayDomState(state);
 });
@@ -52,7 +53,7 @@ overlayGlobal.addEventListener?.('DOMContentLoaded', () => {
   if (stopBtn) {
     stopBtn.addEventListener('click', () => {
       stopBtn.disabled = true;
-      void ipcRenderer.invoke(IPC_CHANNELS.computerOverlayTriggerStop).finally(() => {
+      void ipcRenderer.invoke(COMPUTER_OVERLAY_IPC_CHANNELS.triggerStop).finally(() => {
         stopBtn.disabled = false;
       });
     });

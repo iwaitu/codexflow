@@ -496,7 +496,7 @@ function reduceSseEvent(
     }
 
     case 'task_status': {
-      const d = evtData as { name?: string | null; callId?: string | null; success?: boolean | null; result?: string | null };
+      const d = evtData as { name?: string | null; callId?: string | null; success?: boolean | null };
       if (d.name || d.callId) {
         set((s) => {
           const revIdx = [...s.toolCalls]
@@ -507,7 +507,19 @@ function reduceSseEvent(
                 (!d.callId && t.name === d.name && t.status !== 'completed' && t.status !== 'failed'),
             );
           if (revIdx === -1) {
-            return s;
+            if (!s.isTurnRunning || !d.name || (evtData.type !== 'tool_result')) return s;
+            return {
+              toolCalls: [...s.toolCalls, {
+                key: d.callId || `result-${evt.id ?? s.toolCalls.length}`,
+                callId: d.callId ?? null,
+                name: d.name,
+                status: d.success === false ? 'failed' : 'completed',
+                outputStdout: '',
+                outputStderr: '',
+                outputTruncated: false,
+                suppressedLines: 0,
+              }],
+            };
           }
           const realIdx = s.toolCalls.length - 1 - revIdx;
           const copy = [...s.toolCalls];
@@ -515,7 +527,6 @@ function reduceSseEvent(
           copy[realIdx] = {
             ...target,
             status: d.success === false ? 'failed' : 'completed',
-            result: d.result ?? target.result,
           };
           return { toolCalls: copy };
         });
@@ -881,7 +892,7 @@ function reduceSseEvent(
         isTurnRunning: false,
         isThinkingStreaming: false,
         turnNotice: msg,
-        messages: s.streamingContent
+        messages: s.streamingContent || s.streamingThinking
           ? [
               ...s.messages,
               {

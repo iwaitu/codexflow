@@ -1,6 +1,7 @@
 import { BrowserWindow, globalShortcut, ipcMain, screen, type IpcMainInvokeEvent } from 'electron';
 import { join } from 'node:path';
-import { IPC_CHANNELS, type ComputerControlOverlayState } from '../../src/shared/ipc';
+import { COMPUTER_OVERLAY_IPC_CHANNELS } from '../../src/shared/computerOverlayIpc';
+import type { ComputerControlOverlayState } from '../../src/shared/ipc';
 
 const OVERLAY_WIDTH = 380;
 const OVERLAY_HEIGHT = 44;
@@ -130,7 +131,7 @@ export class ComputerOverlayManager {
       return;
     }
     this.ipcRegistered = true;
-    ipcMain.handle(IPC_CHANNELS.computerOverlayTriggerStop, async (event: IpcMainInvokeEvent) => {
+    ipcMain.handle(COMPUTER_OVERLAY_IPC_CHANNELS.triggerStop, async (event: IpcMainInvokeEvent) => {
       if (!this.overlayWindow || this.overlayWindow.isDestroyed() || event.sender !== this.overlayWindow.webContents) {
         throw new Error('Unauthorized IPC caller: invalid overlay stop sender');
       }
@@ -185,7 +186,7 @@ export class ComputerOverlayManager {
     }
     this.overlayWindow = null;
     if (this.ipcRegistered) {
-      ipcMain.removeHandler(IPC_CHANNELS.computerOverlayTriggerStop);
+      ipcMain.removeHandler(COMPUTER_OVERLAY_IPC_CHANNELS.triggerStop);
       this.ipcRegistered = false;
     }
   }
@@ -281,7 +282,7 @@ export class ComputerOverlayManager {
 
     win.webContents.once('did-finish-load', () => {
       if (!win.isDestroyed()) {
-        win.webContents.send(IPC_CHANNELS.computerOverlayStateUpdated, this.currentState);
+        win.webContents.send(COMPUTER_OVERLAY_IPC_CHANNELS.stateUpdated, this.currentState);
       }
     });
 
@@ -298,7 +299,7 @@ export class ComputerOverlayManager {
     const y = Math.round(primaryWorkArea.y + 10);
     win.setBounds({ x, y, width: OVERLAY_WIDTH, height: OVERLAY_HEIGHT });
     if (!win.webContents.isLoading()) {
-      win.webContents.send(IPC_CHANNELS.computerOverlayStateUpdated, state);
+      win.webContents.send(COMPUTER_OVERLAY_IPC_CHANNELS.stateUpdated, state);
     }
     if (!win.isVisible()) {
       win.showInactive();

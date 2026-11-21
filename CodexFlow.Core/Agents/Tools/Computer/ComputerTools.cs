@@ -405,7 +405,7 @@ public sealed class ComputerRequestTakeoverTool(
     public string Name => ComputerToolNames.RequestTakeover;
 
     public string Description =>
-        "当桌面操作遇到 Windows UAC 管理员提权弹窗、系统密码输入框、硬件 Key、手机扫码或复杂验证时，请求由用户本人接管桌面操作，并暂停回合计时直至用户在桌面端点击「完成并交回 Agent」。\n" +
+        "当桌面操作遇到 Windows UAC 管理员提权弹窗、系统密码输入框、硬件 Key、手机扫码、复杂验证，或重新截图后光标仍无法到位时，请求由用户本人接管桌面操作，并暂停回合计时直至用户在桌面端点击「完成并交回 Agent」。\n" +
         "参数（JSON object）：\n" +
         "  - reason (string, 必填): 向用户说明需要人工操作的具体原因与指引\n" +
         "  - timeout_seconds (int, 可选): 最长等待秒数，默认 300（范围 30-900）";

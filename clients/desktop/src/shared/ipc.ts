@@ -529,8 +529,6 @@ export const IPC_CHANNELS = {
   restoreHostWindowForComputer: 'codexflow:restore-host-window-for-computer',
   setComputerControlActive: 'codexflow:set-computer-control-active',
   computerEmergencyStopped: 'codexflow:computer-emergency-stopped',
-  computerOverlayTriggerStop: 'codexflow:computer-overlay-trigger-stop',
-  computerOverlayStateUpdated: 'codexflow:computer-overlay-state-updated',
   listPermissionRules: 'codexflow:list-permission-rules',
   deletePermissionRule: 'codexflow:delete-permission-rule',
   openLocalWorkspace: 'codexflow:open-local-workspace',

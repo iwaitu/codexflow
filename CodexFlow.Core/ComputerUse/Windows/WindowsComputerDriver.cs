@@ -78,13 +78,13 @@ public sealed class WindowsComputerDriver : IComputerDriver
     }
 
     public void PerformMouseClick(int x, int y, string button, int clickCount)
-        => Win32ComputerNative.MouseClickAbsolute(x, y, button, clickCount);
+        => Win32ComputerNative.ClickAtCursor(x, y, button, clickCount);
 
     public void PerformMouseMove(int x, int y)
         => Win32ComputerNative.MoveMouseAbsolute(x, y);
 
-    public void PerformMouseDrag(int startX, int startY, int endX, int endY, string button)
-        => Win32ComputerNative.MouseDragAbsolute(startX, startY, endX, endY, button);
+    public void PerformMouseDrag(int startX, int startY, int endX, int endY, string button, CancellationToken ct)
+        => Win32ComputerNative.MouseDragAbsolute(startX, startY, endX, endY, button, ct);
 
     public void PerformMouseScroll(int x, int y, int deltaX, int deltaY)
         => Win32ComputerNative.MouseScrollAt(x, y, deltaX, deltaY);

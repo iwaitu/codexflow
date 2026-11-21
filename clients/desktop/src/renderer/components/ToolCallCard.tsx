@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { CheckCircle2, ChevronDown, ChevronRight, Loader2, Terminal, XCircle } from 'lucide-react';
+import React, { useState } from 'react';
+import { ChevronDown, ChevronRight, Loader2, Terminal } from 'lucide-react';
 import type { UiToolCall } from '../lib/sessionRecovery';
 
 interface ToolCallCardProps {
@@ -7,35 +7,8 @@ interface ToolCallCardProps {
 }
 
 export const ToolCallCard: React.FC<ToolCallCardProps> = ({ tool }) => {
-  const [expanded, setExpanded] = useState(tool.status === 'running' || tool.status === 'failed');
-
-  useEffect(() => {
-    if (tool.status === 'failed') {
-      setExpanded(true);
-    }
-  }, [tool.status]);
-
-  const statusBadge = {
-    called: <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[11px] text-slate-300">已请求</span>,
-    running: (
-      <span className="inline-flex items-center gap-1 rounded bg-indigo-500/20 px-1.5 py-0.5 text-[11px] text-indigo-300">
-        <Loader2 className="h-3 w-3 animate-spin" />
-        运行中
-      </span>
-    ),
-    completed: (
-      <span className="inline-flex items-center gap-1 rounded bg-emerald-500/20 px-1.5 py-0.5 text-[11px] text-emerald-300">
-        <CheckCircle2 className="h-3 w-3" />
-        完成
-      </span>
-    ),
-    failed: (
-      <span className="inline-flex items-center gap-1 rounded bg-rose-500/20 px-1.5 py-0.5 text-[11px] text-rose-300">
-        <XCircle className="h-3 w-3" />
-        失败
-      </span>
-    ),
-  }[tool.status];
+  const [expanded, setExpanded] = useState(tool.status === 'running');
+  if (tool.status !== 'called' && tool.status !== 'running') return null;
 
   return (
     <div className="rounded-lg border border-slate-800 bg-slate-900/70 text-xs">
@@ -48,7 +21,14 @@ export const ToolCallCard: React.FC<ToolCallCardProps> = ({ tool }) => {
           {expanded ? <ChevronDown className="h-3.5 w-3.5 text-slate-400" /> : <ChevronRight className="h-3.5 w-3.5 text-slate-400" />}
           <Terminal className="h-3.5 w-3.5 text-indigo-400" />
           <span className="font-mono font-medium text-slate-200">{tool.name}</span>
-          {statusBadge}
+          {tool.status === 'running' ? (
+            <span className="inline-flex items-center gap-1 rounded bg-indigo-500/20 px-1.5 py-0.5 text-[11px] text-indigo-300">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              运行中
+            </span>
+          ) : (
+            <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[11px] text-slate-300">已请求</span>
+          )}
           {tool.outputTruncated && (
             <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[11px] text-amber-300">
               输出已截断{tool.suppressedLines > 0 ? ` (${tool.suppressedLines} 行已合并)` : ''}
@@ -81,14 +61,6 @@ export const ToolCallCard: React.FC<ToolCallCardProps> = ({ tool }) => {
             </div>
           )}
 
-          {tool.result && (
-            <div>
-              <div className="mb-1 text-[11px] text-slate-400">结果</div>
-              <pre className="max-h-48 overflow-auto rounded bg-slate-950 p-2 font-mono text-[11px] text-slate-300 whitespace-pre-wrap">
-                {tool.result}
-              </pre>
-            </div>
-          )}
         </div>
       )}
     </div>

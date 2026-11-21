@@ -8,6 +8,7 @@ using System.Globalization;
 using System.Text;
 using CodexFlow.Contracts.ComputerUse;
 using CodexFlow.Core.Configuration;
+using CodexFlow.Core.Execution;
 using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Core.Runtime;
 using Microsoft.Extensions.Logging;
@@ -17,7 +18,7 @@ namespace CodexFlow.Core.ComputerUse;
 
 /// <summary>
 /// Central orchestrator for desktop Computer Use: manages the exclusive desktop lease,
-/// window pinning, DPI-aware coordinate resolution, self-UI occlusion masking,
+/// window pinning, DPI-aware coordinate resolution, screen capture,
 /// host window avoidance readiness barrier, approval coordination, physical override
 /// detection, and millisecond-level emergency stop.
 /// </summary>
@@ -26,6 +27,7 @@ public sealed class ComputerSessionManager : IComputerSessionManager
     private const int MaxRecentActions = 30;
     private const int AvoidancePollIntervalMs = 40;
     private const int AvoidanceMaxWaitMs = 600;
+    private const int CursorSettleDelayMs = 50;
     private const int PostActionCaptureDelayMs = 350;
     private const double PhysicalMouseOverrideThresholdPx = 120d;
     private static readonly TimeSpan StatePublishThrottle = TimeSpan.FromMilliseconds(250);
@@ -39,10 +41,13 @@ public sealed class ComputerSessionManager : IComputerSessionManager
     private readonly IComputerApprovalCoordinator? _approvalCoordinator;
     private readonly IComputerStateEventPublisher? _statePublisher;
     private readonly IControlPlaneStateProvider? _controlPlane;
+    private readonly IOptionsMonitor<ExecutionOptions>? _executionOptions;
 
     private readonly object _leaseGate = new();
     private string? _leaseOwnerSessionId;
     private DateTimeOffset _leaseLastActivityUtc;
+    private IDisposable? _leaseInterruptMonitor;
+    private long _leaseGeneration;
 
     private readonly ConcurrentDictionary<string, SessionRuntimeState> _sessions = new(StringComparer.Ordinal);
     private int _disposed;
@@ -55,7 +60,8 @@ public sealed class ComputerSessionManager : IComputerSessionManager
         IModelSettingsService? modelSettings = null,
         IComputerApprovalCoordinator? approvalCoordinator = null,
         IComputerStateEventPublisher? statePublisher = null,
-        IControlPlaneStateProvider? controlPlane = null)
+        IControlPlaneStateProvider? controlPlane = null,
+        IOptionsMonitor<ExecutionOptions>? executionOptions = null)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _driver = driver ?? throw new ArgumentNullException(nameof(driver));
@@ -65,6 +71,7 @@ public sealed class ComputerSessionManager : IComputerSessionManager
         _approvalCoordinator = approvalCoordinator;
         _statePublisher = statePublisher;
         _controlPlane = controlPlane;
+        _executionOptions = executionOptions;
     }
 
     public ComputerDriverStatusDto GetDriverStatus()
@@ -88,13 +95,13 @@ public sealed class ComputerSessionManager : IComputerSessionManager
             return disabledErr!;
         }
 
+        var session = GetOrCreateSession(caller.SessionId);
         var wantsPinChange = unpin || !string.IsNullOrWhiteSpace(pinWindowHandle) || !string.IsNullOrWhiteSpace(pinProcessName);
-        if (wantsPinChange && !TryAcquireDesktopLease(caller.SessionId, out var busyErr))
+        if (wantsPinChange && !TryAcquireDesktopLease(session, out var busyErr))
         {
             return busyErr!;
         }
 
-        var session = GetOrCreateSession(caller.SessionId);
         var displays = _driver.GetDisplays();
         var windows = _driver.GetVisibleWindows(
             _securityGuard.ProtectedPidsSnapshot,
@@ -120,6 +127,11 @@ public sealed class ComputerSessionManager : IComputerSessionManager
             if (_securityGuard.IsBlockedProcessName(matched.ProcessName))
             {
                 return Fail("blocked_sensitive_application", $"安全策略禁止锁定敏感应用程序（{matched.ProcessName}）。");
+            }
+
+            if (session.EmergencyStopped)
+            {
+                return EmergencyStopped();
             }
 
             _ = _driver.TryBringWindowToForeground(matched.WindowHandle);
@@ -187,24 +199,22 @@ public sealed class ComputerSessionManager : IComputerSessionManager
             return multimodalErr!;
         }
 
-        if (!TryAcquireDesktopLease(caller.SessionId, out var busyErr))
+        var session = GetOrCreateSession(caller.SessionId);
+        if (!TryAcquireDesktopLease(session, out var busyErr))
         {
             return busyErr!;
         }
 
-        var session = GetOrCreateSession(caller.SessionId);
-        if (session.EmergencyStopped)
-        {
-            return Fail("emergency_stopped", "本会话 Computer Use 已被用户紧急停止，需由用户发起新一轮对话后恢复。");
-        }
-
-        if (_options.CurrentValue.AutoMinimizeHostWindow && fullDesktop)
-        {
-            await RequestHostWindowAvoidanceAsync(session, ct).ConfigureAwait(false);
-        }
-
+        using var captureCts = CancellationTokenSource.CreateLinkedTokenSource(ct, session.EnterActionScope());
+        var avoidHost = _options.CurrentValue.AutoMinimizeHostWindow && fullDesktop;
         try
         {
+            captureCts.Token.ThrowIfCancellationRequested();
+            if (avoidHost)
+            {
+                await RequestHostWindowAvoidanceAsync(session, captureCts.Token).ConfigureAwait(false);
+            }
+
             var capture = CaptureAndProcessFrame(
                 session,
                 fullDesktop,
@@ -213,6 +223,7 @@ public sealed class ComputerSessionManager : IComputerSessionManager
                 markerImgPoint: null,
                 dragEndImgPoint: null);
 
+            captureCts.Token.ThrowIfCancellationRequested();
             session.UpdateCapture(capture.Screenshot, capture.Viewport);
             session.RecordAction(
                 tool: "computer_screenshot",
@@ -233,6 +244,10 @@ public sealed class ComputerSessionManager : IComputerSessionManager
                 Screenshot: capture.Screenshot,
                 Viewport: capture.Viewport);
         }
+        catch (OperationCanceledException) when (session.EmergencyStopped)
+        {
+            return EmergencyStopped();
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Computer Use screenshot failed for session {SessionId}", caller.SessionId);
@@ -241,11 +256,8 @@ public sealed class ComputerSessionManager : IComputerSessionManager
         }
         finally
         {
-            if (session.HostWindowAvoidanceRequested)
-            {
-                session.HostWindowAvoidanceRequested = false;
-                await PublishStateAsync(session, force: true, CancellationToken.None).ConfigureAwait(false);
-            }
+            await ReleaseHostWindowAvoidanceAsync(session).ConfigureAwait(false);
+            ExitDesktopActionScope(session);
         }
     }
 
@@ -272,15 +284,10 @@ public sealed class ComputerSessionManager : IComputerSessionManager
             return multimodalErr!;
         }
 
-        if (!TryAcquireDesktopLease(caller.SessionId, out var busyErr))
+        var session = GetOrCreateSession(caller.SessionId);
+        if (!TryAcquireDesktopLease(session, out var busyErr))
         {
             return busyErr!;
-        }
-
-        var session = GetOrCreateSession(caller.SessionId);
-        if (session.EmergencyStopped)
-        {
-            return Fail("emergency_stopped", "本会话 Computer Use 已被用户紧急停止，需由用户发起新一轮对话后恢复。");
         }
 
         if (session.TakeoverPending)
@@ -299,16 +306,19 @@ public sealed class ComputerSessionManager : IComputerSessionManager
             return Fail("invalid_action", "参数 action 不能为空。");
         }
 
-        if (action == "wait")
+        using var actionCts = CancellationTokenSource.CreateLinkedTokenSource(ct, session.EnterActionScope());
+        var actionToken = actionCts.Token;
+        try
         {
-            var waitMs = Math.Clamp(request.DurationMs ?? 1000, 100, 15_000);
-            using var waitCts = CancellationTokenSource.CreateLinkedTokenSource(ct, session.EnterActionScope());
-            try
+            actionToken.ThrowIfCancellationRequested();
+            if (action == "wait")
             {
-                await Task.Delay(waitMs, waitCts.Token).ConfigureAwait(false);
+                var waitMs = Math.Clamp(request.DurationMs ?? 1000, 100, 15_000);
+                await Task.Delay(waitMs, actionToken).ConfigureAwait(false);
                 var frame = CaptureAndProcessFrame(session, false, null, _options.CurrentValue.EnableGridOverlay, null, null);
+                actionToken.ThrowIfCancellationRequested();
                 session.UpdateCapture(frame.Screenshot, frame.Viewport);
-                await PublishStateAsync(session, force: true, ct).ConfigureAwait(false);
+                await PublishStateAsync(session, force: true, actionToken).ConfigureAwait(false);
                 return new ComputerOperationResult(
                     Succeeded: true,
                     Output: $"已完成等待 {waitMs}ms。\n{FormatCaptureDescription(frame.Viewport, session)}",
@@ -316,17 +326,32 @@ public sealed class ComputerSessionManager : IComputerSessionManager
                     Screenshot: frame.Screenshot,
                     Viewport: frame.Viewport);
             }
-            catch (OperationCanceledException) when (session.EmergencyStopped)
-            {
-                return Fail("emergency_stopped", "等待被用户紧急停止。");
-            }
-            finally
-            {
-                session.ExitActionScope();
-            }
-        }
 
-        // Physical mouse override check: if human moved mouse > 120px shortly after agent's last move, yield control.
+            if (ExecutionMode == ExecutionPermissionMode.Deny)
+            {
+                return Fail("execution_permission_denied", "当前执行权限为 Deny，禁止注入桌面键鼠输入。");
+            }
+
+            return await ExecuteInputAsync(session, request, action, actionToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (session.EmergencyStopped)
+        {
+            return EmergencyStopped();
+        }
+        finally
+        {
+            await ReleaseHostWindowAvoidanceAsync(session).ConfigureAwait(false);
+            ExitDesktopActionScope(session);
+        }
+    }
+
+    private async Task<ComputerOperationResult> ExecuteInputAsync(
+        SessionRuntimeState session,
+        ComputerActRequest request,
+        string action,
+        CancellationToken ct)
+    {
+        // A large pointer movement outside the approval flow is a request to yield control.
         if (session.TryDetectPhysicalMouseOverride(_driver, PhysicalMouseOverrideThresholdPx, out var overrideDistance))
         {
             session.ClearLastAgentCursor();
@@ -335,7 +360,8 @@ public sealed class ComputerSessionManager : IComputerSessionManager
                 $"检测到用户刚刚手动大幅移动了物理鼠标（位移 {overrideDistance:0}px），已自动让出桌面控制权。请先通过 computer_screenshot 重新确认屏幕状态后再继续。");
         }
 
-        var isCoordinateAction = action is "click" or "double_click" or "right_click" or "middle_click" or "move" or "drag" or "scroll";
+        var isClickAction = action is "click" or "double_click" or "right_click" or "middle_click";
+        var isCoordinateAction = isClickAction || action is "move" or "drag" or "scroll";
         var isKeyboardAction = action is "type_text" or "key_combo";
         if (!isCoordinateAction && !isKeyboardAction)
         {
@@ -394,37 +420,49 @@ public sealed class ComputerSessionManager : IComputerSessionManager
             return Fail("missing_text", "动作 'type_text' 必须提供 text 参数。");
         }
 
-        // Pre-check target window safety before requesting approval.
-        ComputerPointSafetyResult preSafety;
-        if (targetScreen is { } pt)
+        ComputerPointSafetyResult CheckTarget() => targetScreen is { } point
+            ? _securityGuard.EvaluatePointTarget(point.X, point.Y)
+            : _securityGuard.EvaluateForegroundTarget();
+
+        ComputerPointSafetyResult? CheckDragEnd() => dragEndScreen is { } point
+            ? _securityGuard.EvaluatePointTarget(point.X, point.Y)
+            : null;
+
+        var preSafety = CheckTarget();
+        var preEndSafety = CheckDragEnd();
+        if (preSafety.HitProtectedSelfUi || preEndSafety?.HitProtectedSelfUi == true)
         {
-            preSafety = _securityGuard.EvaluatePointTarget(pt.X, pt.Y);
-            if (!preSafety.Allowed && !preSafety.HitProtectedSelfUi)
+            if (!await WaitForHostWindowAvoidanceBarrierAsync(session, targetScreen, dragEndScreen, ct).ConfigureAwait(false))
             {
-                return Fail(preSafety.ErrorCode!, preSafety.ErrorMessage!);
+                return HostWindowObstructed();
             }
 
-            if (dragEndScreen is { } endPt)
-            {
-                var endSafety = _securityGuard.EvaluatePointTarget(endPt.X, endPt.Y);
-                if (!endSafety.Allowed && !endSafety.HitProtectedSelfUi)
-                {
-                    return Fail(endSafety.ErrorCode!, endSafety.ErrorMessage!);
-                }
-            }
-        }
-        else
-        {
-            preSafety = _securityGuard.EvaluateForegroundTarget();
-            if (!preSafety.Allowed && !preSafety.HitProtectedSelfUi)
-            {
-                return Fail(preSafety.ErrorCode!, preSafety.ErrorMessage!);
-            }
+            preSafety = CheckTarget();
+            preEndSafety = CheckDragEnd();
         }
 
-        // If host window sits over the target right now, minimize/avoid it BEFORE preview/execution OR proceed to approval if approval is needed.
-        var targetWindowSnapshot = preSafety.HitProtectedSelfUi ? null : preSafety.Window;
-        var (needsApproval, allowSessionScope) = EvaluateApprovalRequirement(caller.SessionId, action, targetWindowSnapshot?.ProcessName);
+        if (!preSafety.Allowed)
+        {
+            return Fail(preSafety.ErrorCode!, preSafety.ErrorMessage!);
+        }
+
+        if (preEndSafety is { Allowed: false } blockedEnd)
+        {
+            return Fail(blockedEnd.ErrorCode!, blockedEnd.ErrorMessage!);
+        }
+
+        var targetWindowSnapshot = preSafety.Window;
+        var dragWindowSnapshot = preEndSafety?.Window;
+        if (isKeyboardAction && targetWindowSnapshot is null)
+        {
+            return Fail("target_window_unavailable", "无法确认键盘输入的前台窗口，请重新观察桌面后重试。");
+        }
+
+        var useFullAuto = IsManagedFullAuto();
+        var (needsApproval, allowSessionScope) = useFullAuto
+            ? (false, false)
+            : EvaluateApprovalRequirement(session.SessionId, action, targetWindowSnapshot?.ProcessName);
+        ScreenPoint? pointerAfterApproval = null;
         if (needsApproval)
         {
             if (_controlPlane is { IsControlPlaneAvailable: false } || _approvalCoordinator is null)
@@ -445,20 +483,15 @@ public sealed class ComputerSessionManager : IComputerSessionManager
                 previewBase64 = Convert.ToBase64String(ComputerVisualProcessor.EncodePng(cropBgra, cw, ch));
             }
 
-            var targetProc = targetWindowSnapshot?.ProcessName ?? session.PinnedProcessName ?? "desktop";
-            var targetTitle = targetWindowSnapshot?.Title ?? session.PinnedWindowTitle ?? "Desktop";
-            var targetHandle = targetWindowSnapshot?.WindowHandle ?? session.PinnedWindowHandle ?? string.Empty;
-            var actionSummary = BuildActionSummary(action, request, targetScreen, dragEndScreen);
-
             var approvalOutcome = await _approvalCoordinator.RequestApprovalAsync(
                 new ComputerApprovalPrompt(
-                    SessionId: caller.SessionId,
+                    SessionId: session.SessionId,
                     Tool: "computer_act",
                     Action: action,
-                    TargetProcessName: targetProc,
-                    TargetWindowTitle: targetTitle,
-                    TargetWindowHandle: targetHandle,
-                    ActionSummary: actionSummary,
+                    TargetProcessName: targetWindowSnapshot?.ProcessName ?? "desktop",
+                    TargetWindowTitle: targetWindowSnapshot?.Title ?? "Desktop",
+                    TargetWindowHandle: targetWindowSnapshot?.WindowHandle ?? string.Empty,
+                    ActionSummary: BuildActionSummary(action, request, targetScreen, dragEndScreen),
                     RiskReason: "桌面级键鼠操作会直接作用于宿主机当前桌面会话，请确认目标窗口与动作位置准确。",
                     TargetX: targetScreen?.X,
                     TargetY: targetScreen?.Y,
@@ -466,89 +499,161 @@ public sealed class ComputerSessionManager : IComputerSessionManager
                     PreviewImageBase64: previewBase64),
                 ct).ConfigureAwait(false);
 
+            // Moving the pointer to the approval card is expected even when the user denies.
+            session.ClearLastAgentCursor();
             if (!approvalOutcome.Approved)
             {
+                ct.ThrowIfCancellationRequested();
                 return Fail(
                     approvalOutcome.ErrorCode ?? "approval_denied",
                     approvalOutcome.ErrorMessage ?? "用户拒绝了桌面交互操作。");
             }
-        }
 
-        // Window Avoidance Readiness Barrier: after approval (and/or when host window covers target), request minimization & wait up to 600ms.
-        if (_options.CurrentValue.AutoMinimizeHostWindow)
-        {
-            var barrierOk = await WaitForHostWindowAvoidanceBarrierAsync(
-                session,
-                targetScreen,
-                dragEndScreen,
-                ct).ConfigureAwait(false);
-            if (!barrierOk)
+            if (_driver.TryGetCursorPosition(out var approvedX, out var approvedY))
             {
-                return Fail(
-                    "self_ui_interaction_forbidden",
-                    "安全策略拒绝：目标坐标仍被 CodexFlow 窗口覆盖（避让超时）。请手动移开或最小化 CodexFlow 窗口后再重试。");
+                pointerAfterApproval = new ScreenPoint(approvedX, approvedY);
+            }
+
+            if (!await WaitForHostWindowAvoidanceBarrierAsync(session, targetScreen, dragEndScreen, ct).ConfigureAwait(false))
+            {
+                return HostWindowObstructed();
             }
         }
-        else if (preSafety.HitProtectedSelfUi)
-        {
-            return Fail("self_ui_interaction_forbidden", "安全策略严禁向 CodexFlow 自身窗口注入键鼠事件。");
-        }
 
-        // Post-approval / post-avoidance TOCTOU window verification.
-        var liveSafety = targetScreen is { } finalPt
-            ? _securityGuard.EvaluatePointTarget(finalPt.X, finalPt.Y)
-            : _securityGuard.EvaluateForegroundTarget();
+        var liveSafety = CheckTarget();
+        var liveEndSafety = CheckDragEnd();
         if (!liveSafety.Allowed)
         {
             return Fail(liveSafety.ErrorCode!, liveSafety.ErrorMessage!);
         }
 
-        if (targetWindowSnapshot is not null &&
-            !_securityGuard.IsWindowStillExpected(targetWindowSnapshot, liveSafety.Window, out var toctouReason))
+        if (liveEndSafety is { Allowed: false } blockedLiveEnd)
+        {
+            return Fail(blockedLiveEnd.ErrorCode!, blockedLiveEnd.ErrorMessage!);
+        }
+
+        if (!_securityGuard.IsWindowStillExpected(targetWindowSnapshot, liveSafety.Window, out var toctouReason) ||
+            (dragEndScreen is not null &&
+             !_securityGuard.IsWindowStillExpected(dragWindowSnapshot, liveEndSafety?.Window, out toctouReason)))
         {
             return Fail("toctou_window_drift", toctouReason!);
         }
 
-        // Execute the physical OS input while physical Esc x2 interrupt monitor is active.
+        // The desktop lease keeps the physical Esc monitor active across actions.
         var sw = Stopwatch.StartNew();
-        using var actionCts = CancellationTokenSource.CreateLinkedTokenSource(ct, session.EnterActionScope());
-        IDisposable? interruptMonitor = null;
-        var physicalAborted = false;
-        string? abortReason = null;
+
+        ComputerOperationResult? CheckInputState()
+        {
+            ct.ThrowIfCancellationRequested();
+
+            if (!TryValidateEnabledAndNotDisposed(out var disabled))
+            {
+                return disabled!;
+            }
+
+            if (ExecutionMode == ExecutionPermissionMode.Deny)
+            {
+                return Fail("execution_permission_denied", "当前执行权限为 Deny，禁止注入桌面键鼠输入。");
+            }
+
+            if (useFullAuto && !IsManagedFullAuto())
+            {
+                return Fail("execution_permission_changed", "桌面操作的 FullAuto 授权已变更，请重新观察桌面后重试。");
+            }
+
+            if (!IsLeaseHeldBy(session.SessionId) || session.TakeoverPending)
+            {
+                return Fail("desktop_control_changed", "桌面控制权已变更，请重新观察桌面后重试。");
+            }
+
+            if (_securityGuard.HasAnyPendingApprovalFreeze(session.SessionId))
+            {
+                return Fail("pending_approval_freeze", "仍有待处理的控制面审批，已暂停键鼠输入。");
+            }
+
+            return null;
+        }
 
         try
         {
-            interruptMonitor = _driver.StartPhysicalInterruptMonitor(reason =>
+            if (CheckInputState() is { } inputError)
             {
-                physicalAborted = true;
-                abortReason = reason;
-                _ = EmergencyStopAsync(caller.SessionId, reason, CancellationToken.None);
-            });
-
-            if (session.EmergencyStopped || actionCts.Token.IsCancellationRequested)
-            {
-                return Fail("emergency_stopped", "操作已在执行前被用户紧急停止。");
+                return inputError;
             }
 
+            if (pointerAfterApproval is { } pointer && _driver.TryGetCursorPosition(out var currentX, out var currentY))
+            {
+                var dx = (double)currentX - pointer.X;
+                var dy = (double)currentY - pointer.Y;
+                if (dx * dx + dy * dy > PhysicalMouseOverrideThresholdPx * PhysicalMouseOverrideThresholdPx)
+                {
+                    return Fail("physical_mouse_override_detected", "审批结束后检测到用户移动鼠标，已让出控制权。请重新观察桌面后继续。");
+                }
+            }
+
+            var clickPoint = targetScreen;
+            if ((isClickAction || action == "move") && targetScreen is { } moveTarget)
+            {
+                ct.ThrowIfCancellationRequested();
+                _driver.PerformMouseMove(moveTarget.X, moveTarget.Y);
+                await Task.Delay(CursorSettleDelayMs, ct).ConfigureAwait(false);
+
+                if (CheckInputState() is { } moveError)
+                {
+                    return moveError;
+                }
+
+                var failure = isClickAction ? "已取消点击" : "鼠标未能完成移动";
+                const string recovery = "请重新截图核对目标。若光标仍无法到位，请用 computer_request_takeover 请求用户操作，交回后再截图确认。";
+                if (!_driver.TryGetCursorPosition(out var cursorX, out var cursorY))
+                {
+                    return Fail("cursor_position_unavailable",
+                        $"无法确认光标是否到达目标 ({moveTarget.X}, {moveTarget.Y})，{failure}。{recovery}");
+                }
+
+                // Absolute Windows mouse coordinates can round to an adjacent pixel.
+                if (Math.Abs((long)cursorX - moveTarget.X) > 1 || Math.Abs((long)cursorY - moveTarget.Y) > 1)
+                {
+                    return Fail("cursor_position_mismatch",
+                        $"光标实际位置 ({cursorX}, {cursorY}) 与目标 ({moveTarget.X}, {moveTarget.Y}) 不一致，{failure}。{recovery}");
+                }
+
+                session.RecordAgentCursor(cursorX, cursorY);
+                clickPoint = new ScreenPoint(cursorX, cursorY);
+            }
+
+            if (isClickAction && clickPoint is { } actualPoint)
+            {
+                // Moving the pointer can open a menu or change which window receives the click.
+                var clickSafety = _securityGuard.EvaluatePointTarget(actualPoint.X, actualPoint.Y);
+                if (!clickSafety.Allowed)
+                {
+                    return Fail(clickSafety.ErrorCode!, clickSafety.ErrorMessage!);
+                }
+
+                if (!_securityGuard.IsWindowStillExpected(targetWindowSnapshot, clickSafety.Window, out var clickWindowDrift))
+                {
+                    return Fail("toctou_window_drift", clickWindowDrift!);
+                }
+            }
+
+            ct.ThrowIfCancellationRequested();
             switch (action)
             {
                 case "click":
-                    _driver.PerformMouseClick(targetScreen!.Value.X, targetScreen.Value.Y, request.Button ?? "left", 1);
+                    _driver.PerformMouseClick(clickPoint!.Value.X, clickPoint.Value.Y, request.Button ?? "left", 1);
                     break;
                 case "double_click":
-                    _driver.PerformMouseClick(targetScreen!.Value.X, targetScreen.Value.Y, request.Button ?? "left", 2);
+                    _driver.PerformMouseClick(clickPoint!.Value.X, clickPoint.Value.Y, request.Button ?? "left", 2);
                     break;
                 case "right_click":
-                    _driver.PerformMouseClick(targetScreen!.Value.X, targetScreen.Value.Y, "right", 1);
+                    _driver.PerformMouseClick(clickPoint!.Value.X, clickPoint.Value.Y, "right", 1);
                     break;
                 case "middle_click":
-                    _driver.PerformMouseClick(targetScreen!.Value.X, targetScreen.Value.Y, "middle", 1);
-                    break;
-                case "move":
-                    _driver.PerformMouseMove(targetScreen!.Value.X, targetScreen.Value.Y);
+                    _driver.PerformMouseClick(clickPoint!.Value.X, clickPoint.Value.Y, "middle", 1);
                     break;
                 case "drag":
-                    _driver.PerformMouseDrag(targetScreen!.Value.X, targetScreen.Value.Y, dragEndScreen!.Value.X, dragEndScreen.Value.Y, request.Button ?? "left");
+                    _driver.PerformMouseDrag(targetScreen!.Value.X, targetScreen.Value.Y, dragEndScreen!.Value.X, dragEndScreen.Value.Y, request.Button ?? "left", ct);
                     break;
                 case "scroll":
                     _driver.PerformMouseScroll(targetScreen!.Value.X, targetScreen.Value.Y, request.DeltaX ?? 0, request.DeltaY ?? 480);
@@ -574,23 +679,13 @@ public sealed class ComputerSessionManager : IComputerSessionManager
                 session.RecordAgentCursor(ptCoords.X, ptCoords.Y);
             }
 
-            await Task.Delay(PostActionCaptureDelayMs, actionCts.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (physicalAborted || session.EmergencyStopped)
-        {
-            return Fail("emergency_stopped", $"桌面操作被紧急中断（{abortReason ?? "user_stop"}），所有输入流与修饰键已释放。");
+            await Task.Delay(PostActionCaptureDelayMs, ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Computer Use action {Action} failed for session {SessionId}", action, caller.SessionId);
+            _logger.LogWarning(ex, "Computer Use action {Action} failed for session {SessionId}", action, session.SessionId);
             return Fail("computer_action_failed", ex.Message);
         }
-        finally
-        {
-            interruptMonitor?.Dispose();
-            session.ExitActionScope();
-        }
-
         sw.Stop();
 
         // Post-action echo screenshot with red target reticle / drag trajectory.
@@ -615,6 +710,7 @@ public sealed class ComputerSessionManager : IComputerSessionManager
                 markerImgPoint: markerImg,
                 dragEndImgPoint: dragEndImg);
 
+            ct.ThrowIfCancellationRequested();
             session.UpdateCapture(postCapture.Screenshot, postCapture.Viewport);
             var summary = BuildActionSummary(action, request, targetScreen, dragEndScreen);
             session.RecordAction(
@@ -670,22 +766,22 @@ public sealed class ComputerSessionManager : IComputerSessionManager
             return Fail("missing_reason", "发起人工接管必须提供具体的操作指引原因。");
         }
 
-        if (!TryAcquireDesktopLease(caller.SessionId, out var busyErr))
+        var session = GetOrCreateSession(caller.SessionId);
+        if (!TryAcquireDesktopLease(session, out var busyErr))
         {
             return busyErr!;
         }
 
-        var session = GetOrCreateSession(caller.SessionId);
         var clampedSeconds = Math.Clamp(timeoutSeconds, 30, (int)ManualTakeoverMaxDuration.TotalSeconds);
-        var tcs = session.BeginTakeover(reason.Trim());
-        await PublishStateAsync(session, force: true, ct).ConfigureAwait(false);
-
         using var pauseGuard = AmbientTurnTimeoutController.Current?.PauseTimers();
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct, session.EnterActionScope());
-        timeoutCts.CancelAfter(TimeSpan.FromSeconds(clampedSeconds));
 
         try
         {
+            timeoutCts.Token.ThrowIfCancellationRequested();
+            var tcs = session.BeginTakeover(reason.Trim());
+            await PublishStateAsync(session, force: true, timeoutCts.Token).ConfigureAwait(false);
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(clampedSeconds));
             var note = await tcs.Task.WaitAsync(timeoutCts.Token).ConfigureAwait(false);
             session.EndTakeover();
 
@@ -728,7 +824,7 @@ public sealed class ComputerSessionManager : IComputerSessionManager
         }
         finally
         {
-            session.ExitActionScope();
+            ExitDesktopActionScope(session);
         }
     }
 
@@ -775,35 +871,52 @@ public sealed class ComputerSessionManager : IComputerSessionManager
         }
     }
 
+    public async Task EndTurnAsync(string sessionId, CancellationToken ct = default)
+    {
+        SessionRuntimeState session;
+        lock (_leaseGate)
+        {
+            if (!IsLeaseHeldBy(sessionId) || !_sessions.TryGetValue(sessionId, out session!))
+            {
+                return;
+            }
+
+            session.HostWindowAvoidanceRequested = false;
+            session.ClearLastAgentCursor();
+            session.Touch();
+            ReleaseDesktopLease(sessionId);
+        }
+
+        await PublishStateAsync(session, force: true, ct).ConfigureAwait(false);
+    }
+
     public async Task<ComputerEmergencyStopResponse> EmergencyStopAsync(
         string? sessionId = null,
         string? reason = null,
         CancellationToken ct = default)
     {
-        var cancelledCount = 0;
-        var targets = string.IsNullOrWhiteSpace(sessionId)
-            ? _sessions.Values.ToArray()
-            : (_sessions.TryGetValue(sessionId.Trim(), out var single) ? [single] : Array.Empty<SessionRuntimeState>());
-
-        foreach (var s in targets)
+        SessionRuntimeState[] targets;
+        lock (_leaseGate)
         {
-            s.TriggerEmergencyStop();
-            _approvalCoordinator?.CancelSessionApprovals(s.SessionId, reason ?? "Emergency stop triggered.");
-            ReleaseDesktopLease(s.SessionId);
-            cancelledCount++;
-            await PublishStateAsync(s, force: true, ct).ConfigureAwait(false);
+            targets = string.IsNullOrWhiteSpace(sessionId)
+                ? _sessions.Values.ToArray()
+                : (_sessions.TryGetValue(sessionId.Trim(), out var single) ? [single] : []);
+            foreach (var session in targets)
+            {
+                StopDesktopSession(session, reason);
+            }
         }
 
-        if (string.IsNullOrWhiteSpace(sessionId))
+        foreach (var session in targets)
         {
-            ReleaseDesktopLease(null);
+            await PublishStateAsync(session, force: true, ct).ConfigureAwait(false);
         }
 
         return new ComputerEmergencyStopResponse(
             Stopped: true,
-            CancelledSessions: cancelledCount,
-            Message: cancelledCount > 0
-                ? $"已紧急停止 {cancelledCount} 个活跃桌面操控会话并释放全部输入控制。"
+            CancelledSessions: targets.Length,
+            Message: targets.Length > 0
+                ? $"已紧急停止 {targets.Length} 个桌面操控会话，正在释放输入控制。"
                 : "当前无活跃桌面操控会话，紧急熔断保护已就绪。");
     }
 
@@ -937,29 +1050,6 @@ public sealed class ComputerSessionManager : IComputerSessionManager
             VirtualHeight: raw.VirtualHeight,
             EffectiveMode: effectiveMode);
 
-        // Mask any protected CodexFlow windows overlapping the captured region to prevent self-approval visual feedback loops.
-        var windows = _driver.GetVisibleWindows(
-            _securityGuard.ProtectedPidsSnapshot,
-            _securityGuard.ProtectedHandlesSnapshot);
-        var protectedRects = new List<ComputerProtectedRect>();
-        foreach (var win in windows)
-        {
-            if (win.IsMinimized || !_securityGuard.IsProtectedWindow(win))
-            {
-                continue;
-            }
-
-            if (TryProjectScreenRectToImage(viewport, win.X, win.Y, win.Width, win.Height, out var rx, out var ry, out var rw, out var rh))
-            {
-                protectedRects.Add(new ComputerProtectedRect(rx, ry, rw, rh));
-            }
-        }
-
-        if (protectedRects.Count > 0)
-        {
-            ComputerVisualProcessor.ApplyProtectedRectMasks(bgra, imgW, imgH, protectedRects);
-        }
-
         if (includeGrid)
         {
             ComputerVisualProcessor.DrawCoordinateGrid(bgra, imgW, imgH, effectiveMode);
@@ -1030,39 +1120,6 @@ public sealed class ComputerSessionManager : IComputerSessionManager
         return (primary.X, primary.Y, primary.Width, primary.Height);
     }
 
-    private static bool TryProjectScreenRectToImage(
-        ComputerCaptureViewport viewport,
-        int sx,
-        int sy,
-        int sw,
-        int sh,
-        out int ix,
-        out int iy,
-        out int iw,
-        out int ih)
-    {
-        var capRight = viewport.CaptureOriginX + viewport.CaptureWidth;
-        var capBottom = viewport.CaptureOriginY + viewport.CaptureHeight;
-        var interLeft = Math.Max(viewport.CaptureOriginX, sx);
-        var interTop = Math.Max(viewport.CaptureOriginY, sy);
-        var interRight = Math.Min(capRight, sx + sw);
-        var interBottom = Math.Min(capBottom, sy + sh);
-
-        if (interRight <= interLeft || interBottom <= interTop)
-        {
-            ix = iy = iw = ih = 0;
-            return false;
-        }
-
-        var tl = CoordinateMapper.ToImageCoordinate(viewport, interLeft, interTop);
-        var br = CoordinateMapper.ToImageCoordinate(viewport, interRight - 1, interBottom - 1);
-        ix = tl.X;
-        iy = tl.Y;
-        iw = Math.Max(1, br.X - tl.X + 1);
-        ih = Math.Max(1, br.Y - tl.Y + 1);
-        return true;
-    }
-
     private async Task RequestHostWindowAvoidanceAsync(SessionRuntimeState session, CancellationToken ct)
     {
         session.HostWindowAvoidanceRequested = true;
@@ -1101,30 +1158,44 @@ public sealed class ComputerSessionManager : IComputerSessionManager
             return true;
         }
 
+        if (!_options.CurrentValue.AutoMinimizeHostWindow)
+        {
+            return false;
+        }
+
         session.HostWindowAvoidanceRequested = true;
         await PublishStateAsync(session, force: true, ct).ConfigureAwait(false);
-
-        try
+        for (var elapsed = 0; elapsed < AvoidanceMaxWaitMs; elapsed += AvoidancePollIntervalMs)
         {
-            var elapsed = 0;
-            while (elapsed < AvoidanceMaxWaitMs)
+            await Task.Delay(AvoidancePollIntervalMs, ct).ConfigureAwait(false);
+            if (!IsObstructedBySelf())
             {
-                await Task.Delay(AvoidancePollIntervalMs, ct).ConfigureAwait(false);
-                elapsed += AvoidancePollIntervalMs;
-                if (!IsObstructedBySelf())
-                {
-                    return true;
-                }
+                return true;
             }
-
-            return !IsObstructedBySelf();
         }
-        finally
+
+        return false;
+    }
+
+    private async Task ReleaseHostWindowAvoidanceAsync(SessionRuntimeState session)
+    {
+        if (session.HostWindowAvoidanceRequested)
         {
             session.HostWindowAvoidanceRequested = false;
             await PublishStateAsync(session, force: true, CancellationToken.None).ConfigureAwait(false);
         }
     }
+
+    private static ComputerOperationResult HostWindowObstructed()
+        => Fail("self_ui_interaction_forbidden",
+            "目标仍被 CodexFlow 窗口覆盖。请移开或最小化 CodexFlow，再重新观察桌面。");
+
+    private ExecutionPermissionMode ExecutionMode
+        => _executionOptions?.CurrentValue.PermissionMode ?? ExecutionPermissionMode.Ask;
+
+    private bool IsManagedFullAuto()
+        => ExecutionMode == ExecutionPermissionMode.FullAuto &&
+           _controlPlane is { TokenDeliveryMode: "Pipe", IsControlPlaneAvailable: true, SelfApprovalProtection: true };
 
     private (bool NeedsApproval, bool AllowSessionScope) EvaluateApprovalRequirement(
         string sessionId,
@@ -1210,27 +1281,95 @@ public sealed class ComputerSessionManager : IComputerSessionManager
         return true;
     }
 
-    private bool TryAcquireDesktopLease(string sessionId, out ComputerOperationResult? error)
+    private bool TryAcquireDesktopLease(SessionRuntimeState session, out ComputerOperationResult? error)
     {
         var timeout = TimeSpan.FromMinutes(Math.Clamp(_options.CurrentValue.IdleTimeoutMinutes, 1, 120));
         var now = DateTimeOffset.UtcNow;
 
         lock (_leaseGate)
         {
-            if (_leaseOwnerSessionId is null ||
-                string.Equals(_leaseOwnerSessionId, sessionId, StringComparison.Ordinal) ||
-                now - _leaseLastActivityUtc > timeout)
+            if (session.EmergencyStopped)
             {
-                _leaseOwnerSessionId = sessionId;
-                _leaseLastActivityUtc = now;
-                error = null;
-                return true;
+                error = EmergencyStopped();
+                return false;
             }
 
-            error = Fail(
-                "desktop_busy_by_other_session",
-                $"物理桌面排他租约正由另一个会话（{_leaseOwnerSessionId}）持有，请等待其操作完成或关闭后再发起桌面自动化。");
-            return false;
+            if (!IsLeaseHeldBy(session.SessionId))
+            {
+                if (_leaseOwnerSessionId is { } owner &&
+                    (now - _leaseLastActivityUtc <= timeout ||
+                     (_sessions.TryGetValue(owner, out var previous) && previous.HasActiveAction)))
+                {
+                    error = Fail(
+                        "desktop_busy_by_other_session",
+                        $"物理桌面排他租约正由另一个会话（{owner}）持有，请等待其操作完成或关闭后再发起桌面自动化。");
+                    return false;
+                }
+
+                ReleaseDesktopLease(null);
+                _leaseOwnerSessionId = session.SessionId;
+                var generation = ++_leaseGeneration;
+                try
+                {
+                    var monitor = _driver.StartPhysicalInterruptMonitor(
+                        reason => _ = StopLeaseOwnerOnInterruptAsync(session, generation, reason));
+                    if (!IsLeaseHeldBy(session.SessionId))
+                    {
+                        monitor.Dispose();
+                        error = EmergencyStopped();
+                        return false;
+                    }
+
+                    _leaseInterruptMonitor = monitor;
+                }
+                catch (Exception ex)
+                {
+                    ReleaseDesktopLease(session.SessionId);
+                    _logger.LogWarning(ex, "Could not start Computer Use emergency stop monitor");
+                    error = Fail("emergency_stop_monitor_unavailable", "无法启动桌面急停监听，请重试。");
+                    return false;
+                }
+            }
+
+            _leaseLastActivityUtc = now;
+            error = null;
+            return true;
+        }
+    }
+
+    private async Task StopLeaseOwnerOnInterruptAsync(SessionRuntimeState session, long generation, string reason)
+    {
+        lock (_leaseGate)
+        {
+            if (_leaseGeneration != generation || !IsLeaseHeldBy(session.SessionId))
+            {
+                return;
+            }
+
+            StopDesktopSession(session, reason);
+        }
+
+        await PublishStateAsync(session, force: true, CancellationToken.None).ConfigureAwait(false);
+    }
+
+    private void StopDesktopSession(SessionRuntimeState session, string? reason)
+    {
+        session.TriggerEmergencyStop();
+        session.HostWindowAvoidanceRequested = false;
+        session.Touch();
+        _approvalCoordinator?.CancelSessionApprovals(session.SessionId, reason ?? "Emergency stop triggered.");
+        if (!session.HasActiveAction)
+        {
+            ReleaseDesktopLease(session.SessionId);
+        }
+    }
+
+    private void ExitDesktopActionScope(SessionRuntimeState session)
+    {
+        session.ExitActionScope();
+        if (session.EmergencyStopped)
+        {
+            ReleaseDesktopLease(session.SessionId);
         }
     }
 
@@ -1241,6 +1380,9 @@ public sealed class ComputerSessionManager : IComputerSessionManager
             if (sessionId is null || string.Equals(_leaseOwnerSessionId, sessionId, StringComparison.Ordinal))
             {
                 _leaseOwnerSessionId = null;
+                var monitor = _leaseInterruptMonitor;
+                _leaseInterruptMonitor = null;
+                monitor?.Dispose();
             }
         }
     }
@@ -1371,6 +1513,9 @@ public sealed class ComputerSessionManager : IComputerSessionManager
     private static ComputerOperationResult Fail(string code, string message)
         => new(Succeeded: false, Output: $"[{code}] {message}", Summary: message, ErrorCode: code);
 
+    private static ComputerOperationResult EmergencyStopped()
+        => Fail("emergency_stopped", "本会话 Computer Use 已被用户紧急停止，需由用户发起新一轮对话后恢复。");
+
     private sealed class SessionRuntimeState(string sessionId) : IDisposable
     {
         private readonly object _actionGate = new();
@@ -1394,7 +1539,7 @@ public sealed class ComputerSessionManager : IComputerSessionManager
         public bool TakeoverPending { get; private set; }
         public string? TakeoverReason { get; private set; }
         public DateTimeOffset? TakeoverStartedAtUtc { get; private set; }
-        public bool EmergencyStopped { get; set; }
+        public volatile bool EmergencyStopped;
         public bool HostWindowAvoidanceRequested { get; set; }
         public DateTimeOffset LastActivityUtc { get; private set; } = DateTimeOffset.UtcNow;
         public DateTimeOffset LastPublishedUtc { get; set; } = DateTimeOffset.MinValue;
@@ -1469,7 +1614,23 @@ public sealed class ComputerSessionManager : IComputerSessionManager
             {
                 _activeScopeCts?.Dispose();
                 _activeScopeCts = new CancellationTokenSource();
+                if (EmergencyStopped)
+                {
+                    _activeScopeCts.Cancel();
+                }
+
                 return _activeScopeCts.Token;
+            }
+        }
+
+        public bool HasActiveAction
+        {
+            get
+            {
+                lock (_actionGate)
+                {
+                    return _activeScopeCts is not null;
+                }
             }
         }
 

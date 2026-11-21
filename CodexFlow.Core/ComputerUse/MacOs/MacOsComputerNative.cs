@@ -55,6 +55,7 @@ internal static unsafe class MacOsComputerNative
 
     private const uint CgScrollEventUnitPixel = 0;
     private const uint CgMouseEventClickState = 1;
+    private const uint CgKeyboardEventAutorepeat = 8;
     private const uint CgKeyboardEventKeycode = 9;
     private const uint CgEventSourceUserData = 42;
     private const long CodexFlowInjectedUserData = 0x43464C57; // "CFLW"
@@ -567,7 +568,6 @@ internal static unsafe class MacOsComputerNative
         var count = Math.Clamp(clickCount, 1, 3);
         var pt = new CGPoint { X = x, Y = y };
 
-        MoveMouse(x, y);
         for (var i = 1; i <= count; i++)
         {
             var down = CGEventCreateMouseEvent(0, downType, pt, cgBtn);
@@ -586,8 +586,9 @@ internal static unsafe class MacOsComputerNative
         }
     }
 
-    public static void DragMouse(int startX, int startY, int endX, int endY, string button)
+    public static void DragMouse(int startX, int startY, int endX, int endY, string button, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         var (downType, upType, cgBtn) = ResolveMouseTypes(button);
         var dragType = (button?.Trim().ToLowerInvariant()) switch
         {
@@ -597,6 +598,7 @@ internal static unsafe class MacOsComputerNative
         };
 
         var startPt = new CGPoint { X = startX, Y = startY };
+        var currentPoint = startPt;
         var down = CGEventCreateMouseEvent(0, downType, startPt, cgBtn);
         PostAndRelease(down);
 
@@ -605,16 +607,18 @@ internal static unsafe class MacOsComputerNative
             const int steps = 10;
             for (var step = 1; step <= steps; step++)
             {
+                ct.ThrowIfCancellationRequested();
                 var ix = startX + (endX - startX) * (step / (double)steps);
                 var iy = startY + (endY - startY) * (step / (double)steps);
-                var drag = CGEventCreateMouseEvent(0, dragType, new CGPoint { X = ix, Y = iy }, cgBtn);
+                currentPoint = new CGPoint { X = ix, Y = iy };
+                var drag = CGEventCreateMouseEvent(0, dragType, currentPoint, cgBtn);
                 PostAndRelease(drag);
                 Thread.Sleep(12);
             }
         }
         finally
         {
-            var up = CGEventCreateMouseEvent(0, upType, new CGPoint { X = endX, Y = endY }, cgBtn);
+            var up = CGEventCreateMouseEvent(0, upType, currentPoint, cgBtn);
             PostAndRelease(up);
         }
     }
@@ -884,7 +888,8 @@ internal static unsafe class MacOsComputerNative
         {
             var sourceTag = CGEventGetIntegerValueField(eventRef, CgEventSourceUserData);
             var keycode = CGEventGetIntegerValueField(eventRef, CgKeyboardEventKeycode);
-            if (sourceTag != CodexFlowInjectedUserData && keycode == MacVkEscape)
+            if (sourceTag != CodexFlowInjectedUserData && keycode == MacVkEscape &&
+                CGEventGetIntegerValueField(eventRef, CgKeyboardEventAutorepeat) == 0)
             {
                 var now = Environment.TickCount64;
                 var prev = Interlocked.Exchange(ref s_lastPhysicalEscTicks, now);

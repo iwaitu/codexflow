@@ -195,7 +195,13 @@ public sealed class ComputerSecurityGuard
         mismatchReason = null;
         if (expectedSnapshot is null)
         {
-            return true;
+            if (liveWindow is null)
+            {
+                return true;
+            }
+
+            mismatchReason = "目标点出现了新的窗口。请重新截屏确认后再操作。";
+            return false;
         }
 
         if (liveWindow is null)
@@ -206,11 +212,18 @@ public sealed class ComputerSecurityGuard
 
         var handleMatches = string.Equals(expectedSnapshot.WindowHandle, liveWindow.WindowHandle, StringComparison.OrdinalIgnoreCase);
         var processMatches = string.Equals(expectedSnapshot.ProcessName, liveWindow.ProcessName, StringComparison.OrdinalIgnoreCase);
-        if (!handleMatches || !processMatches)
+        if (!handleMatches || !processMatches || expectedSnapshot.ProcessId != liveWindow.ProcessId)
         {
             mismatchReason =
                 $"安全策略拦截 TOCTOU 窗口漂移：审批时目标为 {expectedSnapshot.ProcessName} ({expectedSnapshot.WindowHandle})，" +
                 $"当前变更为 {liveWindow.ProcessName} ({liveWindow.WindowHandle})。请重新截屏确认后再操作。";
+            return false;
+        }
+
+        if ((expectedSnapshot.X, expectedSnapshot.Y, expectedSnapshot.Width, expectedSnapshot.Height) !=
+            (liveWindow.X, liveWindow.Y, liveWindow.Width, liveWindow.Height))
+        {
+            mismatchReason = "目标窗口已移动或改变大小。请重新截屏确认后再操作。";
             return false;
         }
 

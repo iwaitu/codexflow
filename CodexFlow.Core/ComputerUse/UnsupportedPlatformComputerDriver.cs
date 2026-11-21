@@ -77,7 +77,7 @@ public sealed class UnsupportedPlatformComputerDriver : IComputerDriver
     public void PerformMouseMove(int x, int y)
         => throw new PlatformNotSupportedException("当前平台暂不支持原生 Computer Use 鼠标移动。");
 
-    public void PerformMouseDrag(int startX, int startY, int endX, int endY, string button)
+    public void PerformMouseDrag(int startX, int startY, int endX, int endY, string button, CancellationToken ct)
         => throw new PlatformNotSupportedException("当前平台暂不支持原生 Computer Use 鼠标拖拽。");
 
     public void PerformMouseScroll(int x, int y, int deltaX, int deltaY)

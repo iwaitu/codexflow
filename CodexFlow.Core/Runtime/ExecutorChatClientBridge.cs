@@ -4,6 +4,7 @@
 
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Models;
 using Microsoft.Extensions.AI;
@@ -129,8 +130,8 @@ internal sealed class ExecutorChatClientBridge : IChatClient
             {
                 if (content is FunctionResultContent fnResult)
                 {
-                    var raw = fnResult.Result?.ToString();
-                    foreach (var item in store.ExtractReferencedAttachments(raw))
+                    var output = ReadToolOutput(fnResult.Result?.ToString());
+                    foreach (var item in store.ExtractReferencedAttachments(output))
                     {
                         if (seenIds.Add(item.Id))
                         {
@@ -158,6 +159,36 @@ internal sealed class ExecutorChatClientBridge : IChatClient
         }
 
         return result;
+    }
+
+    private static string? ReadToolOutput(string? text)
+    {
+        if (text is null || !text.Contains("codexflow_visual", StringComparison.Ordinal) ||
+            !text.AsSpan().TrimStart().StartsWith("{", StringComparison.Ordinal))
+        {
+            return text;
+        }
+
+        // The QRE tool result is JSON. Its escaped marker can only be resolved after decoding the output field.
+        try
+        {
+            using var document = JsonDocument.Parse(text);
+            var root = document.RootElement;
+            if (root.TryGetProperty("__icodex_tool_result", out var marker) &&
+                marker.ValueKind == JsonValueKind.True &&
+                (root.TryGetProperty("output", out var output) ||
+                 root.TryGetProperty(nameof(CodexToolResult.Output), out output)) &&
+                output.ValueKind == JsonValueKind.String)
+            {
+                return output.GetString();
+            }
+        }
+        catch (JsonException)
+        {
+            // Tool results can also be plain text.
+        }
+
+        return text;
     }
 
     private static ChatMessage HydrateUserMessage(ChatMessage msg, TurnVisualAttachmentStore store)

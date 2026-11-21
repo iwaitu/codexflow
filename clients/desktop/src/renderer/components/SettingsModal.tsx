@@ -113,7 +113,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   );
   const [computerEnabled, setComputerEnabled] = useState(Boolean(computerSettings?.enabled ?? false));
   const [computerApprovalPolicy, setComputerApprovalPolicy] = useState(
-    computerSettings?.interactionApprovalPolicy ?? 'HighRiskOnly',
+    computerSettings?.interactionApprovalPolicy ?? 'AlwaysAsk',
   );
   const [computerCoordinateMode, setComputerCoordinateMode] = useState(
     computerSettings?.coordinateMode ?? 'Auto',
@@ -181,7 +181,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setBrowserIdleMinutes(String(browserSettings?.idleTimeoutMinutes ?? 15));
     setBrowserMaxSessions(String(browserSettings?.maxConcurrentSessions ?? 3));
     setComputerEnabled(Boolean(computerSettings?.enabled ?? false));
-    setComputerApprovalPolicy(computerSettings?.interactionApprovalPolicy ?? 'HighRiskOnly');
+    setComputerApprovalPolicy(computerSettings?.interactionApprovalPolicy ?? 'AlwaysAsk');
     setComputerCoordinateMode(computerSettings?.coordinateMode ?? 'Auto');
     setComputerMaxLongEdge(String(computerSettings?.maxImageLongEdge ?? 1280));
     setComputerMaxScreenshots(String(computerSettings?.maxScreenshotsPerTurn ?? 10));
@@ -861,10 +861,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     onChange={(e) => setComputerApprovalPolicy(e.target.value)}
                     className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
                   >
-                    <option value="HighRiskOnly">HighRiskOnly（默认：危险热键/首操/窗口漂移审批）</option>
+                    <option value="HighRiskOnly">HighRiskOnly（文本输入、组合键和拖拽需审批）</option>
                     <option value="AlwaysAsk">AlwaysAsk（每次键鼠动作均弹窗询问）</option>
                     <option value="AppScopedInSession">AppScopedInSession（本会话按应用进程授信）</option>
                   </select>
+                  <span className="mt-1 block text-xs text-slate-400">
+                    受管桌面使用 FullAuto 时自动放行常规键鼠动作。Deny 禁止键鼠输入。
+                  </span>
                 </label>
 
                 <label className="block">

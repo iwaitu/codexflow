@@ -89,6 +89,8 @@ public interface IComputerSessionManager : IAsyncDisposable
 
     void ResetEmergencyStopForNewTurn(string sessionId);
 
+    Task EndTurnAsync(string sessionId, CancellationToken ct = default);
+
     Task<ComputerEmergencyStopResponse> EmergencyStopAsync(
         string? sessionId = null,
         string? reason = null,

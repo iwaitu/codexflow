@@ -85,18 +85,19 @@ CodexFlow 在**日常模式（`Daily`）**与**开发模式（`Development`）**
    - **Plan Mode 与后台 Worker 禁用**：`PlanSafeToolPolicy` 屏蔽所有 `ComputerInteract`（`computer_act`、`computer_request_takeover`）；`AmbientComputerCallerContext` 与各工具入口强制拒绝后台 Worker/子代理调用桌面操控工具。
    - **非多模态模型硬拒绝**：`computer_observe` 与 `computer_act`（带自动 350ms 后重抓截屏）在执行前校验当前模型支持多模态图像输入（`TurnVisualAttachmentContext.Current?.IsMultimodalEnabled`），禁止在纯文本大模型下盲点盲输。
    - **滑动视觉窗口**：桌面截屏注册为 `computer-screenshot` 滑动分类附件，仅保留最近 **3 帧** 供模型决策参考，防止长任务图片持续膨胀上下文预算。
-2. **宿主 Self-UI 防自批与双层遮罩**
+2. **宿主窗口输入保护**
    - 客户端在就绪后经控制面 `POST /api/gateway/computer/protected-windows` 上报主进程 PID 与所有受保护窗口原生句柄（含主窗口与悬浮置顶停止胶囊窗）。
-   - `Win32ComputerNative`（`CreateToolhelp32Snapshot` 进程树遍历）与 `MacOsComputerNative` 结合 `ComputerSecurityGuard` 在截屏捕获阶段定位同进程树及客户端保护句柄可见矩形，由 `ComputerVisualProcessor` 使用纯托管像素缓冲涂黑并标记 `[CODEXFLOW PROTECTED]`。
+   - 桌面截图按实际可见画面捕获。画面中可见的 CodexFlow 窗口和叠在其上方的系统菜单都会出现在截图中。受保护窗口的判断用于键鼠输入控制。
    - 所有桌面点击类操作在落点周边执行 **`±4px` 9 宫格多点探测**；只要任意探测点命中 CodexFlow 自身进程树、客户端保护窗口、敏感窗口列表、或位于当前窗口 Z-Order 之上的高危系统进程，立即硬拒绝，从根源阻断模型点击「允许执行」按钮完成自我审批。
 3. **高敏进程屏蔽与高危快捷键冻结机制**
    - `BlockedProcessNames` 默认覆盖密码管理器、系统身份授权窗口与凭据保险箱（`1password`、`keepass`、`bitwarden`、`lastpass`、`dashlane`、`securityagent`、`consent`、`credentialuibroker` 等），命中的窗口既禁止 `pin`，也禁止任何鼠标点击或字符注入；
    - `Win+R` / `Win+L` / `Win+X` / `Ctrl+Alt+Del` / `Alt+F4` / `Cmd+Q` / `Cmd+Space` / `Cmd+Tab` 等高危系统级热键受分类策略管制（高危系统键硬拦截，高风险修改/跨应用热键强制单次人工审批）；
-   - **`AlwaysAsk` / `HighRiskOnly` / `AppScopedInSession` 分层审批 + 待批屏幕冻结 + TOCTOU 复核**：当触发审批时，系统截取带红圈靶心的局部预览图并通过 `approval_requested` 呈送控制面，同时记录当前桌面目标句柄与前后像素签名（待批期间若人工或外部弹窗打断导致目标漂移、Z-Order 遮挡变化或画面哈希显著漂移，审批通过后也拒绝执行）。
+   - **桌面交互审批**：受管本机桌面宿主的 `FullAuto` 为主会话自动放行常规键鼠输入，`Deny` 禁止注入。在 `Ask`、`AutoInWorkspace` 或非受管宿主中，仍由 `AlwaysAsk`、`HighRiskOnly` 或 `AppScopedInSession` 决定审批。危险系统组合键、敏感窗口、保护窗口与急停照常生效。
+   - **审批期间冻结与执行前复核**：审批卡显示目标及可用的局部图像。审批后按原绝对坐标检查窗口句柄、进程与边界，任一拖拽端点变化也会阻止执行。需要避让时，CodexFlow 暂时最小化到输入与回显截图结束。用户操作审批卡导致的指针位移不会改写落点。
 4. **物理桌面全局排他租约锁与四层紧急停止体系**
-   - `ComputerSessionManager` 维护单一本机桌面物理键鼠独占租约锁（同一时刻仅允许 1 个活跃会话持有桌面控制权，空闲超时自动回收）。
+   - `ComputerSessionManager` 维护单一本机桌面物理键鼠独占租约锁。同一时刻仅允许一个会话持有桌面控制权。回合结束时主动释放，空闲超时也会回收。
    - 四层紧急中断机制并存：
-     1. 宿主原生底层非注入按键钩子：Windows `WH_KEYBOARD_LL` 检测 `!LLKHF_INJECTED` 物理 `Esc` 双击（450ms 内连按两次 `Esc`）、macOS `CGEventTap` 检测 `kCGEventSourceUserData != CodexFlowEventTag` 物理 `Esc` 双击；
+     1. 桌面租约存续期间持续监听物理 `Esc` 双击。Windows `WH_KEYBOARD_LL` 忽略注入事件和长按重复，macOS `CGEventTap` 忽略 CodexFlow 注入事件和长按重复。两次按下的间隔最多 450ms；
      2. 操控期 Electron 主进程动态注册 `CommandOrControl+.` 全局热键（非操控期不长期占用系统快捷键）；
      3. 顶部无焦点置顶停止胶囊窗（`focusable: false`，点击 `[■ 停止]` 直接经控制面熔断）；
      4. 应用聚焦时排除中文 IME 合成态（`isComposing` / `keyCode === 229`）与弹层态后的 `Esc` / `Ctrl+.` + 物理鼠标大幅移动让权探测（`>120px` 连续用户位移自动切回 `takeover` 或停止）。

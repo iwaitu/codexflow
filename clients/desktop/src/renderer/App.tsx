@@ -14,6 +14,7 @@ import { WelcomeWizardModal } from './components/WelcomeWizardModal';
 import { WorkspaceInspector } from './components/WorkspaceInspector';
 import type { AppUpdateState } from '@shared/ipc';
 import { ApiError, apiClient, type ConversationSummary } from './lib/apiClient';
+import { toChatMessages } from './lib/sessionRecovery';
 import {
   formatOptimisticMessageWithAttachments,
   type ChatAttachment,
@@ -890,7 +891,7 @@ export const App: React.FC = () => {
       if (cur.activeSessionId !== sid || cur.sessionGeneration !== gen || cur.activeConversationId !== conversationId) {
         return;
       }
-      useAppStore.setState({ messages: history, messagesTruncated: false });
+      useAppStore.setState({ messages: toChatMessages(history), messagesTruncated: false });
       const cw = await apiClient.getContextWindow(auth, sid).catch(() => null);
       const afterCw = useAppStore.getState();
       if (afterCw.activeSessionId === sid && afterCw.sessionGeneration === gen) {

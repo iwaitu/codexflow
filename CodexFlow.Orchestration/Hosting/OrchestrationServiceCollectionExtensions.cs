@@ -357,7 +357,8 @@ public static class OrchestrationServiceCollectionExtensions
                 sp.GetService<CodexFlow.Core.Configuration.IModelSettingsService>(),
                 sp.GetService<CodexFlow.Core.ComputerUse.IComputerApprovalCoordinator>(),
                 sp.GetService<CodexFlow.Core.ComputerUse.IComputerStateEventPublisher>(),
-                controlPlane: sp.GetService<CodexFlow.Core.Execution.Approval.IControlPlaneStateProvider>()));
+                controlPlane: sp.GetService<CodexFlow.Core.Execution.Approval.IControlPlaneStateProvider>(),
+                executionOptions: sp.GetService<Microsoft.Extensions.Options.IOptionsMonitor<CodexFlow.Core.Execution.ExecutionOptions>>()));
         services.AddHostedService<CodexFlow.Orchestration.ComputerUse.ComputerIdleReaperHostedService>();
         Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<CodexFlow.Core.BusinessSkills.OpenApiBusinessPluginAdapter>(services);
         Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<CodexFlow.Core.BusinessSkills.McpBusinessPluginAdapter>(services);
