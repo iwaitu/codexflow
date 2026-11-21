@@ -22,7 +22,7 @@ public sealed record MultimodalProbeResult(
 public interface IMultimodalCapabilityProbe
 {
     Task<MultimodalProbeResult> ProbeAsync(
-        string apiUrl,
+        string endpointTemplate,
         string? apiMode,
         string model,
         string apiKey,
@@ -47,13 +47,13 @@ public sealed class DefaultMultimodalCapabilityProbe : IMultimodalCapabilityProb
     public static ReadOnlyMemory<byte> BuiltInTestPngBytes => BuiltInTestPng;
 
     public async Task<MultimodalProbeResult> ProbeAsync(
-        string apiUrl,
+        string endpointTemplate,
         string? apiMode,
         string model,
         string apiKey,
         CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(apiUrl) || string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(model))
+        if (string.IsNullOrWhiteSpace(endpointTemplate) || string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(model))
         {
             return new MultimodalProbeResult(
                 IsSupported: false,
@@ -64,10 +64,10 @@ public sealed class DefaultMultimodalCapabilityProbe : IMultimodalCapabilityProb
         using var handler = new SocketsHttpHandler { ConnectTimeout = ConnectTimeout };
         using var httpClient = new HttpClient(handler, disposeHandler: false) { Timeout = ProbeTimeout };
 
-        IChatClient? client = null;
         try
         {
-            client = VllmChatClientFactory.Create(apiUrl, apiKey, model, apiMode, httpClient);
+            using var client = VllmChatClientFactory.Create(endpointTemplate, apiKey, model, apiMode, httpClient);
+            return await ProbeClientAsync(client, model, ct).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -76,8 +76,10 @@ public sealed class DefaultMultimodalCapabilityProbe : IMultimodalCapabilityProb
                 Status: "ProbeFailed",
                 Message: $"创建模型客户端失败: {ex.Message}");
         }
+    }
 
-        using var disposableClient = client;
+    private async Task<MultimodalProbeResult> ProbeClientAsync(IChatClient client, string model, CancellationToken ct)
+    {
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(ProbeTimeout);
 

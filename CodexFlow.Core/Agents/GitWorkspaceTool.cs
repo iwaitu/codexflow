@@ -191,15 +191,7 @@ public class GitWorkspaceTool : ICodexTool
                         $"- 目录数: {dirCount}\n" +
                         $"- 仓库 URL: {repoUrl}\n" +
                         $"请使用 ivilson_ls 工具查看项目结构。",
-                        new
-                        {
-                            Action = "Clone",
-                            Url = repoUrl,
-                            Path = targetPath,
-                            ProjectFolder = Path.GetFileName(targetPath),
-                            FileCount = fileCount,
-                            DirectoryCount = dirCount
-                        });
+                        new GitCloneMetadata("Clone", repoUrl, targetPath, Path.GetFileName(targetPath), fileCount, dirCount));
 
                 default:
                     return CodexToolResult.Error($"Unknown tool {Name}");
@@ -370,3 +362,7 @@ public class GitWorkspaceTool : ICodexTool
     }
 }
 
+
+
+internal sealed record GitCloneMetadata(
+    string Action, string Url, string Path, string ProjectFolder, int FileCount, int DirectoryCount);

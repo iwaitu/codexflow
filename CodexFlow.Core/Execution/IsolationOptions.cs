@@ -15,7 +15,7 @@ public sealed class IsolationOptions
     public string CommandImage { get; set; } = "mcr.microsoft.com/dotnet/sdk:10.0";
 
     /// <summary>exec_code language -> image.</summary>
-    public Dictionary<string, string> LanguageImages { get; set; } = new(StringComparer.OrdinalIgnoreCase)
+    public Dictionary<string, string> LanguageImages { get; init; } = new(StringComparer.OrdinalIgnoreCase)
     {
         ["python"] = "python:3.12-alpine",
         ["node"] = "node:22-alpine",
@@ -23,7 +23,7 @@ public sealed class IsolationOptions
     };
 
     /// <summary>First argv token -> image override (e.g. npm -> node image). Falls back to <see cref="CommandImage"/>.</summary>
-    public Dictionary<string, string> ExecutableImages { get; set; } = new(StringComparer.OrdinalIgnoreCase)
+    public Dictionary<string, string> ExecutableImages { get; init; } = new(StringComparer.OrdinalIgnoreCase)
     {
         ["node"] = "node:22-alpine",
         ["npm"] = "node:22-alpine",
@@ -35,7 +35,7 @@ public sealed class IsolationOptions
     };
 
     /// <summary>When set, only these images may run.</summary>
-    public List<string>? AllowedImages { get; set; }
+    public IReadOnlyList<string>? AllowedImages { get; init; }
 
     /// <summary>Pull a missing image from the registry (host side, not the guest). Off by default.</summary>
     public bool PullMissingImages { get; set; }

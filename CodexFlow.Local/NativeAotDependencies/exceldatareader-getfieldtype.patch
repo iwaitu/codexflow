@@ -1,0 +1,23 @@
+diff --git a/src/ExcelDataReader/ExcelDataReader.cs b/src/ExcelDataReader/ExcelDataReader.cs
+--- a/src/ExcelDataReader/ExcelDataReader.cs
++++ b/src/ExcelDataReader/ExcelDataReader.cs
+@@ -97,7 +97,18 @@
+ #if NET8_0_OR_GREATER
+     [return: DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicFields)]
+ #endif
+-    public Type GetFieldType(int i) => GetValue(i)?.GetType();
++    public Type GetFieldType(int i) => GetValue(i) switch
++    {
++        null => null,
++        bool => typeof(bool),
++        int => typeof(int),
++        double => typeof(double),
++        string => typeof(string),
++        DateTime => typeof(DateTime),
++        DateTimeOffset => typeof(DateTimeOffset),
++        TimeSpan => typeof(TimeSpan),
++        _ => throw new InvalidOperationException("Unexpected Excel cell value type."),
++    };
+ 
+     public float GetFloat(int i) => (float)GetValue(i);
+ 

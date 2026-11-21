@@ -16,7 +16,7 @@ public sealed record SkillRunExecutionContext
     public required SkillDefinitionV1 Definition { get; init; }
     public required string PluginId { get; init; }
     public required string PluginName { get; init; }
-    public required string SourceUrl { get; init; }
+    public required string SourceAddress { get; init; }
     public required string Environment { get; init; }
     public required string ConnectionId { get; init; }
     public required int ConnectionRevision { get; init; }
@@ -322,7 +322,7 @@ public sealed class SkillWorkflowEngine
                 Capability = cap,
                 EffectiveRisk = cap.Summary.Risk,
                 EndpointPolicy = ctx.EndpointPolicy,
-                SourceUrl = ctx.SourceUrl,
+                SourceUrl = ctx.SourceAddress,
                 AuthKind = ctx.ExecutionAuthKind,
                 SecretPayloadJson = ctx.ExecutionSecretJson,
                 SelectedServerUrl = string.IsNullOrWhiteSpace(def.ConnectionBinding.SelectedServerUrl) ? null : def.ConnectionBinding.SelectedServerUrl,

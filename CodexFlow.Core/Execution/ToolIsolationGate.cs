@@ -180,7 +180,6 @@ public sealed class ToolIsolationGate(
         Func<bool>? verifyStagedArtifactsUnchanged = null,
         Func<(string? ScriptSha256, string? InputsManifestSha256)>? refreshArtifactHashes = null,
         Func<ExecutionBackend, (IReadOnlyList<string> FullArgv, string? StdIn, IReadOnlyDictionary<string, string>? EnvOverrides)?>? resolveArgvForBackend = null,
-        CancellationToken ct = default,
         bool preResolvedTrustedExecutable = false,
         string? wrapperSha256 = null,
         int timeoutSeconds = 0,
@@ -190,7 +189,8 @@ public sealed class ToolIsolationGate(
         string? scriptPreview = null,
         int? scriptLength = null,
         string? backendNotice = null,
-        bool allowBackendSwitchRebuild = true)
+        bool allowBackendSwitchRebuild = true,
+        CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(backend);

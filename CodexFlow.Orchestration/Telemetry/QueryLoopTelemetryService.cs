@@ -6,7 +6,7 @@ using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using CodexFlow.Core.Telemetry;
 using Microsoft.Extensions.Logging;
-using Newtonsoft.Json;
+using CodexFlow.Orchestration.Persistence;
 
 namespace CodexFlow.Telemetry;
 
@@ -69,16 +69,14 @@ public sealed class QueryLoopTelemetryService : IQueryLoopTelemetry
         var ep = evt.EntryPoint.ToString();
         _queryRunsTotal.Add(1, new TagList { { "entry_point", ep } });
 
-        _logger.LogInformation("QUERYLOOP|{Json}", Serialize(new
-        {
-            event_type = "query_loop_started",
-            query_id = evt.QueryId,
-            session_id = evt.SessionId,
-            entry_point = ep,
-            started_at = evt.StartedAt,
-            max_rounds = evt.MaxRounds,
-            initial_context_chars = evt.InitialContextChars
-        }));
+        _logger.LogInformation("QUERYLOOP|{Json}", OrchestrationPayloadJson.Write(
+            ("event_type", "query_loop_started"),
+            ("query_id", evt.QueryId),
+            ("session_id", evt.SessionId),
+            ("entry_point", ep),
+            ("started_at", evt.StartedAt),
+            ("max_rounds", evt.MaxRounds),
+            ("initial_context_chars", evt.InitialContextChars)));
     }
 
     /// <summary>
@@ -93,23 +91,21 @@ public sealed class QueryLoopTelemetryService : IQueryLoopTelemetry
         if (evt.ToolCallCount == 0)
             _zeroToolCallRoundsTotal.Add(1, new TagList { { "entry_point", ep } });
 
-        _logger.LogInformation("QUERYLOOP|{Json}", Serialize(new
-        {
-            event_type = "query_loop_round_completed",
-            query_id = evt.QueryId,
-            session_id = evt.SessionId,
-            entry_point = ep,
-            round = evt.Round,
-            tool_call_count = evt.ToolCallCount,
-            has_text = evt.HasText,
-            text_length = evt.TextLength,
-            thinking_length = evt.ThinkingLength,
-            context_chars = evt.ContextChars,
-            duration_ms = evt.DurationMs,
-            continue_reason = evt.ContinueReason,
-            prompt_tokens = evt.PromptTokens,
-            completion_tokens = evt.CompletionTokens
-        }));
+        _logger.LogInformation("QUERYLOOP|{Json}", OrchestrationPayloadJson.Write(
+            ("event_type", "query_loop_round_completed"),
+            ("query_id", evt.QueryId),
+            ("session_id", evt.SessionId),
+            ("entry_point", ep),
+            ("round", evt.Round),
+            ("tool_call_count", evt.ToolCallCount),
+            ("has_text", evt.HasText),
+            ("text_length", evt.TextLength),
+            ("thinking_length", evt.ThinkingLength),
+            ("context_chars", evt.ContextChars),
+            ("duration_ms", evt.DurationMs),
+            ("continue_reason", evt.ContinueReason),
+            ("prompt_tokens", evt.PromptTokens),
+            ("completion_tokens", evt.CompletionTokens)));
     }
 
     /// <summary>
@@ -136,25 +132,23 @@ public sealed class QueryLoopTelemetryService : IQueryLoopTelemetry
         if (evt.TotalCachedPromptTokens.HasValue)
             _cachedPromptTokens.Record(evt.TotalCachedPromptTokens.Value, tags);
 
-        _logger.LogInformation("QUERYLOOP|{Json}", Serialize(new
-        {
-            event_type = "query_loop_terminated",
-            query_id = evt.QueryId,
-            session_id = evt.SessionId,
-            entry_point = ep,
-            termination_reason = reason,
-            detail_code = evt.DetailCode,
-            total_rounds = evt.TotalRounds,
-            total_tool_calls = evt.TotalToolCalls,
-            zero_tool_call_rounds = evt.ZeroToolCallRounds,
-            malformed_protocol_count = evt.MalformedProtocolCount,
-            empty_response_count = evt.EmptyResponseCount,
-            recovery_count = evt.RecoveryCount,
-            total_duration_ms = evt.TotalDurationMs,
-            total_prompt_tokens = evt.TotalPromptTokens,
-            total_cached_prompt_tokens = evt.TotalCachedPromptTokens,
-            total_completion_tokens = evt.TotalCompletionTokens
-        }));
+        _logger.LogInformation("QUERYLOOP|{Json}", OrchestrationPayloadJson.Write(
+            ("event_type", "query_loop_terminated"),
+            ("query_id", evt.QueryId),
+            ("session_id", evt.SessionId),
+            ("entry_point", ep),
+            ("termination_reason", reason),
+            ("detail_code", evt.DetailCode),
+            ("total_rounds", evt.TotalRounds),
+            ("total_tool_calls", evt.TotalToolCalls),
+            ("zero_tool_call_rounds", evt.ZeroToolCallRounds),
+            ("malformed_protocol_count", evt.MalformedProtocolCount),
+            ("empty_response_count", evt.EmptyResponseCount),
+            ("recovery_count", evt.RecoveryCount),
+            ("total_duration_ms", evt.TotalDurationMs),
+            ("total_prompt_tokens", evt.TotalPromptTokens),
+            ("total_cached_prompt_tokens", evt.TotalCachedPromptTokens),
+            ("total_completion_tokens", evt.TotalCompletionTokens)));
     }
 
     /// <summary>
@@ -171,19 +165,15 @@ public sealed class QueryLoopTelemetryService : IQueryLoopTelemetry
         else if (evt.RecoveryType == "empty_response")
             _emptyResponseTotal.Add(1, new TagList { { "entry_point", ep } });
 
-        _logger.LogInformation("QUERYLOOP|{Json}", Serialize(new
-        {
-            event_type = "query_loop_recovery",
-            query_id = evt.QueryId,
-            session_id = evt.SessionId,
-            entry_point = ep,
-            round = evt.Round,
-            recovery_type = evt.RecoveryType,
-            attempt = evt.Attempt,
-            continued = evt.Continued,
-            terminal = evt.Terminal
-        }));
+        _logger.LogInformation("QUERYLOOP|{Json}", OrchestrationPayloadJson.Write(
+            ("event_type", "query_loop_recovery"),
+            ("query_id", evt.QueryId),
+            ("session_id", evt.SessionId),
+            ("entry_point", ep),
+            ("round", evt.Round),
+            ("recovery_type", evt.RecoveryType),
+            ("attempt", evt.Attempt),
+            ("continued", evt.Continued),
+            ("terminal", evt.Terminal)));
     }
-
-    private static string Serialize(object obj) => JsonConvert.SerializeObject(obj);
 }

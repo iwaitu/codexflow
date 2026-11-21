@@ -2,6 +2,7 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+using CodexFlow.Gateway.Http;
 using System.Security.Claims;
 using CodexFlow.Application;
 using CodexFlow.Contracts.Browser;
@@ -9,9 +10,6 @@ using CodexFlow.Contracts.BusinessSkills;
 using CodexFlow.Core.Browser;
 using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Orchestration.BusinessSkills;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Mvc;
 
 namespace CodexFlow.Controllers;
 
@@ -44,24 +42,21 @@ public sealed record PendingApprovalsResponse(
 /// <summary>
 /// Interactive execution approval reconciliation (normal plane) and decision submission (control plane).
 /// </summary>
-[ApiController]
-[Route("api/gateway")]
-[Authorize(AuthenticationSchemes = JwtBearerDefaults.AuthenticationScheme)]
+
 public sealed class GatewayApprovalController(
     IExecutionApprovalBroker approvalBroker,
     IChatService chatService,
     IControlPlaneStateProvider? controlPlane = null,
     IBusinessSkillApprovalCoordinator? businessApprovalCoordinator = null,
-    IBrowserApprovalCoordinator? browserApprovalCoordinator = null) : ControllerBase
+    IBrowserApprovalCoordinator? browserApprovalCoordinator = null) : GatewayEndpointHandler
 {
     /// <summary>
     /// Returns all currently pending execution approval items for the owned session so clients can reconcile
     /// after SSE reconnects, <c>replay_gap</c> markers, or heartbeat count mismatches.
     /// </summary>
-    [HttpGet("session/{sessionId}/approvals")]
-    [Authorize(Policy = "ActiveUser")]
-    public async Task<ActionResult<PendingApprovalsResponse>> GetPendingApprovals(
-        [FromRoute] string sessionId,
+
+    public async Task<IResult> GetPendingApprovals(
+        string sessionId,
         CancellationToken ct)
     {
         _ = ct;
@@ -99,10 +94,9 @@ public sealed class GatewayApprovalController(
     /// Requires control-plane credentials and session ownership so the UI can verify script fidelity
     /// independently from SSE preview events.
     /// </summary>
-    [HttpGet("approvals/{approvalId}/script")]
-    [Authorize(Policy = ControlPlaneAuthConstants.ControlPlanePolicy)]
-    public async Task<ActionResult<PendingApprovalScriptSnapshot>> GetPendingApprovalScript(
-        [FromRoute] string approvalId,
+
+    public async Task<IResult> GetPendingApprovalScript(
+        string approvalId,
         CancellationToken ct = default)
     {
         _ = ct;
@@ -141,11 +135,10 @@ public sealed class GatewayApprovalController(
     /// Submits an authorization decision for a pending execution approval item. Requires a control-plane credential;
     /// normal access tokens receive <c>403 Forbidden</c>.
     /// </summary>
-    [HttpPost("approvals/{approvalId}")]
-    [Authorize(Policy = ControlPlaneAuthConstants.ControlPlanePolicy)]
-    public async Task<IActionResult> SubmitApprovalDecision(
-        [FromRoute] string approvalId,
-        [FromBody] SubmitExecutionApprovalRequest request,
+
+    public async Task<IResult> SubmitApprovalDecision(
+        string approvalId,
+        SubmitExecutionApprovalRequest request,
         CancellationToken ct)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -253,7 +246,7 @@ public sealed class GatewayApprovalController(
         return MapSubmissionResult(approvalId, decisionKind, outcome);
     }
 
-    private IActionResult MapSubmissionResult(
+    private IResult MapSubmissionResult(
         string approvalId,
         ExecutionApprovalDecisionKind decisionKind,
         ApprovalSubmissionResult outcome)

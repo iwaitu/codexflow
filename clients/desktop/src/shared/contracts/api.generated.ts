@@ -503,9 +503,7 @@ export type paths = {
             };
             requestBody: {
                 content: {
-                    "multipart/form-data": {
-                        file?: components["schemas"]["IFormFile"];
-                    };
+                    "multipart/form-data": components["schemas"]["UploadAttachmentForm"];
                 };
             };
             responses: {
@@ -2396,8 +2394,8 @@ export type paths = {
         };
         get: {
             parameters: {
-                query?: {
-                    capabilityId?: string;
+                query: {
+                    capabilityId: string;
                     snapshotId?: string;
                 };
                 header?: never;
@@ -5671,6 +5669,9 @@ export type components = {
             /** Format: int32 */
             expectedRevision: number | string;
             name?: null | string;
+        };
+        UploadAttachmentForm: {
+            file?: components["schemas"]["IFormFile"];
         };
         UploadedAttachmentDto: {
             contentType: string;

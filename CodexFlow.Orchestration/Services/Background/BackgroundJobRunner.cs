@@ -20,12 +20,12 @@ using CodexFlow.Core.Workers;
 using CodexFlow.Core.Constants;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System.Diagnostics;
 using System.Xml.Linq;
+using CodexFlow.Orchestration.Persistence;
 
 namespace CodexFlow.Services.Background
 {
@@ -191,11 +191,11 @@ namespace CodexFlow.Services.Background
             try
             {
                 using var execScope = _serviceProvider.CreateScope();
-                var dbContext = execScope.ServiceProvider.GetRequiredService<IJobDbContext>();
+                var persistence = JobRunPersistence.Create(execScope.ServiceProvider);
 
-                var job = await dbContext.BackgroundJobs.FindAsync(jobId);
+                var job = await persistence.LoadAsync(jobId, ct).ConfigureAwait(false);
                 if (job == null) throw new InvalidOperationException($"Job {jobId} not found");
-                var latestCheckpoint = await GetLatestCheckpointAsync(dbContext, jobId, ct);
+                var latestCheckpoint = await persistence.FindLatestCheckpointAsync(jobId, ct);
 
                 _logger.LogInformation(
                     "BackgroundJobRunner loaded job. job={JobId} type={JobType} status={Status} session={SessionId} task={TaskId} checkpoint={Checkpoint}",
@@ -241,7 +241,7 @@ namespace CodexFlow.Services.Background
 
                 if (preflightDeniedPayload is null &&
                     await TryFinalizeCommittedForgeRetryBeforeStartAsync(
-                        dbContext,
+                        persistence,
                         job,
                         latestCheckpoint,
                         suppressNotifications,
@@ -251,7 +251,7 @@ namespace CodexFlow.Services.Background
                 }
 
                 if ((preflightDeniedPayload is null || preflight.Kind == WorkerPreflightKind.WorkspaceUnavailable) &&
-                    await TryDeferRetryNotBeforeAsync(dbContext, job, latestCheckpoint, ct).ConfigureAwait(false))
+                    await TryDeferRetryNotBeforeAsync(persistence, job, latestCheckpoint, ct).ConfigureAwait(false))
                 {
                     return;
                 }
@@ -261,23 +261,27 @@ namespace CodexFlow.Services.Background
                 job.UpdatedAtUtc = DateTime.UtcNow;
                 
                 // Close the outbox circuit: Started
-                dbContext.OutboxEvents.Add(new OutboxEvent
+                var startedEntry = new OutboxEvent
                 {
                     EventType = "JobStarted",
                     JobId = job.JobId,
                     SessionId = job.SessionId,
                     TaskId = job.TaskId,
                     Payload = "{}"
-                });
+                };
 
-                await dbContext.SaveChangesAsync(ct);
+                if (!await persistence.TryCommitAsync(job, null, startedEntry, ct).ConfigureAwait(false))
+                {
+                    _logger.LogInformation("Skipping job start because the claim changed. job={JobId}", job.JobId);
+                    return;
+                }
                 _outboxSignal.Pulse();
 
                 _logger.LogInformation("Executing job {JobId} of type {JobType}", jobId, job.JobType);
 
                 if (ShouldEnterWaitingUser(job.PayloadJson, latestCheckpoint))
                 {
-                    await EnterWaitingUserAsync(dbContext, job, latestCheckpoint, suppressNotifications, ct);
+                    await EnterWaitingUserAsync(persistence, job, latestCheckpoint, suppressNotifications, ct);
                     return;
                 }
 
@@ -304,9 +308,9 @@ namespace CodexFlow.Services.Background
                 }
                 catch (OperationCanceledException) when (approvalSuspension.SuspendedApproval is not null && !ct.IsCancellationRequested)
                 {
-                    latestCheckpoint = await GetLatestCheckpointAsync(dbContext, jobId, ct);
+                    latestCheckpoint = await persistence.FindLatestCheckpointAsync(jobId, ct);
                     await EnterWaitingUserForApprovalAsync(
-                        dbContext,
+                        persistence,
                         job,
                         latestCheckpoint,
                         approvalSuspension.SuspendedApproval,
@@ -319,9 +323,9 @@ namespace CodexFlow.Services.Background
 
                 if (approvalSuspension.SuspendedApproval is { } suspendedItem && !ct.IsCancellationRequested)
                 {
-                    latestCheckpoint = await GetLatestCheckpointAsync(dbContext, jobId, ct);
+                    latestCheckpoint = await persistence.FindLatestCheckpointAsync(jobId, ct);
                     await EnterWaitingUserForApprovalAsync(
-                        dbContext,
+                        persistence,
                         job,
                         latestCheckpoint,
                         suspendedItem,
@@ -335,10 +339,10 @@ namespace CodexFlow.Services.Background
                 // Determine final status from result payload
                 var resultObj = TryParsePayload(resultPayload);
                 var jobSucceeded = resultObj?["success"]?.Value<bool>() ?? true;
-                latestCheckpoint = await GetLatestCheckpointAsync(dbContext, jobId, ct);
+                latestCheckpoint = await persistence.FindLatestCheckpointAsync(jobId, ct);
 
                 if (!jobSucceeded &&
-                    await TryPreserveQueuedRetryAsync(dbContext, job, resultObj, latestCheckpoint, suppressNotifications, ct).ConfigureAwait(false))
+                    await TryPreserveQueuedRetryAsync(persistence, job, resultObj, latestCheckpoint, suppressNotifications, ct).ConfigureAwait(false))
                 {
                     return;
                 }
@@ -350,7 +354,7 @@ namespace CodexFlow.Services.Background
                     ForgeQualityRetry.ShouldRetry(resultObj, TryParsePayload(resultObj?["updatedPayloadJson"]?.Value<string>()) ?? TryParsePayload(job.PayloadJson)))
                 {
                     await RequeueTransientWorkerFailureAsync(
-                        dbContext,
+                        persistence,
                         execScope.ServiceProvider,
                         job,
                         latestCheckpoint,
@@ -366,7 +370,7 @@ namespace CodexFlow.Services.Background
                     job.Attempt < MaxTransientWorkerRetryAttempts)
                 {
                     await RequeueTransientWorkerFailureAsync(
-                        dbContext,
+                        persistence,
                         execScope.ServiceProvider,
                         job,
                         latestCheckpoint,
@@ -375,7 +379,7 @@ namespace CodexFlow.Services.Background
                     return;
                 }
 
-                if (!await IsCurrentExecutionOwnerAsync(dbContext, job.JobId, claimToken, ct).ConfigureAwait(false))
+                if (!await IsCurrentExecutionOwnerAsync(persistence, job.JobId, claimToken, ct).ConfigureAwait(false))
                 {
                     _logger.LogInformation(
                         "Skipping terminal update from stale background job execution. job={JobId}",
@@ -388,15 +392,15 @@ namespace CodexFlow.Services.Background
                     var recoveryMessage = resultObj?["message"]?.Value<string>()
                         ?? resultObj?["summary"]?.Value<string>()
                         ?? "Worker requires recovery before it can continue.";
-                    await MarkJobRecoveryNeededAsync(
-                        dbContext,
+                    var recovered = await MarkJobRecoveryNeededAsync(
+                        persistence,
                         job,
                         resultPayload,
                         recoveryMessage,
                         latestCheckpoint,
                         suppressNotifications,
                         ct).ConfigureAwait(false);
-                    if (!suppressNotifications)
+                    if (recovered && !suppressNotifications)
                     {
                         await ContinuePlanAfterRecoveryNeededWorkerAsync(job, resultPayload, CancellationToken.None)
                             .ConfigureAwait(false);
@@ -404,15 +408,13 @@ namespace CodexFlow.Services.Background
                     return;
                 }
 
-                dbContext.JobCheckpoints.Add(CreateCheckpoint(
+                var checkpoint = CreateCheckpoint(
                     job,
                     latestCheckpoint,
                     jobSucceeded ? "Completed" : "Failed",
-                    checkpointData: JsonConvert.SerializeObject(new
-                    {
-                        completedAtUtc = DateTime.UtcNow,
-                        success = jobSucceeded
-                    })));
+                    checkpointData: OrchestrationPayloadJson.Write(
+                        ("completedAtUtc", DateTime.UtcNow),
+                        ("success", jobSucceeded)));
 
                 job.Status = jobSucceeded ? BackgroundJobStatus.Completed : BackgroundJobStatus.Failed;
                 job.FinishedAtUtc = DateTime.UtcNow;
@@ -440,26 +442,18 @@ namespace CodexFlow.Services.Background
                 job.ResultPayloadJson = resultPayload;
 
                 // Close the outbox circuit: Completed or Failed
-                dbContext.OutboxEvents.Add(new OutboxEvent
+                var terminalEntry = new OutboxEvent
                 {
                     EventType = jobSucceeded ? "JobCompleted" : "JobFailed",
                     JobId = job.JobId,
                     SessionId = job.SessionId,
                     TaskId = job.TaskId,
                     Payload = resultPayload
-                });
+                };
 
-                try
+                if (!await persistence.TryCommitAsync(job, checkpoint, terminalEntry, ct).ConfigureAwait(false))
                 {
-                    await dbContext.SaveChangesAsync(ct);
-                }
-                catch (DbUpdateConcurrencyException ex)
-                {
-                    _logger.LogWarning(
-                        ex,
-                        "Skipping terminal update because the job claim changed before save. job={JobId}",
-                        job.JobId);
-                    dbContext.ChangeTracker.Clear();
+                    _logger.LogWarning("Skipping terminal update because the job claim changed before save. job={JobId}", job.JobId);
                     return;
                 }
                 _outboxSignal.Pulse();
@@ -480,13 +474,13 @@ namespace CodexFlow.Services.Background
                 _logger.LogWarning("Job {JobId} interrupted by shutdown/cancellation, marking for recovery", jobId);
                 
                 using var shutdownScope = _serviceProvider.CreateScope();
-                var dbContext = shutdownScope.ServiceProvider.GetRequiredService<IJobDbContext>();
+                var persistence = JobRunPersistence.Create(shutdownScope.ServiceProvider);
                 
-                var job = await dbContext.BackgroundJobs.FindAsync(jobId);
+                var job = await persistence.LoadAsync(jobId, CancellationToken.None).ConfigureAwait(false);
                 if (job != null)
                 {
-                    var latestCheckpoint = await GetLatestCheckpointAsync(dbContext, jobId, CancellationToken.None);
-                    if (!await IsCurrentExecutionOwnerAsync(dbContext, job.JobId, claimToken, CancellationToken.None).ConfigureAwait(false))
+                    var latestCheckpoint = await persistence.FindLatestCheckpointAsync(jobId, CancellationToken.None);
+                    if (!await IsCurrentExecutionOwnerAsync(persistence, job.JobId, claimToken, CancellationToken.None).ConfigureAwait(false))
                     {
                         _logger.LogInformation(
                             "Skipping cancellation recovery update from stale background job execution. job={JobId}",
@@ -495,7 +489,7 @@ namespace CodexFlow.Services.Background
                     }
 
                     await MarkJobRecoveryNeededAsync(
-                        dbContext,
+                        persistence,
                         job,
                         BuildRecoveryNeededPayload(
                             workerType: ResolveWorkerTypeName(job.JobType),
@@ -520,14 +514,18 @@ namespace CodexFlow.Services.Background
                 _logger.LogError(ex, "Job {JobId} failed", jobId);
                 
                 using var errorScope = _serviceProvider.CreateScope();
-                var dbContext = errorScope.ServiceProvider.GetRequiredService<IJobDbContext>();
+                var persistence = JobRunPersistence.Create(errorScope.ServiceProvider);
                 
-                var job = await dbContext.BackgroundJobs.FindAsync(jobId);
+                var job = await persistence.LoadAsync(jobId, CancellationToken.None).ConfigureAwait(false);
                 if (job != null)
                 {
-                    var latestCheckpoint = await GetLatestCheckpointAsync(dbContext, jobId, CancellationToken.None);
+                    var latestCheckpoint = await persistence.FindLatestCheckpointAsync(jobId, CancellationToken.None);
+                    if (!CanStartClaimedExecution(job, claimToken))
+                    {
+                        return;
+                    }
                     if (await TryPreserveQueuedRetryAsync(
-                            dbContext,
+                            persistence,
                             job,
                             resultObj: null,
                             latestCheckpoint,
@@ -540,7 +538,7 @@ namespace CodexFlow.Services.Background
                         return;
                     }
 
-                    if (!await IsCurrentExecutionOwnerAsync(dbContext, job.JobId, claimToken, CancellationToken.None).ConfigureAwait(false))
+                    if (!await IsCurrentExecutionOwnerAsync(persistence, job.JobId, claimToken, CancellationToken.None).ConfigureAwait(false))
                     {
                         _logger.LogInformation(
                             "Skipping failure update from stale background job execution. job={JobId}",
@@ -557,26 +555,27 @@ namespace CodexFlow.Services.Background
                     job.UpdatedAtUtc = DateTime.UtcNow;
                     var failurePayload = await AttachJobNotificationXmlAsync(
                         job,
-                        Newtonsoft.Json.JsonConvert.SerializeObject(new
-                        {
-                            success = false,
-                            message = ex.Message,
-                            error = ex.Message
-                        }),
+                        OrchestrationPayloadJson.Write(
+                            ("success", false),
+                            ("message", ex.Message),
+                            ("error", ex.Message)),
                         CancellationToken.None);
                     job.ResultPayloadJson = failurePayload;
 
                     // Close the outbox circuit: Failed
-                    dbContext.OutboxEvents.Add(new OutboxEvent
+                    var failedEntry = new OutboxEvent
                     {
                         EventType = "JobFailed",
                         JobId = job.JobId,
                         SessionId = job.SessionId,
                         TaskId = job.TaskId,
                         Payload = failurePayload
-                    });
+                    };
                     
-                    await dbContext.SaveChangesAsync(CancellationToken.None);
+                    if (!await persistence.TryCommitAsync(job, null, failedEntry, CancellationToken.None).ConfigureAwait(false))
+                    {
+                        return;
+                    }
                     _outboxSignal.Pulse();
                     if (!suppressNotifications)
                     {
@@ -617,7 +616,7 @@ namespace CodexFlow.Services.Background
         }
 
         private static async Task<bool> IsCurrentExecutionOwnerAsync(
-            IJobDbContext dbContext,
+            JobRunPersistence persistence,
             string jobId,
             string? claimToken,
             CancellationToken ct)
@@ -627,16 +626,7 @@ namespace CodexFlow.Services.Background
                 return true;
             }
 
-            var current = await dbContext.BackgroundJobs
-                .AsNoTracking()
-                .Where(x => x.JobId == jobId)
-                .Select(x => new
-                {
-                    x.Status,
-                    x.ClaimToken
-                })
-                .SingleOrDefaultAsync(ct)
-                .ConfigureAwait(false);
+            var current = await persistence.FindCurrentAsync(jobId, ct).ConfigureAwait(false);
 
             if (current == null || current.Status != BackgroundJobStatus.Running)
             {
@@ -753,7 +743,7 @@ namespace CodexFlow.Services.Background
         }
 
         private async Task RequeueTransientWorkerFailureAsync(
-            IJobDbContext dbContext,
+            JobRunPersistence persistence,
             IServiceProvider serviceProvider,
             BackgroundJob job,
             JobCheckpoint? latestCheckpoint,
@@ -775,18 +765,16 @@ namespace CodexFlow.Services.Background
             jobPayload["retryNotBeforeUtc"] = retryAvailableAtUtc;
             jobPayload["retryDelaySeconds"] = (int)retryDelay.TotalSeconds;
 
-            dbContext.JobCheckpoints.Add(CreateCheckpoint(
+            var checkpoint = CreateCheckpoint(
                 job,
                 latestCheckpoint,
                 "TransientRetryQueued",
-                checkpointData: JsonConvert.SerializeObject(new
-                {
-                    retryQueuedAtUtc = DateTime.UtcNow,
-                    retryAvailableAtUtc,
-                    retryDelaySeconds = (int)retryDelay.TotalSeconds,
-                    nextAttempt,
-                    detailCode
-                })));
+                checkpointData: OrchestrationPayloadJson.Write(
+                    ("retryQueuedAtUtc", DateTime.UtcNow),
+                    ("retryAvailableAtUtc", retryAvailableAtUtc),
+                    ("retryDelaySeconds", (int)retryDelay.TotalSeconds),
+                    ("nextAttempt", nextAttempt),
+                    ("detailCode", detailCode)));
 
             job.Status = BackgroundJobStatus.Queued;
             job.Attempt = nextAttempt;
@@ -801,34 +789,24 @@ namespace CodexFlow.Services.Background
             job.UpdatedAtUtc = DateTime.UtcNow;
             job.PayloadJson = jobPayload.ToString(Formatting.None);
 
-            dbContext.OutboxEvents.Add(new OutboxEvent
+            var entry = new OutboxEvent
             {
                 EventType = "JobRetried",
                 JobId = job.JobId,
                 SessionId = job.SessionId,
                 TaskId = job.TaskId,
-                Payload = JsonConvert.SerializeObject(new
-                {
-                    reason,
-                    detailCode,
-                    retryAvailableAtUtc,
-                    retryDelaySeconds = (int)retryDelay.TotalSeconds,
-                    attempt = nextAttempt,
-                    maxAttempts = MaxTransientWorkerRetryAttempts
-                })
-            });
+                Payload = OrchestrationPayloadJson.Write(
+                    ("reason", reason),
+                    ("detailCode", detailCode),
+                    ("retryAvailableAtUtc", retryAvailableAtUtc),
+                    ("retryDelaySeconds", (int)retryDelay.TotalSeconds),
+                    ("attempt", nextAttempt),
+                    ("maxAttempts", MaxTransientWorkerRetryAttempts))
+            };
 
-            try
+            if (!await persistence.TryCommitAsync(job, checkpoint, entry, ct).ConfigureAwait(false))
             {
-                await dbContext.SaveChangesAsync(ct).ConfigureAwait(false);
-            }
-            catch (DbUpdateConcurrencyException ex)
-            {
-                _logger.LogWarning(
-                    ex,
-                    "Skipping transient retry requeue because the job claim changed before save. job={JobId}",
-                    job.JobId);
-                dbContext.ChangeTracker.Clear();
+                _logger.LogWarning("Skipping transient retry requeue because the job claim changed before save. job={JobId}", job.JobId);
                 return;
             }
             _outboxSignal.Pulse();
@@ -903,7 +881,7 @@ namespace CodexFlow.Services.Background
         }
 
         private async Task<bool> TryDeferRetryNotBeforeAsync(
-            IJobDbContext dbContext,
+            JobRunPersistence persistence,
             BackgroundJob job,
             JobCheckpoint? latestCheckpoint,
             CancellationToken ct)
@@ -924,21 +902,22 @@ namespace CodexFlow.Services.Background
                     payload.Remove("retryNotBeforeUtc");
                     payload.Remove("retryDelaySeconds");
                     job.PayloadJson = payload.ToString(Formatting.None);
-                    await dbContext.SaveChangesAsync(ct).ConfigureAwait(false);
+                    if (!await persistence.TryCommitAsync(job, null, null, ct).ConfigureAwait(false))
+                    {
+                        return true;
+                    }
                 }
 
                 return false;
             }
 
-            dbContext.JobCheckpoints.Add(CreateCheckpoint(
+            var checkpoint = CreateCheckpoint(
                 job,
                 latestCheckpoint,
                 "RetryDeferred",
-                checkpointData: JsonConvert.SerializeObject(new
-                {
-                    deferredAtUtc = DateTime.UtcNow,
-                    retryNotBeforeUtc
-                })));
+                checkpointData: OrchestrationPayloadJson.Write(
+                    ("deferredAtUtc", DateTime.UtcNow),
+                    ("retryNotBeforeUtc", retryNotBeforeUtc)));
 
             job.Status = BackgroundJobStatus.Queued;
             job.RunnerId = null;
@@ -951,30 +930,20 @@ namespace CodexFlow.Services.Background
             job.UpdatedAtUtc = DateTime.UtcNow;
             job.ErrorMessage = $"Transient provider failure; retry deferred until {retryNotBeforeUtc:O}.";
 
-            dbContext.OutboxEvents.Add(new OutboxEvent
+            var entry = new OutboxEvent
             {
                 EventType = "JobRetried",
                 JobId = job.JobId,
                 SessionId = job.SessionId,
                 TaskId = job.TaskId,
-                Payload = JsonConvert.SerializeObject(new
-                {
-                    reason = "retry_not_before_deferred",
-                    retryNotBeforeUtc
-                })
-            });
+                Payload = OrchestrationPayloadJson.Write(
+                    ("reason", "retry_not_before_deferred"),
+                    ("retryNotBeforeUtc", retryNotBeforeUtc))
+            };
 
-            try
+            if (!await persistence.TryCommitAsync(job, checkpoint, entry, ct).ConfigureAwait(false))
             {
-                await dbContext.SaveChangesAsync(ct).ConfigureAwait(false);
-            }
-            catch (DbUpdateConcurrencyException ex)
-            {
-                _logger.LogWarning(
-                    ex,
-                    "Skipping committed retry finalization because the job claim changed before save. job={JobId}",
-                    job.JobId);
-                dbContext.ChangeTracker.Clear();
+                _logger.LogWarning("Skipping retry deferral because the job claim changed before save. job={JobId}", job.JobId);
                 return true;
             }
             _outboxSignal.Pulse();
@@ -1007,40 +976,36 @@ namespace CodexFlow.Services.Background
             if (outcome.Kind == WorkerPreflightKind.WorkspaceUnavailable)
             {
                 // Same shape the Forge worker itself reports for a missing workspace, so the existing transient-requeue handling applies.
-                return JsonConvert.SerializeObject(new
-                {
-                    success = false,
-                    message = $"Worker workspace is unavailable: {outcome.Path}",
-                    workerType = ResolveWorkerTypeName(job.JobType),
-                    detailCode = $"WorkspaceUnavailable: {outcome.Path}",
-                    worktreePath = (string?)null,
-                    workspacePath = outcome.Path,
-                    worktreeRetained = false,
-                    serviceDiagnostics = new Dictionary<string, object?>
+                return OrchestrationPayloadJson.Write(
+                    ("success", false),
+                    ("message", $"Worker workspace is unavailable: {outcome.Path}"),
+                    ("workerType", ResolveWorkerTypeName(job.JobType)),
+                    ("detailCode", $"WorkspaceUnavailable: {outcome.Path}"),
+                    ("worktreePath", (string?)null),
+                    ("workspacePath", outcome.Path),
+                    ("worktreeRetained", false),
+                    ("serviceDiagnostics", new Dictionary<string, object?>
                     {
                         ["workspaceUnavailable"] = true,
                         ["mainWorkspacePath"] = outcome.Path,
                         ["preflight"] = outcome.Code
-                    },
-                    updatedPayloadJson = job.PayloadJson
-                });
+                    }),
+                    ("updatedPayloadJson", job.PayloadJson));
             }
 
-            return JsonConvert.SerializeObject(new
-            {
-                success = false,
-                message = $"Worker execution is not authorized: {outcome.Message}",
-                workerType = ResolveWorkerTypeName(job.JobType),
-                detailCode = $"WorkerExecutionNotAuthorized:{outcome.Code}",
-                worktreePath = (string?)null,
-                workspacePath = (string?)null,
-                worktreeRetained = false,
-                updatedPayloadJson = job.PayloadJson
-            });
+            return OrchestrationPayloadJson.Write(
+                ("success", false),
+                ("message", $"Worker execution is not authorized: {outcome.Message}"),
+                ("workerType", ResolveWorkerTypeName(job.JobType)),
+                ("detailCode", $"WorkerExecutionNotAuthorized:{outcome.Code}"),
+                ("worktreePath", (string?)null),
+                ("workspacePath", (string?)null),
+                ("worktreeRetained", false),
+                ("updatedPayloadJson", job.PayloadJson));
         }
 
         private async Task<bool> TryFinalizeCommittedForgeRetryBeforeStartAsync(
-            IJobDbContext dbContext,
+            JobRunPersistence persistence,
             BackgroundJob job,
             JobCheckpoint? latestCheckpoint,
             bool suppressNotifications,
@@ -1087,14 +1052,14 @@ namespace CodexFlow.Services.Background
             // reused only when the real repository agrees: the retained worktree exists, is clean, belongs to this task and
             // repository, HEAD is the claimed full SHA, the approved plan is unchanged and the diff matches the claim.
             var evidence = await TryVerifyRetainedForgeArtifactAsync(
-                    dbContext, job, payload, lastCommitHash, lastChangedFilePaths, worktreeKey, ct)
+                    job, payload, lastCommitHash, lastChangedFilePaths, worktreeKey, ct)
                 .ConfigureAwait(false);
             if (evidence.Manifest is null)
             {
                 // Insufficient evidence: never claim completion. Strip the unverified claims so no later fast path
                 // (including the one at ForgeWorker start) can finalize from them, and let the normal worker run.
                 payload["unverifiedLastCommitHash"] = lastCommitHash;
-                payload["unverifiedLastChangedFiles"] = JArray.FromObject(lastChangedFilePaths);
+                payload["unverifiedLastChangedFiles"] = OrchestrationPayloadJson.Array(lastChangedFilePaths);
                 payload["retryReuseRejectedReason"] = evidence.Reason;
                 payload.Remove("lastCommitHash");
                 payload.Remove("lastChangedFiles");
@@ -1116,7 +1081,7 @@ namespace CodexFlow.Services.Background
             payload["worktreeKey"] = worktreeKey;
             payload["shadowWorktreePath"] = retainedWorktreePath;
             payload["lastCommitHash"] = manifest.HeadCommit;
-            payload["lastChangedFiles"] = JArray.FromObject(lastChangedFilePaths);
+            payload["lastChangedFiles"] = OrchestrationPayloadJson.Array(lastChangedFilePaths);
             payload.Remove("retryNotBeforeUtc");
             payload.Remove("retryDelaySeconds");
             payload["worktreeRetained"] = true;
@@ -1133,39 +1098,35 @@ namespace CodexFlow.Services.Background
                 ["priorRetryChangedFileCount"] = lastChangedFilePaths.Length
             };
             var summary = $"ForgeWorker completed by finalizing {lastChangedFilePaths.Length} verified committed change(s) retained from the previous retry attempt.";
-            var resultPayload = JsonConvert.SerializeObject(new
-            {
-                success = true,
-                message = summary,
-                summary,
-                result = "已复用重试前已提交且经 Git 校验的保留工作区变更完成当前任务。",
-                workerType = WorkerType.Forge.ToString().ToLowerInvariant(),
-                durationMs = 0,
-                totalRounds = 0,
-                totalToolCalls = 0,
-                writeToolCalls = 0,
-                terminationReason = QueryTerminationReason.NoToolCalls.ToString(),
-                detailCode = "RetriedCommittedChangesFinalized",
-                worktreePath = retainedWorktreePath,
-                workspacePath = retainedWorktreePath,
-                changedFiles = lastChangedFilePaths,
-                commitHash = manifest.HeadCommit,
-                artifactManifest = manifest,
-                worktreeRetained = true,
-                serviceDiagnostics,
-                updatedPayloadJson = payload.ToString(Formatting.None)
-            });
+            var resultPayload = OrchestrationPayloadJson.Write(
+                ("success", true),
+                ("message", summary),
+                ("summary", summary),
+                ("result", "已复用重试前已提交且经 Git 校验的保留工作区变更完成当前任务。"),
+                ("workerType", WorkerType.Forge.ToString().ToLowerInvariant()),
+                ("durationMs", 0),
+                ("totalRounds", 0),
+                ("totalToolCalls", 0),
+                ("writeToolCalls", 0),
+                ("terminationReason", QueryTerminationReason.NoToolCalls.ToString()),
+                ("detailCode", "RetriedCommittedChangesFinalized"),
+                ("worktreePath", retainedWorktreePath),
+                ("workspacePath", retainedWorktreePath),
+                ("changedFiles", lastChangedFilePaths),
+                ("commitHash", manifest.HeadCommit),
+                ("artifactManifest", manifest),
+                ("worktreeRetained", true),
+                ("serviceDiagnostics", serviceDiagnostics),
+                ("updatedPayloadJson", payload.ToString(Formatting.None)));
 
-            dbContext.JobCheckpoints.Add(CreateCheckpoint(
+            var checkpoint = CreateCheckpoint(
                 job,
                 latestCheckpoint,
                 "Completed",
-                checkpointData: JsonConvert.SerializeObject(new
-                {
-                    completedAtUtc = DateTime.UtcNow,
-                    success = true,
-                    finalizedUsingRetriedCommittedChanges = true
-                })));
+                checkpointData: OrchestrationPayloadJson.Write(
+                    ("completedAtUtc", DateTime.UtcNow),
+                    ("success", true),
+                    ("finalizedUsingRetriedCommittedChanges", true)));
 
             job.Status = BackgroundJobStatus.Completed;
             job.FinishedAtUtc = DateTime.UtcNow;
@@ -1178,16 +1139,19 @@ namespace CodexFlow.Services.Background
             resultPayload = await AttachJobNotificationXmlAsync(job, resultPayload, ct).ConfigureAwait(false);
             job.ResultPayloadJson = resultPayload;
 
-            dbContext.OutboxEvents.Add(new OutboxEvent
+            var entry = new OutboxEvent
             {
                 EventType = "JobCompleted",
                 JobId = job.JobId,
                 SessionId = job.SessionId,
                 TaskId = job.TaskId,
                 Payload = resultPayload
-            });
+            };
 
-            await dbContext.SaveChangesAsync(ct).ConfigureAwait(false);
+            if (!await persistence.TryCommitAsync(job, checkpoint, entry, ct).ConfigureAwait(false))
+            {
+                return true;
+            }
             _outboxSignal.Pulse();
 
             _logger.LogInformation(
@@ -1213,7 +1177,6 @@ namespace CodexFlow.Services.Background
         /// and builds the trusted manifest for it. Any missing/unverifiable evidence returns a rejection (no manifest).
         /// </summary>
         private async Task<RetainedForgeArtifactEvidence> TryVerifyRetainedForgeArtifactAsync(
-            IJobDbContext dbContext,
             BackgroundJob job,
             JObject payload,
             string? claimedCommitHash,
@@ -1335,11 +1298,9 @@ namespace CodexFlow.Services.Background
                     return Reject("manifest_unavailable");
                 }
 
-                var db = sp.GetRequiredService<IJobDbContext>();
-                var parentManifests = (await db.BackgroundJobs.AsNoTracking()
-                        .Where(x => x.SessionId == sessionId && x.JobId != job.JobId && x.Status == BackgroundJobStatus.Completed)
-                        .Select(x => x.ResultPayloadJson)
-                        .ToListAsync(ct).ConfigureAwait(false))
+                var jobs = sp.GetRequiredService<IJobReadStore>();
+                var parentManifests = (await jobs.ReadCompletedResultPayloadsAsync(sessionId, job.JobId, ct)
+                        .ConfigureAwait(false))
                     .Select(ForgeArtifactManifestFactory.ParseManifest)
                     .OfType<CodexFlow.Contracts.ForgeArtifactManifest>()
                     .Where(x => manifest.ParentArtifactIds.Contains(x.ArtifactId, StringComparer.Ordinal))
@@ -1375,7 +1336,7 @@ namespace CodexFlow.Services.Background
         }
 
         private async Task<bool> TryPreserveQueuedRetryAsync(
-            IJobDbContext dbContext,
+            JobRunPersistence persistence,
             BackgroundJob job,
             JObject? resultObj,
             JobCheckpoint? latestCheckpoint,
@@ -1383,20 +1344,16 @@ namespace CodexFlow.Services.Background
             CancellationToken ct)
         {
             var updatedPayload = TryParsePayload(resultObj?["updatedPayloadJson"]?.Value<string>());
-            try
+            if (!await persistence.TryReloadAsync(job, ct).ConfigureAwait(false))
             {
-                await dbContext.Entry(job).ReloadAsync(ct).ConfigureAwait(false);
-            }
-            catch (InvalidOperationException)
-            {
-                // The job may have been detached in a test or unusual recovery path; fall back to the tracked values.
+                return true;
             }
 
             if (HasFinalizableCommittedForgeRetryPayload(updatedPayload, job.Attempt))
             {
                 job.PayloadJson = updatedPayload!.ToString(Formatting.None);
                 if (await TryFinalizeCommittedForgeRetryBeforeStartAsync(
-                        dbContext,
+                        persistence,
                         job,
                         latestCheckpoint,
                         suppressNotifications,
@@ -1407,7 +1364,7 @@ namespace CodexFlow.Services.Background
             }
 
             if (await TryFinalizeCommittedForgeRetryBeforeStartAsync(
-                    dbContext,
+                    persistence,
                     job,
                     latestCheckpoint,
                     suppressNotifications,
@@ -1416,7 +1373,7 @@ namespace CodexFlow.Services.Background
                 return true;
             }
 
-            if (await TryDeferRetryNotBeforeAsync(dbContext, job, latestCheckpoint, ct).ConfigureAwait(false))
+            if (await TryDeferRetryNotBeforeAsync(persistence, job, latestCheckpoint, ct).ConfigureAwait(false))
             {
                 return true;
             }
@@ -1437,7 +1394,7 @@ namespace CodexFlow.Services.Background
             }
 
             job.PayloadJson = updatedPayload!.ToString(Formatting.None);
-            return await TryDeferRetryNotBeforeAsync(dbContext, job, latestCheckpoint, ct).ConfigureAwait(false);
+            return await TryDeferRetryNotBeforeAsync(persistence, job, latestCheckpoint, ct).ConfigureAwait(false);
         }
 
         private static DateTimeOffset? TryGetRetryNotBeforeUtc(JObject? payload)
@@ -1479,7 +1436,7 @@ namespace CodexFlow.Services.Background
         }
 
         private async Task EnterWaitingUserAsync(
-            IJobDbContext dbContext,
+            JobRunPersistence persistence,
             BackgroundJob job,
             JobCheckpoint? latestCheckpoint,
             bool suppressNotifications,
@@ -1490,34 +1447,35 @@ namespace CodexFlow.Services.Background
             var waitingReason = payload?["waitingReason"]?.Value<string>() ?? "User confirmation required";
             var waitingContext = ResolveWaitingUserContext(payload);
 
-            dbContext.JobCheckpoints.Add(CreateCheckpoint(
+            var checkpoint = CreateCheckpoint(
                 job,
                 latestCheckpoint,
                 "AwaitingUserConfirmation",
                 pendingActionType: "UserConfirmation",
                 pendingPayloadJson: job.PayloadJson,
                 resumeToken: resumeToken,
-                checkpointData: JsonConvert.SerializeObject(new
-                {
-                    waitingReason,
-                    resumeToken
-                })));
+                checkpointData: OrchestrationPayloadJson.Write(
+                    ("waitingReason", waitingReason),
+                    ("resumeToken", resumeToken)));
 
             job.Status = BackgroundJobStatus.WaitingUser;
             job.WaitingReason = waitingReason;
             job.UpdatedAtUtc = DateTime.UtcNow;
             var waitingPayload = await AttachWaitingUserNotificationXmlAsync(job, waitingReason, resumeToken, waitingContext, ct);
 
-            dbContext.OutboxEvents.Add(new OutboxEvent
+            var entry = new OutboxEvent
             {
                 EventType = "JobWaitingUser",
                 JobId = job.JobId,
                 SessionId = job.SessionId,
                 TaskId = job.TaskId,
                 Payload = waitingPayload
-            });
+            };
 
-            await dbContext.SaveChangesAsync(ct);
+            if (!await persistence.TryCommitAsync(job, checkpoint, entry, ct).ConfigureAwait(false))
+            {
+                return;
+            }
             _outboxSignal.Pulse();
             if (!suppressNotifications)
             {
@@ -1526,7 +1484,7 @@ namespace CodexFlow.Services.Background
         }
 
         private async Task EnterWaitingUserForApprovalAsync(
-            IJobDbContext dbContext,
+            JobRunPersistence persistence,
             BackgroundJob job,
             JobCheckpoint? latestCheckpoint,
             CodexFlow.Core.Execution.Approval.PendingApprovalItem approval,
@@ -1539,37 +1497,38 @@ namespace CodexFlow.Services.Background
             var payload = TryParsePayload(job.PayloadJson);
             var waitingContext = ResolveWaitingUserContext(payload);
 
-            dbContext.JobCheckpoints.Add(CreateCheckpoint(
+            var checkpoint = CreateCheckpoint(
                 job,
                 latestCheckpoint,
                 "AwaitingUserConfirmation",
                 pendingActionType: "UserConfirmation",
                 pendingPayloadJson: job.PayloadJson,
                 resumeToken: resumeToken,
-                checkpointData: JsonConvert.SerializeObject(new
-                {
-                    waitingReason,
-                    resumeToken,
-                    approvalId = approval.ApprovalId,
-                    requestDigest = approval.RequestDigest
-                })));
+                checkpointData: OrchestrationPayloadJson.Write(
+                    ("waitingReason", waitingReason),
+                    ("resumeToken", resumeToken),
+                    ("approvalId", approval.ApprovalId),
+                    ("requestDigest", approval.RequestDigest)));
 
             job.Status = BackgroundJobStatus.WaitingUser;
             job.WaitingReason = waitingReason;
             job.UpdatedAtUtc = DateTime.UtcNow;
             var waitingPayload = await AttachWaitingUserNotificationXmlAsync(job, waitingReason, resumeToken, waitingContext, ct);
 
-            dbContext.OutboxEvents.Add(new OutboxEvent
+            var entry = new OutboxEvent
             {
                 EventType = "JobWaitingUser",
                 JobId = job.JobId,
                 SessionId = job.SessionId,
                 TaskId = job.TaskId,
                 Payload = waitingPayload
-            });
+            };
 
-            await dbContext.SaveChangesAsync(ct);
-            // Release persistence barrier IMMEDIATELY after durable SaveChangesAsync (before best-effort external notification dispatch)!
+            if (!await persistence.TryCommitAsync(job, checkpoint, entry, ct).ConfigureAwait(false))
+            {
+                return;
+            }
+            // Release the approval barrier only after the job, checkpoint, and event have committed.
             approvalSuspension.NotifyPersistenceCommitted();
             _outboxSignal.Pulse();
             if (!suppressNotifications)
@@ -1591,14 +1550,6 @@ namespace CodexFlow.Services.Background
                 // Immediate dispatch is best-effort. The heartbeat scanner remains the fallback path.
                 _logger.LogWarning(ex, "Immediate notification dispatch failed for job {JobId}; heartbeat fallback will retry", jobId);
             }
-        }
-
-        private static async Task<JobCheckpoint?> GetLatestCheckpointAsync(IJobDbContext dbContext, string jobId, CancellationToken ct)
-        {
-            return await dbContext.JobCheckpoints
-                .Where(c => c.JobId == jobId)
-                .OrderByDescending(c => c.SequenceNumber)
-                .FirstOrDefaultAsync(ct);
         }
 
         private static JobCheckpoint CreateCheckpoint(
@@ -1848,34 +1799,30 @@ namespace CodexFlow.Services.Background
                 RecordProviderParameterFailureIfPresent(result, serviceDiagnostics);
                 var summary = BuildReadOnlyWorkerSummary(workerType, result);
 
-                return JsonConvert.SerializeObject(new
-                {
-                    success,
-                    message = summary,
-                    summary,
-                    result = result.FinalText,
-                    workerType = workerType.ToString().ToLowerInvariant(),
-                    durationMs = started.ElapsedMilliseconds,
-                    totalRounds = result.TotalRounds,
-                    totalToolCalls = result.TotalToolCalls,
-                    terminationReason = result.TerminationReason.ToString(),
-                    detailCode = result.TerminalDetailCode,
-                    serviceDiagnostics
-                });
+                return OrchestrationPayloadJson.Write(
+                    ("success", success),
+                    ("message", summary),
+                    ("summary", summary),
+                    ("result", result.FinalText),
+                    ("workerType", workerType.ToString().ToLowerInvariant()),
+                    ("durationMs", started.ElapsedMilliseconds),
+                    ("totalRounds", result.TotalRounds),
+                    ("totalToolCalls", result.TotalToolCalls),
+                    ("terminationReason", result.TerminationReason.ToString()),
+                    ("detailCode", result.TerminalDetailCode),
+                    ("serviceDiagnostics", serviceDiagnostics));
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "BackgroundJobRunner: {WorkerType} threw. job={JobId} session={SessionId}", workerType, job.JobId, sessionId);
                 serviceDiagnostics["exception"] = ex.GetType().Name;
 
-                return JsonConvert.SerializeObject(new
-                {
-                    success = false,
-                    message = ex.Message,
-                    workerType = workerType.ToString().ToLowerInvariant(),
-                    durationMs = started.ElapsedMilliseconds,
-                    serviceDiagnostics
-                });
+                return OrchestrationPayloadJson.Write(
+                    ("success", false),
+                    ("message", ex.Message),
+                    ("workerType", workerType.ToString().ToLowerInvariant()),
+                    ("durationMs", started.ElapsedMilliseconds),
+                    ("serviceDiagnostics", serviceDiagnostics));
             }
         }
 
@@ -2027,18 +1974,16 @@ namespace CodexFlow.Services.Background
                 // failure; a genuine business FAIL verdict from a healthy run keeps success=true further below.
                 if (IsTechnicalRuntimeFailure(result))
                 {
-                    return JsonConvert.SerializeObject(new
-                    {
-                        success = false,
-                        message = $"VerifyWorker runtime terminated with {result.TerminationReason}.",
-                        workerType = WorkerType.Verify.ToString().ToLowerInvariant(),
-                        durationMs = started.ElapsedMilliseconds,
-                        totalRounds = result.TotalRounds,
-                        totalToolCalls = result.TotalToolCalls,
-                        terminationReason = result.TerminationReason.ToString(),
-                        detailCode = result.TerminalDetailCode,
-                        serviceDiagnostics
-                    });
+                    return OrchestrationPayloadJson.Write(
+                        ("success", false),
+                        ("message", $"VerifyWorker runtime terminated with {result.TerminationReason}."),
+                        ("workerType", WorkerType.Verify.ToString().ToLowerInvariant()),
+                        ("durationMs", started.ElapsedMilliseconds),
+                        ("totalRounds", result.TotalRounds),
+                        ("totalToolCalls", result.TotalToolCalls),
+                        ("terminationReason", result.TerminationReason.ToString()),
+                        ("detailCode", result.TerminalDetailCode),
+                        ("serviceDiagnostics", serviceDiagnostics));
                 }
 
                 var verificationReport = ParseVerificationReport(result.FinalText, job.TaskId ?? job.JobId, job.JobId);
@@ -2068,99 +2013,74 @@ namespace CodexFlow.Services.Background
                 payload["verificationVerdict"] = verificationReport.Verdict;
                 payload["verificationPassed"] = verificationReport.Passed;
                 payload["verificationSummary"] = summary;
-                payload["verificationIssues"] = JArray.FromObject(verificationReport.Issues);
-                payload["verificationEvidence"] = JArray.FromObject(
-                    verificationReport.Evidence.Select(e => new
-                    {
-                        check = e.Check,
-                        passed = e.Passed,
-                        command = e.Command,
-                        exitCode = e.ExitCode,
-                        observation = e.Observation
-                    }));
-                payload["verificationChecklist"] = JObject.FromObject(new
-                {
-                    completedItems = verificationChecklist.CompletedItems.Select(item => new
-                    {
-                        check = item.Check,
-                        evidence = item.Evidence.ToArray()
-                    }),
-                    failedItems = verificationChecklist.FailedItems.Select(item => new
-                    {
-                        check = item.Check,
-                        evidence = item.Evidence.ToArray()
-                    }),
-                    pendingItems = verificationChecklist.PendingItems.Select(item => new
-                    {
-                        check = item.Check,
-                        evidence = item.Evidence.ToArray()
-                    }),
-                    focusItems = verificationChecklist.FocusItems.ToArray()
-                });
+                payload["verificationIssues"] = OrchestrationPayloadJson.Array(verificationReport.Issues);
+                payload["verificationEvidence"] = OrchestrationPayloadJson.Array(verificationReport.Evidence.Select(e => OrchestrationPayloadJson.Object(
+                        ("check", e.Check),
+                        ("passed", e.Passed),
+                        ("command", e.Command),
+                        ("exitCode", e.ExitCode),
+                        ("observation", e.Observation))));
+                payload["verificationChecklist"] = OrchestrationPayloadJson.Object(
+                    ("completedItems", verificationChecklist.CompletedItems.Select(item => OrchestrationPayloadJson.Object(
+                        ("check", item.Check),
+                        ("evidence", item.Evidence.ToArray())))),
+                    ("failedItems", verificationChecklist.FailedItems.Select(item => OrchestrationPayloadJson.Object(
+                        ("check", item.Check),
+                        ("evidence", item.Evidence.ToArray())))),
+                    ("pendingItems", verificationChecklist.PendingItems.Select(item => OrchestrationPayloadJson.Object(
+                        ("check", item.Check),
+                        ("evidence", item.Evidence.ToArray())))),
+                    ("focusItems", verificationChecklist.FocusItems.ToArray()));
 
-                return JsonConvert.SerializeObject(new
-                {
-                    success = true,
-                    message = $"VerifyWorker concluded {verificationReport.Verdict.ToUpperInvariant()} with {verificationReport.Evidence.Count} evidence item(s).",
-                    summary,
-                    result = result.FinalText,
-                    workerType = WorkerType.Verify.ToString().ToLowerInvariant(),
-                    durationMs = started.ElapsedMilliseconds,
-                    totalRounds = result.TotalRounds,
-                    totalToolCalls = result.TotalToolCalls,
-                    writeToolCalls = result.WriteToolCalls,
-                    inputTokens = result.TotalPromptTokens,
-                    cachedInputTokens = result.TotalCachedPromptTokens,
-                    outputTokens = result.TotalCompletionTokens,
-                    terminationReason = result.TerminationReason.ToString(),
-                    detailCode = result.TerminalDetailCode,
-                    verificationVerdict = verificationReport.Verdict,
-                    verificationPassed = verificationReport.Passed,
-                    verificationSummary = summary,
-                    verificationIssues = verificationReport.Issues,
-                    verificationEvidence = verificationReport.Evidence.Select(e => new
-                    {
-                        check = e.Check,
-                        passed = e.Passed,
-                        command = e.Command,
-                        exitCode = e.ExitCode,
-                        observation = e.Observation
-                    }).ToArray(),
-                    verificationChecklist = new
-                    {
-                        completedItems = verificationChecklist.CompletedItems.Select(item => new
-                        {
-                            check = item.Check,
-                            evidence = item.Evidence.ToArray()
-                        }).ToArray(),
-                        failedItems = verificationChecklist.FailedItems.Select(item => new
-                        {
-                            check = item.Check,
-                            evidence = item.Evidence.ToArray()
-                        }).ToArray(),
-                        pendingItems = verificationChecklist.PendingItems.Select(item => new
-                        {
-                            check = item.Check,
-                            evidence = item.Evidence.ToArray()
-                        }).ToArray(),
-                        focusItems = verificationChecklist.FocusItems.ToArray()
-                    },
-                    serviceDiagnostics
-                });
+                return OrchestrationPayloadJson.Write(
+                    ("success", true),
+                    ("message", $"VerifyWorker concluded {verificationReport.Verdict.ToUpperInvariant()} with {verificationReport.Evidence.Count} evidence item(s)."),
+                    ("summary", summary),
+                    ("result", result.FinalText),
+                    ("workerType", WorkerType.Verify.ToString().ToLowerInvariant()),
+                    ("durationMs", started.ElapsedMilliseconds),
+                    ("totalRounds", result.TotalRounds),
+                    ("totalToolCalls", result.TotalToolCalls),
+                    ("writeToolCalls", result.WriteToolCalls),
+                    ("inputTokens", result.TotalPromptTokens),
+                    ("cachedInputTokens", result.TotalCachedPromptTokens),
+                    ("outputTokens", result.TotalCompletionTokens),
+                    ("terminationReason", result.TerminationReason.ToString()),
+                    ("detailCode", result.TerminalDetailCode),
+                    ("verificationVerdict", verificationReport.Verdict),
+                    ("verificationPassed", verificationReport.Passed),
+                    ("verificationSummary", summary),
+                    ("verificationIssues", verificationReport.Issues),
+                    ("verificationEvidence", verificationReport.Evidence.Select(e => OrchestrationPayloadJson.Object(
+                        ("check", e.Check),
+                        ("passed", e.Passed),
+                        ("command", e.Command),
+                        ("exitCode", e.ExitCode),
+                        ("observation", e.Observation))).ToArray()),
+                    ("verificationChecklist", OrchestrationPayloadJson.Object(
+                        ("completedItems", verificationChecklist.CompletedItems.Select(item => OrchestrationPayloadJson.Object(
+                            ("check", item.Check),
+                            ("evidence", item.Evidence.ToArray()))).ToArray()),
+                        ("failedItems", verificationChecklist.FailedItems.Select(item => OrchestrationPayloadJson.Object(
+                            ("check", item.Check),
+                            ("evidence", item.Evidence.ToArray()))).ToArray()),
+                        ("pendingItems", verificationChecklist.PendingItems.Select(item => OrchestrationPayloadJson.Object(
+                            ("check", item.Check),
+                            ("evidence", item.Evidence.ToArray()))).ToArray()),
+                        ("focusItems", verificationChecklist.FocusItems.ToArray()))),
+                    ("serviceDiagnostics", serviceDiagnostics));
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "BackgroundJobRunner: VerifyWorker threw. job={JobId} session={SessionId}", job.JobId, sessionId);
                 serviceDiagnostics["exception"] = ex.GetType().Name;
 
-                return JsonConvert.SerializeObject(new
-                {
-                    success = false,
-                    message = ex.Message,
-                    workerType = WorkerType.Verify.ToString().ToLowerInvariant(),
-                    durationMs = started.ElapsedMilliseconds,
-                    serviceDiagnostics
-                });
+                return OrchestrationPayloadJson.Write(
+                    ("success", false),
+                    ("message", ex.Message),
+                    ("workerType", WorkerType.Verify.ToString().ToLowerInvariant()),
+                    ("durationMs", started.ElapsedMilliseconds),
+                    ("serviceDiagnostics", serviceDiagnostics));
             }
         }
 
@@ -2250,34 +2170,32 @@ namespace CodexFlow.Services.Background
                     payload["workspacePath"] = mainWorkspacePath;
                     payload["worktreeKey"] = worktreeKey;
                     payload["lastCommitHash"] = lastCommitHash;
-                    payload["lastChangedFiles"] = JArray.FromObject(lastChangedFilePaths);
+                    payload["lastChangedFiles"] = OrchestrationPayloadJson.Array(lastChangedFilePaths);
                     payload.Remove("shadowWorktreePath");
                     payload.Remove("retryNotBeforeUtc");
                     payload.Remove("retryDelaySeconds");
                     payload["worktreeRetained"] = false;
 
                     var summary = $"ForgeWorker completed by finalizing {lastChangedFilePaths.Length} committed change(s) from the previous retry attempt.";
-                    return JsonConvert.SerializeObject(new
-                    {
-                        success = true,
-                        message = summary,
-                        summary,
-                        result = "已复用重试前已提交的工作区变更完成当前任务。",
-                        workerType = WorkerType.Forge.ToString().ToLowerInvariant(),
-                        durationMs = started.ElapsedMilliseconds,
-                        totalRounds = 0,
-                        totalToolCalls = 0,
-                        writeToolCalls = 0,
-                        terminationReason = QueryTerminationReason.NoToolCalls.ToString(),
-                        detailCode = "RetriedCommittedChangesFinalized",
-                        worktreePath = (string?)null,
-                        workspacePath = mainWorkspacePath,
-                        changedFiles = lastChangedFilePaths,
-                        commitHash = lastCommitHash,
-                        worktreeRetained = false,
-                        serviceDiagnostics,
-                        updatedPayloadJson = payload.ToString(Formatting.None)
-                    });
+                    return OrchestrationPayloadJson.Write(
+                        ("success", true),
+                        ("message", summary),
+                        ("summary", summary),
+                        ("result", "已复用重试前已提交的工作区变更完成当前任务。"),
+                        ("workerType", WorkerType.Forge.ToString().ToLowerInvariant()),
+                        ("durationMs", started.ElapsedMilliseconds),
+                        ("totalRounds", 0),
+                        ("totalToolCalls", 0),
+                        ("writeToolCalls", 0),
+                        ("terminationReason", QueryTerminationReason.NoToolCalls.ToString()),
+                        ("detailCode", "RetriedCommittedChangesFinalized"),
+                        ("worktreePath", (string?)null),
+                        ("workspacePath", mainWorkspacePath),
+                        ("changedFiles", lastChangedFilePaths),
+                        ("commitHash", lastCommitHash),
+                        ("worktreeRetained", false),
+                        ("serviceDiagnostics", serviceDiagnostics),
+                        ("updatedPayloadJson", payload.ToString(Formatting.None)));
                 }
 
                 if ((string.IsNullOrWhiteSpace(mainWorkspacePath) || !Directory.Exists(mainWorkspacePath)) &&
@@ -2285,19 +2203,17 @@ namespace CodexFlow.Services.Background
                 {
                     serviceDiagnostics["workspaceUnavailable"] = true;
                     serviceDiagnostics["mainWorkspacePath"] = mainWorkspacePath;
-                    return JsonConvert.SerializeObject(new
-                    {
-                        success = false,
-                        message = $"Forge worker workspace is unavailable: {mainWorkspacePath}",
-                        workerType = WorkerType.Forge.ToString().ToLowerInvariant(),
-                        durationMs = started.ElapsedMilliseconds,
-                        detailCode = $"WorkspaceUnavailable: {mainWorkspacePath}",
-                        worktreePath = (string?)null,
-                        workspacePath = mainWorkspacePath,
-                        worktreeRetained = false,
-                        serviceDiagnostics,
-                        updatedPayloadJson = payload.ToString(Formatting.None)
-                    });
+                    return OrchestrationPayloadJson.Write(
+                        ("success", false),
+                        ("message", $"Forge worker workspace is unavailable: {mainWorkspacePath}"),
+                        ("workerType", WorkerType.Forge.ToString().ToLowerInvariant()),
+                        ("durationMs", started.ElapsedMilliseconds),
+                        ("detailCode", $"WorkspaceUnavailable: {mainWorkspacePath}"),
+                        ("worktreePath", (string?)null),
+                        ("workspacePath", mainWorkspacePath),
+                        ("worktreeRetained", false),
+                        ("serviceDiagnostics", serviceDiagnostics),
+                        ("updatedPayloadJson", payload.ToString(Formatting.None)));
                 }
 
                 if (retainedShadowWorktreeAvailable && !Directory.Exists(mainWorkspacePath))
@@ -2330,21 +2246,19 @@ namespace CodexFlow.Services.Background
                     session.Metadata.TryGetValue(PlanGuardMetadataKeys.PlanResetReason, out var resetReason);
                     serviceDiagnostics["planResetRequired"] = true;
                     serviceDiagnostics["planResetReason"] = resetReason;
-                    return JsonConvert.SerializeObject(new
-                    {
-                        success = false,
-                        message = string.IsNullOrWhiteSpace(resetReason)
+                    return OrchestrationPayloadJson.Write(
+                        ("success", false),
+                        ("message", string.IsNullOrWhiteSpace(resetReason)
                             ? "当前计划已失效，ForgeWorker 已暂停执行。请先重新生成计划。"
-                            : $"当前计划已失效，ForgeWorker 已暂停执行。原因：{resetReason}",
-                        workerType = WorkerType.Forge.ToString().ToLowerInvariant(),
-                        durationMs = started.ElapsedMilliseconds,
-                        detailCode = "PlanResetRequired",
-                        worktreePath = (string?)null,
-                        workspacePath = mainWorkspacePath,
-                        worktreeRetained = false,
-                        serviceDiagnostics,
-                        updatedPayloadJson = payload.ToString(Formatting.None)
-                    });
+                            : $"当前计划已失效，ForgeWorker 已暂停执行。原因：{resetReason}"),
+                        ("workerType", WorkerType.Forge.ToString().ToLowerInvariant()),
+                        ("durationMs", started.ElapsedMilliseconds),
+                        ("detailCode", "PlanResetRequired"),
+                        ("worktreePath", (string?)null),
+                        ("workspacePath", mainWorkspacePath),
+                        ("worktreeRetained", false),
+                        ("serviceDiagnostics", serviceDiagnostics),
+                        ("updatedPayloadJson", payload.ToString(Formatting.None)));
                 }
 
                 if (session.Metadata.TryGetValue(PlanGuardMetadataKeys.PlanPatchPending, out var patchPendingRaw) &&
@@ -2356,21 +2270,19 @@ namespace CodexFlow.Services.Background
                     serviceDiagnostics["planPatchPending"] = true;
                     serviceDiagnostics["planPatchTaskId"] = patchTaskId;
                     serviceDiagnostics["planPatchReason"] = patchReason;
-                    return JsonConvert.SerializeObject(new
-                    {
-                        success = false,
-                        message = string.IsNullOrWhiteSpace(patchReason)
+                    return OrchestrationPayloadJson.Write(
+                        ("success", false),
+                        ("message", string.IsNullOrWhiteSpace(patchReason)
                             ? "当前计划存在待确认的局部 Plan Patch，ForgeWorker 已暂停所有任务执行。请先确认或清理 Plan Patch。"
-                            : $"当前计划存在待确认的局部 Plan Patch，ForgeWorker 已暂停所有任务执行。原因：{patchReason}",
-                        workerType = WorkerType.Forge.ToString().ToLowerInvariant(),
-                        durationMs = started.ElapsedMilliseconds,
-                        detailCode = "PlanPatchPending",
-                        worktreePath = (string?)null,
-                        workspacePath = mainWorkspacePath,
-                        worktreeRetained = false,
-                        serviceDiagnostics,
-                        updatedPayloadJson = payload.ToString(Formatting.None)
-                    });
+                            : $"当前计划存在待确认的局部 Plan Patch，ForgeWorker 已暂停所有任务执行。原因：{patchReason}"),
+                        ("workerType", WorkerType.Forge.ToString().ToLowerInvariant()),
+                        ("durationMs", started.ElapsedMilliseconds),
+                        ("detailCode", "PlanPatchPending"),
+                        ("worktreePath", (string?)null),
+                        ("workspacePath", mainWorkspacePath),
+                        ("worktreeRetained", false),
+                        ("serviceDiagnostics", serviceDiagnostics),
+                        ("updatedPayloadJson", payload.ToString(Formatting.None)));
                 }
 
                 var workerSession = WorkerExecutionSessionFactory.CreateForWorker(session, WorkerType.Forge);
@@ -2397,10 +2309,10 @@ namespace CodexFlow.Services.Background
                 serviceDiagnostics["baseBranch"] = baseBranch;
                 serviceDiagnostics["shadowBaseRef"] = shadowBaseRef;
 
-                var enableShadowWorkspace = configuration?.GetValue<bool?>("Workspace:EnableShadowWorkspace") ?? true;
-                var enableTaskFileScopeGuard = configuration?.GetValue<bool?>("Workspace:EnableTaskFileScopeGuard") ?? true;
-                keepShadowOnFailure = configuration?.GetValue<bool?>("Workspace:KeepShadowOnFailure") ?? false;
-                keepShadowOnInfrastructureError = configuration?.GetValue<bool?>("Workspace:KeepShadowOnInfrastructureError") ?? true;
+                var enableShadowWorkspace = BooleanConfiguration.Read(configuration, "Workspace:EnableShadowWorkspace", defaultValue: true);
+                var enableTaskFileScopeGuard = BooleanConfiguration.Read(configuration, "Workspace:EnableTaskFileScopeGuard", defaultValue: true);
+                keepShadowOnFailure = BooleanConfiguration.Read(configuration, "Workspace:KeepShadowOnFailure", defaultValue: false);
+                keepShadowOnInfrastructureError = BooleanConfiguration.Read(configuration, "Workspace:KeepShadowOnInfrastructureError", defaultValue: true);
                 serviceDiagnostics["enableShadowWorkspace"] = enableShadowWorkspace;
                 serviceDiagnostics["enableTaskFileScopeGuard"] = enableTaskFileScopeGuard;
                 serviceDiagnostics["keepShadowOnFailure"] = keepShadowOnFailure;
@@ -2437,14 +2349,12 @@ namespace CodexFlow.Services.Background
 
                     if (string.IsNullOrWhiteSpace(shadowWorkspacePath))
                     {
-                        return JsonConvert.SerializeObject(new
-                        {
-                            success = false,
-                            message = "forge worker 无法创建 shadow worktree。",
-                            workerType = WorkerType.Forge.ToString().ToLowerInvariant(),
-                            durationMs = started.ElapsedMilliseconds,
-                            serviceDiagnostics
-                        });
+                        return OrchestrationPayloadJson.Write(
+                            ("success", false),
+                            ("message", "forge worker 无法创建 shadow worktree。"),
+                            ("workerType", WorkerType.Forge.ToString().ToLowerInvariant()),
+                            ("durationMs", started.ElapsedMilliseconds),
+                            ("serviceDiagnostics", serviceDiagnostics));
                     }
 
                     if (retainedShadowWorktreeAvailable)
@@ -2465,19 +2375,17 @@ namespace CodexFlow.Services.Background
                                 discarded);
                             if (!discarded)
                             {
-                                return JsonConvert.SerializeObject(new
-                                {
-                                    success = false,
-                                    message = "forge worker 无法清理保留的 shadow worktree 中上一次尝试遗留的未提交改动。",
-                                    workerType = WorkerType.Forge.ToString().ToLowerInvariant(),
-                                    durationMs = started.ElapsedMilliseconds,
-                                    detailCode = "ShadowWorktreeResidueNotDiscarded",
-                                    worktreePath = shadowWorkspacePath,
-                                    workspacePath = mainWorkspacePath,
-                                    worktreeRetained = true,
-                                    serviceDiagnostics,
-                                    updatedPayloadJson = payload.ToString(Formatting.None)
-                                });
+                                return OrchestrationPayloadJson.Write(
+                                    ("success", false),
+                                    ("message", "forge worker 无法清理保留的 shadow worktree 中上一次尝试遗留的未提交改动。"),
+                                    ("workerType", WorkerType.Forge.ToString().ToLowerInvariant()),
+                                    ("durationMs", started.ElapsedMilliseconds),
+                                    ("detailCode", "ShadowWorktreeResidueNotDiscarded"),
+                                    ("worktreePath", shadowWorkspacePath),
+                                    ("workspacePath", mainWorkspacePath),
+                                    ("worktreeRetained", true),
+                                    ("serviceDiagnostics", serviceDiagnostics),
+                                    ("updatedPayloadJson", payload.ToString(Formatting.None)));
                             }
                         }
                     }
@@ -2695,8 +2603,8 @@ namespace CodexFlow.Services.Background
                             payload["workspacePath"] = activeWorkspacePath;
                             payload["worktreeKey"] = worktreeKey;
                             payload["lastCommitHash"] = null;
-                            payload["lastChangedFiles"] = JArray.FromObject(changedFilePaths);
-                            payload["outOfScopeFiles"] = JArray.FromObject(outOfScope);
+                            payload["lastChangedFiles"] = OrchestrationPayloadJson.Array(changedFilePaths);
+                            payload["outOfScopeFiles"] = OrchestrationPayloadJson.Array(outOfScope);
                             if (usingShadowWorktree)
                             {
                                 payload["shadowWorktreePath"] = shadowWorkspacePath;
@@ -2717,28 +2625,26 @@ namespace CodexFlow.Services.Background
                                 serviceDiagnostics,
                                 "scope_violation").ConfigureAwait(false);
 
-                            return JsonConvert.SerializeObject(new
-                            {
-                                success = false,
-                                message = reason,
-                                summary = reason,
-                                result = result.FinalText,
-                                workerType = WorkerType.Forge.ToString().ToLowerInvariant(),
-                                durationMs = started.ElapsedMilliseconds,
-                                totalRounds = result.TotalRounds,
-                                totalToolCalls = result.TotalToolCalls,
-                                terminationReason = result.TerminationReason.ToString(),
-                                detailCode = result.TerminalDetailCode,
-                                worktreePath = usingShadowWorktree ? activeWorkspacePath : null,
-                                workspacePath = activeWorkspacePath,
-                                changedFiles = changedFilePaths,
-                                outOfScopeFiles = outOfScope.ToArray(),
-                                scopeDenials = taskScopeHook?.Denials,
-                                commitHash,
-                                worktreeRetained = scopeViolationWorktreeRetained,
-                                serviceDiagnostics,
-                                updatedPayloadJson = payload.ToString(Formatting.None)
-                            });
+                            return OrchestrationPayloadJson.Write(
+                                ("success", false),
+                                ("message", reason),
+                                ("summary", reason),
+                                ("result", result.FinalText),
+                                ("workerType", WorkerType.Forge.ToString().ToLowerInvariant()),
+                                ("durationMs", started.ElapsedMilliseconds),
+                                ("totalRounds", result.TotalRounds),
+                                ("totalToolCalls", result.TotalToolCalls),
+                                ("terminationReason", result.TerminationReason.ToString()),
+                                ("detailCode", result.TerminalDetailCode),
+                                ("worktreePath", usingShadowWorktree ? activeWorkspacePath : null),
+                                ("workspacePath", activeWorkspacePath),
+                                ("changedFiles", changedFilePaths),
+                                ("outOfScopeFiles", outOfScope.ToArray()),
+                                ("scopeDenials", taskScopeHook?.Denials),
+                                ("commitHash", commitHash),
+                                ("worktreeRetained", scopeViolationWorktreeRetained),
+                                ("serviceDiagnostics", serviceDiagnostics),
+                                ("updatedPayloadJson", payload.ToString(Formatting.None)));
                         }
                     }
 
@@ -2770,7 +2676,7 @@ namespace CodexFlow.Services.Background
                     payload["workspacePath"] = activeWorkspacePath;
                     payload["worktreeKey"] = worktreeKey;
                     payload["lastCommitHash"] = effectiveCommitHash;
-                    payload["lastChangedFiles"] = JArray.FromObject(effectiveChangedFilePaths);
+                    payload["lastChangedFiles"] = OrchestrationPayloadJson.Array(effectiveChangedFilePaths);
                     if (usingShadowWorktree)
                     {
                         payload["shadowWorktreePath"] = shadowWorkspacePath;
@@ -2809,7 +2715,7 @@ namespace CodexFlow.Services.Background
                             {
                                 ["worktreePath"] = usingShadowWorktree ? activeWorkspacePath : null,
                                 ["workspacePath"] = activeWorkspacePath,
-                                ["changedFiles"] = JArray.FromObject(effectiveChangedFilePaths),
+                                ["changedFiles"] = OrchestrationPayloadJson.Array(effectiveChangedFilePaths),
                                 ["commitHash"] = effectiveCommitHash,
                                 ["worktreeRetained"] = usingShadowWorktree,
                                 ["updatedPayloadJson"] = payload.ToString(Formatting.None)
@@ -2946,34 +2852,32 @@ namespace CodexFlow.Services.Background
                         serviceDiagnostics["restorePreflightFailed"] = true;
                     }
 
-                    return JsonConvert.SerializeObject(new
-                    {
-                        success,
-                        message = summary,
-                        summary,
-                        result = result.FinalText,
-                        workerType = WorkerType.Forge.ToString().ToLowerInvariant(),
-                        durationMs = started.ElapsedMilliseconds,
-                        totalRounds = result.TotalRounds,
-                        totalToolCalls = result.TotalToolCalls,
-                        writeToolCalls = result.WriteToolCalls,
-                        terminationReason = result.TerminationReason.ToString(),
-                        detailCode = ForgeDetailCode.Resolve(
+                    return OrchestrationPayloadJson.Write(
+                        ("success", success),
+                        ("message", summary),
+                        ("summary", summary),
+                        ("result", result.FinalText),
+                        ("workerType", WorkerType.Forge.ToString().ToLowerInvariant()),
+                        ("durationMs", started.ElapsedMilliseconds),
+                        ("totalRounds", result.TotalRounds),
+                        ("totalToolCalls", result.TotalToolCalls),
+                        ("writeToolCalls", result.WriteToolCalls),
+                        ("terminationReason", result.TerminationReason.ToString()),
+                        ("detailCode", ForgeDetailCode.Resolve(
                             restorePreflightFailure is not null, workerBlocked, noRelevantChange, unmetPackages.Count,
-                            success, effectiveChangedFilePaths.Length, result.TotalToolCalls, result.TerminalDetailCode),
-                        workerReport = workerReport is null ? null : new { status = workerReport.Status, reason = workerReport.Reason, unfinished = workerReport.Unfinished, unverified = workerReport.Unverified },
-                        unmetPackages = unmetPackages.Select(static u => new { package = u.Package, project = u.Project, expected = u.Expected, actual = u.Actual }).ToArray(),
-                        scopeDenials = taskScopeHook?.Denials,
-                        detailMessage = result.TerminalDetailMessage,
-                        worktreePath = usingShadowWorktree ? activeWorkspacePath : null,
-                        workspacePath = activeWorkspacePath,
-                        changedFiles = effectiveChangedFilePaths,
-                        commitHash = effectiveCommitHash,
-                        artifactManifest,
-                        worktreeRetained = worktreeRetained,
-                        serviceDiagnostics,
-                        updatedPayloadJson = payload.ToString(Formatting.None)
-                    });
+                            success, effectiveChangedFilePaths.Length, result.TotalToolCalls, result.TerminalDetailCode)),
+                        ("workerReport", workerReport is null ? null : OrchestrationPayloadJson.Object(("status", workerReport.Status), ("reason", workerReport.Reason), ("unfinished", workerReport.Unfinished), ("unverified", workerReport.Unverified))),
+                        ("unmetPackages", unmetPackages.Select(static u => OrchestrationPayloadJson.Object(("package", u.Package), ("project", u.Project), ("expected", u.Expected), ("actual", u.Actual))).ToArray()),
+                        ("scopeDenials", taskScopeHook?.Denials),
+                        ("detailMessage", result.TerminalDetailMessage),
+                        ("worktreePath", usingShadowWorktree ? activeWorkspacePath : null),
+                        ("workspacePath", activeWorkspacePath),
+                        ("changedFiles", effectiveChangedFilePaths),
+                        ("commitHash", effectiveCommitHash),
+                        ("artifactManifest", artifactManifest),
+                        ("worktreeRetained", worktreeRetained),
+                        ("serviceDiagnostics", serviceDiagnostics),
+                        ("updatedPayloadJson", payload.ToString(Formatting.None)));
                 }
                 finally
                 {
@@ -2996,19 +2900,17 @@ namespace CodexFlow.Services.Background
                     serviceDiagnostics,
                     "worker_infrastructure_error").ConfigureAwait(false);
 
-                return JsonConvert.SerializeObject(new
-                {
-                    success = false,
-                    message = ex.Message,
-                    workerType = WorkerType.Forge.ToString().ToLowerInvariant(),
-                    durationMs = started.ElapsedMilliseconds,
-                    detailCode = $"{ex.GetType().Name}: {ex.Message}",
-                    worktreePath = usingShadowWorktree ? activeWorkspacePath : null,
-                    workspacePath = activeWorkspacePath,
-                    worktreeRetained = worktreeRetained,
-                    serviceDiagnostics,
-                    updatedPayloadJson = payload.ToString(Formatting.None)
-                });
+                return OrchestrationPayloadJson.Write(
+                    ("success", false),
+                    ("message", ex.Message),
+                    ("workerType", WorkerType.Forge.ToString().ToLowerInvariant()),
+                    ("durationMs", started.ElapsedMilliseconds),
+                    ("detailCode", $"{ex.GetType().Name}: {ex.Message}"),
+                    ("worktreePath", usingShadowWorktree ? activeWorkspacePath : null),
+                    ("workspacePath", activeWorkspacePath),
+                    ("worktreeRetained", worktreeRetained),
+                    ("serviceDiagnostics", serviceDiagnostics),
+                    ("updatedPayloadJson", payload.ToString(Formatting.None)));
             }
         }
 
@@ -3589,19 +3491,19 @@ namespace CodexFlow.Services.Background
 
             if (runtimeFlags is { Count: > 0 })
             {
-                payload["runtimeFlags"] = JArray.FromObject(runtimeFlags);
+                payload["runtimeFlags"] = OrchestrationPayloadJson.Array(runtimeFlags);
             }
 
             if (serviceDiagnostics != null)
             {
-                payload["serviceDiagnostics"] = JObject.FromObject(serviceDiagnostics);
+                payload["serviceDiagnostics"] = OrchestrationPayloadJson.Object(serviceDiagnostics);
             }
 
             return payload.ToString(Formatting.None);
         }
 
-        private async Task MarkJobRecoveryNeededAsync(
-            IJobDbContext dbContext,
+        private async Task<bool> MarkJobRecoveryNeededAsync(
+            JobRunPersistence persistence,
             BackgroundJob job,
             string recoveryPayloadJson,
             string reason,
@@ -3609,29 +3511,22 @@ namespace CodexFlow.Services.Background
             bool suppressNotifications,
             CancellationToken ct)
         {
-            var trackedJob = await ResolveTrackedJobForTerminalWriteAsync(dbContext, job, ct).ConfigureAwait(false);
-            if (trackedJob == null)
+            if (!await persistence.TryReloadAsync(job, ct).ConfigureAwait(false))
             {
-                _logger.LogWarning(
-                    "Skipping recovery-needed persistence because the parent job no longer exists. job={JobId}",
-                    job.JobId);
-                return;
+                _logger.LogWarning("Skipping recovery persistence because the job disappeared or its claim changed. job={JobId}", job.JobId);
+                return false;
             }
 
-            job = trackedJob;
-
-            dbContext.JobCheckpoints.Add(CreateCheckpoint(
+            var checkpoint = CreateCheckpoint(
                 job,
                 latestCheckpoint,
                 "RecoveryNeeded",
                 pendingActionType: "RecoveryResume",
                 pendingPayloadJson: job.PayloadJson,
-                checkpointData: JsonConvert.SerializeObject(new
-                {
-                    reason,
-                    recoveryPayloadJson,
-                    markedAtUtc = DateTime.UtcNow
-                })));
+                checkpointData: OrchestrationPayloadJson.Write(
+                    ("reason", reason),
+                    ("recoveryPayloadJson", recoveryPayloadJson),
+                    ("markedAtUtc", DateTime.UtcNow)));
 
             job.Status = BackgroundJobStatus.FailedRecoveryNeeded;
             job.ErrorMessage = reason;
@@ -3650,36 +3545,19 @@ namespace CodexFlow.Services.Background
             var payloadWithNotification = await AttachJobNotificationXmlAsync(job, recoveryPayloadJson, ct);
             job.ResultPayloadJson = payloadWithNotification;
 
-            dbContext.OutboxEvents.Add(new OutboxEvent
+            var entry = new OutboxEvent
             {
                 EventType = "JobRecoveryNeeded",
                 JobId = job.JobId,
                 SessionId = job.SessionId,
                 TaskId = job.TaskId,
                 Payload = payloadWithNotification
-            });
+            };
 
-            try
+            if (!await persistence.TryCommitAsync(job, checkpoint, entry, ct).ConfigureAwait(false))
             {
-                await dbContext.SaveChangesAsync(ct).ConfigureAwait(false);
-            }
-            catch (DbUpdateConcurrencyException ex)
-            {
-                _logger.LogWarning(
-                    ex,
-                    "Skipping recovery-needed persistence because the job claim changed before save. job={JobId}",
-                    job.JobId);
-                dbContext.ChangeTracker.Clear();
-                return;
-            }
-            catch (DbUpdateException ex) when (IsMissingBackgroundJobForeignKeyViolation(ex))
-            {
-                _logger.LogWarning(
-                    ex,
-                    "Skipping recovery-needed checkpoint because the parent job disappeared before save. job={JobId}",
-                    job.JobId);
-                dbContext.ChangeTracker.Clear();
-                return;
+                _logger.LogWarning("Skipping recovery persistence because the job claim changed before save. job={JobId}", job.JobId);
+                return false;
             }
 
             _outboxSignal.Pulse();
@@ -3687,29 +3565,8 @@ namespace CodexFlow.Services.Background
             {
                 await DispatchNotificationImmediatelyAsync(job.JobId, CancellationToken.None);
             }
-        }
 
-        private static async Task<BackgroundJob?> ResolveTrackedJobForTerminalWriteAsync(
-            IJobDbContext dbContext,
-            BackgroundJob job,
-            CancellationToken ct)
-        {
-            var entry = dbContext.Entry(job);
-            if (entry.State == EntityState.Detached)
-            {
-                return await dbContext.BackgroundJobs.FindAsync([job.JobId], ct).ConfigureAwait(false);
-            }
-
-            await entry.ReloadAsync(ct).ConfigureAwait(false);
-            return entry.State == EntityState.Detached ? null : job;
-        }
-
-        private static bool IsMissingBackgroundJobForeignKeyViolation(DbUpdateException ex)
-        {
-            // SQLSTATE 23503 is a foreign key violation on every provider that reports SQLSTATE; the message names the constraint.
-            return ex.GetBaseException() is System.Data.Common.DbException databaseException &&
-                   string.Equals(databaseException.SqlState, "23503", StringComparison.Ordinal) &&
-                   databaseException.Message.Contains("FK_JobCheckpoints_BackgroundJobs_JobId", StringComparison.Ordinal);
+            return true;
         }
 
         private static string GetDefaultWorkerPrompt(WorkerType workerType)
@@ -3984,12 +3841,10 @@ namespace CodexFlow.Services.Background
         private static async Task<string> RunMockSimpleTaskAsync(BackgroundJob job, CancellationToken ct)
         {
             await Task.Delay(TimeSpan.FromSeconds(3), ct);
-            return JsonConvert.SerializeObject(new
-            {
-                success = true,
-                message = $"MockSimpleTask [{job.TaskId ?? job.JobId}] completed successfully.",
-                taskId = job.TaskId
-            });
+            return OrchestrationPayloadJson.Write(
+                ("success", true),
+                ("message", $"MockSimpleTask [{job.TaskId ?? job.JobId}] completed successfully."),
+                ("taskId", job.TaskId));
         }
 
         private static async Task<string> SimulateJobAsync(CancellationToken ct)
@@ -4069,49 +3924,49 @@ namespace CodexFlow.Services.Background
                     ToolCallRequestedEvent e => new GatewaySseEvent
                     {
                         Type = GatewaySseEventType.ToolCall,
-                        Payload = new
+                        Payload = new Dictionary<string, object?>
                         {
-                            type = GatewaySseEventType.ToolCall,
-                            name = e.ToolName,
-                            callId = e.CallId,
-                            jobId,
-                            taskId
+                            ["type"] = GatewaySseEventType.ToolCall,
+                            ["name"] = e.ToolName,
+                            ["callId"] = e.CallId,
+                            ["jobId"] = jobId,
+                            ["taskId"] = taskId
                         }
                     },
                     ToolExecutionCompletedEvent e => new GatewaySseEvent
                     {
                         Type = GatewaySseEventType.TaskStatus,
-                        Payload = new
+                        Payload = new Dictionary<string, object?>
                         {
-                            type = "tool_result",
-                            name = e.ToolName,
-                            success = e.Success,
-                            result = e.Result,
-                            jobId,
-                            taskId
+                            ["type"] = "tool_result",
+                            ["name"] = e.ToolName,
+                            ["success"] = e.Success,
+                            ["result"] = e.Result,
+                            ["jobId"] = jobId,
+                            ["taskId"] = taskId
                         }
                     },
                     SystemNoticeEvent e => new GatewaySseEvent
                     {
                         Type = GatewaySseEventType.SystemMessage,
-                        Payload = new
+                        Payload = new Dictionary<string, object?>
                         {
-                            type = GatewaySseEventType.SystemMessage,
-                            noticeType = e.NoticeType,
-                            content = e.Content,
-                            jobId,
-                            taskId
+                            ["type"] = GatewaySseEventType.SystemMessage,
+                            ["noticeType"] = e.NoticeType,
+                            ["content"] = e.Content,
+                            ["jobId"] = jobId,
+                            ["taskId"] = taskId
                         }
                     },
                     ErrorEvent e => new GatewaySseEvent
                     {
                         Type = GatewaySseEventType.Error,
-                        Payload = new
+                        Payload = new Dictionary<string, object?>
                         {
-                            error = e.ErrorType,
-                            message = e.Message,
-                            jobId,
-                            taskId
+                            ["error"] = e.ErrorType,
+                            ["message"] = e.Message,
+                            ["jobId"] = jobId,
+                            ["taskId"] = taskId
                         }
                     },
                     _ => null
@@ -4131,11 +3986,11 @@ namespace CodexFlow.Services.Background
                                 new GatewaySseEvent
                                 {
                                     Type = GatewaySseEventType.FileTreeUpdated,
-                                    Payload = new
+                                    Payload = new Dictionary<string, object?>
                                     {
-                                        tool = completed.ToolName,
-                                        jobId,
-                                        taskId
+                                        ["tool"] = completed.ToolName,
+                                        ["jobId"] = jobId,
+                                        ["taskId"] = taskId
                                     }
                                 }).ConfigureAwait(false);
                         }

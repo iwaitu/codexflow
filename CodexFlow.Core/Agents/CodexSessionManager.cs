@@ -484,13 +484,16 @@ public class CodexSessionManager
     /// This is called after a query turn completes so session diagnostics stay aligned with
     /// the hot context window that drives auto-compression.
     /// </summary>
+    public Task RecordRuntimeUsageAsync(string sessionId, int promptTokens, int completionTokens, CancellationToken cancellationToken)
+        => RecordRuntimeUsageAsync(sessionId, promptTokens, completionTokens, ct: cancellationToken);
+
     public async Task RecordRuntimeUsageAsync(
         string sessionId,
         int promptTokens,
         int completionTokens,
-        CancellationToken ct = default,
         int cachedPromptTokens = 0,
-        int? lastContextTokens = null)
+        int? lastContextTokens = null,
+        CancellationToken ct = default)
     {
         var session = await GetOrCreateSessionAsync(sessionId, string.Empty, string.Empty, (Uri?)null).ConfigureAwait(false);
 

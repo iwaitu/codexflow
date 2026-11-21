@@ -10,6 +10,7 @@ using CodexFlow.Application;
 using CodexFlow.Application.Jobs;
 using CodexFlow.Contracts.BusinessSkills;
 using CodexFlow.Controllers;
+using CodexFlow.Gateway.Http;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Agents;
 using CodexFlow.Core.BusinessSkills;
@@ -377,7 +378,7 @@ public sealed class P1ControlPlaneAndSnapshotTests : IDisposable
         var guard = new OutboundTargetPolicyGuard();
         var credStore = new DpapiBusinessCredentialStore(Path.Combine(credDir, "business-plugins"));
 
-        builder.Services.AddControllers().AddApplicationPart(typeof(BusinessPluginsController).Assembly);
+        builder.Services.AddCodexFlowGateway();
         builder.Services.AddSingleton(creds);
         builder.Services.AddSingleton<IControlPlaneStateProvider>(creds);
         builder.Services.AddSingleton(guard);
@@ -387,7 +388,7 @@ public sealed class P1ControlPlaneAndSnapshotTests : IDisposable
                 new BusinessSkillsOptions { Enabled = featureEnabled }));
         builder.Services.AddScoped<IBusinessPluginControlService, CodexFlow.Orchestration.BusinessSkills.BusinessPluginControlService>();
 
-        builder.Services.AddCodexFlowSqliteStorage(dbPath);
+        builder.Services.AddTestSqliteStorage(dbPath);
         builder.Services.AddCodexFlowLocalDefaults();
         builder.Services.AddSingleton<IWorkspaceRootProvider>(new WorkspaceRootProvider(workspacesRoot, Path.GetDirectoryName(dbPath)));
         builder.Services.AddScoped<ITaskListService>(sp =>
@@ -415,7 +416,8 @@ public sealed class P1ControlPlaneAndSnapshotTests : IDisposable
 
         app.UseAuthentication();
         app.UseAuthorization();
-        app.MapControllers();
+        app.UseCodexFlowGatewayBindingErrors();
+        app.MapCodexFlowGateway();
         await app.StartAsync();
 
         var baseUri = new Uri(app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First());

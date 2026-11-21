@@ -8,6 +8,7 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using CodexFlow.Orchestration.Persistence;
 using System.Text.RegularExpressions;
 using CodexFlow.Contracts;
 using CodexFlow.Core.Execution;
@@ -519,19 +520,14 @@ public sealed class RestoreOverlayService(
     internal static string BuildReviewedList(string reviewedBy, DateTimeOffset now, string targetFramework, IReadOnlyList<(string Id, string Version)> packages)
     {
         var reviewedAt = now.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", System.Globalization.CultureInfo.InvariantCulture);
-        var roots = packages.Select(p => new { id = p.Id, version = p.Version }).ToArray();
+        var roots = packages.Select(static p => new ReviewedDependencyPackage(p.Id, p.Version)).ToArray();
         var sdk = ImplicitSdkPackages(packages);
-        if (sdk.Count == 0)
-            return JsonSerializer.Serialize(new { schema = 1, reviewedBy, reviewedAtUtc = reviewedAt, targetFramework, packages = roots });
-
-        return JsonSerializer.Serialize(new
-        {
-            schema = 1,
-            reviewedBy,
-            reviewedAtUtc = reviewedAt,
-            targetFramework,
-            groups = new[] { new { name = "upgrade", packages = roots, sdkPackages = sdk.Select(p => new { id = p.Id, version = p.Version }).ToArray() } }
-        });
+        var payload = sdk.Count == 0
+            ? new ReviewedDependencyList(1, reviewedBy, reviewedAt, targetFramework, roots, Groups: null)
+            : new ReviewedDependencyList(1, reviewedBy, reviewedAt, targetFramework, Packages: null,
+                [new ReviewedDependencyGroup("upgrade", roots,
+                    sdk.Select(static p => new ReviewedDependencyPackage(p.Id, p.Version)).ToArray())]);
+        return JsonSerializer.Serialize(payload, OrchestrationSnapshotJsonContext.CamelCase.ReviewedDependencyList);
     }
 
     // The verification guests are linux containers; the SDK picks the runtime-identifier package of the platform it runs on.

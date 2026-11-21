@@ -47,16 +47,3 @@ public interface IJobDbContext
 
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 }
-
-/// <summary>The session facts a job is checked against before it runs.</summary>
-public sealed record SessionRecord(string Id, string? UserId, string? WorkspacePath);
-
-/// <summary>
-/// Looks sessions up for the job runner. Sessions belong to the host (the platform keeps them next to its users; the local host
-/// has a single user), so the runner asks through this interface and never reads a session table itself.
-/// </summary>
-public interface ISessionDirectory
-{
-    /// <summary>The session with this id, or null when there is none.</summary>
-    Task<SessionRecord?> FindAsync(string sessionId, CancellationToken ct);
-}

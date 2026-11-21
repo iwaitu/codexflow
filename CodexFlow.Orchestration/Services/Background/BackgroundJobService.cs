@@ -2,16 +2,15 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-using CodexFlow.Orchestration.Jobs;
 using CodexFlow.Application.Jobs;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Models.Jobs;
 using CodexFlow.Core.Workers;
 using CodexFlow.Domain.Jobs;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using CodexFlow.Orchestration.Persistence;
 
 namespace CodexFlow.Services.Background
 {
@@ -20,7 +19,7 @@ namespace CodexFlow.Services.Background
     /// </summary>
     public class BackgroundJobService : IBackgroundJobService
     {
-        private readonly IJobDbContext _context;
+        private readonly IJobStore _store;
         private readonly IOutboxSignal _outboxSignal;
         private readonly IBackgroundJobSignal _jobSignal;
         private readonly IJobHotView _hotView;
@@ -31,7 +30,7 @@ namespace CodexFlow.Services.Background
         /// <summary>
         /// Initializes the background job service.
         /// </summary>
-        /// <param name="context">EF Core context used to persist job records, checkpoints, and outbox events.</param>
+        /// <param name="store">Durable job storage used to create and read jobs.</param>
         /// <param name="outboxSignal">Signal used to wake the outbox projector after lifecycle changes.</param>
         /// <param name="jobSignal">Signal used to wake the supervisor when runnable work becomes available.</param>
         /// <param name="hotView">Hot job views that are cleared during cleanup.</param>
@@ -39,7 +38,7 @@ namespace CodexFlow.Services.Background
         /// <param name="eventLog">Job event history that is cleared together with a session's jobs.</param>
         /// <param name="logger">Logger used for cleanup and lifecycle diagnostics.</param>
         public BackgroundJobService(
-            IJobDbContext context,
+            IJobStore store,
             IOutboxSignal outboxSignal,
             IBackgroundJobSignal jobSignal,
             IJobHotView hotView,
@@ -47,7 +46,7 @@ namespace CodexFlow.Services.Background
             IJobEventLog eventLog,
             ILogger<BackgroundJobService> logger)
         {
-            _context = context;
+            _store = store;
             _outboxSignal = outboxSignal;
             _jobSignal = jobSignal;
             _hotView = hotView;
@@ -89,8 +88,7 @@ namespace CodexFlow.Services.Background
                 Payload = payloadJson
             };
 
-            await _context.BackgroundJobs.AddAsync(job);
-            await _context.JobCheckpoints.AddAsync(new JobCheckpoint
+            var checkpoint = new JobCheckpoint
             {
                 JobId = job.JobId,
                 SessionId = sessionId,
@@ -99,10 +97,8 @@ namespace CodexFlow.Services.Background
                 CurrentStep = startRunning ? "InlineReady" : "Queued",
                 Attempt = job.Attempt,
                 CheckpointData = payloadJson
-            });
-            await _context.OutboxEvents.AddAsync(outboxEvent);
-            
-            await _context.SaveChangesAsync();
+            };
+            await _store.CreateAsync(job, checkpoint, outboxEvent).ConfigureAwait(false);
             _outboxSignal.Pulse();
             if (!startRunning)
             {
@@ -116,14 +112,7 @@ namespace CodexFlow.Services.Background
         /// </summary>
         /// <param name="jobId">Job identifier.</param>
         /// <returns>The current status when the job exists; otherwise <see langword="null"/>.</returns>
-        public async Task<BackgroundJobStatus?> GetJobStatusAsync(string jobId)
-        {
-            var job = await _context.BackgroundJobs
-                .Where(j => j.JobId == jobId)
-                .Select(j => (BackgroundJobStatus?)j.Status)
-                .FirstOrDefaultAsync();
-            return job;
-        }
+        public Task<BackgroundJobStatus?> GetJobStatusAsync(string jobId) => _store.GetStatusAsync(jobId);
 
         /// <summary>
         /// Requeues a terminal background job for another attempt.
@@ -147,7 +136,7 @@ namespace CodexFlow.Services.Background
         /// </summary>
         public async Task<RetryOutcome> RetryJobDetailedAsync(string jobId, string? guidance = null)
         {
-            var job = await _context.BackgroundJobs.FindAsync(jobId);
+            var job = await _store.FindAsync(jobId);
             if (job == null) return new RetryOutcome(BackgroundJobCommandResult.NotFound);
 
             if (job.Status is not (BackgroundJobStatus.Failed or BackgroundJobStatus.FailedRecoveryNeeded or BackgroundJobStatus.Cancelled))
@@ -214,6 +203,8 @@ namespace CodexFlow.Services.Background
                 job.PayloadJson = payload.ToString(Formatting.None);
             }
 
+            var originalStatus = job.Status;
+            var originalAttempt = job.Attempt;
             job.Status = BackgroundJobStatus.Queued;
             job.Attempt++;
             job.ErrorMessage = null;
@@ -231,8 +222,12 @@ namespace CodexFlow.Services.Background
                 Payload = "{}"
             };
 
-            _context.OutboxEvents.Add(ev);
-            await _context.SaveChangesAsync();
+            if (await _store.ApplyTransitionsAsync([new JobTransition(
+                    JobTransitionKind.Retry, job, originalStatus, job.ClaimToken, originalAttempt, ev)]) == 0)
+            {
+                return new RetryOutcome(BackgroundJobCommandResult.Conflict, "job_state_changed",
+                    "作业已在其他请求中更新，请刷新后重试。", failureText);
+            }
             _outboxSignal.Pulse();
             _jobSignal.Pulse();
             return new RetryOutcome(BackgroundJobCommandResult.Success, FailureSummary: failureText);
@@ -265,7 +260,7 @@ namespace CodexFlow.Services.Background
         /// <returns>A command result describing whether the cancellation changed state.</returns>
         public async Task<BackgroundJobCommandResult> CancelJobAsync(string jobId)
         {
-            var job = await _context.BackgroundJobs.FindAsync(jobId);
+            var job = await _store.FindAsync(jobId);
             if (job == null) return BackgroundJobCommandResult.NotFound;
 
             if (job.Status == BackgroundJobStatus.Cancelled || job.Status == BackgroundJobStatus.Completed)
@@ -278,6 +273,7 @@ namespace CodexFlow.Services.Background
                 return BackgroundJobCommandResult.Conflict;
             }
 
+            var originalStatus = job.Status;
             job.Status = BackgroundJobStatus.Cancelled;
             job.CancelledAtUtc = DateTime.UtcNow;
             job.FinishedAtUtc = DateTime.UtcNow;
@@ -297,8 +293,11 @@ namespace CodexFlow.Services.Background
                 Payload = "{}"
             };
 
-            _context.OutboxEvents.Add(ev);
-            await _context.SaveChangesAsync();
+            if (await _store.ApplyTransitionsAsync([new JobTransition(
+                    JobTransitionKind.Cancel, job, originalStatus, job.ClaimToken, job.Attempt, ev)]) == 0)
+            {
+                return BackgroundJobCommandResult.Conflict;
+            }
             _outboxSignal.Pulse();
             _jobSignal.Pulse();
             return BackgroundJobCommandResult.Success;
@@ -311,46 +310,17 @@ namespace CodexFlow.Services.Background
         /// <returns>The number of background job rows deleted from the relational store.</returns>
         public async Task<int> DeleteSessionJobRecordsAsync(string sessionId)
         {
-            var checkpoints = await _context.JobCheckpoints
-                .Where(c => c.SessionId == sessionId)
-                .ToListAsync();
-            var outboxEvents = await _context.OutboxEvents
-                .Where(e => e.SessionId == sessionId)
-                .ToListAsync();
-            var jobs = await _context.BackgroundJobs
-                .Where(j => j.SessionId == sessionId)
-                .ToListAsync();
-            var jobViewIds = jobs
-                .Where(j => !string.IsNullOrWhiteSpace(j.JobId))
-                .Select(j => j.JobId)
-                .ToArray();
-
-            if (checkpoints.Count > 0)
+            var deleted = await _store.DeleteBySessionAsync(sessionId);
+            if (deleted.Changed)
             {
-                _context.JobCheckpoints.RemoveRange(checkpoints);
-            }
-
-            if (outboxEvents.Count > 0)
-            {
-                _context.OutboxEvents.RemoveRange(outboxEvents);
-            }
-
-            if (jobs.Count > 0)
-            {
-                _context.BackgroundJobs.RemoveRange(jobs);
-            }
-
-            if (checkpoints.Count > 0 || outboxEvents.Count > 0 || jobs.Count > 0)
-            {
-                await _context.SaveChangesAsync();
                 _outboxSignal.Pulse();
-            _jobSignal.Pulse();
+                _jobSignal.Pulse();
             }
 
             try
             {
                 await _keyValueStore.DeleteAsync($"Codex:TaskList:{sessionId}");
-                await _hotView.DeleteAsync(jobViewIds);
+                await _hotView.DeleteAsync(deleted.JobIds);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -359,7 +329,7 @@ namespace CodexFlow.Services.Background
 
             await _eventLog.DeleteBySessionAsync(sessionId);
 
-            return jobs.Count;
+            return deleted.JobIds.Count;
         }
 
         /// <summary>
@@ -369,25 +339,14 @@ namespace CodexFlow.Services.Background
         /// <returns>The number of jobs transitioned to <c>Cancelled</c>.</returns>
         public async Task<int> CancelSessionJobsAsync(string sessionId)
         {
-            var activeStatuses = new[]
-            {
-                BackgroundJobStatus.Queued,
-                BackgroundJobStatus.Running,
-                BackgroundJobStatus.WaitingUser,
-                BackgroundJobStatus.FailedRecoveryNeeded
-            };
-
-            var jobs = await _context.BackgroundJobs
-                .Where(j => j.SessionId == sessionId && activeStatuses.Contains(j.Status))
-                .ToListAsync();
-
+            var jobs = await _store.ReadActiveAsync(sessionId);
             if (jobs.Count == 0) return 0;
 
             var now = DateTime.UtcNow;
-            var events = new List<OutboxEvent>(jobs.Count);
-
+            var transitions = new List<JobTransition>(jobs.Count);
             foreach (var job in jobs)
             {
+                var originalStatus = job.Status;
                 job.Status = BackgroundJobStatus.Cancelled;
                 job.CancelledAtUtc = now;
                 job.FinishedAtUtc = now;
@@ -398,22 +357,26 @@ namespace CodexFlow.Services.Background
                     job.ErrorMessage = "Worker was stopped by coordinator.";
                 }
 
-                events.Add(new OutboxEvent
+                var entry = new OutboxEvent
                 {
                     EventType = "JobCancelled",
                     JobId = job.JobId,
                     SessionId = job.SessionId,
                     TaskId = job.TaskId,
                     Payload = "{}"
-                });
+                };
+                transitions.Add(new JobTransition(
+                    JobTransitionKind.Cancel, job, originalStatus, job.ClaimToken, job.Attempt, entry));
             }
 
-            _context.OutboxEvents.AddRange(events);
-            await _context.SaveChangesAsync();
-            _outboxSignal.Pulse();
-            _jobSignal.Pulse();
+            var cancelled = await _store.ApplyTransitionsAsync(transitions);
+            if (cancelled > 0)
+            {
+                _outboxSignal.Pulse();
+                _jobSignal.Pulse();
+            }
 
-            return jobs.Count;
+            return cancelled;
         }
 
         /// <summary>
@@ -425,7 +388,7 @@ namespace CodexFlow.Services.Background
         /// <returns>A command result describing whether the resume operation was accepted.</returns>
         public async Task<BackgroundJobCommandResult> ResumeJobAsync(string jobId, string? resumeToken, string? payloadJson)
         {
-            var job = await _context.BackgroundJobs.FindAsync(jobId);
+            var job = await _store.FindAsync(jobId);
             if (job == null) return BackgroundJobCommandResult.NotFound;
 
             if (job.Status is not (BackgroundJobStatus.WaitingUser or BackgroundJobStatus.FailedRecoveryNeeded))
@@ -433,10 +396,7 @@ namespace CodexFlow.Services.Background
                 return BackgroundJobCommandResult.Conflict;
             }
 
-            var latestCheckpoint = await _context.JobCheckpoints
-                .Where(c => c.JobId == jobId)
-                .OrderByDescending(c => c.SequenceNumber)
-                .FirstOrDefaultAsync();
+            var latestCheckpoint = await _store.FindLatestCheckpointAsync(jobId);
 
             if (job.Status == BackgroundJobStatus.WaitingUser)
             {
@@ -450,6 +410,7 @@ namespace CodexFlow.Services.Background
             }
 
             var originalStatus = job.Status;
+            var originalToken = job.ClaimToken;
 
             if (payloadJson != null)
             {
@@ -473,7 +434,7 @@ namespace CodexFlow.Services.Background
                 ? "ResumedFromWaitingUser"
                 : "RecoveryResumed";
 
-            _context.JobCheckpoints.Add(new JobCheckpoint
+            var checkpoint = new JobCheckpoint
             {
                 JobId = job.JobId,
                 SessionId = job.SessionId,
@@ -484,13 +445,11 @@ namespace CodexFlow.Services.Background
                 PendingPayloadJson = payloadJson,
                 ResumeToken = null,
                 Attempt = job.Attempt,
-                CheckpointData = JsonConvert.SerializeObject(new
-                {
-                    resumeToken,
-                    payloadJson,
-                    resumedAtUtc = DateTime.UtcNow
-                })
-            });
+                CheckpointData = OrchestrationPayloadJson.Write(
+                    ("resumeToken", resumeToken),
+                    ("payloadJson", payloadJson),
+                    ("resumedAtUtc", DateTime.UtcNow))
+            };
 
             var ev = new OutboxEvent
             {
@@ -501,8 +460,11 @@ namespace CodexFlow.Services.Background
                 Payload = payloadJson ?? "{}"
             };
 
-            _context.OutboxEvents.Add(ev);
-            await _context.SaveChangesAsync();
+            if (await _store.ApplyTransitionsAsync([new JobTransition(JobTransitionKind.Resume, job,
+                    originalStatus, originalToken, job.Attempt, ev, checkpoint, latestCheckpoint?.CheckpointId)]) == 0)
+            {
+                return BackgroundJobCommandResult.Conflict;
+            }
             _outboxSignal.Pulse();
             _jobSignal.Pulse();
             return BackgroundJobCommandResult.Success;

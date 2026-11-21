@@ -63,19 +63,19 @@ jobs:
         with:
           global-json-file: global.json
 
-      - name: Pack the five libraries
+      - name: Pack the six libraries
         run: dotnet pack CodexFlow.slnx -c Release -o "$RUNNER_TEMP/packages"
 
-      - name: Exactly the five packages, at the declared version, from this commit
+      - name: Verify the six packages, version, and commit
         run: python3 -I scripts/ci/check_packages.py --packages "$RUNNER_TEMP/packages" --props Directory.Build.props --commit "$(git rev-parse HEAD)"
 
-      - name: A project that has only the packed packages can restore and build against them
+      - name: Restore and run a project that only uses the packed packages
         env:
           CODEXFLOW_PACKED: ${{ runner.temp }}/packages
           NUGET_PACKAGES: ${{ runner.temp }}/consumer-package-cache
         run: |
           version="$(python3 -I scripts/ci/check_packages.py --print-version --props Directory.Build.props)"
-          dotnet build scripts/ci/package-consumer -c Release -p:CodexFlowVersion="$version"
+          dotnet run --project scripts/ci/package-consumer -c Release -p:CodexFlowVersion="$version"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

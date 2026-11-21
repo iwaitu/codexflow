@@ -442,7 +442,15 @@ public interface IIsolatedExecutionSession : IAsyncDisposable
     Task AbortAsync();
 }
 
-public sealed record IsolatedSessionOpenResult(ExecutionDecision Decision, IIsolatedExecutionSession? Session);
+public sealed record IsolatedSessionOpenResult(ExecutionDecision Decision, IIsolatedExecutionSession? Session)
+{
+    /// <summary>Opens a session and transfers its lifetime to the caller receiving the result.</summary>
+    internal static IsolatedSessionOpenResult Open(Func<IIsolatedExecutionSession> createSession)
+    {
+        var decision = ExecutionDecision.Allow();
+        return new IsolatedSessionOpenResult(decision, createSession());
+    }
+}
 
 public interface IIsolatedExecutionService
 {

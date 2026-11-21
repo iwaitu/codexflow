@@ -92,7 +92,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
     public async Task<BrowserOperationResult> NavigateAsync(
         BrowserTrustedCallerContext caller,
         string action,
-        string? url,
+        string? navigationAddress,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(caller);
@@ -102,7 +102,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             return Fail("invalid_action", $"不支持的导航动作 '{action}'，允许值: goto, back, forward, reload。");
         }
 
-        if (normalizedAction == "goto" && string.IsNullOrWhiteSpace(url))
+        if (normalizedAction == "goto" && string.IsNullOrWhiteSpace(navigationAddress))
         {
             return Fail("missing_url", "执行 goto 导航时必须提供 url 参数。");
         }
@@ -135,14 +135,14 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             if (normalizedAction == "goto")
             {
                 var approvedPorts = session.GetApprovedLoopbackPortsSnapshot();
-                var eval = _policyGuard.ValidateNavigationUrl(url, caller.WorkMode, approvedPorts);
+                var eval = _policyGuard.ValidateNavigationUrl(navigationAddress, caller.WorkMode, approvedPorts);
                 if (!eval.Allowed && eval.RequiresLoopbackPortApproval && eval.NormalizedUri is not null)
                 {
                     var approvalResult = await RequestLoopbackPortApprovalAsync(session, eval.NormalizedUri, eval.TargetPort, ct).ConfigureAwait(false);
                     if (!approvalResult.Approved)
                     {
                         var reason = approvalResult.ErrorMessage ?? eval.Message ?? "访问非白名单本机端口未获批准。";
-                        session.RecordAction("browser_navigate", "goto", SanitizeOneLine(url, 200), tab.Url, false, reason, sw.ElapsedMilliseconds);
+                        session.RecordAction("browser_navigate", "goto", SanitizeOneLine(navigationAddress, 200), tab.Url, false, reason, sw.ElapsedMilliseconds);
                         await PublishStateAsync(session, force: true, ct: ct).ConfigureAwait(false);
                         return Fail(approvalResult.ErrorCode ?? BrowserTargetPolicyGuard.ReasonLoopbackApprovalRequired, reason);
                     }
@@ -157,12 +157,12 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                         oneTimePortGranted = eval.TargetPort;
                     }
 
-                    eval = _policyGuard.ValidateNavigationUrl(url, caller.WorkMode, session.GetApprovedLoopbackPortsSnapshot());
+                    eval = _policyGuard.ValidateNavigationUrl(navigationAddress, caller.WorkMode, session.GetApprovedLoopbackPortsSnapshot());
                 }
 
                 if (!eval.Allowed || eval.NormalizedUri is null)
                 {
-                    session.RecordAction("browser_navigate", "goto", SanitizeOneLine(url, 200), tab.Url, false, eval.Message, sw.ElapsedMilliseconds);
+                    session.RecordAction("browser_navigate", "goto", SanitizeOneLine(navigationAddress, 200), tab.Url, false, eval.Message, sw.ElapsedMilliseconds);
                     await PublishStateAsync(session, force: true, ct: ct).ConfigureAwait(false);
                     return Fail(eval.ReasonCode ?? "policy_denied", eval.Message ?? "URL 被浏览器安全策略拦截。");
                 }
@@ -180,7 +180,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                         ct).ConfigureAwait(false);
                     if (!remoteIpEval.Allowed)
                     {
-                        session.RecordAction("browser_navigate", "goto", SanitizeOneLine(url, 200), tab.Url, false, remoteIpEval.Message, sw.ElapsedMilliseconds);
+                        session.RecordAction("browser_navigate", "goto", SanitizeOneLine(navigationAddress, 200), tab.Url, false, remoteIpEval.Message, sw.ElapsedMilliseconds);
                         await PublishStateAsync(session, force: true, ct: ct).ConfigureAwait(false);
                         return Fail(remoteIpEval.ReasonCode ?? "policy_denied", remoteIpEval.Message ?? "远端浏览器目标地址被安全策略拦截。");
                     }
@@ -195,7 +195,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 }
 
                 var navJson = new JsonObject { ["url"] = eval.NormalizedUri.AbsoluteUri }.ToJsonString();
-                var navResult = await proc.Connection.SendJsonAsync("Page.navigate", navJson, tab.CdpSessionId, ct).ConfigureAwait(false);
+                var navResult = await proc.Connection.SendJsonAsync("Page.navigate", navJson, tab.CdpSessionId, ct: ct).ConfigureAwait(false);
                 if (navResult.TryGetProperty("errorText", out var errProp) && !string.IsNullOrWhiteSpace(errProp.GetString()))
                 {
                     var navErr = errProp.GetString()!;
@@ -206,7 +206,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             }
             else if (normalizedAction == "reload")
             {
-                await proc.Connection.SendJsonAsync("Page.reload", "{\"ignoreCache\":false}", tab.CdpSessionId, ct).ConfigureAwait(false);
+                await proc.Connection.SendJsonAsync("Page.reload", "{\"ignoreCache\":false}", tab.CdpSessionId, ct: ct).ConfigureAwait(false);
             }
             else
             {
@@ -245,7 +245,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                         "Page.navigateToHistoryEntry",
                         string.Create(CultureInfo.InvariantCulture, $"{{\"entryId\":{entryId}}}"),
                         tab.CdpSessionId,
-                        ct).ConfigureAwait(false);
+                        ct: ct).ConfigureAwait(false);
                 }
             }
 
@@ -266,7 +266,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             session.RecordAction(
                 "browser_navigate",
                 normalizedAction,
-                SanitizeOneLine(url ?? normalizedAction, 200),
+                SanitizeOneLine(navigationAddress ?? normalizedAction, 200),
                 tab.Url,
                 true,
                 SanitizeOneLine(string.IsNullOrWhiteSpace(tab.Title) ? tab.Url : tab.Title, 140),
@@ -279,7 +279,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 Succeeded: true,
                 Output: $"{summary}\n\n{formatted}",
                 Summary: summary,
-                Url: tab.Url,
+                PageLocation: tab.Url,
                 Title: tab.Title,
                 Screenshot: screenshot);
         }
@@ -290,7 +290,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "browser_navigate failed for session {SessionId}", caller.SessionId);
-            session.RecordAction("browser_navigate", normalizedAction, SanitizeOneLine(url, 200), session.GetActiveTab()?.Url, false, ex.Message, sw.ElapsedMilliseconds);
+            session.RecordAction("browser_navigate", normalizedAction, SanitizeOneLine(navigationAddress, 200), session.GetActiveTab()?.Url, false, ex.Message, sw.ElapsedMilliseconds);
             await PublishStateAsync(session, force: true, ct: ct).ConfigureAwait(false);
             return Fail("browser_error", $"浏览器导航失败: {ex.Message}");
         }
@@ -375,7 +375,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 Succeeded: true,
                 Output: $"{summary}\n\n{formatted}",
                 Summary: summary,
-                Url: tab.Url,
+                PageLocation: tab.Url,
                 Title: tab.Title,
                 Screenshot: screenshot);
         }
@@ -817,7 +817,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                     if (action == "type" && !string.IsNullOrEmpty(request.Text))
                     {
                         var insertJson = new JsonObject { ["text"] = request.Text }.ToJsonString();
-                        await proc.Connection.SendJsonAsync("Input.insertText", insertJson, tab.CdpSessionId, ct).ConfigureAwait(false);
+                        await proc.Connection.SendJsonAsync("Input.insertText", insertJson, tab.CdpSessionId, ct: ct).ConfigureAwait(false);
                     }
                     break;
                 }
@@ -883,7 +883,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 Succeeded: true,
                 Output: $"{summary}\n\n{formatted}",
                 Summary: summary,
-                Url: tab.Url,
+                PageLocation: tab.Url,
                 Title: tab.Title,
                 Screenshot: screenshot);
         }
@@ -975,7 +975,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                     SessionId: caller.SessionId,
                     Tool: "browser_evaluate",
                     Action: "evaluate",
-                    TargetUrl: liveUrlBeforeApproval,
+                    TargetAddress: liveUrlBeforeApproval,
                     TargetOrigin: originBeforeApproval,
                     TargetDescription: $"在页面主上下文中执行 JavaScript 表达式 ({originBeforeApproval})",
                     RiskReason: "该表达式直接在当前页面主上下文运行并可访问同源 DOM 与前端状态（非沙箱环境），必须单次人工确认（allow_once）。",
@@ -1015,7 +1015,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 ["awaitPromise"] = awaitPromise,
                 ["timeout"] = 8000
             }.ToJsonString();
-            var evalRes = await proc.Connection.SendJsonAsync("Runtime.evaluate", evalParams, tab.CdpSessionId, evalCts.Token).ConfigureAwait(false);
+            var evalRes = await proc.Connection.SendJsonAsync("Runtime.evaluate", evalParams, tab.CdpSessionId, ct: evalCts.Token).ConfigureAwait(false);
 
             if (evalRes.TryGetProperty("exceptionDetails", out var excDetails))
             {
@@ -1034,7 +1034,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                     Succeeded: false,
                     Output: $"[evaluate_exception] 页面脚本执行异常:\n{UntrustedText.Wrap("browser_eval_error", cleanErr)}",
                     Summary: SanitizeOneLine(cleanErr, 120),
-                    Url: tab.Url,
+                    PageLocation: tab.Url,
                     Title: tab.Title,
                     ErrorCode: "evaluate_exception");
             }
@@ -1054,7 +1054,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                             ["returnByValue"] = true,
                             ["awaitPromise"] = false
                         }.ToJsonString();
-                        var callRes = await proc.Connection.SendJsonAsync("Runtime.callFunctionOn", callParams, tab.CdpSessionId, evalCts.Token).ConfigureAwait(false);
+                        var callRes = await proc.Connection.SendJsonAsync("Runtime.callFunctionOn", callParams, tab.CdpSessionId, ct: evalCts.Token).ConfigureAwait(false);
                         rawOutput = callRes.TryGetProperty("result", out var cr) && cr.TryGetProperty("value", out var cv)
                             ? (cv.ValueKind == JsonValueKind.String ? cv.GetString() ?? "null" : cv.ToString())
                             : "[object]";
@@ -1067,7 +1067,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                                 "Runtime.releaseObject",
                                 new JsonObject { ["objectId"] = objectId }.ToJsonString(),
                                 tab.CdpSessionId,
-                                CancellationToken.None).ConfigureAwait(false);
+                                ct: CancellationToken.None).ConfigureAwait(false);
                         }
                         catch (Exception)
                         {
@@ -1111,7 +1111,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 Succeeded: true,
                 Output: $"{summary}\n\n{UntrustedText.Wrap("browser_eval_result", cleaned)}",
                 Summary: summary,
-                Url: tab.Url,
+                PageLocation: tab.Url,
                 Title: tab.Title);
         }
         catch (OperationCanceledException)
@@ -1135,7 +1135,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         BrowserTrustedCallerContext caller,
         string action,
         string? tabId = null,
-        string? url = null,
+        string? navigationAddress = null,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(caller);
@@ -1191,9 +1191,9 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 case "new":
                 {
                     Uri? targetUri = null;
-                    if (!string.IsNullOrWhiteSpace(url))
+                    if (!string.IsNullOrWhiteSpace(navigationAddress))
                     {
-                        var eval = _policyGuard.ValidateNavigationUrl(url, caller.WorkMode, session.GetApprovedLoopbackPortsSnapshot());
+                        var eval = _policyGuard.ValidateNavigationUrl(navigationAddress, caller.WorkMode, session.GetApprovedLoopbackPortsSnapshot());
                         if (!eval.Allowed && eval.RequiresLoopbackPortApproval && eval.NormalizedUri is not null)
                         {
                             var approvalResult = await RequestLoopbackPortApprovalAsync(session, eval.NormalizedUri, eval.TargetPort, ct).ConfigureAwait(false);
@@ -1207,7 +1207,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                                 session.ApproveLoopbackPortForSession(eval.TargetPort);
                             }
 
-                            eval = _policyGuard.ValidateNavigationUrl(url, caller.WorkMode, session.GetApprovedLoopbackPortsSnapshot());
+                            eval = _policyGuard.ValidateNavigationUrl(navigationAddress, caller.WorkMode, session.GetApprovedLoopbackPortsSnapshot());
                         }
 
                         if (!eval.Allowed || eval.NormalizedUri is null)
@@ -1246,7 +1246,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                     if (targetUri is not null)
                     {
                         var navJson = new JsonObject { ["url"] = targetUri.AbsoluteUri }.ToJsonString();
-                        await proc.Connection.SendJsonAsync("Page.navigate", navJson, tab.CdpSessionId, ct).ConfigureAwait(false);
+                        await proc.Connection.SendJsonAsync("Page.navigate", navJson, tab.CdpSessionId, ct: ct).ConfigureAwait(false);
                         await WaitForDocumentSettleAsync(proc.Connection, tab, ct).ConfigureAwait(false);
                         var snapshot = await CaptureDomSnapshotCoreAsync(proc.Connection, session, tab, ct).ConfigureAwait(false);
                         _ = await TryCaptureViewportJpegAsync(
@@ -1261,7 +1261,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
 
                     session.RecordAction("browser_tabs", "new", tab.TargetId, tab.Url, true, $"新建标签页 {tab.TargetId}", 0);
                     await PublishStateAsync(session, force: true, ct: ct).ConfigureAwait(false);
-                    return new BrowserOperationResult(true, $"已新建并切换到标签页 [{tab.TargetId}] ({tab.Url})。", Summary: $"新建标签页 {tab.TargetId}", Url: tab.Url, Title: tab.Title);
+                    return new BrowserOperationResult(true, $"已新建并切换到标签页 [{tab.TargetId}] ({tab.Url})。", Summary: $"新建标签页 {tab.TargetId}", PageLocation: tab.Url, Title: tab.Title);
                 }
                 case "switch":
                 {
@@ -1279,7 +1279,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                     _ = await TryCaptureViewportJpegAsync(proc.Connection, session, targetTab, ct).ConfigureAwait(false);
                     session.RecordAction("browser_tabs", "switch", targetTab.TargetId, targetTab.Url, true, $"切换至 {targetTab.TargetId}", 0);
                     await PublishStateAsync(session, force: true, ct: ct).ConfigureAwait(false);
-                    return new BrowserOperationResult(true, $"已切换到标签页 [{targetTab.TargetId}] ({targetTab.Url})。", Summary: $"切换标签页 {targetTab.TargetId}", Url: targetTab.Url, Title: targetTab.Title);
+                    return new BrowserOperationResult(true, $"已切换到标签页 [{targetTab.TargetId}] ({targetTab.Url})。", Summary: $"切换标签页 {targetTab.TargetId}", PageLocation: targetTab.Url, Title: targetTab.Title);
                 }
                 case "close":
                 {
@@ -1474,7 +1474,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 Succeeded: true,
                 Output: $"{summary}\n\n{formatted}",
                 Summary: summary,
-                Url: tab.Url,
+                PageLocation: tab.Url,
                 Title: tab.Title,
                 Screenshot: screenshot);
         }
@@ -1557,7 +1557,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 Succeeded: true,
                 Output: "已唤出桌面浏览器窗口进入人工接管状态。",
                 Summary: "已进入人工接管",
-                Url: tab.Url,
+                PageLocation: tab.Url,
                 Title: tab.Title);
         }
         finally
@@ -1644,7 +1644,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         }
 
         var currentOpts = _options.CurrentValue;
-        var isRemoteConfigured = !string.IsNullOrWhiteSpace(currentOpts.RemoteCdpWsUrl);
+        var isRemoteConfigured = !string.IsNullOrWhiteSpace(currentOpts.RemoteCdpAddress);
         return new BrowserSessionStateDto(
             SessionId: sessionId ?? string.Empty,
             Status: "idle",
@@ -1908,7 +1908,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
 
             // P1-7 / P2-2: If runtime target (local/remote, executable, headless, profile mode) changed since launch,
             // drain idle sessions; if active busy sessions remain, fail-closed with browser_restart_required.
-            var isRemoteDesired = !string.IsNullOrWhiteSpace(opts.RemoteCdpWsUrl);
+            var isRemoteDesired = !string.IsNullOrWhiteSpace(opts.RemoteCdpAddress);
             if (isRemoteDesired && opts.ProfileMode == BrowserProfileMode.Persistent)
             {
                 return (null, Fail(
@@ -2050,24 +2050,25 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             }
 
             CdpBrowserSessionState? newState = null;
-            var sessionProxy = proc.IsRemote
-                ? null
-                : new BrowserOutboundProxy(
-                    _policyGuard,
-                    _portRegistry,
-                    () => newState?.WorkMode ?? SessionWorkMode.Daily,
-                    () => newState?.GetApprovedLoopbackPortsSnapshot(),
-                    _logger);
-
+            await using var proxyOwner = new AsyncResourceOwner<BrowserOutboundProxy>();
             string? browserContextId = null;
             try
             {
+                var sessionProxy = proc.IsRemote
+                    ? null
+                    : proxyOwner.Acquire(() => new BrowserOutboundProxy(
+                        _policyGuard,
+                        _portRegistry,
+                        () => newState?.WorkMode ?? SessionWorkMode.Daily,
+                        () => newState?.GetApprovedLoopbackPortsSnapshot(),
+                        _logger));
+
                 var createCtxParams = sessionProxy is null
                     ? new JsonObject { ["disposeOnDetach"] = true }.ToJsonString()
                     : new JsonObject
                     {
                         ["disposeOnDetach"] = true,
-                        ["proxyServer"] = sessionProxy.ProxyServerUrl,
+                        ["proxyServer"] = sessionProxy.ProxyServerUri.GetLeftPart(UriPartial.Authority),
                         ["proxyBypassList"] = "<-loopback>"
                     }.ToJsonString();
 
@@ -2089,6 +2090,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                     workspaceRoot: caller.WorkspaceRoot,
                     stagingDirectory: sessionStagingDir,
                     isRemote: proc.IsRemote);
+                proxyOwner.RelinquishOwnership();
                 if (!_sessions.TryAdd(caller.SessionId, newState))
                 {
                     try
@@ -2130,10 +2132,6 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                     }
                 }
 
-                if (sessionProxy is not null)
-                {
-                    await sessionProxy.DisposeAsync().ConfigureAwait(false);
-                }
                 throw;
             }
         }
@@ -2150,12 +2148,12 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
 
     private string ComputeDesiredRuntimeKey(BrowserOptions opts)
     {
-        if (!string.IsNullOrWhiteSpace(opts.RemoteCdpWsUrl))
+        if (!string.IsNullOrWhiteSpace(opts.RemoteCdpAddress))
         {
-            var check = BrowserRemoteEndpointGuard.ValidateRemoteCdpWsUrlSyntax(opts.RemoteCdpWsUrl);
+            var check = BrowserRemoteEndpointGuard.ValidateRemoteCdpWsUrlSyntax(opts.RemoteCdpAddress);
             var normalized = check.Allowed && check.NormalizedUri is not null
                 ? check.NormalizedUri.AbsoluteUri
-                : opts.RemoteCdpWsUrl.Trim();
+                : opts.RemoteCdpAddress.Trim();
             return $"remote:{normalized}";
         }
 
@@ -2206,10 +2204,10 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             }
 
             ICdpBrowserRuntime runtime;
-            if (!string.IsNullOrWhiteSpace(desiredOpts.RemoteCdpWsUrl))
+            if (!string.IsNullOrWhiteSpace(desiredOpts.RemoteCdpAddress))
             {
                 runtime = await CdpRemoteBrowserRuntime.ConnectAsync(
-                    desiredOpts.RemoteCdpWsUrl,
+                    desiredOpts.RemoteCdpAddress,
                     _portRegistry,
                     _logger,
                     ct).ConfigureAwait(false);
@@ -2385,7 +2383,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             ["deviceScaleFactor"] = 1,
             ["mobile"] = false
         }.ToJsonString();
-        await connection.SendJsonAsync("Emulation.setDeviceMetricsOverride", metricsParams, cdpSessionId, ct).ConfigureAwait(false);
+        await connection.SendJsonAsync("Emulation.setDeviceMetricsOverride", metricsParams, cdpSessionId, ct: ct).ConfigureAwait(false);
 
         var fetchParams = isRemote
             ? new JsonObject { ["patterns"] = new JsonArray(new JsonObject { ["urlPattern"] = "*" }) }.ToJsonString()
@@ -2393,10 +2391,10 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             {
                 ["patterns"] = new JsonArray(new JsonObject { ["urlPattern"] = "*", ["resourceType"] = "Document" })
             }.ToJsonString();
-        await connection.SendJsonAsync("Fetch.enable", fetchParams, cdpSessionId, ct).ConfigureAwait(false);
+        await connection.SendJsonAsync("Fetch.enable", fetchParams, cdpSessionId, ct: ct).ConfigureAwait(false);
     }
 
-    private void OnCdpEventReceived(CdpEventMessage evt)
+    private void OnCdpEventReceived(object? _, CdpEventArgs evt)
     {
         if (string.Equals(evt.Method, "Target.targetCreated", StringComparison.Ordinal))
         {
@@ -2588,7 +2586,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             {
                 ["patterns"] = new JsonArray(new JsonObject { ["urlPattern"] = "*", ["resourceType"] = "Document" })
             }.ToJsonString();
-        await connection.SendJsonAsync("Fetch.enable", fetchParams, cdpSessionId, ct).ConfigureAwait(false);
+        await connection.SendJsonAsync("Fetch.enable", fetchParams, cdpSessionId, ct: ct).ConfigureAwait(false);
     }
 
     private async Task HandleTargetCreatedAsync(JsonElement parameters)
@@ -2805,7 +2803,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                     "Fetch.continueRequest",
                     new JsonObject { ["requestId"] = requestId }.ToJsonString(),
                     cdpSessionId,
-                    CancellationToken.None).ConfigureAwait(false);
+                    ct: CancellationToken.None).ConfigureAwait(false);
             }
             else
             {
@@ -2813,7 +2811,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                     "Fetch.failRequest",
                     new JsonObject { ["requestId"] = requestId, ["errorReason"] = "BlockedByClient" }.ToJsonString(),
                     cdpSessionId,
-                    CancellationToken.None).ConfigureAwait(false);
+                    ct: CancellationToken.None).ConfigureAwait(false);
             }
         }
         catch (Exception ex)
@@ -2838,7 +2836,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 "Page.handleJavaScriptDialog",
                 new JsonObject { ["accept"] = accept }.ToJsonString(),
                 cdpSessionId,
-                CancellationToken.None).ConfigureAwait(false);
+                ct: CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -2941,7 +2939,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 SessionId: session.SessionId,
                 Tool: "browser_navigate",
                 Action: "loopback_port_access",
-                TargetUrl: targetUri.AbsoluteUri,
+                TargetAddress: targetUri.AbsoluteUri,
                 TargetOrigin: origin,
                 TargetDescription: string.Create(CultureInfo.InvariantCulture, $"允许浏览器访问开发模式本机端口 {port} ({origin})"),
                 RiskReason: "该本机端口不在默认前端开发白名单中，请确认并非敏感本地管理端口（如数据库或 Docker API）。",
@@ -2982,7 +2980,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 SessionId: session.SessionId,
                 Tool: "browser_navigate",
                 Action: "persistent_origin_navigation",
-                TargetUrl: targetUri.AbsoluteUri,
+                TargetAddress: targetUri.AbsoluteUri,
                 TargetOrigin: origin,
                 TargetDescription: $"允许持久化登录态浏览器导航至外部站点 {origin}",
                 RiskReason: "当前处于持久化登录态 Profile，访问外部站点会携带已保存登录 Cookie/状态，请确认站点归属与导航安全性。",
@@ -3074,7 +3072,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 SessionId: caller.SessionId,
                 Tool: "browser_act",
                 Action: action,
-                TargetUrl: effectiveUrl,
+                TargetAddress: effectiveUrl,
                 TargetOrigin: origin,
                 TargetDescription: desc,
                 RiskReason: riskReason,
@@ -3192,7 +3190,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 ["awaitPromise"] = false
             }.ToJsonString();
 
-            var evalRes = await connection.SendJsonAsync("Runtime.evaluate", evalParams, cdpSessionId, ct).ConfigureAwait(false);
+            var evalRes = await connection.SendJsonAsync("Runtime.evaluate", evalParams, cdpSessionId, ct: ct).ConfigureAwait(false);
             objectId = evalRes.TryGetProperty("result", out var r) && r.TryGetProperty("objectId", out var oid)
                 ? oid.GetString()
                 : null;
@@ -3205,7 +3203,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 "DOM.describeNode",
                 new JsonObject { ["objectId"] = objectId }.ToJsonString(),
                 cdpSessionId,
-                ct).ConfigureAwait(false);
+                ct: ct).ConfigureAwait(false);
             var backendNodeId = descRes.GetProperty("node").GetProperty("backendNodeId").GetInt32();
             if (backendNodeId <= 0)
             {
@@ -3218,7 +3216,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 ["backendNodeId"] = backendNodeId,
                 ["files"] = new JsonArray(stagedFilePath)
             }.ToJsonString();
-            await connection.SendJsonAsync("DOM.setFileInputFiles", setFilesParams, cdpSessionId, ct).ConfigureAwait(false);
+            await connection.SendJsonAsync("DOM.setFileInputFiles", setFilesParams, cdpSessionId, ct: ct).ConfigureAwait(false);
         }
         finally
         {
@@ -3230,7 +3228,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                         "Runtime.releaseObject",
                         new JsonObject { ["objectId"] = objectId }.ToJsonString(),
                         cdpSessionId,
-                        CancellationToken.None).ConfigureAwait(false);
+                        ct: CancellationToken.None).ConfigureAwait(false);
                 }
                 catch (Exception)
                 {
@@ -3289,7 +3287,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                     ct: ct).ConfigureAwait(false);
 
                 try { await connection.SendAsync("Emulation.clearDeviceMetricsOverride", sessionId: tab.CdpSessionId, ct: ct).ConfigureAwait(false); } catch (Exception) { }
-                try { await connection.SendJsonAsync("Page.setInterceptFileChooserDialog", "{\"enabled\":false}", tab.CdpSessionId, ct).ConfigureAwait(false); } catch (Exception) { }
+                try { await connection.SendJsonAsync("Page.setInterceptFileChooserDialog", "{\"enabled\":false}", tab.CdpSessionId, ct: ct).ConfigureAwait(false); } catch (Exception) { }
                 await connection.SendAsync("Page.bringToFront", sessionId: tab.CdpSessionId, ct: ct).ConfigureAwait(false);
             }
             else
@@ -3307,13 +3305,13 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                             ["mobile"] = false
                         }.ToJsonString(),
                         tab.CdpSessionId,
-                        ct).ConfigureAwait(false);
+                        ct: ct).ConfigureAwait(false);
                 }
                 catch (Exception)
                 {
                 }
 
-                try { await connection.SendJsonAsync("Page.setInterceptFileChooserDialog", "{\"enabled\":true}", tab.CdpSessionId, ct).ConfigureAwait(false); } catch (Exception) { }
+                try { await connection.SendJsonAsync("Page.setInterceptFileChooserDialog", "{\"enabled\":true}", tab.CdpSessionId, ct: ct).ConfigureAwait(false); } catch (Exception) { }
 
                 await connection.SendJsonAsync(
                     "Browser.setWindowBounds",
@@ -3459,7 +3457,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             "Page.createIsolatedWorld",
             new JsonObject { ["frameId"] = frameId, ["worldName"] = IsolatedWorldName, ["grantUniveralAccess"] = false }.ToJsonString(),
             cdpSessionId,
-            ct).ConfigureAwait(false);
+            ct: ct).ConfigureAwait(false);
 
         var ctxId = worldRes.GetProperty("executionContextId").GetInt32();
         setWorldId(ctxId);
@@ -3503,7 +3501,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
 
             try
             {
-                var result = await connection.SendJsonAsync("Runtime.evaluate", evalParams, cdpSessionId, ct).ConfigureAwait(false);
+                var result = await connection.SendJsonAsync("Runtime.evaluate", evalParams, cdpSessionId, ct: ct).ConfigureAwait(false);
                 if (result.TryGetProperty("result", out var r) && r.TryGetProperty("value", out var v))
                 {
                     return v.ValueKind == JsonValueKind.String ? v.GetString() : v.ToString();
@@ -3828,7 +3826,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 ["quality"] = 78,
                 ["fromSurface"] = true
             }.ToJsonString();
-            var result = await connection.SendJsonAsync("Page.captureScreenshot", captureParams, tab.CdpSessionId, ct).ConfigureAwait(false);
+            var result = await connection.SendJsonAsync("Page.captureScreenshot", captureParams, tab.CdpSessionId, ct: ct).ConfigureAwait(false);
             if (result.TryGetProperty("data", out var dataProp) && dataProp.GetString() is { Length: > 0 } base64)
             {
                 var bytes = Convert.FromBase64String(base64);
@@ -3921,7 +3919,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             "Input.dispatchMouseEvent",
             new JsonObject { ["type"] = "mouseMoved", ["x"] = x, ["y"] = y }.ToJsonString(),
             cdpSessionId,
-            ct);
+            ct: ct);
 
     private static async Task DispatchMouseClickAsync(CdpConnection connection, string cdpSessionId, double x, double y, int clickCount, CancellationToken ct)
     {
@@ -3931,12 +3929,12 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 "Input.dispatchMouseEvent",
                 new JsonObject { ["type"] = "mousePressed", ["x"] = x, ["y"] = y, ["button"] = "left", ["clickCount"] = i }.ToJsonString(),
                 cdpSessionId,
-                ct).ConfigureAwait(false);
+                ct: ct).ConfigureAwait(false);
             await connection.SendJsonAsync(
                 "Input.dispatchMouseEvent",
                 new JsonObject { ["type"] = "mouseReleased", ["x"] = x, ["y"] = y, ["button"] = "left", ["clickCount"] = i }.ToJsonString(),
                 cdpSessionId,
-                ct).ConfigureAwait(false);
+                ct: ct).ConfigureAwait(false);
         }
     }
 
@@ -3953,7 +3951,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 ["windowsVirtualKeyCode"] = windowsVirtualKeyCode
             }.ToJsonString(),
             cdpSessionId,
-            ct).ConfigureAwait(false);
+            ct: ct).ConfigureAwait(false);
         if (!string.IsNullOrEmpty(text))
         {
             await connection.SendJsonAsync(
@@ -3967,7 +3965,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                     ["windowsVirtualKeyCode"] = windowsVirtualKeyCode
                 }.ToJsonString(),
                 cdpSessionId,
-                ct).ConfigureAwait(false);
+                ct: ct).ConfigureAwait(false);
         }
         await connection.SendJsonAsync(
             "Input.dispatchKeyEvent",
@@ -3979,7 +3977,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 ["windowsVirtualKeyCode"] = windowsVirtualKeyCode
             }.ToJsonString(),
             cdpSessionId,
-            ct).ConfigureAwait(false);
+            ct: ct).ConfigureAwait(false);
     }
 
     private static bool IsSubmitTriggerKey(string? key)

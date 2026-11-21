@@ -5,9 +5,7 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.Encodings.Web;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using CodexFlow.Contracts.BusinessSkills;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Agents;
@@ -17,8 +15,6 @@ using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Core.Gateway;
 using CodexFlow.Core.Models;
 using CodexFlow.Core.Runtime;
-using CodexFlow.Orchestration.Jobs;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace CodexFlow.Orchestration.BusinessSkills;
@@ -35,18 +31,6 @@ internal static class BusinessSkillToolConstants
 
 internal static class BusinessSkillToolFormatting
 {
-    internal static readonly JsonSerializerOptions WireJsonOptions = new(JsonSerializerDefaults.Web)
-    {
-        WriteIndented = false,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-    };
-
-    internal static readonly JsonSerializerOptions DeserJsonOptions = new(JsonSerializerDefaults.Web)
-    {
-        AllowOutOfOrderMetadataProperties = true
-    };
-
     /// <summary>
     /// 统一使用 untrusted 边界标签隔离外部 API 返回与外部目录描述，并转义内部闭合标签防止提示词注入。
     /// </summary>
@@ -87,7 +71,7 @@ internal static class BusinessSkillToolFormatting
             sorted[kv.Key] = kv.Value;
         }
 
-        var canonical = $"{skillId}|{pinnedVersion}|{JsonSerializer.Serialize(sorted, WireJsonOptions)}";
+        var canonical = $"{skillId}|{pinnedVersion}|{JsonSerializer.Serialize(sorted, BusinessSkillJsonContext.Wire.SortedInputValues)}";
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
         var msgPart = string.IsNullOrWhiteSpace(messageId) ? "msg" : messageId.Trim();
         if (msgPart.Length > 24)
@@ -124,7 +108,9 @@ internal static class BusinessSkillToolFormatting
             payload["inputsSchema"] = inputsSchema;
         }
 
-        var json = JsonSerializer.Serialize(payload, WireJsonOptions);
+        var envelope = new BusinessSkillStructuredErrorPayload(false, code, message, retryable, userAction,
+            fieldErrors is { Count: > 0 } ? fieldErrors : null, inputsSchema);
+        var json = JsonSerializer.Serialize(envelope, BusinessSkillJsonContext.Wire.BusinessSkillStructuredErrorPayload);
         return CodexToolResult.Succeeded(json, payload, summary: $"business_skill_error:{code}");
     }
 
@@ -165,7 +151,7 @@ internal static class BusinessSkillToolFormatting
     }
 
     public static async Task<bool> HasNonReadCapabilitiesAsync(
-        IJobDbContext db,
+        IBusinessSkillExecutionStore store,
         string snapshotId,
         IReadOnlyList<string> usedCapabilityIds,
         CancellationToken ct)
@@ -175,14 +161,10 @@ internal static class BusinessSkillToolFormatting
             return false;
         }
 
-        var idSet = usedCapabilityIds.ToHashSet(StringComparer.Ordinal);
-        var capRisks = await db.CatalogCapabilities.AsNoTracking()
-            .Where(c => c.SnapshotId == snapshotId && idSet.Contains(c.Id))
-            .Select(c => new { c.Id, c.Risk })
-            .ToListAsync(ct)
-            .ConfigureAwait(false);
+        var uniqueIds = usedCapabilityIds.Distinct(StringComparer.Ordinal).ToArray();
+        var capRisks = await store.ListCapabilityRisksAsync(snapshotId, uniqueIds, ct).ConfigureAwait(false);
 
-        if (capRisks.Count < idSet.Count)
+        if (capRisks.Count < uniqueIds.Length)
         {
             // 快照中缺失任意已用能力时 fail-closed，视作非只读
             return true;
@@ -193,29 +175,14 @@ internal static class BusinessSkillToolFormatting
             risk != CapabilityRiskLevel.Read);
     }
 
-    public static object BuildRunSummaryObject(SkillRunDto run, bool catalogFreshnessChecked = false)
+    public static BusinessSkillRunSummaryPayload BuildRunSummaryObject(SkillRunDto run, bool catalogFreshnessChecked = false)
     {
-        return new
-        {
-            ok = run.Status is SkillRunStatus.Succeeded or SkillRunStatus.PartialSucceeded,
-            runId = run.RunId,
-            skillId = run.SkillId,
-            skillVersion = run.SkillVersion,
-            status = run.Status.ToString(),
-            catalogFreshnessChecked,
-            errorCode = run.Error?.Code,
-            errorMessage = run.Error?.Message,
-            externalRequestsConsumed = run.ExternalRequestCount,
-            steps = run.Steps.Select(static s => new
-            {
-                stepId = s.StepId,
-                stepType = s.StepType,
-                state = s.State.ToString(),
-                errorCode = s.ErrorCode,
-                responseSummary = s.ResponseSummary
-            }).ToArray(),
-            output = run.OutputPayload
-        };
+        var steps = run.Steps.Select(static step => new BusinessSkillStepSummaryPayload(
+            step.StepId, step.StepType, step.State.ToString(), step.ErrorCode, step.ResponseSummary)).ToArray();
+        return new BusinessSkillRunSummaryPayload(
+            run.Status is SkillRunStatus.Succeeded or SkillRunStatus.PartialSucceeded,
+            run.RunId, run.SkillId, run.SkillVersion, run.Status.ToString(), catalogFreshnessChecked,
+            run.Error?.Code, run.Error?.Message, run.ExternalRequestCount, steps, run.OutputPayload);
     }
 }
 
@@ -254,7 +221,7 @@ public sealed class BusinessSkillListTool(IServiceScopeFactory scopeFactory) : I
         var query = arguments.GetValueOrDefault("query")?.ToString()?.Trim();
 
         await using var scope = _scopeFactory.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<IJobDbContext>();
+        var store = scope.ServiceProvider.GetRequiredService<IBusinessSkillExecutionStore>();
 
         if (!string.IsNullOrWhiteSpace(runId))
         {
@@ -271,7 +238,7 @@ public sealed class BusinessSkillListTool(IServiceScopeFactory scopeFactory) : I
 
             var runJson = JsonSerializer.Serialize(
                 BusinessSkillToolFormatting.BuildRunSummaryObject(runRes.Value),
-                BusinessSkillToolFormatting.WireJsonOptions);
+                BusinessSkillJsonContext.Wire.BusinessSkillRunSummaryPayload);
             return CodexToolResult.Succeeded(
                 BusinessSkillToolFormatting.WrapUntrustedPayload(runJson),
                 new { runId, status = runRes.Value.Status.ToString() },
@@ -280,17 +247,15 @@ public sealed class BusinessSkillListTool(IServiceScopeFactory scopeFactory) : I
 
         if (!string.IsNullOrWhiteSpace(skillId))
         {
-            return await GetSkillDetailAsync(db, skillId, ct).ConfigureAwait(false);
+            return await GetSkillDetailAsync(store, skillId, ct).ConfigureAwait(false);
         }
 
-        return await ListSkillsAsync(db, query, ct).ConfigureAwait(false);
+        return await ListSkillsAsync(store, query, ct).ConfigureAwait(false);
     }
 
-    private static async Task<CodexToolResult> GetSkillDetailAsync(IJobDbContext db, string skillId, CancellationToken ct)
+    private static async Task<CodexToolResult> GetSkillDetailAsync(IBusinessSkillExecutionStore store, string skillId, CancellationToken ct)
     {
-        var skill = await db.PublishedSkills.AsNoTracking()
-            .FirstOrDefaultAsync(s => s.Id == skillId, ct)
-            .ConfigureAwait(false);
+        var skill = await store.FindPublishedSkillAsync(skillId, ct).ConfigureAwait(false);
         if (skill is null)
         {
             return BusinessSkillToolFormatting.BuildStructuredError(
@@ -300,19 +265,15 @@ public sealed class BusinessSkillListTool(IServiceScopeFactory scopeFactory) : I
                 userAction: "请先调用 list_business_skills() 获取有效的 skillId。");
         }
 
-        var plugin = await db.BusinessPlugins.AsNoTracking()
-            .FirstOrDefaultAsync(p => p.Id == skill.PluginId, ct)
-            .ConfigureAwait(false);
-        var activeVer = await db.PublishedSkillVersions.AsNoTracking()
-            .FirstOrDefaultAsync(v => v.SkillId == skill.Id && v.Version == skill.ActiveVersion, ct)
-            .ConfigureAwait(false);
+        var plugin = await store.FindPluginAsync(skill.PluginId, ct).ConfigureAwait(false);
+        var activeVer = await store.FindPublishedVersionAsync(skill.Id, skill.ActiveVersion, ct).ConfigureAwait(false);
 
         SkillDefinitionV1? def = null;
         if (activeVer is not null && !string.IsNullOrWhiteSpace(activeVer.DefinitionJson))
         {
             try
             {
-                def = JsonSerializer.Deserialize<SkillDefinitionV1>(activeVer.DefinitionJson, BusinessSkillToolFormatting.DeserJsonOptions);
+                def = JsonSerializer.Deserialize(activeVer.DefinitionJson, BusinessSkillJsonContext.Builder.SkillDefinitionV1);
             }
             catch (JsonException)
             {
@@ -321,49 +282,25 @@ public sealed class BusinessSkillListTool(IServiceScopeFactory scopeFactory) : I
         }
 
         var hasWriteSteps = def is not null && activeVer is not null
-            ? await BusinessSkillToolFormatting.HasNonReadCapabilitiesAsync(db, activeVer.CatalogSnapshotId, def.UsedCapabilityIds, ct).ConfigureAwait(false)
+            ? await BusinessSkillToolFormatting.HasNonReadCapabilitiesAsync(store, activeVer.CatalogSnapshotId, def.UsedCapabilityIds, ct).ConfigureAwait(false)
             : true;
 
-        var detail = new
-        {
-            ok = true,
-            id = skill.Id,
-            name = skill.Name,
-            description = BusinessSkillToolFormatting.TruncateText(skill.Description, 400),
-            environment = skill.Environment,
-            activeVersion = skill.ActiveVersion,
-            pluginEnabled = plugin?.Enabled ?? false,
-            needsRevalidation = activeVer?.NeedsRevalidation ?? true,
-            hasWriteSteps,
-            inputs = def?.Inputs ?? new SkillInputSchemaDto(),
-            outputs = def?.Outputs ?? new SkillOutputSchemaDto(),
-            stepSummary = (def?.Steps ?? []).Select(static s => new { id = s.Id, title = s.Title }).ToArray()
-        };
+        var stepSummary = (def?.Steps ?? []).Select(static step => new BusinessSkillStepTitlePayload(step.Id, step.Title)).ToArray();
+        var detail = new BusinessSkillDetailPayload(
+            true, skill.Id, skill.Name, BusinessSkillToolFormatting.TruncateText(skill.Description, 400),
+            skill.Environment, skill.ActiveVersion, plugin?.Enabled ?? false, activeVer?.NeedsRevalidation ?? true,
+            hasWriteSteps, def?.Inputs ?? new SkillInputSchemaDto(), def?.Outputs ?? new SkillOutputSchemaDto(), stepSummary);
 
-        var json = JsonSerializer.Serialize(detail, BusinessSkillToolFormatting.WireJsonOptions);
+        var json = JsonSerializer.Serialize(detail, BusinessSkillJsonContext.Wire.BusinessSkillDetailPayload);
         return CodexToolResult.Succeeded(
             BusinessSkillToolFormatting.WrapUntrustedPayload(json),
             new { skillId = skill.Id, activeVersion = skill.ActiveVersion, hasWriteSteps },
             summary: $"business_skill_detail:{skill.Id}@v{skill.ActiveVersion}");
     }
 
-    private static async Task<CodexToolResult> ListSkillsAsync(IJobDbContext db, string? query, CancellationToken ct)
+    private static async Task<CodexToolResult> ListSkillsAsync(IBusinessSkillExecutionStore store, string? query, CancellationToken ct)
     {
-        var enabledPluginIds = await db.BusinessPlugins.AsNoTracking()
-            .Where(p => p.Enabled)
-            .Select(p => p.Id)
-            .ToListAsync(ct)
-            .ConfigureAwait(false);
-        var enabledSet = enabledPluginIds.ToHashSet(StringComparer.Ordinal);
-
-        var published = await db.PublishedSkills.AsNoTracking()
-            .OrderBy(s => s.Id)
-            .ToListAsync(ct)
-            .ConfigureAwait(false);
-
-        var activeSkills = published
-            .Where(s => enabledSet.Contains(s.PluginId))
-            .ToList();
+        var activeSkills = (await store.ListEnabledPublishedSkillsAsync(ct).ConfigureAwait(false)).ToList();
 
         if (!string.IsNullOrWhiteSpace(query))
         {
@@ -379,13 +316,10 @@ public sealed class BusinessSkillListTool(IServiceScopeFactory scopeFactory) : I
         var skillIds = activeSkills.Select(static s => s.Id).ToArray();
         var versions = skillIds.Length == 0
             ? []
-            : await db.PublishedSkillVersions.AsNoTracking()
-                .Where(v => skillIds.Contains(v.SkillId))
-                .ToListAsync(ct)
-                .ConfigureAwait(false);
+            : await store.ListPublishedVersionsAsync(skillIds, ct).ConfigureAwait(false);
         var verMap = versions.ToDictionary(v => (v.SkillId, v.Version));
 
-        var items = new List<object>(activeSkills.Count);
+        var items = new List<BusinessSkillListItemPayload>(activeSkills.Count);
         foreach (var s in activeSkills)
         {
             verMap.TryGetValue((s.Id, s.ActiveVersion), out var ver);
@@ -394,7 +328,7 @@ public sealed class BusinessSkillListTool(IServiceScopeFactory scopeFactory) : I
             {
                 try
                 {
-                    def = JsonSerializer.Deserialize<SkillDefinitionV1>(ver.DefinitionJson, BusinessSkillToolFormatting.DeserJsonOptions);
+                    def = JsonSerializer.Deserialize(ver.DefinitionJson, BusinessSkillJsonContext.Builder.SkillDefinitionV1);
                 }
                 catch (JsonException)
                 {
@@ -403,32 +337,17 @@ public sealed class BusinessSkillListTool(IServiceScopeFactory scopeFactory) : I
             }
 
             var hasWriteSteps = def is not null && ver is not null
-                ? await BusinessSkillToolFormatting.HasNonReadCapabilitiesAsync(db, ver.CatalogSnapshotId, def.UsedCapabilityIds, ct).ConfigureAwait(false)
+                ? await BusinessSkillToolFormatting.HasNonReadCapabilitiesAsync(store, ver.CatalogSnapshotId, def.UsedCapabilityIds, ct).ConfigureAwait(false)
                 : true;
 
             var inputKeys = def?.Inputs?.Properties?.Keys.OrderBy(static k => k, StringComparer.Ordinal).ToArray() ?? [];
-            items.Add(new
-            {
-                id = s.Id,
-                name = s.Name,
-                description = BusinessSkillToolFormatting.TruncateText(s.Description, BusinessSkillToolConstants.MaxDescriptionChars),
-                activeVersion = s.ActiveVersion,
-                environment = s.Environment,
-                needsRevalidation = ver?.NeedsRevalidation ?? true,
-                hasWriteSteps,
-                inputKeys
-            });
+            items.Add(new BusinessSkillListItemPayload(
+                s.Id, s.Name, BusinessSkillToolFormatting.TruncateText(s.Description, BusinessSkillToolConstants.MaxDescriptionChars),
+                s.ActiveVersion, s.Environment, ver?.NeedsRevalidation ?? true, hasWriteSteps, inputKeys));
         }
 
-        var payload = new
-        {
-            ok = true,
-            count = items.Count,
-            query = string.IsNullOrWhiteSpace(query) ? null : query,
-            skills = items
-        };
-
-        var json = JsonSerializer.Serialize(payload, BusinessSkillToolFormatting.WireJsonOptions);
+        var payload = new BusinessSkillListPayload(true, items.Count, string.IsNullOrWhiteSpace(query) ? null : query, items);
+        var json = JsonSerializer.Serialize(payload, BusinessSkillJsonContext.Wire.BusinessSkillListPayload);
         return CodexToolResult.Succeeded(
             BusinessSkillToolFormatting.WrapUntrustedPayload(json),
             new { count = items.Count },
@@ -573,10 +492,8 @@ public sealed class BusinessSkillRunTool(
         bool catalogFreshnessWillRun;
         await using (var preScope = _scopeFactory.CreateAsyncScope())
         {
-            var db = preScope.ServiceProvider.GetRequiredService<IJobDbContext>();
-            var skill = await db.PublishedSkills.AsNoTracking()
-                .FirstOrDefaultAsync(s => s.Id == skillId, ct)
-                .ConfigureAwait(false);
+            var store = preScope.ServiceProvider.GetRequiredService<IBusinessSkillExecutionStore>();
+            var skill = await store.FindPublishedSkillAsync(skillId, ct).ConfigureAwait(false);
             if (skill is null)
             {
                 return BusinessSkillToolFormatting.BuildStructuredError(
@@ -587,9 +504,7 @@ public sealed class BusinessSkillRunTool(
             }
 
             pinnedVersion = skill.ActiveVersion;
-            var verEntity = await db.PublishedSkillVersions.AsNoTracking()
-                .FirstOrDefaultAsync(v => v.SkillId == skill.Id && v.Version == pinnedVersion, ct)
-                .ConfigureAwait(false);
+            var verEntity = await store.FindPublishedVersionAsync(skill.Id, pinnedVersion, ct).ConfigureAwait(false);
             if (verEntity is null)
             {
                 return BusinessSkillToolFormatting.BuildStructuredError(
@@ -608,7 +523,7 @@ public sealed class BusinessSkillRunTool(
                     userAction: "该 Skill 关联的插件或目录已变更，需前往「插件与 Skill」构建器重新校验或发布新版本后再执行。");
             }
 
-            pinnedDefinition = JsonSerializer.Deserialize<SkillDefinitionV1>(verEntity.DefinitionJson, BusinessSkillToolFormatting.DeserJsonOptions);
+            pinnedDefinition = JsonSerializer.Deserialize(verEntity.DefinitionJson, BusinessSkillJsonContext.Builder.SkillDefinitionV1);
             if (pinnedDefinition is null)
             {
                 return BusinessSkillToolFormatting.BuildStructuredError(
@@ -619,7 +534,7 @@ public sealed class BusinessSkillRunTool(
             }
 
             var hasWriteSteps = await BusinessSkillToolFormatting.HasNonReadCapabilitiesAsync(
-                db, verEntity.CatalogSnapshotId, pinnedDefinition.UsedCapabilityIds, ct).ConfigureAwait(false);
+                store, verEntity.CatalogSnapshotId, pinnedDefinition.UsedCapabilityIds, ct).ConfigureAwait(false);
             if (policy.PlanModeActive && hasWriteSteps)
             {
                 return BusinessSkillToolFormatting.BuildStructuredError(
@@ -629,9 +544,7 @@ public sealed class BusinessSkillRunTool(
                     userAction: "当前处于只读规划模式（Plan Mode），禁止执行含写入或未确认风险步骤的业务 Skill；请先调用 exit_plan_mode 请求用户退出只读模式。");
             }
 
-            var snap = await db.CatalogSnapshots.AsNoTracking()
-                .FirstOrDefaultAsync(s => s.Id == verEntity.CatalogSnapshotId, ct)
-                .ConfigureAwait(false);
+            var snap = await store.FindSnapshotAsync(verEntity.CatalogSnapshotId, null, ct).ConfigureAwait(false);
             catalogFreshnessWillRun = snap is not null &&
                 snap.FetchedAtUtc < DateTime.UtcNow.AddMinutes(-BusinessSkillDefaults.CatalogFreshnessMinutes);
         }
@@ -689,18 +602,11 @@ public sealed class BusinessSkillRunTool(
                     activeElapsed += now - lastTickUtc;
                     if (activeElapsed >= _softTimeout)
                     {
-                        var pendingPayload = new
-                        {
-                            ok = true,
-                            pending = true,
-                            runId = currentRun.RunId,
-                            skillId = currentRun.SkillId,
-                            skillVersion = currentRun.SkillVersion,
-                            status = currentRun.Status.ToString(),
-                            catalogFreshnessChecked = catalogFreshnessWillRun,
-                            userAction = $"业务 Skill 仍在后台执行中（runId={currentRun.RunId}），可稍后调用 list_business_skills(runId=\"{currentRun.RunId}\") 查询最终结果。"
-                        };
-                        var pendingJson = JsonSerializer.Serialize(pendingPayload, BusinessSkillToolFormatting.WireJsonOptions);
+                        var pendingPayload = new BusinessSkillPendingPayload(
+                            true, true, currentRun.RunId, currentRun.SkillId, currentRun.SkillVersion,
+                            currentRun.Status.ToString(), catalogFreshnessWillRun,
+                            $"业务 Skill 仍在后台执行中（runId={currentRun.RunId}），可稍后调用 list_business_skills(runId=\"{currentRun.RunId}\") 查询最终结果。");
+                        var pendingJson = JsonSerializer.Serialize(pendingPayload, BusinessSkillJsonContext.Wire.BusinessSkillPendingPayload);
                         return CodexToolResult.Succeeded(
                             BusinessSkillToolFormatting.WrapUntrustedPayload(pendingJson),
                             new { currentRun.RunId, status = currentRun.Status.ToString(), pending = true },
@@ -742,7 +648,7 @@ public sealed class BusinessSkillRunTool(
         }
 
         var resultObj = BusinessSkillToolFormatting.BuildRunSummaryObject(currentRun, catalogFreshnessWillRun);
-        var resultJson = JsonSerializer.Serialize(resultObj, BusinessSkillToolFormatting.WireJsonOptions);
+        var resultJson = JsonSerializer.Serialize(resultObj, BusinessSkillJsonContext.Wire.BusinessSkillRunSummaryPayload);
         return CodexToolResult.Succeeded(
             BusinessSkillToolFormatting.WrapUntrustedPayload(resultJson),
             new { currentRun.RunId, status = currentRun.Status.ToString(), catalogFreshnessChecked = catalogFreshnessWillRun },

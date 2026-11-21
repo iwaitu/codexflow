@@ -93,8 +93,8 @@ public sealed class CodexGateway : ICodexGateway, IAsyncDisposable
         string sessionId,
         string userId,
         long lastEventId = 0,
-        [EnumeratorCancellation] CancellationToken ct = default,
-        string? channelEpoch = null)
+        string? channelEpoch = null,
+        [EnumeratorCancellation] CancellationToken ct = default)
     {
         var channel = GetOrCreateChannel(sessionId);
         var subscriber = channel.Subscribe(lastEventId, channelEpoch);
@@ -108,12 +108,10 @@ public sealed class CodexGateway : ICodexGateway, IAsyncDisposable
             sessionId,
             0,
             0,
-            new
-            {
-                userId,
-                lastEventId,
-                subscriberCount = channel.SubscriberCount
-            });
+            FullTextAuditLogger.Fields(
+                ("userId", userId),
+                ("lastEventId", lastEventId),
+                ("subscriberCount", channel.SubscriberCount)));
 
         try
         {
@@ -128,13 +126,13 @@ public sealed class CodexGateway : ICodexGateway, IAsyncDisposable
             {
                 Seq = 0,
                 Type = GatewaySseEventType.Heartbeat,
-                Payload = new
+                Payload = new Dictionary<string, object?>
                 {
-                    sessionId,
-                    status = "connected",
-                    subscriberCount = channel.SubscriberCount,
-                    epoch = channel.Epoch,
-                    pendingApprovals = GetTotalPendingApprovals()
+                    ["sessionId"] = sessionId,
+                    ["status"] = "connected",
+                    ["subscriberCount"] = channel.SubscriberCount,
+                    ["epoch"] = channel.Epoch,
+                    ["pendingApprovals"] = GetTotalPendingApprovals()
                 }
             };
 
@@ -156,13 +154,13 @@ public sealed class CodexGateway : ICodexGateway, IAsyncDisposable
                 {
                     Seq = 0,
                     Type = GatewaySseEventType.Heartbeat,
-                    Payload = new
+                    Payload = new Dictionary<string, object?>
                     {
-                        sessionId,
-                        status = "alive",
-                        subscriberCount = channel.SubscriberCount,
-                        intervalSeconds = (int)_sseHeartbeatInterval.TotalSeconds,
-                        pendingApprovals = GetTotalPendingApprovals()
+                        ["sessionId"] = sessionId,
+                        ["status"] = "alive",
+                        ["subscriberCount"] = channel.SubscriberCount,
+                        ["intervalSeconds"] = (int)_sseHeartbeatInterval.TotalSeconds,
+                        ["pendingApprovals"] = GetTotalPendingApprovals()
                     }
                 };
             }
@@ -177,12 +175,10 @@ public sealed class CodexGateway : ICodexGateway, IAsyncDisposable
                 sessionId,
                 0,
                 0,
-                new
-                {
-                    userId,
-                    lastEventId,
-                    subscriberCount = channel.SubscriberCount
-                });
+                FullTextAuditLogger.Fields(
+                    ("userId", userId),
+                    ("lastEventId", lastEventId),
+                    ("subscriberCount", channel.SubscriberCount)));
         }
     }
 
@@ -275,7 +271,7 @@ public sealed class CodexGateway : ICodexGateway, IAsyncDisposable
                 sid,
                 0,
                 0,
-                new { });
+                FullTextAuditLogger.Fields());
             return channel;
         });
     }

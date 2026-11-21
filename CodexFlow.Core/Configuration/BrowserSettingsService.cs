@@ -72,8 +72,8 @@ public sealed class BrowserSettingsService : IBrowserSettingsService
                 var trimmedRemote = request.RemoteCdpWsUrl.Trim();
                 if (trimmedRemote.Length == 0)
                 {
-                    current.RemoteCdpWsUrl = null;
-                    section.Remove(nameof(BrowserOptions.RemoteCdpWsUrl));
+                    current.RemoteCdpAddress = null;
+                    section.Remove(BrowserOptions.RemoteCdpConfigurationKey);
                 }
                 else if (!BrowserRemoteEndpointGuard.ContainsMaskPlaceholder(trimmedRemote))
                 {
@@ -83,8 +83,8 @@ public sealed class BrowserSettingsService : IBrowserSettingsService
                         throw new ArgumentException(verified.ErrorMessage ?? "RemoteCdpWsUrl must be a valid ws:// or wss:// URL.", nameof(request));
                     }
 
-                    current.RemoteCdpWsUrl = verified.NormalizedUri.AbsoluteUri;
-                    section[nameof(BrowserOptions.RemoteCdpWsUrl)] = current.RemoteCdpWsUrl;
+                    current.RemoteCdpAddress = verified.NormalizedUri.AbsoluteUri;
+                    section[BrowserOptions.RemoteCdpConfigurationKey] = current.RemoteCdpAddress;
                 }
             }
 
@@ -193,14 +193,14 @@ public sealed class BrowserSettingsService : IBrowserSettingsService
             opts.ExecutablePath = execPath.Trim();
         }
 
-        var remoteWs = section.Value<string>(nameof(BrowserOptions.RemoteCdpWsUrl));
+        var remoteWs = section.Value<string>(BrowserOptions.RemoteCdpConfigurationKey);
         if (!string.IsNullOrWhiteSpace(remoteWs) &&
             !BrowserRemoteEndpointGuard.ContainsMaskPlaceholder(remoteWs))
         {
             var verified = BrowserRemoteEndpointGuard.ValidateRemoteCdpWsUrlSyntax(remoteWs);
             if (verified.Allowed && verified.NormalizedUri is not null)
             {
-                opts.RemoteCdpWsUrl = verified.NormalizedUri.AbsoluteUri;
+                opts.RemoteCdpAddress = verified.NormalizedUri.AbsoluteUri;
             }
         }
 

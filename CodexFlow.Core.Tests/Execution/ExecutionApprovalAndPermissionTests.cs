@@ -1607,8 +1607,8 @@ public sealed class ExecutionApprovalAndPermissionTests : IDisposable
             string sessionId,
             string userId,
             long lastEventId = 0,
-            [EnumeratorCancellation] CancellationToken ct = default,
-            string? channelEpoch = null)
+            string? channelEpoch = null,
+            [EnumeratorCancellation] CancellationToken ct = default)
         {
             await Task.CompletedTask;
             yield break;

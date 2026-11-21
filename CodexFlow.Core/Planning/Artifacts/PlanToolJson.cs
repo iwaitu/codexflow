@@ -76,6 +76,15 @@ internal static class PlanToolJson
 
     private static void IgnoreNullCollections<T>(JToken token)
     {
+        if (typeof(T) == typeof(CodexSession) && token is JObject session)
+        {
+            RemoveNullCollections(session, nameof(CodexSession.Plan), nameof(CodexSession.Metadata));
+            if (session.GetValue(nameof(CodexSession.Plan), StringComparison.OrdinalIgnoreCase) is JArray plan)
+            {
+                IgnoreNullCollections<List<CodexTask>>(plan);
+            }
+        }
+
         if (token is not JArray rows)
         {
             return;
@@ -145,7 +154,7 @@ internal static class PlanToolJson
     private static void PopulateCollections(JsonTypeInfo type)
     {
         if (type.Type != typeof(CodexTask) && type.Type != typeof(TaskChecklistItem) &&
-            type.Type != typeof(PlanArtifact) && type.Type != typeof(PlanProjectionRecord))
+            type.Type != typeof(PlanArtifact) && type.Type != typeof(PlanProjectionRecord) && type.Type != typeof(CodexSession))
         {
             return;
         }
@@ -244,6 +253,11 @@ internal sealed record RunTestsPayload(
 
 [JsonSourceGenerationOptions(GenerationMode = JsonSourceGenerationMode.Metadata)]
 [JsonSerializable(typeof(PlanArtifact))]
+[JsonSerializable(typeof(CodexSession))]
+[JsonSerializable(typeof(List<PlanReviewRecord>))]
+[JsonSerializable(typeof(IReadOnlyList<PlanReviewRecord>))]
+[JsonSerializable(typeof(PlanApprovalRecord))]
+[JsonSerializable(typeof(PlanProjectionRecord))]
 [JsonSerializable(typeof(List<CodexTask>))]
 [JsonSerializable(typeof(IReadOnlyList<CodexTask>))]
 [JsonSerializable(typeof(PlanDiffResult))]

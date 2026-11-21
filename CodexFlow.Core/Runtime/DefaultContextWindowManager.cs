@@ -95,9 +95,9 @@ public sealed class DefaultContextWindowManager : IContextWindowManager
                     request.SessionId,
                     result.TotalPromptTokens ?? 0,
                     result.TotalCompletionTokens ?? 0,
-                    ct,
                     result.TotalCachedPromptTokens ?? 0,
-                    lastContextTokens)
+                    lastContextTokens,
+                    ct)
                 .ConfigureAwait(false);
         }
 

@@ -428,29 +428,8 @@ public sealed class ConfiguredSamplingChatClient : IChatClient
     }
 
     private static string? ResolveRequiredToolName(ChatOptions? options)
-    {
-        if (options == null)
-        {
-            return null;
-        }
-
-        var toolMode = options.GetType().GetProperty("ToolMode")?.GetValue(options);
-        if (toolMode == null)
-        {
-            return null;
-        }
-
-        foreach (var propertyName in new[] { "RequiredFunctionName", "RequiredToolName", "FunctionName", "ToolName", "Name" })
-        {
-            var value = toolMode.GetType().GetProperty(propertyName)?.GetValue(toolMode) as string;
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                return value;
-            }
-        }
-
-        return null;
-    }
+        => options?.ToolMode is RequiredChatToolMode { RequiredFunctionName: { } name } &&
+           !string.IsNullOrWhiteSpace(name) ? name : null;
 
     private static PromptSnapshotCorrelation? ExtractPromptSnapshotCorrelation(ChatOptions? options)
     {
@@ -487,15 +466,7 @@ public sealed class ConfiguredSamplingChatClient : IChatClient
     }
 
     private static string? ResolveToolChoiceDescription(ChatOptions? options)
-    {
-        if (options == null)
-        {
-            return null;
-        }
-
-        var toolMode = options.GetType().GetProperty("ToolMode")?.GetValue(options);
-        return toolMode?.ToString();
-    }
+        => options?.ToolMode?.ToString();
 
     private sealed record PromptSnapshotCorrelation(string? QueryId, string? SessionId, int? Round);
 }

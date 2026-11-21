@@ -3,14 +3,13 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 using System.Text.Json;
+using CodexFlow.Orchestration.Persistence;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Agents;
 using CodexFlow.Core.Agents.Tools;
 using CodexFlow.Core.Gateway;
 using CodexFlow.Core.Models;
 using CodexFlow.Domain.Chat;
-using CodexFlow.Orchestration.Jobs;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
 namespace CodexFlow.Orchestration.Chat;
@@ -34,7 +33,7 @@ public sealed record PlanModeTransitionResult(
 /// and applies host-controlled Plan Mode transitions with optimistic CAS version checks and audit records.
 /// </summary>
 public sealed class SessionPolicyResolver(
-    IJobDbContext db,
+    ISessionPolicyStore policies,
     ISessionStore sessionStore,
     IWorkflowAuditStore auditStore,
     ICodexGateway? gateway = null,
@@ -47,13 +46,10 @@ public sealed class SessionPolicyResolver(
             throw new InvalidOperationException("SessionId is required to resolve authoritative session policy.");
         }
 
-        IvilsonSession? entity;
+        StoredSessionPolicy? session;
         try
         {
-            entity = await db.Sessions
-                .AsNoTracking()
-                .FirstOrDefaultAsync(s => s.Id == sessionId, ct)
-                .ConfigureAwait(false);
+            session = await policies.FindPolicyAsync(sessionId, null, ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -61,12 +57,12 @@ public sealed class SessionPolicyResolver(
             throw new InvalidOperationException($"Failed to load authoritative policy for session '{sessionId}'.", ex);
         }
 
-        if (entity is null)
+        if (session is null)
         {
             throw new InvalidOperationException($"Authoritative session '{sessionId}' not found; failing closed.");
         }
 
-        return ToSnapshot(entity);
+        return Normalize(session.Policy);
     }
 
     public async Task<SessionPolicySnapshot?> TryResolveAsync(string sessionId, string? userId = null, CancellationToken ct = default)
@@ -76,11 +72,8 @@ public sealed class SessionPolicyResolver(
             return null;
         }
 
-        var entity = await db.Sessions
-            .AsNoTracking()
-            .FirstOrDefaultAsync(s => s.Id == sessionId && (userId == null || s.UserId == userId), ct)
-            .ConfigureAwait(false);
-        return entity is null ? null : ToSnapshot(entity);
+        var session = await policies.FindPolicyAsync(sessionId, userId, ct).ConfigureAwait(false);
+        return session is null ? null : Normalize(session.Policy);
     }
 
     public async Task<(bool Success, int PlanModeVersion, string? Error)> EnterPlanModeAsync(
@@ -89,7 +82,7 @@ public sealed class SessionPolicyResolver(
         string? objective,
         CancellationToken ct = default)
     {
-        var session = await db.Sessions.FirstOrDefaultAsync(s => s.Id == sessionId, ct).ConfigureAwait(false);
+        var session = await policies.FindPolicyAsync(sessionId, null, ct).ConfigureAwait(false);
         if (session is null)
         {
             return (false, 1, $"Session '{sessionId}' not found.");
@@ -106,15 +99,16 @@ public sealed class SessionPolicyResolver(
             messageId: null,
             ct: ct).ConfigureAwait(false);
 
+        var version = Math.Max(1, session.Policy.PlanModeVersion);
         return result.Outcome is PlanModeTransitionOutcome.Updated or PlanModeTransitionOutcome.NoOp
-            ? (true, result.Policy?.PlanModeVersion ?? session.PlanModeVersion, null)
-            : (false, session.PlanModeVersion, result.Message);
+            ? (true, result.Policy?.PlanModeVersion ?? version, null)
+            : (false, version, result.Message);
     }
 
     public async Task<int> GetCurrentPlanModeVersionAsync(string sessionId, CancellationToken ct = default)
     {
-        var entity = await db.Sessions.AsNoTracking().FirstOrDefaultAsync(s => s.Id == sessionId, ct).ConfigureAwait(false);
-        return Math.Max(1, entity?.PlanModeVersion ?? 1);
+        var session = await policies.FindPolicyAsync(sessionId, null, ct).ConfigureAwait(false);
+        return Math.Max(1, session?.Policy.PlanModeVersion ?? 1);
     }
 
     public async Task<PlanModeTransitionResult> SetPlanModeAsync(
@@ -132,45 +126,53 @@ public sealed class SessionPolicyResolver(
         ArgumentException.ThrowIfNullOrWhiteSpace(userId);
         ArgumentException.ThrowIfNullOrWhiteSpace(changedBy);
 
-        var session = await db.Sessions
-            .FirstOrDefaultAsync(s => s.Id == sessionId && s.UserId == userId, ct)
-            .ConfigureAwait(false);
-        if (session is null)
+        while (true)
         {
-            return new PlanModeTransitionResult(PlanModeTransitionOutcome.NotFound, null, "Session not found.");
-        }
+            ct.ThrowIfCancellationRequested();
+            var session = await policies.FindPolicyAsync(sessionId, userId, ct).ConfigureAwait(false);
+            if (session is null)
+            {
+                return new PlanModeTransitionResult(PlanModeTransitionOutcome.NotFound, null, "Session not found.");
+            }
 
-        var currentVersion = Math.Max(1, session.PlanModeVersion);
-        if (expectedPlanModeVersion.HasValue && expectedPlanModeVersion.Value != currentVersion)
-        {
+            var current = Normalize(session.Policy);
+            if (expectedPlanModeVersion is int expected && expected != current.PlanModeVersion)
+            {
+                return new PlanModeTransitionResult(
+                    PlanModeTransitionOutcome.VersionConflict,
+                    current,
+                    $"PlanModeVersion mismatch: expected {expected}, current is {current.PlanModeVersion}.");
+            }
+
+            if (current.PlanModeActive == active)
+            {
+                return new PlanModeTransitionResult(PlanModeTransitionOutcome.NoOp, current, "Plan mode unchanged.");
+            }
+
+            var nowUtc = DateTime.UtcNow;
+            var newVersion = current.PlanModeVersion + 1;
+            if (!await policies.TrySetPlanModeAsync(sessionId, session, active, newVersion, nowUtc, changedBy, ct)
+                .ConfigureAwait(false))
+            {
+                continue;
+            }
+
+            var snapshot = current with
+            {
+                PlanModeActive = active,
+                PlanModeVersion = newVersion,
+                PlanModeChangedAtUtc = nowUtc,
+                PlanModeChangedBy = changedBy,
+            };
+            await SyncCachedSessionAsync(sessionId, snapshot, reason, objective).ConfigureAwait(false);
+            await RecordPlanModeAuditAsync(sessionId, userId, snapshot, changedBy, reason, messageId, ct).ConfigureAwait(false);
+            await PublishPlanModeChangedAsync(sessionId, snapshot, reason, objective, ct).ConfigureAwait(false);
+
             return new PlanModeTransitionResult(
-                PlanModeTransitionOutcome.VersionConflict,
-                ToSnapshot(session),
-                $"PlanModeVersion mismatch: expected {expectedPlanModeVersion.Value}, current is {currentVersion}.");
+                PlanModeTransitionOutcome.Updated,
+                snapshot,
+                active ? "Plan mode enabled." : "Plan mode disabled.");
         }
-
-        if (session.PlanModeActive == active)
-        {
-            return new PlanModeTransitionResult(PlanModeTransitionOutcome.NoOp, ToSnapshot(session), "Plan mode unchanged.");
-        }
-
-        var nowUtc = DateTime.UtcNow;
-        session.PlanModeActive = active;
-        session.PlanModeVersion = currentVersion + 1;
-        session.PlanModeChangedAtUtc = nowUtc;
-        session.PlanModeChangedBy = changedBy;
-
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
-
-        var snapshot = ToSnapshot(session);
-        await SyncCachedSessionAsync(sessionId, snapshot, reason, objective).ConfigureAwait(false);
-        await RecordPlanModeAuditAsync(sessionId, userId, snapshot, changedBy, reason, messageId, ct).ConfigureAwait(false);
-        await PublishPlanModeChangedAsync(sessionId, snapshot, reason, objective, ct).ConfigureAwait(false);
-
-        return new PlanModeTransitionResult(
-            PlanModeTransitionOutcome.Updated,
-            snapshot,
-            active ? "Plan mode enabled." : "Plan mode disabled.");
     }
 
     public static SessionPolicySnapshot ToSnapshot(IvilsonSession entity)
@@ -181,6 +183,9 @@ public sealed class SessionPolicyResolver(
             Math.Max(1, entity.PlanModeVersion),
             entity.PlanModeChangedAtUtc,
             entity.PlanModeChangedBy);
+
+    private static SessionPolicySnapshot Normalize(SessionPolicySnapshot policy)
+        => policy with { ModeVersion = Math.Max(1, policy.ModeVersion), PlanModeVersion = Math.Max(1, policy.PlanModeVersion) };
 
     private async Task SyncCachedSessionAsync(
         string sessionId,
@@ -225,19 +230,10 @@ public sealed class SessionPolicyResolver(
         try
         {
             var auditId = $"plan-mode-{Guid.NewGuid():N}";
-            var payload = JsonSerializer.Serialize(new
-            {
-                userId,
-                sessionId,
-                workMode = snapshot.WorkMode.ToString(),
-                modeVersion = snapshot.ModeVersion,
-                planModeActive = snapshot.PlanModeActive,
-                planModeVersion = snapshot.PlanModeVersion,
-                changedBy,
-                reason,
-                messageId,
-                changedAtUtc = snapshot.PlanModeChangedAtUtc
-            });
+            var payload = JsonSerializer.Serialize(
+                new PlanModeAuditPayload(userId, sessionId, snapshot.WorkMode.ToString(), snapshot.ModeVersion,
+                    snapshot.PlanModeActive, snapshot.PlanModeVersion, changedBy, reason, messageId, snapshot.PlanModeChangedAtUtc),
+                OrchestrationSnapshotJsonContext.CamelCase.PlanModeAuditPayload);
 
             await auditStore.StartAsync(new WorkflowRunRecord
             {
@@ -275,18 +271,18 @@ public sealed class SessionPolicyResolver(
                 new GatewaySseEvent
                 {
                     Type = GatewaySseEventType.PlanModeChanged,
-                    Payload = new
+                    Payload = new Dictionary<string, object?>
                     {
-                        type = GatewaySseEventType.PlanModeChanged,
-                        sessionId,
-                        workMode = snapshot.WorkMode.ToString(),
-                        modeVersion = snapshot.ModeVersion,
-                        active = snapshot.PlanModeActive,
-                        version = snapshot.PlanModeVersion,
-                        changedAtUtc = snapshot.PlanModeChangedAtUtc,
-                        changedBy = snapshot.PlanModeChangedBy,
-                        reason,
-                        objective
+                        ["type"] = GatewaySseEventType.PlanModeChanged,
+                        ["sessionId"] = sessionId,
+                        ["workMode"] = snapshot.WorkMode.ToString(),
+                        ["modeVersion"] = snapshot.ModeVersion,
+                        ["active"] = snapshot.PlanModeActive,
+                        ["version"] = snapshot.PlanModeVersion,
+                        ["changedAtUtc"] = snapshot.PlanModeChangedAtUtc,
+                        ["changedBy"] = snapshot.PlanModeChangedBy,
+                        ["reason"] = reason,
+                        ["objective"] = objective
                     }
                 },
                 ct).ConfigureAwait(false);

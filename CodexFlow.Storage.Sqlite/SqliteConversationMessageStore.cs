@@ -10,8 +10,15 @@ using Microsoft.Data.Sqlite;
 namespace CodexFlow.Storage.Sqlite;
 
 /// <summary>Stores conversation messages through SQLite commands on a caller-owned connection.</summary>
-internal sealed class SqliteConversationMessageStore(SqliteConnection connection) : IConversationMessageStore
+internal sealed class SqliteConversationMessageStore : IConversationMessageStore
 {
+    private readonly SqliteConnection? _connection;
+    private readonly SqliteConnectionFactory? _connections;
+
+    public SqliteConversationMessageStore(SqliteConnection connection) => _connection = connection;
+
+    public SqliteConversationMessageStore(SqliteConnectionFactory connections) => _connections = connections;
+
     private const string MessageColumns = """
         Id, ConversationId, UserContent, AiContent, ThinkingContent, TokenUsed,
         SystemPrompt, ReplyId, Created, ToolCallResult, MessageType, NotificationMeta
@@ -19,6 +26,8 @@ internal sealed class SqliteConversationMessageStore(SqliteConnection connection
 
     public async Task<List<IvilsonChatMessage>> ReadAfterAsync(string conversationId, DateTime? createdAfterUtc, int? hardLimit)
     {
+        await using var ownedConnection = _connections?.Open();
+        var connection = ownedConnection ?? _connection!;
         var openedHere = connection.State != ConnectionState.Open;
         if (openedHere)
             await connection.OpenAsync();
@@ -45,21 +54,7 @@ internal sealed class SqliteConversationMessageStore(SqliteConnection connection
             var messages = new List<IvilsonChatMessage>();
             while (await reader.ReadAsync())
             {
-                messages.Add(new IvilsonChatMessage
-                {
-                    Id = reader.GetString(0),
-                    ConversationId = reader.GetString(1),
-                    UserContent = ReadNullableText(reader, 2),
-                    AiContent = ReadNullableText(reader, 3),
-                    ThinkingContent = ReadNullableText(reader, 4),
-                    TokenUsed = reader.GetInt32(5),
-                    SystemPrompt = ReadNullableText(reader, 6),
-                    ReplyId = ReadNullableText(reader, 7),
-                    Created = reader.GetDateTime(8),
-                    ToolCallResult = ReadNullableText(reader, 9),
-                    MessageType = ReadNullableText(reader, 10),
-                    NotificationMeta = ReadNullableText(reader, 11),
-                });
+                messages.Add(ReadMessage(reader));
             }
 
             return messages;
@@ -73,13 +68,15 @@ internal sealed class SqliteConversationMessageStore(SqliteConnection connection
 
     public async Task AppendAsync(string userId, string? model, IvilsonChatMessage message)
     {
+        await using var ownedConnection = _connections?.Open();
+        var connection = ownedConnection ?? _connection!;
         var openedHere = connection.State != ConnectionState.Open;
         if (openedHere)
             await connection.OpenAsync();
 
         try
         {
-            await using var transaction = connection.BeginTransaction();
+            await using var transaction = connection.BeginTransaction(deferred: false);
             await using var command = connection.CreateCommand();
             command.Transaction = transaction;
             command.CommandText = """
@@ -130,4 +127,20 @@ internal sealed class SqliteConversationMessageStore(SqliteConnection connection
 
     private static void AddNullableText(SqliteCommand command, string name, string? value)
         => command.Parameters.AddWithValue(name, (object?)value ?? DBNull.Value);
+
+    internal static IvilsonChatMessage ReadMessage(SqliteDataReader reader, int offset = 0) => new()
+    {
+        Id = reader.GetString(offset),
+        ConversationId = reader.GetString(offset + 1),
+        UserContent = ReadNullableText(reader, offset + 2),
+        AiContent = ReadNullableText(reader, offset + 3),
+        ThinkingContent = ReadNullableText(reader, offset + 4),
+        TokenUsed = reader.GetInt32(offset + 5),
+        SystemPrompt = ReadNullableText(reader, offset + 6),
+        ReplyId = ReadNullableText(reader, offset + 7),
+        Created = reader.GetDateTime(offset + 8),
+        ToolCallResult = ReadNullableText(reader, offset + 9),
+        MessageType = ReadNullableText(reader, offset + 10),
+        NotificationMeta = ReadNullableText(reader, offset + 11),
+    };
 }

@@ -5,14 +5,13 @@
 using CodexFlow.Contracts;
 using CodexFlow.Domain.Chat;
 using CodexFlow.Orchestration.Hosting;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
 namespace CodexFlow.Application
 {
     public class ChatService : IChatService
     {
-        private readonly CodexFlow.Orchestration.Jobs.IJobDbContext _db;
+        private readonly IChatPersistence _persistence;
         private readonly ILogger<ChatService> _logger;
         private readonly IWorkspaceRootProvider? _workspaceRootProvider;
         private readonly CodexFlow.Core.Browser.IBrowserSessionManager? _browserSessionManager;
@@ -20,22 +19,13 @@ namespace CodexFlow.Application
         private readonly IConversationMessageStore _conversationMessages;
 
         public ChatService(
-            CodexFlow.Orchestration.Jobs.IJobDbContext db,
-            ILogger<ChatService> logger,
-            IWorkspaceRootProvider? workspaceRootProvider = null,
-            CodexFlow.Core.Browser.IBrowserSessionManager? browserSessionManager = null)
-            : this(db, logger, workspaceRootProvider, new EfConversationMessageStore(db), browserSessionManager)
-        {
-        }
-
-        public ChatService(
-            CodexFlow.Orchestration.Jobs.IJobDbContext db,
+            IChatPersistence persistence,
             ILogger<ChatService> logger,
             IWorkspaceRootProvider? workspaceRootProvider,
             IConversationMessageStore conversationMessages,
-            CodexFlow.Core.Browser.IBrowserSessionManager? browserSessionManager)
+            CodexFlow.Core.Browser.IBrowserSessionManager? browserSessionManager = null)
         {
-            _db = db;
+            _persistence = persistence;
             _logger = logger;
             _workspaceRootProvider = workspaceRootProvider;
             _conversationMessages = conversationMessages;
@@ -64,8 +54,7 @@ namespace CodexFlow.Application
                     Name = name ?? string.Empty,
                     UpdateAt = DateTime.UtcNow
                 };
-                _db.Conversations.Add(conversation);
-                await _db.SaveChangesAsync();
+                await _persistence.AddConversationAsync(conversation);
                 return conversation.Id;
             }
             catch (Exception ex)
@@ -78,33 +67,26 @@ namespace CodexFlow.Application
 
         public async Task<IvilsonConversation?> Get(string id)
         {
-            var result = await _db.Conversations.FindAsync(id);
+            var result = await _persistence.FindConversationWithHistoryAsync(id);
             if (result == null)
             {
                 _logger.LogError("Conversation not found");
                 return null;
             }
-            result.ChatMessages = await _db.ChatMessages.Where(p => p.ConversationId == id).OrderBy(p => p.Created).ToListAsync();
             return result;
         }
 
         public async Task SetName(string id, string name)
         {
-            var conversation = await _db.Conversations.FindAsync(id);
-            if (conversation == null)
+            if (await _persistence.SetConversationNameAsync(id, name, DateTime.UtcNow) is null)
             {
                 _logger.LogError("Conversation not found");
-                return;
             }
-            conversation.Name = name;
-            conversation.UpdateAt = DateTime.UtcNow;
-            _db.Conversations.Update(conversation);
-            await _db.SaveChangesAsync();
         }
 
         public async Task<string> GetConversationName(string conversationId)
         {
-            var cov = await _db.Conversations.FindAsync(conversationId);
+            var cov = await _persistence.FindConversationAsync(conversationId);
             if (cov != null)
             {
                 return cov.Name;
@@ -114,11 +96,8 @@ namespace CodexFlow.Application
 
         
         //根据对话id获取对话内容
-        public async Task<List<IvilsonChatMessage>> GetConversationMessages(string conversationId)
-        {
-            var result = await _db.ChatMessages.Where(p => p.ConversationId == conversationId).OrderBy(p => p.Created).ToListAsync();
-            return result;
-        }
+        public Task<List<IvilsonChatMessage>> GetConversationMessages(string conversationId)
+            => _conversationMessages.ReadAfterAsync(conversationId, null, null);
 
         public Task<List<IvilsonChatMessage>> GetConversationMessagesAfterAsync(
             string conversationId,
@@ -175,12 +154,7 @@ namespace CodexFlow.Application
             var messageId = Guid.NewGuid().ToString("N");
             try
             {
-                var conversation = await _db.Conversations.FindAsync(conversationId);
-                if (conversation != null)
-                {
-                    conversation.UpdateAt = DateTime.UtcNow;
-                }
-
+                var updatedAt = DateTime.UtcNow;
                 var message = new IvilsonChatMessage
                 {
                     Id = messageId,
@@ -191,8 +165,7 @@ namespace CodexFlow.Application
                     NotificationMeta = notificationMeta,
                     Created = DateTime.UtcNow
                 };
-                _db.ChatMessages.Add(message);
-                await _db.SaveChangesAsync();
+                await _persistence.AddNotificationAsync(message, updatedAt);
                 return messageId;
             }
             catch (Exception ex)
@@ -204,112 +177,38 @@ namespace CodexFlow.Application
 
         //获取用户最近的对话id
         public async Task<string> GetUserLatestConversationId(string userid)
-        {
-            var conversation = await _db.Conversations.Where(p => p.UserId == userid).OrderByDescending(p => p.Created).FirstOrDefaultAsync();
-            if (conversation == null)
-            {
-                return "";
-            }
-            return conversation.Id;
-        }
-        //根据回复id获取对话内容
-        public async Task<string?> GetMessageContentByReplyId(string replyId, string userId)
-        {
-            var item = await _db.ChatMessages.FirstOrDefaultAsync(p => p.ReplyId == replyId);
-            return item?.AiContent;
-        }
+            => await _persistence.FindLatestConversationIdAsync(userid) ?? string.Empty;
 
-        /// <summary>
-        /// 获取用户的对话列表
-        /// </summary>
-        /// <param name="userid"></param>
-        /// <returns></returns>
-        public async Task<PageOf<IvilsonConversation>> GetConversations(string userid, string key, int page, int pagesize)
-        {
-            IQueryable<IvilsonConversation> query = _db.Conversations.Where(p => p.UserId == userid);
+        public Task<string?> GetMessageContentByReplyId(string replyId, string userId)
+            => _persistence.FindReplyContentAsync(replyId);
 
-            // 处理关键词 key
-            if (!string.IsNullOrEmpty(key))
-            {
-                query = query.Where(p => p.Name.Contains(key));
-            }
+        public Task<PageOf<IvilsonConversation>> GetConversations(string userid, string key, int page, int pagesize)
+            => userid is null
+                ? Task.FromResult(new PageOf<IvilsonConversation> { List = [], Page = page, PageSize = pagesize })
+                : _persistence.ListConversationsAsync(userid, null, key, page, pagesize, includeArchived: true);
 
-            // 统计总数
-            var total = await query.CountAsync();
+        public Task UpdateConversationIndexed(string cId)
+            => _persistence.SetConversationIndexedAsync(cId);
 
-            // 分页查询
-            var list = await query
-                .OrderByDescending(p => p.UpdateAt)
-                .Skip((page - 1) * pagesize)
-                .Take(pagesize)
-                .ToListAsync();
-
-            return new PageOf<IvilsonConversation>
-            {
-                List = list,
-                PageSize = pagesize,
-                Page = page,
-                Total = total
-            };
-        }
-
-        public async Task UpdateConversationIndexed(string cId)
-        {
-            var conversation = await _db.Conversations.FindAsync(cId);
-            if (conversation == null)
-            {
-                return;
-            }
-            conversation.IsIndexed = true;
-            _db.Update(conversation);
-            await _db.SaveChangesAsync();
-        }
         public async Task<PageOf<IvilsonConversation>> GetAllConversations(string key, int page, int pagesize, string? username)
         {
-            IQueryable<IvilsonConversation> query = _db.Conversations.AsQueryable();
-
-            // 处理 username
+            string? userId = null;
             if (!string.IsNullOrEmpty(username))
             {
-                var userId = await FindUserIdByNameAsync(username);
-
-                if (userId == null)
+                userId = await FindUserIdByNameAsync(username);
+                if (userId is null)
                 {
                     return new PageOf<IvilsonConversation>
                     {
-                        List = new List<IvilsonConversation>(),
+                        List = [],
                         PageSize = pagesize,
                         Page = page,
                         Total = 0
                     };
                 }
-
-                query = query.Where(p => p.UserId == userId);
             }
 
-            // 处理关键词 key
-            if (!string.IsNullOrEmpty(key))
-            {
-                query = query.Where(p => p.Name.Contains(key));
-            }
-
-            // 统计总数
-            var total = await query.CountAsync();
-
-            // 分页查询
-            var list = await query
-                .OrderByDescending(p => p.UpdateAt)
-                .Skip((page - 1) * pagesize)
-                .Take(pagesize)
-                .ToListAsync();
-
-            return new PageOf<IvilsonConversation>
-            {
-                List = list,
-                PageSize = pagesize,
-                Page = page,
-                Total = total
-            };
+            return await _persistence.ListConversationsAsync(userId, null, key, page, pagesize, includeArchived: true);
         }
 
         public Task<string> CreateSession(string userId, string name)
@@ -338,8 +237,7 @@ namespace CodexFlow.Application
                 PlanModeActive = false,
                 PlanModeVersion = 1
             };
-            _db.Sessions.Add(session);
-            await _db.SaveChangesAsync();
+            await _persistence.AddSessionAsync(session);
             return session.Id;
         }
 
@@ -360,10 +258,7 @@ namespace CodexFlow.Application
                 throw new ArgumentException("The default workspace name is reserved.", nameof(name));
             }
 
-            var existingCandidates = await _db.Sessions
-                .Where(s => s.UserId == userId && !s.IsArchived)
-                .OrderByDescending(s => s.Created)
-                .ToListAsync();
+            var existingCandidates = await _persistence.ListActiveSessionsAsync(userId);
 
             var existing = existingCandidates.FirstOrDefault(s =>
                 !string.IsNullOrWhiteSpace(s.WorkspacePath) &&
@@ -382,8 +277,7 @@ namespace CodexFlow.Application
                 var isDefaultWorkspace = string.Equals(existing.Name, "默认工作区", StringComparison.Ordinal) && !existing.IsExternalWorkspace;
                 if (!isDefaultWorkspace && !string.IsNullOrWhiteSpace(name) && !string.Equals(existing.Name, name.Trim(), StringComparison.Ordinal))
                 {
-                    existing.Name = name.Trim();
-                    await _db.SaveChangesAsync();
+                    existing = await _persistence.RenameSessionAsync(existing.Id, userId, name.Trim()) ?? existing;
                 }
 
                 return (existing.Id, existing.Name, false);
@@ -406,66 +300,29 @@ namespace CodexFlow.Application
                 WorkspacePath = normalized,
                 IsExternalWorkspace = true
             };
-            _db.Sessions.Add(session);
-            await _db.SaveChangesAsync();
+            await _persistence.AddSessionAsync(session);
             return (session.Id, session.Name, true);
         }
 
-        public async Task<IvilsonSession?> GetSession(string sessionId)
-        {
-            return await _db.Sessions.Include(s => s.Conversations).FirstOrDefaultAsync(s => s.Id == sessionId);
-        }
+        public Task<IvilsonSession?> GetSession(string sessionId)
+            => _persistence.FindSessionAsync(sessionId, includeConversations: true);
 
-        public async Task<PageOf<IvilsonSession>> GetSessions(string userId, int page, int pageSize)
-            => await GetSessionsPaged(userId, page, pageSize, includeArchived: true);
+        public Task<PageOf<IvilsonSession>> GetSessions(string userId, int page, int pageSize)
+            => GetSessionsPaged(userId, page, pageSize, includeArchived: true);
 
-        public async Task<PageOf<IvilsonSession>> GetSessionsPaged(string userId, int page, int pageSize, bool includeArchived = false)
-        {
-            var safePage = Math.Max(1, page);
-            var safePageSize = Math.Clamp(pageSize, 1, 100);
+        public Task<PageOf<IvilsonSession>> GetSessionsPaged(string userId, int page, int pageSize, bool includeArchived = false)
+            => _persistence.ListSessionsAsync(userId, Math.Max(1, page), Math.Clamp(pageSize, 1, 100), includeArchived);
 
-            var query = _db.Sessions.AsNoTracking().Where(s => s.UserId == userId);
-            if (!includeArchived)
-            {
-                query = query.Where(s => !s.IsArchived);
-            }
-
-            var total = await query.CountAsync();
-            var list = await query.OrderByDescending(s => s.Created)
-                                  .Skip((safePage - 1) * safePageSize)
-                                  .Take(safePageSize)
-                                  .ToListAsync();
-            return new PageOf<IvilsonSession> { List = list, Total = total, Page = safePage, PageSize = safePageSize };
-        }
-
-        public async Task<IvilsonSession?> RenameSession(string sessionId, string userId, string name)
+        public Task<IvilsonSession?> RenameSession(string sessionId, string userId, string name)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(name);
-            var session = await _db.Sessions.FirstOrDefaultAsync(s => s.Id == sessionId && s.UserId == userId);
-            if (session is null)
-            {
-                return null;
-            }
-
-            session.Name = name.Trim();
-            await _db.SaveChangesAsync();
-            return session;
+            return _persistence.RenameSessionAsync(sessionId, userId, name.Trim());
         }
 
-        public async Task<IvilsonSession?> SetSessionArchived(string sessionId, string userId, bool isArchived)
-        {
-            var session = await _db.Sessions.FirstOrDefaultAsync(s => s.Id == sessionId && s.UserId == userId);
-            if (session is null)
-            {
-                return null;
-            }
+        public Task<IvilsonSession?> SetSessionArchived(string sessionId, string userId, bool isArchived)
+            => _persistence.ArchiveSessionAsync(sessionId, userId, isArchived);
 
-            session.IsArchived = isArchived;
-            await _db.SaveChangesAsync();
-            return session;
-        }
-
-        public async Task<PageOf<IvilsonConversation>> GetSessionConversations(
+        public Task<PageOf<IvilsonConversation>> GetSessionConversations(
             string sessionId,
             string userId,
             int page,
@@ -474,125 +331,40 @@ namespace CodexFlow.Application
         {
             var safePage = Math.Max(1, page);
             var safePageSize = Math.Clamp(pageSize, 1, 100);
-
-            var query = _db.Conversations.AsNoTracking()
-                .Where(c => c.SessionId == sessionId && c.UserId == userId);
-            if (!includeArchived)
-            {
-                query = query.Where(c => !c.IsArchived);
-            }
-
-            var total = await query.CountAsync();
-            var list = await query.OrderByDescending(c => c.UpdateAt)
-                                  .Skip((safePage - 1) * safePageSize)
-                                  .Take(safePageSize)
-                                  .ToListAsync();
-            return new PageOf<IvilsonConversation> { List = list, Total = total, Page = safePage, PageSize = safePageSize };
+            return userId is null || sessionId is null
+                ? Task.FromResult(new PageOf<IvilsonConversation> { List = [], Page = safePage, PageSize = safePageSize })
+                : _persistence.ListConversationsAsync(userId, sessionId, null, safePage, safePageSize, includeArchived);
         }
 
-        public async Task<IvilsonConversation?> RenameConversation(string conversationId, string userId, string name)
+        public Task<IvilsonConversation?> RenameConversation(string conversationId, string userId, string name)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(name);
-            var conversation = await _db.Conversations.FirstOrDefaultAsync(c => c.Id == conversationId && c.UserId == userId);
-            if (conversation is null)
-            {
-                return null;
-            }
-
-            conversation.Name = name.Trim();
-            conversation.UpdateAt = DateTime.UtcNow;
-            await _db.SaveChangesAsync();
-            return conversation;
+            return _persistence.RenameConversationAsync(conversationId, userId, name.Trim(), DateTime.UtcNow);
         }
 
-        public async Task<IvilsonConversation?> SetConversationArchived(string conversationId, string userId, bool isArchived)
-        {
-            var conversation = await _db.Conversations.FirstOrDefaultAsync(c => c.Id == conversationId && c.UserId == userId);
-            if (conversation is null)
-            {
-                return null;
-            }
+        public Task<IvilsonConversation?> SetConversationArchived(string conversationId, string userId, bool isArchived)
+            => _persistence.ArchiveConversationAsync(conversationId, userId, isArchived, DateTime.UtcNow);
 
-            conversation.IsArchived = isArchived;
-            conversation.UpdateAt = DateTime.UtcNow;
-            await _db.SaveChangesAsync();
-            return conversation;
-        }
+        public Task UpdateSessionStage(string sessionId, int stage)
+            => _persistence.SetSessionStageAsync(sessionId, stage);
 
-        public async Task UpdateSessionStage(string sessionId, int stage)
-        {
-            var session = await _db.Sessions.FindAsync(sessionId);
-            if (session != null)
-            {
-                session.CurrentStage = stage;
-                await _db.SaveChangesAsync();
-            }
-        }
+        public Task UpdateSessionFacts(string sessionId, string factsJson)
+            => _persistence.SetSessionFactsAsync(sessionId, factsJson);
 
-        public async Task UpdateSessionFacts(string sessionId, string factsJson)
-        {
-            var session = await _db.Sessions.FindAsync(sessionId);
-            if (session != null)
-            {
-                session.FactsJson = factsJson;
-                await _db.SaveChangesAsync();
-            }
-        }
+        public Task UpdateSessionPlan(string sessionId, string planJson)
+            => _persistence.SetSessionPlanAsync(sessionId, planJson);
 
-        public async Task UpdateSessionPlan(string sessionId, string planJson)
-        {
-            var session = await _db.Sessions.FindAsync(sessionId);
-            if (session != null)
-            {
-                session.GlobalPlanJson = planJson;
-                await _db.SaveChangesAsync();
-            }
-        }
+        public Task UpdateSessionProjectUrl(string sessionId, string url)
+            => _persistence.SetSessionProjectUrlAsync(sessionId, url);
 
-        public async Task UpdateSessionProjectUrl(string sessionId, string url)
-        {
-            var session = await _db.Sessions.FindAsync(sessionId);
-            if (session != null)
-            {
-                session.ProjectUrl = url;
-                await _db.SaveChangesAsync();
-            }
-        }
-
-        public async Task ResetSessionExecutionState(string sessionId, int stage = 1)
-        {
-            var session = await _db.Sessions.FindAsync(sessionId);
-            if (session != null)
-            {
-                session.CurrentStage = stage;
-                session.GlobalPlanJson = null;
-                session.ActiveTaskId = null;
-                await _db.SaveChangesAsync();
-            }
-        }
+        public Task ResetSessionExecutionState(string sessionId, int stage = 1)
+            => _persistence.ResetExecutionStateAsync(sessionId, stage);
 
         public async Task ClearSession(string sessionId, string userId)
         {
-            var session = await _db.Sessions
-                .Include(s => s.Conversations)
-                .ThenInclude(c => c.ChatMessages)
-                .AsSplitQuery()
-                .FirstOrDefaultAsync(s => s.Id == sessionId && s.UserId == userId);
-
+            var session = await _persistence.ClearSessionAsync(sessionId, userId);
             if (session != null)
             {
-                // 1. 清空所有对话和消息
-                _db.ChatMessages.RemoveRange(session.Conversations.SelectMany(c => c.ChatMessages));
-                _db.Conversations.RemoveRange(session.Conversations);
-                
-                // 2. 重置 Session 状态
-                session.CurrentStage = 0;
-                session.FactsJson = "[]";
-                session.GlobalPlanJson = null;
-                session.ActiveTaskId = null;
-                
-                await _db.SaveChangesAsync();
-
                 // 3. 物理清理工作区目录内容 (保留根目录)
                 if (!string.IsNullOrWhiteSpace(session.WorkspacePath))
                 {
@@ -648,26 +420,9 @@ namespace CodexFlow.Application
 
         public async Task DeleteSession(string sessionId, string userId)
         {
-            var session = await _db.Sessions
-                .Include(s => s.Conversations)
-                .ThenInclude(c => c.ChatMessages)
-                .AsSplitQuery()
-                .FirstOrDefaultAsync(s => s.Id == sessionId && s.UserId == userId);
-
+            var session = await _persistence.DeleteSessionAsync(sessionId, userId);
             if (session != null)
             {
-                // 保护默认工作区与日常助手默认工作空间，不允许删除
-                if (session.Name == "默认工作区" ||
-                    (session.Name == "日常助手" && session.WorkMode == CodexFlow.Core.Models.SessionWorkMode.Daily && !session.IsExternalWorkspace))
-                {
-                    return;
-                }
-
-                _db.ChatMessages.RemoveRange(session.Conversations.SelectMany(c => c.ChatMessages));
-                _db.Conversations.RemoveRange(session.Conversations);
-                _db.Sessions.Remove(session);
-                await _db.SaveChangesAsync();
-
                 if (_browserSessionManager is not null)
                 {
                     try
@@ -692,9 +447,6 @@ namespace CodexFlow.Application
 
         public async Task<string> CreateConversationInSession(string userId, string sessionId, string model = "codex-v2", string name = "", string? taskId = null, ConversationThreadType type = ConversationThreadType.Chat)
         {
-            var session = await _db.Sessions.FindAsync(sessionId);
-            if (session == null) throw new ArgumentException("Session not found");
-
             var conversation = new IvilsonConversation
             {
                 UserId = userId,
@@ -705,8 +457,7 @@ namespace CodexFlow.Application
                 ThreadType = type
             };
             conversation.UpdateAt = DateTime.UtcNow;
-            _db.Conversations.Add(conversation);
-            await _db.SaveChangesAsync();
+            await _persistence.AddConversationAsync(conversation);
 
             // P1-03: 记录新建 conversation 详情
             _logger.LogInformation("[ChatService] CreateConversationInSession: ConversationId={ConversationId}, SessionId={SessionId}, UserId={UserId}, ThreadType={ThreadType}, Name={Name}",
@@ -717,13 +468,7 @@ namespace CodexFlow.Application
 
         public async Task<List<HistoryViewModel>> GetWorkspaces(string userId)
         {
-            var sessions = await _db.Sessions
-                .Include(s => s.Conversations)
-                .ThenInclude(c => c.ChatMessages)
-                .AsSplitQuery()
-                .Where(s => s.UserId == userId && !s.IsArchived)
-                .OrderByDescending(s => s.Created)
-                .ToListAsync();
+            var sessions = await _persistence.ListActiveSessionsAsync(userId, includeHistory: true);
 
             var result = new List<HistoryViewModel>();
             
@@ -816,10 +561,7 @@ namespace CodexFlow.Application
 
         public async Task<string?> GetDefaultSessionId(string userId)
         {
-            var session = await _db.Sessions
-                .Where(s => s.UserId == userId && s.Name == "默认工作区")
-                .OrderByDescending(s => s.Created)
-                .FirstOrDefaultAsync();
+            var session = await _persistence.FindLatestWorkspaceAsync(userId, "默认工作区", daily: false);
             return session?.Id;
         }
 
@@ -829,10 +571,7 @@ namespace CodexFlow.Application
         public async Task<(string sessionId, bool created, string workspacePath)> GetOrCreateDefaultWorkspace(string userId)
         {
             // 查找现有默认工作区
-            var existingSession = await _db.Sessions
-                .Where(s => s.UserId == userId && s.Name == "默认工作区")
-                .OrderByDescending(s => s.Created)
-                .FirstOrDefaultAsync();
+            var existingSession = await _persistence.FindLatestWorkspaceAsync(userId, "默认工作区", daily: false);
 
             if (existingSession != null)
             {
@@ -852,8 +591,7 @@ namespace CodexFlow.Application
                 Name = "默认工作区",
                 WorkspacePath = workspacePath
             };
-            _db.Sessions.Add(session);
-            await _db.SaveChangesAsync();
+            await _persistence.AddSessionAsync(session);
 
             _logger.LogInformation("[ChatService] GetOrCreateDefaultWorkspace: 创建新默认工作区 SessionId={SessionId}, UserId={UserId}, WorkspacePath={WorkspacePath}", session.Id, userId, workspacePath);
             return (session.Id, true, workspacePath);
@@ -864,14 +602,7 @@ namespace CodexFlow.Application
         /// </summary>
         public async Task<(string sessionId, bool created, string workspacePath)> GetOrCreateDailyAssistantWorkspace(string userId)
         {
-            var existingSession = await _db.Sessions
-                .Where(s => s.UserId == userId &&
-                            s.Name == "日常助手" &&
-                            s.WorkMode == CodexFlow.Core.Models.SessionWorkMode.Daily &&
-                            !s.IsExternalWorkspace &&
-                            !s.IsArchived)
-                .OrderByDescending(s => s.Created)
-                .FirstOrDefaultAsync();
+            var existingSession = await _persistence.FindLatestWorkspaceAsync(userId, "日常助手", daily: true);
 
             if (existingSession != null)
             {
@@ -895,25 +626,13 @@ namespace CodexFlow.Application
                 PlanModeVersion = 1,
                 IsExternalWorkspace = false
             };
-            _db.Sessions.Add(session);
-            await _db.SaveChangesAsync();
+            await _persistence.AddSessionAsync(session);
 
             _logger.LogInformation("[ChatService] GetOrCreateDailyAssistantWorkspace: 创建新日常助手工作空间 SessionId={SessionId}, UserId={UserId}", session.Id, userId);
             return (session.Id, true, workspacePath);
         }
 
-        public async Task DeleteConversation(string conversationId, string userId)
-        {
-            var conversation = await _db.Conversations
-                .Include(c => c.ChatMessages)
-                .FirstOrDefaultAsync(c => c.Id == conversationId && c.UserId == userId);
-
-            if (conversation != null)
-            {
-                _db.ChatMessages.RemoveRange(conversation.ChatMessages);
-                _db.Conversations.Remove(conversation);
-                await _db.SaveChangesAsync();
-            }
-        }
+        public Task DeleteConversation(string conversationId, string userId)
+            => _persistence.DeleteConversationAsync(conversationId, userId);
     }
 }

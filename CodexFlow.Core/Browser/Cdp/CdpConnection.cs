@@ -35,8 +35,8 @@ public sealed class CdpConnection : IAsyncDisposable
     private int _disconnectNotified;
     private volatile bool _faulted;
 
-    public event Action<CdpEventMessage>? EventReceived;
-    public event Action<Exception?>? Disconnected;
+    public event EventHandler<CdpEventArgs>? EventReceived;
+    public event EventHandler<CdpDisconnectedEventArgs>? Disconnected;
 
     public bool IsConnected => _disposed == 0 && !_faulted && _socket.State == WebSocketState.Open;
 
@@ -83,53 +83,59 @@ public sealed class CdpConnection : IAsyncDisposable
             throw new ArgumentException("At least one verified IP address is required.", nameof(verifiedAddresses));
         }
 
-        var handler = new SocketsHttpHandler
-        {
-            UseProxy = false,
-            AllowAutoRedirect = false,
-            ConnectCallback = async (context, token) =>
-            {
-                Exception? lastEx = null;
-                foreach (var ip in verifiedAddresses)
-                {
-                    var sock = new Socket(ip.AddressFamily, SocketType.Stream, ProtocolType.Tcp)
-                    {
-                        NoDelay = true
-                    };
-                    try
-                    {
-                        await sock.ConnectAsync(new IPEndPoint(ip, context.DnsEndPoint.Port), token).ConfigureAwait(false);
-                        return new NetworkStream(sock, ownsSocket: true);
-                    }
-                    catch (Exception ex) when (ex is SocketException or OperationCanceledException)
-                    {
-                        sock.Dispose();
-                        if (token.IsCancellationRequested)
-                        {
-                            throw;
-                        }
-
-                        lastEx = ex;
-                    }
-                }
-
-                throw lastEx ?? new SocketException((int)SocketError.HostNotFound);
-            }
-        };
-
-        var invoker = new HttpMessageInvoker(handler, disposeHandler: true);
-        var socket = new ClientWebSocket();
-        socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
+        SocketsHttpHandler? handler = null;
+        HttpMessageInvoker? invoker = null;
+        ClientWebSocket? socket = null;
         try
         {
+            handler = new SocketsHttpHandler
+            {
+                UseProxy = false,
+                AllowAutoRedirect = false,
+                ConnectCallback = async (context, token) =>
+                {
+                    Exception? lastEx = null;
+                    foreach (var ip in verifiedAddresses)
+                    {
+                        var sock = new Socket(ip.AddressFamily, SocketType.Stream, ProtocolType.Tcp)
+                        {
+                            NoDelay = true
+                        };
+                        try
+                        {
+                            await sock.ConnectAsync(new IPEndPoint(ip, context.DnsEndPoint.Port), token).ConfigureAwait(false);
+                            return new NetworkStream(sock, ownsSocket: true);
+                        }
+                        catch (Exception ex) when (ex is SocketException or OperationCanceledException)
+                        {
+                            sock.Dispose();
+                            if (token.IsCancellationRequested)
+                            {
+                                throw;
+                            }
+
+                            lastEx = ex;
+                        }
+                    }
+
+                    throw lastEx ?? new SocketException((int)SocketError.HostNotFound);
+                }
+            };
+            invoker = new HttpMessageInvoker(handler, disposeHandler: true);
+            handler = null;
+            socket = new ClientWebSocket();
+            socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
             await socket.ConnectAsync(wsEndpoint, invoker, ct).ConfigureAwait(false);
-            return new CdpConnection(socket, logger, invoker);
+            var connection = new CdpConnection(socket, logger, invoker);
+            socket = null;
+            invoker = null;
+            return connection;
         }
-        catch
+        finally
         {
-            socket.Dispose();
-            invoker.Dispose();
-            throw;
+            socket?.Dispose();
+            invoker?.Dispose();
+            handler?.Dispose();
         }
     }
 
@@ -137,8 +143,8 @@ public sealed class CdpConnection : IAsyncDisposable
         string method,
         JsonElement? parameters = null,
         string? sessionId = null,
-        CancellationToken ct = default,
-        TimeSpan? timeout = null)
+        TimeSpan? timeout = null,
+        CancellationToken ct = default)
     {
         ObjectDisposedException.ThrowIf(_disposed != 0, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(method);
@@ -212,8 +218,8 @@ public sealed class CdpConnection : IAsyncDisposable
         string method,
         string? jsonParams = null,
         string? sessionId = null,
-        CancellationToken ct = default,
-        TimeSpan? timeout = null)
+        TimeSpan? timeout = null,
+        CancellationToken ct = default)
     {
         JsonElement? element = null;
         if (!string.IsNullOrWhiteSpace(jsonParams))
@@ -222,7 +228,7 @@ public sealed class CdpConnection : IAsyncDisposable
             element = doc.RootElement.Clone();
         }
 
-        return SendAsync(method, element, sessionId, ct, timeout);
+        return SendAsync(method, element, sessionId, timeout, ct);
     }
 
     private async Task ReceiveLoopAsync(CancellationToken ct)
@@ -261,7 +267,7 @@ public sealed class CdpConnection : IAsyncDisposable
 
                     if (result.Count > 0)
                     {
-                        messageBuffer.Write(buffer, 0, result.Count);
+                        await messageBuffer.WriteAsync(buffer.AsMemory(0, result.Count), CancellationToken.None).ConfigureAwait(false);
                     }
                 }
                 while (!result.EndOfMessage);
@@ -339,7 +345,7 @@ public sealed class CdpConnection : IAsyncDisposable
 
         if (!string.IsNullOrWhiteSpace(msg.Method))
         {
-            var evt = new CdpEventMessage(msg.Method, msg.SessionId, msg.Params?.Clone() ?? default);
+            var evt = new CdpEventArgs(msg.Method, msg.SessionId, msg.Params?.Clone() ?? default);
             var handlers = EventReceived;
             if (handlers is not null)
             {
@@ -347,7 +353,7 @@ public sealed class CdpConnection : IAsyncDisposable
                 {
                     try
                     {
-                        handlers(evt);
+                        handlers(this, evt);
                     }
                     catch (Exception ex)
                     {
@@ -383,7 +389,7 @@ public sealed class CdpConnection : IAsyncDisposable
             {
                 try
                 {
-                    handler(ex);
+                    handler(this, new CdpDisconnectedEventArgs(ex));
                 }
                 catch (Exception callbackEx)
                 {

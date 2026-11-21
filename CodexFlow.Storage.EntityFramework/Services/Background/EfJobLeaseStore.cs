@@ -5,7 +5,6 @@
 using CodexFlow.Orchestration.Jobs;
 using CodexFlow.Domain.Jobs;
 using Microsoft.EntityFrameworkCore;
-using Newtonsoft.Json;
 
 namespace CodexFlow.Services.Background
 {
@@ -46,7 +45,8 @@ namespace CodexFlow.Services.Background
                             && job.LeaseExpiresAtUtc < now))
                     .OrderBy(job => job.CreatedAtUtc)
                     .ToListAsync(ct);
-                var job = candidates.FirstOrDefault(job => IsRunnableAt(job, now));
+                var job = candidates.FirstOrDefault(job =>
+                    JobLeaseEligibility.IsRunnableAt(job.CreatedAtUtc, job.PayloadJson, now));
 
                 if (job == null)
                 {
@@ -113,44 +113,6 @@ namespace CodexFlow.Services.Background
             job.RunnerId = null;
             job.UpdatedAtUtc = now;
             await _context.SaveChangesAsync();
-        }
-
-        /// <summary>
-        /// Whether a job may be claimed at <paramref name="now"/>: it was created already and its optional
-        /// <c>retryNotBeforeUtc</c> payload field has passed.
-        /// </summary>
-        internal static bool IsRunnableAt(BackgroundJob job, DateTime now)
-        {
-            if (job.CreatedAtUtc > now)
-            {
-                return false;
-            }
-
-            var retryNotBeforeUtc = GetRetryNotBeforeUtc(job.PayloadJson);
-            return retryNotBeforeUtc == null ||
-                retryNotBeforeUtc <= new DateTimeOffset(DateTime.SpecifyKind(now, DateTimeKind.Utc));
-        }
-
-        internal static DateTimeOffset? GetRetryNotBeforeUtc(string? payloadJson)
-        {
-            if (string.IsNullOrWhiteSpace(payloadJson) ||
-                !payloadJson.Contains("\"retryNotBeforeUtc\"", StringComparison.Ordinal))
-            {
-                return null;
-            }
-
-            try
-            {
-                var payload = Newtonsoft.Json.Linq.JObject.Parse(payloadJson);
-                var value = payload["retryNotBeforeUtc"]?.ToString();
-                return DateTimeOffset.TryParse(value, out var parsed)
-                    ? parsed.ToUniversalTime()
-                    : null;
-            }
-            catch (JsonException)
-            {
-                return null;
-            }
         }
     }
 }

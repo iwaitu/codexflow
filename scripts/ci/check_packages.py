@@ -15,7 +15,7 @@ import sys
 import xml.etree.ElementTree as ET
 import zipfile
 
-EXPECTED = ['CodexFlow.Contracts', 'CodexFlow.Core', 'CodexFlow.Orchestration', 'CodexFlow.Gateway.Http', 'CodexFlow.Storage.Sqlite']
+EXPECTED = ['CodexFlow.Contracts', 'CodexFlow.Core', 'CodexFlow.Orchestration', 'CodexFlow.Gateway.Http', 'CodexFlow.Storage.Sqlite', 'CodexFlow.Storage.EntityFramework']
 LICENSE = 'MPL-2.0'
 
 

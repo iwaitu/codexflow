@@ -441,16 +441,14 @@ public sealed class RequestPlanApprovalTool(
             artifact = await approvalService.RequestApprovalAsync(artifact.Id, ct).ConfigureAwait(false);
             return CodexToolResult.Succeeded(
                 "PLAN_APPROVAL_REQUESTED",
-                metadata: new
-                {
-                    plan_artifact_id = artifact.Id,
-                    plan_version = artifact.Version,
-                    markdown_hash = PlanArtifactSupport.ComputeMarkdownHash(artifact.Markdown),
-                    goal = artifact.Goal,
-                    task_count = artifact.Tasks.Count,
-                    status = artifact.Status.ToString(),
-                    markdown = artifact.Markdown
-                });
+                metadata: new PlanApprovalRequestMetadata(
+                    artifact.Id,
+                    artifact.Version,
+                    PlanArtifactSupport.ComputeMarkdownHash(artifact.Markdown),
+                    artifact.Goal,
+                    artifact.Tasks.Count,
+                    artifact.Status.ToString(),
+                    artifact.Markdown));
         }
         catch (InvalidOperationException ex)
         {
@@ -483,7 +481,7 @@ public sealed class ApprovePlanTool(
             var userId = PlanArtifactToolSupport.ReadString(arguments, "user_id") ?? string.Empty;
             var feedback = PlanArtifactToolSupport.ReadString(arguments, "feedback");
             var acceptDebt = PlanArtifactToolSupport.ReadBool(arguments, ApprovalArguments.AcceptExistingDependencyDebt);
-            artifact = await approvalService.ApproveAsync(artifact.Id, userId, feedback, ct, acceptDebt).ConfigureAwait(false);
+            artifact = await approvalService.ApproveAsync(artifact.Id, userId, feedback, acceptDebt, ct).ConfigureAwait(false);
             var projection = await projectionService.ProjectAsync(artifact, session, ct).ConfigureAwait(false);
             if (projection.Success)
             {
@@ -647,3 +645,12 @@ public sealed class PlanDiffTool(IPlanDiffService diffService) : ICodexTool
         }
     }
 }
+
+internal sealed record PlanApprovalRequestMetadata(
+    string plan_artifact_id,
+    string plan_version,
+    string markdown_hash,
+    string goal,
+    int task_count,
+    string status,
+    string markdown);

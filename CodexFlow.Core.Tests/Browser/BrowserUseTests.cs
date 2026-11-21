@@ -74,7 +74,7 @@ public sealed class BrowserUseTests
     public void PolicyGuard_BlocksProtectedHostAndCdpPortsInBothModes()
     {
         var opts = new BrowserOptions { AllowLocalhostInDailyMode = true };
-        opts.DevelopmentAllowedLoopbackPorts.Add(32586);
+        opts.DevelopmentAllowedLoopbackPorts = [.. opts.DevelopmentAllowedLoopbackPorts, 32586];
         var ports = new ProtectedLocalPortRegistry();
         ports.RegisterPort(32586, "host");
         ports.RegisterPort(44123, "browser-cdp");
@@ -493,7 +493,7 @@ public sealed class BrowserUseTests
             SessionId: "s1",
             Tool: BrowserToolNames.Act,
             Action: "click",
-            TargetUrl: "https://shop.example/checkout",
+            TargetAddress: "https://shop.example/checkout",
             TargetOrigin: "https://shop.example",
             TargetDescription: "click Pay",
             RiskReason: "sensitive",
@@ -511,7 +511,7 @@ public sealed class BrowserUseTests
             SessionId: "s2",
             Tool: BrowserToolNames.Act,
             Action: "click",
-            TargetUrl: "https://app.example/form",
+            TargetAddress: "https://app.example/form",
             TargetOrigin: "https://app.example",
             TargetDescription: "click Submit",
             RiskReason: "AlwaysAsk",
@@ -703,7 +703,7 @@ public sealed class BrowserUseTests
             SessionId: "s-pnav",
             Tool: BrowserToolNames.Navigate,
             Action: "persistent_origin_navigation",
-            TargetUrl: "https://portal.example/dashboard",
+            TargetAddress: "https://portal.example/dashboard",
             TargetOrigin: "https://portal.example",
             TargetDescription: "Persistent 模式首次访问 https://portal.example",
             RiskReason: "persistent_origin_navigation",
@@ -788,13 +788,13 @@ public sealed class BrowserUseTests
             var saved = svc.Update(new UpdateBrowserSettingsRequest(
                 RemoteCdpWsUrl: "wss://grid.example.com/devtools/browser/abc?token=real-secret",
                 AllowedDomains: ["https://Sub.Example.COM/path", "*.docs.example.com"]));
-            Assert.Equal("wss://grid.example.com/devtools/browser/abc?token=real-secret", saved.RemoteCdpWsUrl);
+            Assert.Equal("wss://grid.example.com/devtools/browser/abc?token=real-secret", saved.RemoteCdpAddress);
             Assert.Equal(["sub.example.com", "*.docs.example.com"], saved.AllowedDomains);
 
             // Echoing masked URL back must NOT clobber persisted token.
             var afterMaskedSave = svc.Update(new UpdateBrowserSettingsRequest(
-                RemoteCdpWsUrl: BrowserRemoteEndpointGuard.MaskRemoteCdpWsUrl(saved.RemoteCdpWsUrl)));
-            Assert.Equal("wss://grid.example.com/devtools/browser/abc?token=real-secret", afterMaskedSave.RemoteCdpWsUrl);
+                RemoteCdpWsUrl: BrowserRemoteEndpointGuard.MaskRemoteCdpWsUrl(saved.RemoteCdpAddress)));
+            Assert.Equal("wss://grid.example.com/devtools/browser/abc?token=real-secret", afterMaskedSave.RemoteCdpAddress);
 
             // Reject invalid wildcards or forbidden protocols.
             Assert.Throws<ArgumentException>(() => svc.Update(new UpdateBrowserSettingsRequest(AllowedDomains: ["*"])));
@@ -817,16 +817,16 @@ public sealed class BrowserUseTests
 
             // PermissionClamp must ignore disk reload attempts to inject or mutate RemoteCdpWsUrl.
             using var clamp = new BrowserPermissionClamp();
-            var baseline = new BrowserOptions { RemoteCdpWsUrl = null };
+            var baseline = new BrowserOptions { RemoteCdpAddress = null };
             clamp.PostConfigure(Options.DefaultName, baseline);
-            var diskTampered = new BrowserOptions { RemoteCdpWsUrl = "ws://evil-attacker.example:9222/devtools/browser/1" };
+            var diskTampered = new BrowserOptions { RemoteCdpAddress = "ws://evil-attacker.example:9222/devtools/browser/1" };
             clamp.PostConfigure(Options.DefaultName, diskTampered);
-            Assert.Null(diskTampered.RemoteCdpWsUrl);
+            Assert.Null(diskTampered.RemoteCdpAddress);
 
-            clamp.ApplyControlPlaneUpdate(new BrowserOptions { RemoteCdpWsUrl = "wss://approved.grid.example/ws" });
-            var reloadOverwrite = new BrowserOptions { RemoteCdpWsUrl = "ws://evil-attacker.example:9222/devtools/browser/1" };
+            clamp.ApplyControlPlaneUpdate(new BrowserOptions { RemoteCdpAddress = "wss://approved.grid.example/ws" });
+            var reloadOverwrite = new BrowserOptions { RemoteCdpAddress = "ws://evil-attacker.example:9222/devtools/browser/1" };
             clamp.PostConfigure(Options.DefaultName, reloadOverwrite);
-            Assert.Equal("wss://approved.grid.example/ws", reloadOverwrite.RemoteCdpWsUrl);
+            Assert.Equal("wss://approved.grid.example/ws", reloadOverwrite.RemoteCdpAddress);
         }
         finally
         {
@@ -1287,7 +1287,7 @@ public sealed class BrowserUseTests
             var opts = new BrowserOptions
             {
                 Enabled = true,
-                RemoteCdpWsUrl = wsUrl,
+                RemoteCdpAddress = wsUrl,
                 DevelopmentAllowedLoopbackPorts = [testPort]
             };
             var ports = new ProtectedLocalPortRegistry();

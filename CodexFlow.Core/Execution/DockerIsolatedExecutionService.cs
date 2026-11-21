@@ -250,63 +250,12 @@ public sealed class DockerIsolatedExecutionService : IIsolatedExecutionService, 
                 }
 
                 var inputTar = Path.Combine(stagingDir, $"input{index}.tar");
-                ExecutionDecision? inputFailure = null;
-                DockerRunResult? loadInput = null;
-                // Hold a single uninterrupted FileShare.None handle across tar creation, baseline/entry hash verification, and docker exec streaming!
-                await using (var inputStream = new FileStream(inputTar, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
-                {
-                    try
-                    {
-                        var inputSnapshot = WorkspaceSnapshotBuilder.Build(input.HostPath, inputStream, inputTar, context.Limits, "tmp/" + guestSub);
-                        if (!string.IsNullOrEmpty(input.ExpectedManifestSha256))
-                        {
-                            var packagedManifest = WorkspaceSnapshotBuilder.ComputeBaselineManifestSha256(inputSnapshot.Baseline);
-                            if (!string.Equals(packagedManifest, input.ExpectedManifestSha256, StringComparison.Ordinal))
-                            {
-                                inputFailure = ExecutionDecision.Deny(
-                                    ExecutionReasonCodes.ApprovalInvalidated,
-                                    $"Packaged Docker input archive manifest for '{guestSub}' differed from approved digest.");
-                            }
-                        }
-
-                        if (inputFailure is null && !string.IsNullOrEmpty(input.ExpectedEntryRelativePath) && !string.IsNullOrEmpty(input.ExpectedEntrySha256))
-                        {
-                            if (!WorkspacePath.TryNormalizeStrict(input.ExpectedEntryRelativePath, out var entryNorm, out _) ||
-                                !inputSnapshot.Baseline.TryGetValue(entryNorm, out var entryBaseline) ||
-                                !string.Equals(entryBaseline.Sha256, input.ExpectedEntrySha256, StringComparison.OrdinalIgnoreCase))
-                            {
-                                inputFailure = ExecutionDecision.Deny(
-                                    ExecutionReasonCodes.ApprovalInvalidated,
-                                    $"Packaged Docker input entry '{input.ExpectedEntryRelativePath}' differed from approved digest.");
-                            }
-                        }
-
-                        if (inputFailure is null)
-                        {
-                            inputStream.Position = 0;
-                            loadInput = await _docker.RunAsync(
-                                new DockerInvocation(["exec", "-i", containerId, "tar", "-x", "-C", "/", "-f", "-"]) { StdIn = inputStream, Timeout = TimeSpan.FromMinutes(2) },
-                                ct).ConfigureAwait(false);
-                        }
-                    }
-                    catch (WorkspaceSnapshotException ex)
-                    {
-                        inputFailure = ExecutionDecision.Deny(ex.ReasonCode, "input directory refused: " + ex.Message);
-                    }
-                }
-
+                var inputFailure = await LoadInputArchiveAsync(containerId, input, inputTar, guestSub, context.Limits, ct).ConfigureAwait(false);
                 if (inputFailure is not null)
                 {
                     await RemoveContainerAsync(containerId).ConfigureAwait(false);
                     DeleteDir(stagingDir);
                     return Refuse(inputFailure);
-                }
-
-                if (loadInput!.ExitCode != 0)
-                {
-                    await RemoveContainerAsync(containerId).ConfigureAwait(false);
-                    DeleteDir(stagingDir);
-                    return Refuse(ExecutionDecision.Unavailable(ExecutionReasonCodes.IsolationUnavailable, "loading an input directory failed: " + Trim(loadInput.Stderr)));
                 }
             }
 
@@ -334,8 +283,56 @@ public sealed class DockerIsolatedExecutionService : IIsolatedExecutionService, 
             throw;
         }
 
-        var session = new DockerSession(this, handle, containerId, imageId, stagingDir, snapshot, context, options) { GuestGit = guestGitInfo };
-        return new IsolatedSessionOpenResult(ExecutionDecision.Allow(), session);
+        return IsolatedSessionOpenResult.Open(() =>
+            new DockerSession(this, handle, containerId, imageId, stagingDir, snapshot, context, options) { GuestGit = guestGitInfo });
+    }
+
+    private async Task<ExecutionDecision?> LoadInputArchiveAsync(
+        string containerId,
+        IsolatedInputDirectory input,
+        string tarPath,
+        string guestSub,
+        ExecutionResourceLimits limits,
+        CancellationToken ct)
+    {
+        // Keep the same exclusive handle for tar creation, digest verification and container loading.
+        await using var archive = File.Open(tarPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None);
+        try
+        {
+            var snapshot = WorkspaceSnapshotBuilder.Build(input.HostPath, archive, tarPath, limits, "tmp/" + guestSub);
+            if (!string.IsNullOrEmpty(input.ExpectedManifestSha256))
+            {
+                var manifest = WorkspaceSnapshotBuilder.ComputeBaselineManifestSha256(snapshot.Baseline);
+                if (!string.Equals(manifest, input.ExpectedManifestSha256, StringComparison.Ordinal))
+                {
+                    return ExecutionDecision.Deny(ExecutionReasonCodes.ApprovalInvalidated,
+                        $"Packaged Docker input archive manifest for '{guestSub}' differed from approved digest.");
+                }
+            }
+
+            if (!string.IsNullOrEmpty(input.ExpectedEntryRelativePath) && !string.IsNullOrEmpty(input.ExpectedEntrySha256) &&
+                (!WorkspacePath.TryNormalizeStrict(input.ExpectedEntryRelativePath, out var entryNorm, out _) ||
+                 !snapshot.Baseline.TryGetValue(entryNorm, out var entryBaseline) ||
+                 !string.Equals(entryBaseline.Sha256, input.ExpectedEntrySha256, StringComparison.OrdinalIgnoreCase)))
+            {
+                return ExecutionDecision.Deny(ExecutionReasonCodes.ApprovalInvalidated,
+                    $"Packaged Docker input entry '{input.ExpectedEntryRelativePath}' differed from approved digest.");
+            }
+
+            archive.Position = 0;
+            var result = await _docker.RunAsync(
+                new DockerInvocation(["exec", "-i", containerId, "tar", "-x", "-C", "/", "-f", "-"])
+                {
+                    StdIn = archive,
+                    Timeout = TimeSpan.FromMinutes(2)
+                }, ct).ConfigureAwait(false);
+            return result.ExitCode == 0 ? null : ExecutionDecision.Unavailable(ExecutionReasonCodes.IsolationUnavailable,
+                "loading an input directory failed: " + Trim(result.Stderr));
+        }
+        catch (WorkspaceSnapshotException ex)
+        {
+            return ExecutionDecision.Deny(ex.ReasonCode, "input directory refused: " + ex.Message);
+        }
     }
 
     /// <summary>

@@ -200,7 +200,8 @@ public sealed class ConversationCreationAndAutoTitleTests : IDisposable
 
     private static GatewayMessageProcessor CreateProcessor(IServiceProvider sp)
         => new(
-            sp.GetRequiredService<IJobDbContext>(),
+            sp.GetRequiredService<IJobStore>(),
+            sp.GetRequiredService<IJobReadStore>(),
             sp.GetRequiredService<IGatewayChatStore>(),
             sp.GetRequiredService<ILLMExecutor>(),
             Mock.Of<IBackgroundJobService>(),

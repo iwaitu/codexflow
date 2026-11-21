@@ -14,7 +14,7 @@ internal sealed class DesignTimeDbContextFactory : IDesignTimeDbContextFactory<J
     public JobDbContext CreateDbContext(string[] args)
     {
         var builder = new DbContextOptionsBuilder<JobDbContext>();
-        builder.UseSqliteFile(Path.Combine(Path.GetTempPath(), "codexflow-local-design-time.db"), typeof(SqliteStorage).Assembly.GetName().Name);
+        builder.UseLegacySqliteFile(Path.Combine(Path.GetTempPath(), "codexflow-local-design-time.db"));
         return new JobDbContext(builder.Options);
     }
 }

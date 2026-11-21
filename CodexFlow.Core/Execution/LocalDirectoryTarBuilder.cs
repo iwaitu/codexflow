@@ -156,24 +156,33 @@ public static class LocalDirectoryTarBuilder
                         return new LocalTarBuildResult(false, rejections);
                     }
 
-                    using var fs = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.Read);
-                    if (HasMultipleHardLinks(file.FullName, fs.SafeFileHandle))
+                    if (!TryWriteTarFile(writer, normalized, file.FullName))
                     {
                         rejections.Add(new ExportRejection(normalized, ExecutionReasonCodes.ExportRejectedLink, "hard link is not allowed"));
                         return new LocalTarBuildResult(false, rejections);
                     }
-
-                    var entry = new PaxTarEntry(TarEntryType.RegularFile, normalized)
-                    {
-                        DataStream = fs,
-                        Mode = UnixFileMode.UserRead | UnixFileMode.UserWrite
-                    };
-                    writer.WriteEntry(entry);
                 }
             }
         }
 
         return new LocalTarBuildResult(true, rejections);
+    }
+
+    private static bool TryWriteTarFile(TarWriter writer, string path, string sourcePath)
+    {
+        using var source = File.Open(sourcePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        if (HasMultipleHardLinks(sourcePath, source.SafeFileHandle))
+        {
+            return false;
+        }
+
+        var entry = new PaxTarEntry(TarEntryType.RegularFile, path)
+        {
+            DataStream = source,
+            Mode = UnixFileMode.UserRead | UnixFileMode.UserWrite
+        };
+        writer.WriteEntry(entry);
+        return true;
     }
 
     internal static bool IsWindowsShortNameAlias(string fullPath, string expectedName)

@@ -31,7 +31,9 @@ public interface IPlanBlueprintGenerator
 public interface IPlanApprovalService
 {
     Task<PlanArtifact> RequestApprovalAsync(string planArtifactId, CancellationToken ct = default);
-    Task<PlanArtifact> ApproveAsync(string planArtifactId, string userId, string? feedback = null, CancellationToken ct = default, bool acceptExistingDependencyDebt = false);
+    Task<PlanArtifact> ApproveAsync(string planArtifactId, string userId, string? feedback = null, bool acceptExistingDependencyDebt = false, CancellationToken ct = default);
+    Task<PlanArtifact> ApproveAsync(string planArtifactId, string userId, string? feedback, CancellationToken cancellationToken)
+        => ApproveAsync(planArtifactId, userId, feedback, ct: cancellationToken);
     Task<PlanArtifact> RejectAsync(string planArtifactId, string userId, string? feedback = null, CancellationToken ct = default);
 }
 

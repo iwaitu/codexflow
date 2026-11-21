@@ -2,6 +2,7 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+using CodexFlow.Gateway.Http;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
@@ -203,7 +204,7 @@ public sealed class P3ApiAndWorkspaceAdmissionTests : IDisposable
         {
             var sessionManager = scope.ServiceProvider.GetRequiredService<CodexSessionManager>();
             await sessionManager.RecordMessagesAsync(sessionId, ("user", "你好"), ("assistant", "你好，请问有什么需要帮忙？"));
-            await sessionManager.RecordRuntimeUsageAsync(sessionId, 6590, 458, CancellationToken.None, cachedPromptTokens: 3200, lastContextTokens: 7048);
+            await sessionManager.RecordRuntimeUsageAsync(sessionId, 6590, 458, cachedPromptTokens: 3200, lastContextTokens: 7048);
         }
 
         using (var cw1 = System.Text.Json.JsonDocument.Parse(
@@ -574,7 +575,7 @@ public sealed class P3ApiAndWorkspaceAdmissionTests : IDisposable
         {
             var idx = i;
             tasks.Add(Task.Run(() => modelSvc.Update(new ModelSettingsUpdate(
-                ApiUrl: "https://api.example.com/v1",
+                EndpointTemplate: "https://api.example.com/v1",
                 Model: $"model-{idx}"))));
             tasks.Add(Task.Run(() => execSvc.Update(new ExecutionSettingsUpdate(
                 Backend: idx % 2 == 0 ? ExecutionBackend.Local : ExecutionBackend.Docker,
@@ -821,7 +822,7 @@ internal sealed class P3TestHost : IAsyncDisposable
         var workspaceSettings = new WorkspaceSettingsService(globalSettingsPath);
         var auditStore = new InMemoryWorkflowAuditStore();
 
-        builder.Services.AddControllers().AddApplicationPart(typeof(CodexGatewayController).Assembly);
+        builder.Services.AddCodexFlowGateway();
         builder.Services.AddSingleton(creds);
         builder.Services.AddSingleton<IControlPlaneStateProvider>(creds);
         builder.Services.AddSingleton<IOptionsMonitor<ExecutionOptions>>(optionsMonitor);
@@ -851,7 +852,7 @@ internal sealed class P3TestHost : IAsyncDisposable
             auditStore: auditStore,
             controlPlane: creds));
 
-        builder.Services.AddCodexFlowSqliteStorage(dbPath);
+        builder.Services.AddTestSqliteStorage(dbPath);
         builder.Services.AddCodexFlowLocalDefaults();
         builder.Services.AddScoped<CodexSessionManager>();
         builder.Services.AddScoped<IProjectMemoryService, ProjectMemoryService>();
@@ -900,7 +901,8 @@ internal sealed class P3TestHost : IAsyncDisposable
 
         app.UseAuthentication();
         app.UseAuthorization();
-        app.MapControllers();
+        app.UseCodexFlowGatewayBindingErrors();
+        app.MapCodexFlowGateway();
         await app.StartAsync();
 
         var baseUri = new Uri(app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First());

@@ -71,7 +71,7 @@ public sealed class BrowserPermissionClamp :
             {
                 _effectiveEnabled = _lastRawEnabled = options.Enabled;
                 _effectiveExecutablePath = NormalizePath(options.ExecutablePath);
-                _effectiveRemoteCdpWsUrl = NormalizeRemoteCdpUrl(options.RemoteCdpWsUrl);
+                _effectiveRemoteCdpWsUrl = NormalizeRemoteCdpUrl(options.RemoteCdpAddress);
                 _effectiveHeadless = _lastRawHeadless = options.Headless;
                 _effectiveProfileMode = _lastRawProfileMode = options.ProfileMode;
                 _effectiveApprovalPolicy = _lastRawApprovalPolicy = options.InteractionApprovalPolicy;
@@ -188,7 +188,7 @@ public sealed class BrowserPermissionClamp :
             // and never misinterprets the stale disk value as a new tightening edit.
             _effectiveEnabled = updated.Enabled;
             _effectiveExecutablePath = NormalizePath(updated.ExecutablePath);
-            _effectiveRemoteCdpWsUrl = NormalizeRemoteCdpUrl(updated.RemoteCdpWsUrl);
+            _effectiveRemoteCdpWsUrl = NormalizeRemoteCdpUrl(updated.RemoteCdpAddress);
             _effectiveHeadless = updated.Headless;
             _effectiveProfileMode = updated.ProfileMode;
             _effectiveApprovalPolicy = updated.InteractionApprovalPolicy;
@@ -219,7 +219,7 @@ public sealed class BrowserPermissionClamp :
     {
         options.Enabled = _effectiveEnabled;
         options.ExecutablePath = _effectiveExecutablePath;
-        options.RemoteCdpWsUrl = _effectiveRemoteCdpWsUrl;
+        options.RemoteCdpAddress = _effectiveRemoteCdpWsUrl;
         options.Headless = _effectiveHeadless;
         options.ProfileMode = _effectiveProfileMode;
         options.InteractionApprovalPolicy = _effectiveApprovalPolicy;

@@ -81,7 +81,7 @@ internal sealed partial class CdpManagedBrowserProcess : ICdpBrowserRuntime
         _logger = logger;
 
         _process.Exited += (_, _) => RaiseTerminated();
-        Connection.Disconnected += _ => RaiseTerminated();
+        Connection.Disconnected += (_, _) => RaiseTerminated();
     }
 
     private void RaiseTerminated()
@@ -178,109 +178,115 @@ internal sealed partial class CdpManagedBrowserProcess : ICdpBrowserRuntime
         Func<IReadOnlySet<int>?>? processProxyApprovedPortsProvider = null)
     {
         var isPersistent = profileMode == BrowserProfileMode.Persistent;
-        string userDataDir;
+        string? userDataDir = null;
         FileStream? profileLockStream = null;
-
-        if (isPersistent)
-        {
-            userDataDir = string.IsNullOrWhiteSpace(persistentProfileDir)
-                ? Path.Combine(runtimeBaseDir, "persistent-default")
-                : persistentProfileDir;
-            Directory.CreateDirectory(userDataDir);
-            if (!OperatingSystem.IsWindows())
-            {
-                try
-                {
-                    File.SetUnixFileMode(
-                        userDataDir,
-                        UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-                }
-                catch (Exception)
-                {
-                }
-            }
-
-            var lockPath = Path.Combine(userDataDir, PersistentLockFileName);
-            try
-            {
-                profileLockStream = new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
-            }
-            catch (IOException ex)
-            {
-                throw new InvalidOperationException(
-                    "持久化浏览器 Profile 目录当前正被另一个 CodexFlow 实例独占使用，请先关闭另一个实例的浏览器或切换为会话隔离 Profile。",
-                    ex);
-            }
-        }
-        else
-        {
-            Directory.CreateDirectory(runtimeBaseDir);
-            userDataDir = Path.Combine(runtimeBaseDir, EphemeralPrefix + Guid.NewGuid().ToString("N")[..12]);
-            Directory.CreateDirectory(userDataDir);
-            await File.WriteAllTextAsync(
-                Path.Combine(userDataDir, OwnerPidFileName),
-                Environment.ProcessId.ToString(CultureInfo.InvariantCulture),
-                ct).ConfigureAwait(false);
-        }
-
-        // In Ephemeral mode, the process-wide fallback proxy runs under strict Daily mode with no approved loopback ports.
-        // In Persistent mode, the default context uses the process-wide proxy bound to the single active persistent session.
-        var fallbackProxy = new BrowserOutboundProxy(
-            policyGuard,
-            portRegistry,
-            processProxyWorkModeProvider ?? (static () => SessionWorkMode.Daily),
-            processProxyApprovedPortsProvider ?? (static () => null),
-            logger);
-
-        var jobGuard = new ProcessJobGuard();
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = executablePath,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = headless
-        };
-
-        if (headless)
-        {
-            startInfo.ArgumentList.Add("--headless=new");
-            startInfo.ArgumentList.Add("--disable-gpu");
-        }
-        else
-        {
-            // Desktop off-screen headed launch for lossless human takeover (Browser.setWindowBounds brings it on-screen).
-            startInfo.ArgumentList.Add("--window-position=-32000,-32000");
-            startInfo.ArgumentList.Add("--disable-backgrounding-occluded-windows");
-            startInfo.ArgumentList.Add("--disable-renderer-backgrounding");
-            startInfo.ArgumentList.Add("--disable-background-timer-throttling");
-        }
-
-        startInfo.ArgumentList.Add("--remote-debugging-port=0");
-        startInfo.ArgumentList.Add("--remote-debugging-address=127.0.0.1");
-        startInfo.ArgumentList.Add($"--user-data-dir={userDataDir}");
-        startInfo.ArgumentList.Add($"--proxy-server={fallbackProxy.ProxyServerUrl}");
-        startInfo.ArgumentList.Add("--proxy-bypass-list=<-loopback>");
-        startInfo.ArgumentList.Add("--disable-quic");
-        startInfo.ArgumentList.Add("--force-webrtc-ip-handling-policy=disable_non_proxied_udp");
-        startInfo.ArgumentList.Add("--no-first-run");
-        startInfo.ArgumentList.Add("--no-default-browser-check");
-        startInfo.ArgumentList.Add("--disable-background-networking");
-        startInfo.ArgumentList.Add("--disable-sync");
-        startInfo.ArgumentList.Add("--disable-extensions");
-        startInfo.ArgumentList.Add("--disable-component-update");
-        startInfo.ArgumentList.Add("--disable-features=MediaRouter,DialMediaRouteProvider,CalculateNativeWinOcclusion");
-        startInfo.ArgumentList.Add("--password-store=basic");
-        startInfo.ArgumentList.Add("--hide-crash-restore-bubble");
-        startInfo.ArgumentList.Add("--mute-audio");
-        startInfo.ArgumentList.Add("--window-size=1280,800");
-        startInfo.ArgumentList.Add("about:blank");
-
-        var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
+        ProcessJobGuard? jobGuard = null;
+        Process? process = null;
         int debugPort = 0;
+        await using var profileLockOwner = new AsyncResourceOwner<FileStream>();
+        await using var proxyOwner = new AsyncResourceOwner<BrowserOutboundProxy>();
+        await using var connectionOwner = new AsyncResourceOwner<CdpConnection>();
 
         try
         {
+            if (isPersistent)
+            {
+                userDataDir = string.IsNullOrWhiteSpace(persistentProfileDir)
+                    ? Path.Combine(runtimeBaseDir, "persistent-default")
+                    : persistentProfileDir;
+                Directory.CreateDirectory(userDataDir);
+                if (!OperatingSystem.IsWindows())
+                {
+                    try
+                    {
+                        File.SetUnixFileMode(
+                            userDataDir,
+                            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+                    }
+                    catch (Exception)
+                    {
+                    }
+                }
+
+                var lockPath = Path.Combine(userDataDir, PersistentLockFileName);
+                try
+                {
+                    profileLockStream = profileLockOwner.Acquire(() =>
+                        new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None));
+                }
+                catch (IOException ex)
+                {
+                    throw new InvalidOperationException(
+                        "持久化浏览器 Profile 目录当前正被另一个 CodexFlow 实例独占使用，请先关闭另一个实例的浏览器或切换为会话隔离 Profile。",
+                        ex);
+                }
+            }
+            else
+            {
+                Directory.CreateDirectory(runtimeBaseDir);
+                userDataDir = Path.Combine(runtimeBaseDir, EphemeralPrefix + Guid.NewGuid().ToString("N")[..12]);
+                Directory.CreateDirectory(userDataDir);
+                await File.WriteAllTextAsync(
+                    Path.Combine(userDataDir, OwnerPidFileName),
+                    Environment.ProcessId.ToString(CultureInfo.InvariantCulture),
+                    ct).ConfigureAwait(false);
+            }
+
+            // In Ephemeral mode, the process-wide fallback proxy runs under strict Daily mode with no approved loopback ports.
+            // In Persistent mode, the default context uses the process-wide proxy bound to the single active persistent session.
+            var fallbackProxy = proxyOwner.Acquire(() => new BrowserOutboundProxy(
+                policyGuard,
+                portRegistry,
+                processProxyWorkModeProvider ?? (static () => SessionWorkMode.Daily),
+                processProxyApprovedPortsProvider ?? (static () => null),
+                logger));
+
+            jobGuard = new ProcessJobGuard();
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = executablePath,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = headless
+            };
+
+            if (headless)
+            {
+                startInfo.ArgumentList.Add("--headless=new");
+                startInfo.ArgumentList.Add("--disable-gpu");
+            }
+            else
+            {
+                // Desktop off-screen headed launch for lossless human takeover (Browser.setWindowBounds brings it on-screen).
+                startInfo.ArgumentList.Add("--window-position=-32000,-32000");
+                startInfo.ArgumentList.Add("--disable-backgrounding-occluded-windows");
+                startInfo.ArgumentList.Add("--disable-renderer-backgrounding");
+                startInfo.ArgumentList.Add("--disable-background-timer-throttling");
+            }
+
+            startInfo.ArgumentList.Add("--remote-debugging-port=0");
+            startInfo.ArgumentList.Add("--remote-debugging-address=127.0.0.1");
+            startInfo.ArgumentList.Add($"--user-data-dir={userDataDir}");
+            startInfo.ArgumentList.Add($"--proxy-server={fallbackProxy.ProxyServerUri.GetLeftPart(UriPartial.Authority)}");
+            startInfo.ArgumentList.Add("--proxy-bypass-list=<-loopback>");
+            startInfo.ArgumentList.Add("--disable-quic");
+            startInfo.ArgumentList.Add("--force-webrtc-ip-handling-policy=disable_non_proxied_udp");
+            startInfo.ArgumentList.Add("--no-first-run");
+            startInfo.ArgumentList.Add("--no-default-browser-check");
+            startInfo.ArgumentList.Add("--disable-background-networking");
+            startInfo.ArgumentList.Add("--disable-sync");
+            startInfo.ArgumentList.Add("--disable-extensions");
+            startInfo.ArgumentList.Add("--disable-component-update");
+            startInfo.ArgumentList.Add("--disable-features=MediaRouter,DialMediaRouteProvider,CalculateNativeWinOcclusion");
+            startInfo.ArgumentList.Add("--password-store=basic");
+            startInfo.ArgumentList.Add("--hide-crash-restore-bubble");
+            startInfo.ArgumentList.Add("--mute-audio");
+            startInfo.ArgumentList.Add("--window-size=1280,800");
+            startInfo.ArgumentList.Add("about:blank");
+
+            process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
+
             var wsTcs = new TaskCompletionSource<Uri>(TaskCreationOptions.RunContinuationsAsynchronously);
             var stderrTail = new StringBuilder();
 
@@ -306,12 +312,12 @@ internal sealed partial class CdpManagedBrowserProcess : ICdpBrowserRuntime
                 }
             };
 
-            process.Exited += (_, _) =>
+            process.Exited += (sender, _) =>
             {
                 string diag;
                 lock (stderrTail) { diag = stderrTail.ToString().Trim(); }
                 var exitCodeText = "unknown";
-                try { exitCodeText = process.ExitCode.ToString(CultureInfo.InvariantCulture); } catch (Exception) { }
+                try { exitCodeText = ((Process)sender!).ExitCode.ToString(CultureInfo.InvariantCulture); } catch (Exception) { }
                 wsTcs.TrySetException(new InvalidOperationException(
                     $"浏览器进程意外退出 (exitCode={exitCodeText})。{diag}"));
             };
@@ -348,7 +354,8 @@ internal sealed partial class CdpManagedBrowserProcess : ICdpBrowserRuntime
             debugPort = wsEndpoint.Port;
             portRegistry.RegisterPort(debugPort, "browser-cdp");
 
-            var connection = await CdpConnection.ConnectAsync(wsEndpoint, logger, startupTimeout.Token).ConfigureAwait(false);
+            var connection = await connectionOwner.AcquireAsync(() =>
+                CdpConnection.ConnectAsync(wsEndpoint, logger, startupTimeout.Token)).ConfigureAwait(false);
             logger.LogInformation(
                 "Managed browser started via {Executable} on CDP port {Port} (headless={Headless}, profile={Profile})",
                 executablePath,
@@ -356,7 +363,7 @@ internal sealed partial class CdpManagedBrowserProcess : ICdpBrowserRuntime
                 headless,
                 profileMode);
 
-            return new CdpManagedBrowserProcess(
+            var runtime = new CdpManagedBrowserProcess(
                 process,
                 jobGuard,
                 fallbackProxy,
@@ -370,8 +377,16 @@ internal sealed partial class CdpManagedBrowserProcess : ICdpBrowserRuntime
                 headless,
                 profileMode,
                 logger);
+            process = null;
+            jobGuard = null;
+            proxyOwner.RelinquishOwnership();
+            connectionOwner.RelinquishOwnership();
+            debugPort = 0;
+            profileLockOwner.RelinquishOwnership();
+            userDataDir = null;
+            return runtime;
         }
-        catch
+        finally
         {
             if (debugPort > 0)
             {
@@ -380,7 +395,7 @@ internal sealed partial class CdpManagedBrowserProcess : ICdpBrowserRuntime
 
             try
             {
-                if (!process.HasExited)
+                if (process is { HasExited: false })
                 {
                     process.Kill(entireProcessTree: true);
                 }
@@ -389,18 +404,16 @@ internal sealed partial class CdpManagedBrowserProcess : ICdpBrowserRuntime
             {
                 // Best-effort cleanup.
             }
+            finally
+            {
+                process?.Dispose();
+                jobGuard?.Dispose();
+            }
 
-            process.Dispose();
-
-            jobGuard.Dispose();
-            await fallbackProxy.DisposeAsync().ConfigureAwait(false);
-            profileLockStream?.Dispose();
-            if (!isPersistent)
+            if (!isPersistent && userDataDir is not null)
             {
                 TryDeleteDirectory(userDataDir, logger);
             }
-
-            throw;
         }
     }
 
@@ -432,10 +445,10 @@ internal sealed partial class CdpManagedBrowserProcess : ICdpBrowserRuntime
         {
             if (!_process.HasExited)
             {
-                if (!_process.WaitForExit(1500))
+                if (!await WaitForExitAsync(_process).ConfigureAwait(false))
                 {
                     _process.Kill(entireProcessTree: true);
-                    _process.WaitForExit(1500);
+                    await WaitForExitAsync(_process).ConfigureAwait(false);
                 }
             }
         }
@@ -450,10 +463,27 @@ internal sealed partial class CdpManagedBrowserProcess : ICdpBrowserRuntime
         }
 
         await _fallbackStrictProxy.DisposeAsync().ConfigureAwait(false);
-        _profileLockStream?.Dispose();
+        if (_profileLockStream is not null)
+        {
+            await _profileLockStream.DisposeAsync().ConfigureAwait(false);
+        }
         if (_deleteUserDataDirOnDispose)
         {
             TryDeleteDirectory(_userDataDir, _logger);
+        }
+    }
+
+    private static async Task<bool> WaitForExitAsync(Process process)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(1500));
+        try
+        {
+            await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+            return true;
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+        {
+            return false;
         }
     }
 

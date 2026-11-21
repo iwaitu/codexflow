@@ -142,7 +142,7 @@ public sealed class ModelSettingsServiceTests : IDisposable
         var service = new ModelSettingsService(SettingsPath);
 
         var view = service.Update(new ModelSettingsUpdate(
-            ApiUrl: "http://10.0.0.1:8001/v1/{1}", ApiMode: "ChatCompletions", Model: "qwen", MaxTokensLength: 200000,
+            EndpointTemplate: "http://10.0.0.1:8001/v1/{1}", ApiMode: "ChatCompletions", Model: "qwen", MaxTokensLength: 200000,
             Temperature: 0.2f, ApiKey: "sk-abcdef123456"));
 
         Assert.Equal("qwen", view.Model);

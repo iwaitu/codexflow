@@ -158,25 +158,24 @@ public sealed class LocalExecutionService : IIsolatedExecutionService, IDisposab
             }
 
             _activeSessions[sessionHandle] = 0;
-            var session = new LocalExecutionSession(
-                this,
-                sessionHandle,
-                sessionDir,
-                workspaceDir,
-                homeDir,
-                tempDir,
-                inputsDir,
-                gitDir,
-                snapshot,
-                context,
-                canExport: options.StageWorkspace && !options.PinToBaseCommit,
-                _observer,
-                _logger)
-            {
-                GuestGit = guestGit
-            };
-
-            return new IsolatedSessionOpenResult(ExecutionDecision.Allow(), session);
+            return IsolatedSessionOpenResult.Open(() =>
+                new LocalExecutionSession(
+                    this,
+                    sessionHandle,
+                    sessionDir,
+                    workspaceDir,
+                    homeDir,
+                    tempDir,
+                    inputsDir,
+                    gitDir,
+                    snapshot,
+                    context,
+                    canExport: options.StageWorkspace && !options.PinToBaseCommit,
+                    _observer,
+                    _logger)
+                {
+                    GuestGit = guestGit
+                });
         }
         catch (WorkspaceSnapshotException ex)
         {
@@ -818,7 +817,7 @@ internal sealed class LocalExecutionSession : IIsolatedExecutionSession
             ct).ConfigureAwait(false);
     }
 
-    public Task<IReadOnlyList<EvidenceFile>> ReadEvidenceAsync(IReadOnlyList<string> globs, CancellationToken ct)
+    public async Task<IReadOnlyList<EvidenceFile>> ReadEvidenceAsync(IReadOnlyList<string> globs, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(globs);
         var results = new List<EvidenceFile>();
@@ -826,7 +825,7 @@ internal sealed class LocalExecutionSession : IIsolatedExecutionSession
 
         if (!Directory.Exists(_workspaceDir))
         {
-            return Task.FromResult<IReadOnlyList<EvidenceFile>>(results);
+            return results;
         }
 
         foreach (var file in new DirectoryInfo(_workspaceDir).EnumerateFiles("*", SearchOption.AllDirectories))
@@ -855,12 +854,12 @@ internal sealed class LocalExecutionSession : IIsolatedExecutionSession
                 break;
             }
 
-            var bytes = File.ReadAllBytes(file.FullName);
+            var bytes = await File.ReadAllBytesAsync(file.FullName, ct).ConfigureAwait(false);
             totalBytes += bytes.Length;
             results.Add(new EvidenceFile(norm, bytes.Length, Convert.ToHexString(SHA256.HashData(bytes)), bytes));
         }
 
-        return Task.FromResult<IReadOnlyList<EvidenceFile>>(results);
+        return results;
     }
 
     public async Task AbortAsync()
@@ -868,16 +867,16 @@ internal sealed class LocalExecutionSession : IIsolatedExecutionSession
         await DisposeAsync().ConfigureAwait(false);
     }
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
-            return ValueTask.CompletedTask;
+            return;
         }
 
         try
         {
-            _sessionCts.Cancel();
+            await _sessionCts.CancelAsync().ConfigureAwait(false);
         }
         catch (ObjectDisposedException)
         {
@@ -886,7 +885,6 @@ internal sealed class LocalExecutionSession : IIsolatedExecutionSession
         _sessionCts.Dispose();
         _service.MarkSessionClosed(SessionHandle);
         LocalExecutionService.TryDeleteDirectory(_sessionDir);
-        return ValueTask.CompletedTask;
     }
 
     private string? ResolveWorkingDirectory(string? requested)

@@ -15,12 +15,17 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.15" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.15" />
     <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="2.1.14" />
   </ItemGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="SchemaMigrations/*.sql" LogicalName="CodexFlow.Storage.Sqlite.SchemaMigrations.%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\CodexFlow.Orchestration\CodexFlow.Orchestration.csproj" />
+    <InternalsVisibleTo Include="CodexFlow.Storage.Sqlite.Design" />
   </ItemGroup>
 
 </Project>

@@ -6,16 +6,32 @@ on:
     paths:
       - 'clients/desktop/**'
       - 'docs/contracts/**'
+      - 'global.json'
       - 'Directory.Build.props'
+      - 'CodexFlow.CodeAnalysis.Worker/**'
+      - 'CodexFlow.Contracts/**'
+      - 'CodexFlow.Core/**'
+      - 'CodexFlow.Gateway.Http/**'
       - 'CodexFlow.Local/**'
+      - 'CodexFlow.Orchestration/**'
+      - 'CodexFlow.Storage.Sqlite/**'
+      - 'scripts/ci/publish-windows-native-aot.ps1'
       - '.github/workflows/client.yml'
   pull_request:
     branches: [main]
     paths:
       - 'clients/desktop/**'
       - 'docs/contracts/**'
+      - 'global.json'
       - 'Directory.Build.props'
+      - 'CodexFlow.CodeAnalysis.Worker/**'
+      - 'CodexFlow.Contracts/**'
+      - 'CodexFlow.Core/**'
+      - 'CodexFlow.Gateway.Http/**'
       - 'CodexFlow.Local/**'
+      - 'CodexFlow.Orchestration/**'
+      - 'CodexFlow.Storage.Sqlite/**'
+      - 'scripts/ci/publish-windows-native-aot.ps1'
       - '.github/workflows/client.yml'
   workflow_call:
     inputs:
@@ -84,7 +100,7 @@ jobs:
         run: npm audit --omit=dev
 
   e2e-windows:
-    name: Desktop Electron E2E (Windows)
+    name: Desktop Electron E2E with Native AOT (Windows)
     runs-on: windows-latest
     needs: desktop
     defaults:
@@ -92,6 +108,19 @@ jobs:
         working-directory: clients/desktop
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+
+      - name: Publish the Windows x64 Native AOT backend for Electron E2E
+        shell: pwsh
+        working-directory: .
+        run: |
+          $backend = Join-Path $env:RUNNER_TEMP 'codexflow-native-backend'
+          $build = Join-Path $env:RUNNER_TEMP 'codexflow-native-build'
+          ./scripts/ci/publish-windows-native-aot.ps1 -OutputDirectory $backend -ArtifactsDirectory $build
+          "CODEXFLOW_NATIVE_BACKEND_BIN=$(Join-Path $backend 'CodexFlow.Local.exe')" >> $env:GITHUB_ENV
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -166,7 +195,18 @@ jobs:
           echo "version=$target_version" >> "$GITHUB_OUTPUT"
           echo "Packaging CodexFlow Desktop version: $target_version"
 
+      - name: Publish Windows x64 Native AOT backend
+        if: matrix.platform == 'win'
+        shell: pwsh
+        env:
+          CODEXFLOW_DESKTOP_BUILD_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          $build = Join-Path $env:RUNNER_TEMP 'codexflow-native-build'
+          ./scripts/ci/publish-windows-native-aot.ps1 -OutputDirectory clients/desktop/resources/backend `
+            -ArtifactsDirectory $build -Version $env:CODEXFLOW_DESKTOP_BUILD_VERSION
+
       - name: Publish self-contained CodexFlow.Local backend (${{ matrix.rid }})
+        if: matrix.platform != 'win'
         shell: bash
         run: |
           dotnet publish CodexFlow.Local/CodexFlow.Local.csproj \

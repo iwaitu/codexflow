@@ -3,20 +3,20 @@
   <PropertyGroup>
     <IsPackable>true</IsPackable>
     <PackageId>CodexFlow.Gateway.Http</PackageId>
-    <Description>The HTTP surface of the CodexFlow gateway: chat, the event stream, jobs and artifact verification (ASP.NET Core controllers).</Description>
+    <Description>The HTTP surface of the CodexFlow gateway, including chat, the event stream, jobs and artifact verification.</Description>
   </PropertyGroup>
 
-  <!-- The HTTP surface of the gateway: chat, the event stream, jobs and artifact verification. Both hosts serve these controllers;
+  <!-- The HTTP surface of the gateway: chat, the event stream, jobs and artifact verification. Hosts map the same routes;
        each host decides who the "Bearer" caller is and what the "ActiveUser" policy means. -->
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <EnableRequestDelegateGenerator>true</EnableRequestDelegateGenerator>
   </PropertyGroup>
 
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
-    <!-- Imported implicitly by the web SDK, which the controllers were written under. -->
     <Using Include="Microsoft.Extensions.Logging" />
     <Using Include="Microsoft.AspNetCore.Http" />
     <Using Include="Microsoft.Extensions.Configuration" />
@@ -24,7 +24,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Only for the name of the authentication scheme the controllers ask for. -->
+    <!-- Supplies the name of the Bearer authentication scheme used by the endpoints. -->
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.15" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.15" />
   </ItemGroup>

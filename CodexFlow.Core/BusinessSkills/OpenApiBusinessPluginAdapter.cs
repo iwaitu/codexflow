@@ -262,27 +262,7 @@ public sealed partial class OpenApiBusinessPluginAdapter
                 };
             }
 
-            using var attemptReq = new HttpRequestMessage(new HttpMethod(spec.HttpMethod), finalUri);
-            if (probeReq.Headers.Authorization is not null)
-            {
-                attemptReq.Headers.Authorization = probeReq.Headers.Authorization;
-            }
-
-            foreach (var h in probeReq.Headers.Where(static x => !string.Equals(x.Key, "Authorization", StringComparison.OrdinalIgnoreCase)))
-            {
-                attemptReq.Headers.TryAddWithoutValidation(h.Key, h.Value);
-            }
-
-            foreach (var h in extraHeaders)
-            {
-                attemptReq.Headers.TryAddWithoutValidation(h.Name, h.Value);
-            }
-
-            if (bodyJsonText is not null)
-            {
-                attemptReq.Content = new StringContent(bodyJsonText, Encoding.UTF8, "application/json");
-            }
-
+            using var attemptReq = CreateExecutionRequest(probeReq.Method, finalUri, probeReq.Headers, extraHeaders, bodyJsonText);
             requestsConsumed++;
             if (attempt > 0)
             {
@@ -449,6 +429,44 @@ public sealed partial class OpenApiBusinessPluginAdapter
             RequestsConsumed = requestsConsumed,
             RetriesConsumed = retriesConsumed
         };
+    }
+
+    private static HttpRequestMessage CreateExecutionRequest(
+        HttpMethod method,
+        Uri endpoint,
+        System.Net.Http.Headers.HttpRequestHeaders headers,
+        IReadOnlyList<(string Name, string Value)> extraHeaders,
+        string? bodyJsonText)
+    {
+        var attemptReq = new HttpRequestMessage(method, endpoint);
+        try
+        {
+            if (headers.Authorization is not null)
+            {
+                attemptReq.Headers.Authorization = headers.Authorization;
+            }
+
+            foreach (var h in headers.Where(static x => !string.Equals(x.Key, "Authorization", StringComparison.OrdinalIgnoreCase)))
+            {
+                attemptReq.Headers.TryAddWithoutValidation(h.Key, h.Value);
+            }
+
+            foreach (var h in extraHeaders)
+            {
+                attemptReq.Headers.TryAddWithoutValidation(h.Name, h.Value);
+            }
+
+            if (bodyJsonText is not null)
+            {
+                attemptReq.Content = new StringContent(bodyJsonText, Encoding.UTF8, "application/json");
+            }
+            return attemptReq;
+        }
+        catch
+        {
+            attemptReq.Dispose();
+            throw;
+        }
     }
 
     private static async Task<OpenApiDiscoveryResult> DiscoverFromContentCoreAsync(

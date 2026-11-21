@@ -231,6 +231,9 @@ internal sealed partial class SourceGeneratedToolFunction(
 
 [JsonSourceGenerationOptions(JsonSerializerDefaults.Web)]
 [JsonSerializable(typeof(CodexToolResult))]
+[JsonSerializable(typeof(PlanApprovalRequestMetadata))]
+[JsonSerializable(typeof(GitCloneMetadata))]
+[JsonSerializable(typeof(DateTime))]
 [JsonSerializable(typeof(List<CodeDiagnostic>))]
 [JsonSerializable(typeof(CodeDiagnostic[]))]
 [JsonSerializable(typeof(TextReadMetadata))]

@@ -21,12 +21,13 @@ public static partial class SkillValueBinder
         SkillInputSchemaDto schema,
         IReadOnlyDictionary<string, JsonElement> suppliedInputs,
         out IReadOnlyDictionary<string, JsonElement> resolvedInputs,
-        out List<BusinessSkillFieldError> errors)
+        out IReadOnlyList<BusinessSkillFieldError> errors)
     {
         ArgumentNullException.ThrowIfNull(schema);
         ArgumentNullException.ThrowIfNull(suppliedInputs);
 
-        errors = [];
+        var issues = new List<BusinessSkillFieldError>();
+        errors = issues;
         var merged = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
 
         foreach (var kv in suppliedInputs)
@@ -48,7 +49,7 @@ public static partial class SkillValueBinder
                 val.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined ||
                 (val.ValueKind == JsonValueKind.String && string.IsNullOrWhiteSpace(val.GetString())))
             {
-                errors.Add(new($"inputs.{req}", BusinessSkillErrorCodes.ValidationFailed,
+                issues.Add(new($"inputs.{req}", BusinessSkillErrorCodes.ValidationFailed,
                     $"Required input '{req}' is missing or empty."));
             }
         }
@@ -62,7 +63,7 @@ public static partial class SkillValueBinder
 
             if (!MatchesDeclaredType(val, prop.Value, out var reason))
             {
-                errors.Add(new($"inputs.{prop.Key}", BusinessSkillErrorCodes.ValidationFailed, reason));
+                issues.Add(new($"inputs.{prop.Key}", BusinessSkillErrorCodes.ValidationFailed, reason));
             }
         }
 

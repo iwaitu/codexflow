@@ -5,14 +5,21 @@
 using CodexFlow.Core.Execution;
 using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Gateway.Contracts;
+using CodexFlow.Gateway.Http;
 using CodexFlow.Local;
 using CodexFlow.Orchestration.Hosting;
-using CodexFlow.Orchestration.Jobs;
 using CodexFlow.Storage.Sqlite;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+
+#if CODEXFLOW_NATIVE_HOST
+if (System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported ||
+    System.Text.Json.JsonSerializer.IsReflectionEnabledByDefault)
+{
+    throw new InvalidOperationException("The Native AOT host requires dynamic code and default JSON reflection to be disabled.");
+}
+#endif
 
 var exportIdx = Array.FindIndex(args, a => string.Equals(a, "--export-contracts", StringComparison.OrdinalIgnoreCase));
 if (exportIdx >= 0)
@@ -27,7 +34,7 @@ if (exportIdx >= 0)
     return 0;
 }
 
-var builder = WebApplication.CreateBuilder(args);
+var builder = WebApplication.CreateSlimBuilder(args);
 
 // Layered configuration: global ~/.codexflow/appsettings.json, then the project's codexflow.yml and
 // .codexflow/codexflow.local.yml (only when the project is trusted, and only its "Project" section), then environment variables
@@ -153,7 +160,7 @@ var credentials = LocalHostCredentials.Initialize(
     startupLogger);
 var accessToken = new LocalAccessToken(credentials.AccessToken, credentials.AccessTokenPath ?? string.Empty);
 
-builder.Services.AddControllers();
+builder.Services.AddCodexFlowGateway();
 builder.Services.AddCodexFlowGatewayOpenApi();
 builder.Services.AddHttpClient();
 builder.Services.AddHealthChecks();
@@ -199,9 +206,7 @@ builder.Services.AddAuthorization(options =>
 
 builder.Services.AddCodexFlowModelClient(builder.Configuration);
 builder.Services.AddCodexFlowRuntime(builder.Configuration);
-builder.Services.AddCodexFlowSqliteStorage(
-    layout.SqlitePath,
-    builder.Configuration.GetValue<bool>("Local:UseSqliteConversationMessages"));
+builder.Services.AddCodexFlowSqliteStorage(layout.SqlitePath);
 builder.Services.AddCodexFlowLocalDefaults();
 
 var app = builder.Build();
@@ -210,10 +215,7 @@ var execMonitor = app.Services.GetRequiredService<IOptionsMonitor<ExecutionOptio
 credentials.UpdateActiveBackend(execMonitor.CurrentValue.Backend);
 using var backendWatch = execMonitor.OnChange(updated => credentials.UpdateActiveBackend(updated.Backend));
 
-await using (var scope = app.Services.CreateAsyncScope())
-{
-    await scope.ServiceProvider.GetRequiredService<JobDbContext>().Database.MigrateAsync();
-}
+await app.Services.GetRequiredService<SqliteSchemaMigrator>().MigrateAsync();
 
 var preflightMode = HostPreflight.ResolvePreflightMode(app.Configuration, app.Logger);
 if (preflightMode != LocalPreflightMode.Off)
@@ -241,7 +243,8 @@ if (layout.AllowedOrigins.Length > 0)
 
 app.UseAuthentication();
 app.UseAuthorization();
-app.MapControllers();
+app.UseCodexFlowGatewayBindingErrors();
+app.MapCodexFlowGateway();
 if (app.Environment.IsDevelopment() || app.Configuration.GetValue<bool>("Local:ExposeOpenApi"))
 {
     app.MapCodexFlowGatewayOpenApi().RequireAuthorization("ActiveUser");

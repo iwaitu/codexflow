@@ -8,6 +8,15 @@ using CodexFlow.Contracts;
 
 namespace CodexFlow.Core.Services;
 
+/// <summary>A worktree as registered in a repository's own metadata (<c>git worktree list --porcelain -z</c>).</summary>
+public sealed record RegisteredWorktree(string Path, string? Branch, bool Prunable, bool Locked);
+
+/// <summary>The text a deleted (or renamed-away) path had just before it was removed, read from Git objects.</summary>
+/// <param name="Path">Repository-relative path, as listed in the artifact manifest.</param>
+/// <param name="Content">File text immediately before the deletion.</param>
+/// <param name="DeletedInCommit">The commit in the head's history that removed the path.</param>
+public sealed record DeletedFilePreState(string Path, string Content, string DeletedInCommit);
+
 /// <summary>Checks trusted worker manifests against Git objects, without running repository code.</summary>
 public sealed class GitArtifactInspector
 {
@@ -145,9 +154,6 @@ public sealed class GitArtifactInspector
         }
     }
 
-    /// <summary>A worktree as registered in a repository's own metadata (<c>git worktree list --porcelain -z</c>).</summary>
-    public sealed record RegisteredWorktree(string Path, string? Branch, bool Prunable, bool Locked);
-
     /// <summary>
     /// Looks <paramref name="worktreePath"/> up in the registry of the repository at <paramref name="repositoryRoot"/>. The registry
     /// lives inside that repository's <c>.git</c> (written by <c>git worktree add</c>), so a directory with a hand-written
@@ -214,12 +220,6 @@ public sealed class GitArtifactInspector
 
         return Flush();
     }
-
-    /// <summary>The text a deleted (or renamed-away) path had just before it was removed, read from Git objects.</summary>
-    /// <param name="Path">Repository-relative path, as listed in the artifact manifest.</param>
-    /// <param name="Content">File text immediately before the deletion.</param>
-    /// <param name="DeletedInCommit">The commit in the head's history that removed the path.</param>
-    public sealed record DeletedFilePreState(string Path, string Content, string DeletedInCommit);
 
     /// <summary>
     /// For a path that no longer exists at <paramref name="headCommit"/>, returns what it contained right before the commit that

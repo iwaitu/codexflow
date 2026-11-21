@@ -153,7 +153,7 @@ public sealed class GatewayRuntimeEventAdapter : IQueryRuntimeEventSink
         {
             Seq = NextSeq(),
             Type = GatewaySseEventType.SetConversationId,
-            Payload = new { conversationId = _conversationId }
+            Payload = new Dictionary<string, object?> { ["conversationId"] = _conversationId }
         });
     }
 
@@ -166,7 +166,7 @@ public sealed class GatewayRuntimeEventAdapter : IQueryRuntimeEventSink
         {
             Seq = NextSeq(),
             Type = GatewaySseEventType.Done,
-            Payload = new { type = "done" }
+            Payload = new Dictionary<string, object?> { ["type"] = "done" }
         });
     }
 
@@ -179,7 +179,7 @@ public sealed class GatewayRuntimeEventAdapter : IQueryRuntimeEventSink
         {
             Seq = NextSeq(),
             Type = GatewaySseEventType.FileTreeUpdated,
-            Payload = new { tool = toolName }
+            Payload = new Dictionary<string, object?> { ["tool"] = toolName }
         });
     }
 
@@ -210,36 +210,36 @@ public sealed class GatewayRuntimeEventAdapter : IQueryRuntimeEventSink
             // 内容事件
             AssistantDeltaEvent e => (
                 GatewaySseEventType.Content,
-                (object)new { type = "content", content = e.Delta, text = e.Delta }),
+                (object)new Dictionary<string, object?> { ["type"] = "content", ["content"] = e.Delta, ["text"] = e.Delta }),
 
             // 思考事件
             ThinkingStartedEvent => (
                 GatewaySseEventType.ThinkingStart,
-                (object)new { type = "thinking_start" }),
+                (object)new Dictionary<string, object?> { ["type"] = "thinking_start" }),
 
             ThinkingDeltaEvent e => (
                 GatewaySseEventType.ThinkingContent,
-                (object)new { type = "thinking_content", content = e.Delta, text = e.Delta }),
+                (object)new Dictionary<string, object?> { ["type"] = "thinking_content", ["content"] = e.Delta, ["text"] = e.Delta }),
 
             ThinkingEndedEvent e => (
                 GatewaySseEventType.ThinkingEnd,
-                (object)new { type = "thinking_end", thinking_content = e.FullThinking }),
+                (object)new Dictionary<string, object?> { ["type"] = "thinking_end", ["thinking_content"] = e.FullThinking }),
 
             // 工具调用事件
             ToolCallRequestedEvent e => BuildToolCallEvent(e),
 
             ToolExecutionStartedEvent e => (
                 GatewaySseEventType.ToolStarted,
-                (object)new { type = "tool_started", name = e.ToolName, callId = e.CallId }),
+                (object)new Dictionary<string, object?> { ["type"] = "tool_started", ["name"] = e.ToolName, ["callId"] = e.CallId }),
 
             ToolExecutionCompletedEvent e => (
                 GatewaySseEventType.TaskStatus,
-                (object)new { type = "tool_result", name = e.ToolName, callId = e.CallId, success = e.Success, result = e.Result }),
+                (object)new Dictionary<string, object?> { ["type"] = "tool_result", ["name"] = e.ToolName, ["callId"] = e.CallId, ["success"] = e.Success, ["result"] = e.Result }),
 
             // Conversation ID
             ConversationIdSetEvent e => (
                 GatewaySseEventType.SetConversationId,
-                (object)new { conversationId = e.ConversationId }),
+                (object)new Dictionary<string, object?> { ["conversationId"] = e.ConversationId }),
 
             // 系统消息 / worker 生命周期消息
             SystemNoticeEvent e when TryMapWorkerNoticeEvent(e, out var workerEventType, out var workerPayload) => (
@@ -248,12 +248,12 @@ public sealed class GatewayRuntimeEventAdapter : IQueryRuntimeEventSink
 
             SystemNoticeEvent e => (
                 GatewaySseEventType.SystemMessage,
-                (object)new { type = "system_message", noticeType = e.NoticeType, content = e.Content, text = e.Content }),
+                (object)new Dictionary<string, object?> { ["type"] = "system_message", ["noticeType"] = e.NoticeType, ["content"] = e.Content, ["text"] = e.Content }),
 
             // 错误事件
             ErrorEvent e => (
                 GatewaySseEventType.Error,
-                (object)new { messageId = _messageId, error = e.ErrorType, message = e.Message }),
+                (object)new Dictionary<string, object?> { ["messageId"] = _messageId, ["error"] = e.ErrorType, ["message"] = e.Message }),
 
             // 以下事件不直接映射到 SSE
             // RoundStartedEvent, RoundCompletedEvent, TerminatedEvent
@@ -276,13 +276,13 @@ public sealed class GatewayRuntimeEventAdapter : IQueryRuntimeEventSink
         var (arguments, truncated) = ToolEventSanitizer.SanitizeArguments(e.Arguments);
         return (
             GatewaySseEventType.ToolCall,
-            new
+            new Dictionary<string, object?>
             {
-                type = "tool_call",
-                name = e.ToolName,
-                callId = e.CallId,
-                arguments,
-                argumentsTruncated = truncated
+                ["type"] = "tool_call",
+                ["name"] = e.ToolName,
+                ["callId"] = e.CallId,
+                ["arguments"] = arguments,
+                ["argumentsTruncated"] = truncated
             });
     }
 

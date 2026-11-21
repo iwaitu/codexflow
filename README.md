@@ -326,7 +326,7 @@ flowchart LR
 | `docs/contracts` | OpenAPI and SSE contracts used by the desktop client. |
 | `docker/verification` | Verification image and scanning configuration. |
 
-The five library projects are packaged together with a shared version from `Directory.Build.props`. The desktop package version is stamped by the release pipeline.
+The library projects are packaged together with a shared version from `Directory.Build.props`. The desktop package version is stamped by the release pipeline.
 
 ## Development and testing
 

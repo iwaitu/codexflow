@@ -3,7 +3,6 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 using CodexFlow.Orchestration.Hosting;
-using CodexFlow.Orchestration.Jobs;
 using System.Text.Json;
 using System.Xml.Linq;
 using CodexFlow.Application.Jobs;
@@ -15,14 +14,13 @@ using CodexFlow.Services.ArtifactAudit;
 using CodexFlow.Services.Verification;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Planning.Artifacts;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
 namespace CodexFlow.Services.Background;
 
 /// <summary>Loads trusted identity from storage and verifies exclusively through the isolated backend.</summary>
 public sealed class ForgeArtifactVerificationService(
-    IJobDbContext db, IGatewayChatStore chat, IIsolatedExecutionService execution, IConfiguration configuration, IArtifactAuditService auditService,
+    IWorkerJobStore storage, IGatewayChatStore chat, IIsolatedExecutionService execution, IConfiguration configuration, IArtifactAuditService auditService,
     IPlanArtifactStore planStore, ILogger<ForgeArtifactVerificationService>? logger = null, ISessionStore? runtimeSessions = null,
     IDependencyRiskScanService? dependencyScan = null, IEnumerable<IProjectVerifier>? projectVerifiers = null,
     IOptionsMonitor<ExecutionOptions>? executionOptions = null)
@@ -51,8 +49,7 @@ public sealed class ForgeArtifactVerificationService(
     {
         var session = await chat.GetSession(request.SessionId);
         if (session is null || session.UserId != userId) return Failed("ArtifactNotFound");
-        var jobs = await db.BackgroundJobs.AsNoTracking().Where(x => x.SessionId == request.SessionId)
-            .OrderBy(x => x.CreatedAtUtc).ToListAsync(ct);
+        var jobs = await storage.ReadSessionJobsAsync(request.SessionId, ct);
         var job = jobs.SingleOrDefault(x => x.JobId == request.JobId);
         if (job is null) return Failed("ArtifactNotFound");
         if (!CodexFlow.Core.Workers.WorkerJobTypes.TryResolveWorkerType(job.JobType, out var type) ||
@@ -183,7 +180,7 @@ public sealed class ForgeArtifactVerificationService(
             return Failed("ArtifactAuditCoverageIncomplete", receipt);
         error = await inspector.ValidateAsync(manifest, root, userId, request.SessionId, job.JobId, job.Attempt, parents, ct);
         if (error is not null) return Failed(error, receipt with { IdentityVerified = false });
-        var currentJobs = await db.BackgroundJobs.AsNoTracking().Where(x => x.SessionId == request.SessionId).ToListAsync(ct);
+        var currentJobs = await storage.ReadSessionJobsAsync(request.SessionId, ct);
         var current = currentJobs.SingleOrDefault(x => x.JobId == job.JobId);
         if (current is null || current.Attempt != job.Attempt || current.Status != BackgroundJobStatus.Completed || current.ResultPayloadJson != job.ResultPayloadJson)
             return Failed("ArtifactAttemptChanged", receipt with { IdentityVerified = false });
@@ -361,21 +358,8 @@ public sealed class ForgeArtifactVerificationService(
             payload["verificationNotice"] = LocalModeVerificationPolicy.UnverifiedNotice;
         }
 
-        var updatedPayload = payload.ToString(Newtonsoft.Json.Formatting.None);
-        var updatedAt = now.UtcDateTime;
-        var expectedPayload = expectedJob.ResultPayloadJson;
-
-        var affected = await db.BackgroundJobs
-            .Where(x => x.JobId == expectedJob.JobId
-                && x.Attempt == expectedJob.Attempt
-                && x.Status == BackgroundJobStatus.Completed
-                && x.ResultPayloadJson == expectedPayload)
-            .ExecuteUpdateAsync(setters => setters
-                .SetProperty(x => x.ResultPayloadJson, updatedPayload)
-                .SetProperty(x => x.ErrorMessage, errorMessage)
-                .SetProperty(x => x.UpdatedAtUtc, updatedAt), ct);
-
-        return affected == 1;
+        return await storage.TryUpdateVerificationPayloadAsync(
+            expectedJob, payload.ToString(Newtonsoft.Json.Formatting.None), errorMessage, now.UtcDateTime, ct);
     }
 
     private static ForgeArtifactVerificationReceipt Failed(string code, ForgeArtifactVerificationReceipt? receipt = null) =>

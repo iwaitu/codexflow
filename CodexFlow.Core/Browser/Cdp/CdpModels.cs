@@ -57,10 +57,17 @@ internal sealed class CdpErrorPayload
     public JsonElement? Data { get; init; }
 }
 
-public sealed record CdpEventMessage(
-    string Method,
-    string? SessionId,
-    JsonElement Params);
+public sealed class CdpEventArgs(string method, string? sessionId, JsonElement parameters) : EventArgs
+{
+    public string Method { get; } = method;
+    public string? SessionId { get; } = sessionId;
+    public JsonElement Params { get; } = parameters;
+}
+
+public sealed class CdpDisconnectedEventArgs(Exception? exception) : EventArgs
+{
+    public Exception? Exception { get; } = exception;
+}
 
 internal sealed class CdpBoundingBox
 {

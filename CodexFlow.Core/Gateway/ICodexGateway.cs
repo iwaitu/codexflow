@@ -36,7 +36,10 @@ public interface ICodexGateway
     /// <c>replay_gap</c> marker with reason <c>sequence_reset</c> and a replay from the start instead of a silently filtered stream.
     /// </param>
     /// <returns>可异步枚举的事件流，断开时自动取消</returns>
-    IAsyncEnumerable<GatewaySseEvent> SubscribeAsync(string sessionId, string userId, long lastEventId = 0, CancellationToken ct = default, string? channelEpoch = null);
+    IAsyncEnumerable<GatewaySseEvent> SubscribeAsync(string sessionId, string userId, long lastEventId = 0, string? channelEpoch = null, CancellationToken ct = default);
+
+    IAsyncEnumerable<GatewaySseEvent> SubscribeAsync(string sessionId, string userId, long lastEventId, CancellationToken cancellationToken)
+        => SubscribeAsync(sessionId, userId, lastEventId, ct: cancellationToken);
 
     /// <summary>
     /// 向指定 Session 主动推送一个外部 SSE 事件。

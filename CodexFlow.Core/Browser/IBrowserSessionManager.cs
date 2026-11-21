@@ -23,7 +23,7 @@ public sealed record BrowserOperationResult(
     bool Succeeded,
     string Output,
     string? Summary = null,
-    string? Url = null,
+    string? PageLocation = null,
     string? Title = null,
     BrowserScreenshotData? Screenshot = null,
     string? ErrorCode = null);
@@ -45,7 +45,7 @@ public interface IBrowserSessionManager : IAsyncDisposable
     Task<BrowserOperationResult> NavigateAsync(
         BrowserTrustedCallerContext caller,
         string action,
-        string? url,
+        string? navigationAddress,
         CancellationToken ct = default);
 
     Task<BrowserOperationResult> SnapshotAsync(
@@ -73,7 +73,7 @@ public interface IBrowserSessionManager : IAsyncDisposable
         BrowserTrustedCallerContext caller,
         string action,
         string? tabId = null,
-        string? url = null,
+        string? navigationAddress = null,
         CancellationToken ct = default);
 
     Task<BrowserOperationResult> RequestTakeoverAsync(

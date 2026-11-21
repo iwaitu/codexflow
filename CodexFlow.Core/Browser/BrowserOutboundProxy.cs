@@ -35,7 +35,7 @@ public sealed class BrowserOutboundProxy : IAsyncDisposable
 
     public int Port { get; }
 
-    public string ProxyServerUrl => string.Create(CultureInfo.InvariantCulture, $"http://127.0.0.1:{Port}");
+    public Uri ProxyServerUri => new(string.Create(CultureInfo.InvariantCulture, $"http://127.0.0.1:{Port}"), UriKind.Absolute);
 
     public BrowserOutboundProxy(
         BrowserTargetPolicyGuard guard,
@@ -385,7 +385,7 @@ public sealed class BrowserOutboundProxy : IAsyncDisposable
                 return null;
             }
 
-            ms.Write(buffer, 0, read);
+            await ms.WriteAsync(buffer.AsMemory(0, read), CancellationToken.None).ConfigureAwait(false);
             var span = ms.GetBuffer().AsSpan(0, (int)ms.Length);
             var terminatorIdx = span.IndexOf(HeaderTerminator);
             if (terminatorIdx >= 0)

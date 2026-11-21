@@ -5,6 +5,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using CodexFlow.Orchestration.Persistence;
 using Microsoft.Extensions.AI;
 
 namespace CodexFlow.AI;
@@ -171,7 +172,7 @@ public static class PromptBudget
     {
         TextContent text => text.Text ?? string.Empty,
         TextReasoningContent reasoning => reasoning.Text ?? string.Empty,
-        FunctionCallContent call => call.Name + " " + (call.Arguments is null ? string.Empty : JsonSerializer.Serialize(call.Arguments)),
+        FunctionCallContent call => call.Name + " " + (call.Arguments is null ? string.Empty : SerializePayload(call.Arguments)),
         FunctionResultContent result => ResultText(result),
         _ => string.Empty
     };
@@ -181,6 +182,17 @@ public static class PromptBudget
         null => string.Empty,
         string text => text,
         JsonElement element => element.GetRawText(),
-        var other => JsonSerializer.Serialize(other)
+        var other => SerializePayload(other)
     };
+
+    private static string SerializePayload(object payload)
+    {
+        if (ManagedPayloadReflection.TryToJson(payload) is { } managed)
+        {
+            return managed;
+        }
+
+        using var document = JsonDocument.Parse(OrchestrationPayloadJson.Token(payload).ToString(Newtonsoft.Json.Formatting.None));
+        return JsonSerializer.Serialize(document.RootElement, OrchestrationSnapshotJsonContext.Default.JsonElement);
+    }
 }

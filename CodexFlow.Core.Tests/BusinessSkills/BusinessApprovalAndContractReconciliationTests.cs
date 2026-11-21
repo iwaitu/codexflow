@@ -3,9 +3,11 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 using CodexFlow.Contracts.BusinessSkills;
-using CodexFlow.Controllers;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.Mvc.Routing;
+using CodexFlow.Core.Execution.Approval;
+using CodexFlow.Gateway.Http;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Routing;
 using Xunit;
 
 namespace CodexFlow.Core.Tests.BusinessSkills;
@@ -105,69 +107,31 @@ public sealed class BusinessApprovalAndContractReconciliationTests
     }
 
     [Fact]
-    public void Section11ProposedRoutes_DoNotCollideWithExistingGatewayHttpRoutes()
+    public async Task Section11ProposedRoutes_DoNotCollideWithExistingGatewayHttpRoutes()
     {
-        var legacyControllers = typeof(GatewayApprovalController).Assembly
-            .GetTypes()
-            .Where(t => !t.IsAbstract &&
-                        typeof(ControllerBase).IsAssignableFrom(t) &&
-                        t != typeof(BusinessPluginsController) &&
-                        t != typeof(BusinessSkillsController))
-            .ToArray();
+        var builder = WebApplication.CreateSlimBuilder();
+        builder.Services.AddCodexFlowGateway();
+        await using var app = builder.Build();
+        app.MapCodexFlowGateway();
 
-        var existingLegacyRoutes = ExtractRouteSignatures(legacyControllers);
-        var businessControllerRoutes = ExtractRouteSignatures([typeof(BusinessPluginsController), typeof(BusinessSkillsController)]);
+        var endpoints = ((IEndpointRouteBuilder)app).DataSources
+            .SelectMany(source => source.Endpoints)
+            .OfType<RouteEndpoint>();
+        var routes = endpoints
+            .SelectMany(endpoint => endpoint.Metadata.GetMetadata<HttpMethodMetadata>()?.HttpMethods.Select(method =>
+                (Signature: $"{method} /{endpoint.RoutePattern.RawText?.Trim('/')}", Endpoint: endpoint)) ?? [])
+            .ToLookup(route => route.Signature, route => route.Endpoint, StringComparer.OrdinalIgnoreCase);
 
-        // 现有非 BusinessSkills 控制器的审批路径必须存在
-        Assert.Contains("POST /api/gateway/approvals/{approvalId}", existingLegacyRoutes);
-
-        var newRoutes = BusinessPluginApiRoutes.CanonicalRoutes
-            .Where(r => !string.Equals(r.Template, "/api/gateway/approvals/{approvalId}", StringComparison.OrdinalIgnoreCase))
-            .ToArray();
-
-        // 新增业务路由不得与原有控制器路由冲突
-        foreach (var route in newRoutes)
+        Assert.Single(routes["POST /api/gateway/approvals/{approvalId}"]);
+        Assert.All(routes, group => Assert.Single(group));
+        foreach (var route in BusinessPluginApiRoutes.CanonicalRoutes)
         {
-            var signature = $"{route.Method} {route.Template}";
-            Assert.DoesNotContain(signature, existingLegacyRoutes);
+            var endpoint = Assert.Single(routes[$"{route.Method} {route.Template}"]);
+            var expectedPolicy = route.AuthPlane == BusinessApiAuthPlane.ControlPlane
+                ? ControlPlaneAuthConstants.ControlPlanePolicy
+                : "ActiveUser";
+            Assert.Contains(endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>(), authorization =>
+                string.Equals(authorization.Policy, expectedPolicy, StringComparison.Ordinal));
         }
-
-        // P1 + P3 已实现全部第 11 节非网关审批业务路由
-        foreach (var route in newRoutes)
-        {
-            var sig = $"{route.Method} {route.Template}";
-            Assert.Contains(sig, businessControllerRoutes);
-        }
-    }
-
-    private static HashSet<string> ExtractRouteSignatures(IEnumerable<Type> controllerTypes)
-    {
-        var routes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var controller in controllerTypes)
-        {
-            var routeAttr = controller.GetCustomAttributes(typeof(RouteAttribute), inherit: false)
-                .OfType<RouteAttribute>()
-                .FirstOrDefault();
-            var prefix = routeAttr?.Template?.Trim('/') ?? string.Empty;
-
-            foreach (var method in controller.GetMethods())
-            {
-                foreach (var httpAttr in method.GetCustomAttributes(typeof(HttpMethodAttribute), inherit: false)
-                             .OfType<HttpMethodAttribute>())
-                {
-                    var template = (httpAttr.Template ?? string.Empty).Trim('/');
-                    var fullPath = string.IsNullOrEmpty(prefix)
-                        ? "/" + template
-                        : (string.IsNullOrEmpty(template) ? "/" + prefix : $"/{prefix}/{template}");
-
-                    foreach (var httpMethod in httpAttr.HttpMethods)
-                    {
-                        routes.Add($"{httpMethod} {fullPath}");
-                    }
-                }
-            }
-        }
-
-        return routes;
     }
 }

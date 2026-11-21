@@ -5,7 +5,7 @@
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Models;
 using Microsoft.Extensions.Logging;
-using Newtonsoft.Json;
+using CodexFlow.Core.Planning.Artifacts;
 
 namespace CodexFlow.Infrastructure.Persistence;
 
@@ -33,7 +33,7 @@ public sealed class KeyValueSessionStore : ISessionStore
         try
         {
             var payload = await _store.GetAsync(KeyPrefix + sessionId, ct).ConfigureAwait(false);
-            return string.IsNullOrEmpty(payload) ? null : JsonConvert.DeserializeObject<CodexSession>(payload);
+            return string.IsNullOrEmpty(payload) ? null : PlanToolJson.Read<CodexSession>(payload);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -47,7 +47,7 @@ public sealed class KeyValueSessionStore : ISessionStore
     {
         try
         {
-            await _store.SetAsync(KeyPrefix + session.Id, JsonConvert.SerializeObject(session), SessionTtl, ct).ConfigureAwait(false);
+            await _store.SetAsync(KeyPrefix + session.Id, PlanToolJson.Write(session), SessionTtl, ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

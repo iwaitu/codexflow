@@ -59,18 +59,18 @@ public sealed class BrowserTargetPolicyGuard
     }
 
     public BrowserPolicyEvaluation ValidateNavigationUrl(
-        string? rawUrl,
+        string? navigationAddress,
         SessionWorkMode workMode,
         IReadOnlySet<int>? sessionApprovedLoopbackPorts = null)
     {
-        if (string.IsNullOrWhiteSpace(rawUrl))
+        if (string.IsNullOrWhiteSpace(navigationAddress))
         {
             return Denied(ReasonInvalidUrl, "URL 不能为空。");
         }
 
-        if (!Uri.TryCreate(rawUrl.Trim(), UriKind.Absolute, out var uri))
+        if (!Uri.TryCreate(navigationAddress.Trim(), UriKind.Absolute, out var uri))
         {
-            return Denied(ReasonInvalidUrl, $"URL 格式无效: '{rawUrl}'。");
+            return Denied(ReasonInvalidUrl, $"URL 格式无效: '{navigationAddress}'。");
         }
 
         var scheme = uri.Scheme.ToLowerInvariant();

@@ -34,12 +34,12 @@ public sealed class GatewayPlannerSummaryEventSink(
                     new GatewaySseEvent
                     {
                         Type = GatewaySseEventType.PlanningSummary,
-                        Payload = new
+                        Payload = new Dictionary<string, object?>
                         {
-                            type = GatewaySseEventType.PlanningSummary,
-                            message = e.Message,
-                            payload = e.Payload,
-                            timestamp = e.Timestamp
+                            ["type"] = GatewaySseEventType.PlanningSummary,
+                            ["message"] = e.Message,
+                            ["payload"] = e.Payload,
+                            ["timestamp"] = e.Timestamp
                         }
                     },
                     ct)

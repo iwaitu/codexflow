@@ -2,6 +2,8 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+using Microsoft.Extensions.Configuration;
+
 namespace CodexFlow.Core.Browser;
 
 public enum BrowserProfileMode
@@ -34,7 +36,10 @@ public sealed class BrowserOptions
 
     public string? ExecutablePath { get; set; }
 
-    public string? RemoteCdpWsUrl { get; set; }
+    internal const string RemoteCdpConfigurationKey = "RemoteCdpWsUrl";
+
+    [ConfigurationKeyName(RemoteCdpConfigurationKey)]
+    public string? RemoteCdpAddress { get; set; }
 
     public bool Headless { get; set; } = true;
 
@@ -46,11 +51,11 @@ public sealed class BrowserOptions
 
     public bool AllowControlledDownloads { get; set; }
 
-    public List<int> DevelopmentAllowedLoopbackPorts { get; set; } = [.. DefaultDevelopmentLoopbackPorts];
+    public IReadOnlyList<int> DevelopmentAllowedLoopbackPorts { get; set; } = [.. DefaultDevelopmentLoopbackPorts];
 
-    public List<string> AllowedDomains { get; set; } = [];
+    public IReadOnlyList<string> AllowedDomains { get; set; } = [];
 
-    public List<string> BlockedDomains { get; set; } = [];
+    public IReadOnlyList<string> BlockedDomains { get; set; } = [];
 
     public int IdleTimeoutMinutes { get; set; } = 15;
 

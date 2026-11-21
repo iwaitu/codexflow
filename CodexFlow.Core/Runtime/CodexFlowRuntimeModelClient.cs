@@ -187,15 +187,14 @@ internal sealed class CodexFlowRuntimeModelClient(
                 ex);
         }
 
-        // Do not wrap MeaiRuntimeModelClient in a `using` block: its Dispose() disposes the
-        // injected IChatClient. Although ExecutorChatClientBridge.Dispose() is a no-op, we also
-        // never dispose MeaiRuntimeModelClient per turn to preserve the shared pipeline.
-        var meaiClient = new MeaiRuntimeModelClient(
-            new ExecutorChatClientBridge(
-                _executor,
-                _coreRequest.Scenario,
-                _coreRequest.Session,
-                nameof(QreV2BackedQueryRuntimeEngine)),
+        // The per-attempt bridge borrows the shared executor and leaves it open on disposal.
+        using var bridge = new ExecutorChatClientBridge(
+            _executor,
+            _coreRequest.Scenario,
+            _coreRequest.Session,
+            nameof(QreV2BackedQueryRuntimeEngine));
+        using var meaiClient = new MeaiRuntimeModelClient(
+            bridge,
             req =>
             {
                 var cloned = QreV2AdapterUtilities.CloneChatOptions(_coreRequest.Options);

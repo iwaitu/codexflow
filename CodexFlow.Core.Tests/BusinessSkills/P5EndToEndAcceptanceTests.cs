@@ -11,6 +11,7 @@ using CodexFlow.Application;
 using CodexFlow.Application.Jobs;
 using CodexFlow.Contracts.BusinessSkills;
 using CodexFlow.Controllers;
+using CodexFlow.Gateway.Http;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Agents;
 using CodexFlow.Core.BusinessSkills;
@@ -789,7 +790,7 @@ public sealed class P5EndToEndAcceptanceTests : IDisposable
 
         // 1. 先初始化仅含旧版迁移（不含 BusinessPluginBuilder 表）的 SQLite 库，写入已有会话与对话记录
         var optionsBuilder = new DbContextOptionsBuilder<JobDbContext>();
-        optionsBuilder.UseSqliteFile(dbPath, typeof(SqliteStorage).Assembly.GetName().Name);
+        optionsBuilder.UseLegacySqliteFile(dbPath);
         await using (var legacyDb = new JobDbContext(optionsBuilder.Options))
         {
             var migrator = legacyDb.GetService<IMigrator>();
@@ -887,7 +888,7 @@ public sealed class P5EndToEndAcceptanceTests : IDisposable
         var guard = new OutboundTargetPolicyGuard();
         var credStore = new InMemoryBusinessCredentialStore();
 
-        builder.Services.AddControllers().AddApplicationPart(typeof(BusinessPluginsController).Assembly);
+        builder.Services.AddCodexFlowGateway();
         builder.Services.AddSingleton(creds);
         builder.Services.AddSingleton<IControlPlaneStateProvider>(creds);
         builder.Services.AddSingleton(guard);
@@ -910,7 +911,7 @@ public sealed class P5EndToEndAcceptanceTests : IDisposable
         builder.Services.AddSingleton<IExecutionApprovalBroker>(_ => Mock.Of<IExecutionApprovalBroker>());
         builder.Services.AddScoped<IChatService>(_ => Mock.Of<IChatService>());
 
-        builder.Services.AddCodexFlowSqliteStorage(dbPath);
+        builder.Services.AddTestSqliteStorage(dbPath);
         builder.Services.AddCodexFlowLocalDefaults();
         builder.Services.AddSingleton<IWorkspaceRootProvider>(new WorkspaceRootProvider(workspacesRoot, Path.GetDirectoryName(dbPath)));
         builder.Services.AddScoped<ITaskListService>(sp =>
@@ -938,7 +939,8 @@ public sealed class P5EndToEndAcceptanceTests : IDisposable
 
         app.UseAuthentication();
         app.UseAuthorization();
-        app.MapControllers();
+        app.UseCodexFlowGatewayBindingErrors();
+        app.MapCodexFlowGateway();
         await app.StartAsync();
 
         var baseUri = new Uri(app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First());

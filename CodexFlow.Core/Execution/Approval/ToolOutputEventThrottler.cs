@@ -172,12 +172,12 @@ public sealed class ToolOutputEventThrottler : IAsyncDisposable
                     if (forceDrainAll && batchPayload is null && _suppressedLines > 0 && !_capReachedNotified)
                     {
                         _capReachedNotified = true;
-                        capPayload = new
+                        capPayload = new Dictionary<string, object?>
                         {
-                            tool = _toolName,
-                            commandTaskId = _taskId,
-                            throttled = true,
-                            suppressedLines = _suppressedLines
+                            ["tool"] = _toolName,
+                            ["commandTaskId"] = _taskId,
+                            ["throttled"] = true,
+                            ["suppressedLines"] = _suppressedLines
                         };
                     }
                 }
@@ -207,19 +207,19 @@ public sealed class ToolOutputEventThrottler : IAsyncDisposable
         }
     }
 
-    private object DrainBatchLocked(long nowStamp)
+    private Dictionary<string, object?> DrainBatchLocked(long nowStamp)
     {
         var outChunk = TakeBounded(_stdoutBuffer, _maxChunkChars);
         var errChunk = TakeBounded(_stderrBuffer, _maxChunkChars);
         _lastFlushStamp = nowStamp;
         _emittedEvents++;
-        return new
+        return new Dictionary<string, object?>
         {
-            tool = _toolName,
-            commandTaskId = _taskId,
-            stdout = outChunk,
-            stderr = errChunk,
-            throttled = false
+            ["tool"] = _toolName,
+            ["commandTaskId"] = _taskId,
+            ["stdout"] = outChunk,
+            ["stderr"] = errChunk,
+            ["throttled"] = false
         };
     }
 

@@ -591,7 +591,7 @@ internal static class BrowserWorkspacePathGuard
     {
         var root = Path.GetPathRoot(path);
         var trimmed = path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        if (string.IsNullOrEmpty(trimmed) && !string.IsNullOrEmpty(root))
+        if (root is not null && trimmed.Length < root.Length)
         {
             return root;
         }

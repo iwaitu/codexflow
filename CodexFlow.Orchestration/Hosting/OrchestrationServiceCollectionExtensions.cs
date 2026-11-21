@@ -27,7 +27,7 @@ namespace CodexFlow.Orchestration.Hosting;
 /// <summary>
 /// Registers everything a host runs that does not depend on where the host keeps its data: the model client, the agent core, the
 /// gateway, the job runner and host-side acceptance. The platform host and the local host both call these and then add their own
-/// storage (<see cref="CodexFlow.Orchestration.Jobs.IJobDbContext"/>, the stores in this namespace, a key-value store, a job event
+/// storage (the host repositories, a key-value store, a job event
 /// log, a lease store) and their own way to reach the user (<see cref="IRealtimeNotifier"/>).
 /// </summary>
 public static class OrchestrationServiceCollectionExtensions
@@ -164,7 +164,12 @@ public static class OrchestrationServiceCollectionExtensions
             return options;
         });
         services.AddScoped<IProjectMemoryService, ProjectMemoryService>();
-        services.AddScoped<CodexFlow.Orchestration.Chat.SessionPolicyResolver>();
+        services.AddScoped(sp => new CodexFlow.Orchestration.Chat.SessionPolicyResolver(
+            sp.GetRequiredService<CodexFlow.Orchestration.Chat.ISessionPolicyStore>(),
+            sp.GetRequiredService<CodexFlow.Core.Abstractions.ISessionStore>(),
+            sp.GetRequiredService<CodexFlow.Core.Abstractions.IWorkflowAuditStore>(),
+            sp.GetService<CodexFlow.Core.Gateway.ICodexGateway>(),
+            sp.GetService<ILogger<CodexFlow.Orchestration.Chat.SessionPolicyResolver>>()));
         services.AddScoped<CodexFlow.Core.Models.ISessionPolicyResolver>(sp => sp.GetRequiredService<CodexFlow.Orchestration.Chat.SessionPolicyResolver>());
         services.AddScoped<CodexFlow.Core.Agents.Tools.IPlanModeHostBridge>(sp => sp.GetRequiredService<CodexFlow.Orchestration.Chat.SessionPolicyResolver>());
         services.AddScoped<CodexSessionManager>();
@@ -205,7 +210,6 @@ public static class OrchestrationServiceCollectionExtensions
         services.AddScoped<CodexFlow.Core.Runtime.IRuntimeHook, CodexFlow.Core.Runtime.ConfiguredStopRuntimeHook>();
         services.AddScoped<CodexFlow.Core.Runtime.IRuntimeHookDispatcher, CodexFlow.Core.Runtime.RuntimeHookDispatcher>();
         services.AddScoped<CodexFlow.Core.Runtime.IQueryRuntimeEngine, CodexFlow.Core.Runtime.QreV2BackedQueryRuntimeEngine>();
-        services.AddScoped<CodexFlow.Core.Abstractions.IPlanArtifactStore, CodexFlow.Infrastructure.Persistence.EfPlanArtifactStore>();
         services.AddScoped<CodexFlow.Core.Abstractions.IPlanFileService, CodexFlow.Core.Services.WorkspacePlanFileService>();
         services.AddScoped<CodexFlow.Core.Abstractions.IPlanBlueprintGenerator, CodexFlow.Core.Services.DefaultPlanBlueprintGenerator>();
         services.AddScoped<CodexFlow.Core.Abstractions.IPlanApprovalService, CodexFlow.Core.Services.DefaultPlanApprovalService>();
@@ -245,11 +249,14 @@ public static class OrchestrationServiceCollectionExtensions
         services.AddScoped<IBackgroundJobService, BackgroundJobService>();
         services.AddSingleton<CodexFlow.Core.Execution.Approval.IBackgroundJobApprovalResumer, BackgroundJobApprovalResumer>();
         services.AddScoped<IPlanTaskDispatchService, PlanTaskDispatchService>();
-        services.AddScoped<IBackgroundJobLeaseService, BackgroundJobLeaseService>();
+        services.AddScoped<IBackgroundJobLeaseService>(sp => new BackgroundJobLeaseService(
+            sp.GetRequiredService<IJobLeaseStore>(),
+            sp.GetRequiredService<IJobLeaseRecoveryStore>(),
+            sp.GetRequiredService<IOutboxSignal>(), sp.GetRequiredService<IBackgroundJobSignal>()));
         services.AddScoped<IBackgroundJobRunner, BackgroundJobRunner>();
         // Explicit factory: JobViewService keeps a Redis-based constructor for existing callers, which DI would find ambiguous.
         services.AddScoped<JobViewService>(sp => new JobViewService(
-            sp.GetRequiredService<CodexFlow.Orchestration.Jobs.IJobDbContext>(),
+            sp.GetRequiredService<IJobReadStore>(),
             sp.GetRequiredService<IJobHotView>(),
             sp));
         services.AddScoped<IJobViewService>(sp => sp.GetRequiredService<JobViewService>());
@@ -347,8 +354,11 @@ public static class OrchestrationServiceCollectionExtensions
             CodexFlow.Orchestration.BusinessSkills.BusinessSkillBuilderService>();
         services.AddScoped<CodexFlow.Orchestration.BusinessSkills.IBusinessSkillRunService,
             CodexFlow.Orchestration.BusinessSkills.BusinessSkillRunService>();
-        services.AddScoped<CodexFlow.Orchestration.BusinessSkills.IBusinessSkillRetentionService,
-            CodexFlow.Orchestration.BusinessSkills.BusinessSkillRetentionService>();
+        services.AddScoped<CodexFlow.Orchestration.BusinessSkills.IBusinessSkillRetentionService>(sp =>
+            new CodexFlow.Orchestration.BusinessSkills.BusinessSkillRetentionService(
+                sp.GetRequiredService<CodexFlow.Orchestration.BusinessSkills.IBusinessSkillRetentionStore>(),
+                sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<CodexFlow.Core.BusinessSkills.BusinessSkillsOptions>>(),
+                sp.GetRequiredService<ILogger<CodexFlow.Orchestration.BusinessSkills.BusinessSkillRetentionService>>()));
         services.AddHostedService<CodexFlow.Orchestration.BusinessSkills.BusinessSkillRunRecoveryHostedService>();
 
         return services;

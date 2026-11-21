@@ -2,10 +2,8 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-using CodexFlow.Orchestration.Jobs;
 using CodexFlow.Application.Jobs;
 using CodexFlow.Application.Jobs.Dtos;
-using Microsoft.EntityFrameworkCore;
 using CodexFlow.Core.Models.Jobs;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -19,16 +17,16 @@ namespace CodexFlow.Services.Background
     /// </remarks>
     public class JobViewService : IJobViewService
     {
-        private readonly IJobDbContext _context;
+        private readonly IJobReadStore _jobs;
         private readonly IJobHotView _hotView;
         private readonly IServiceProvider _serviceProvider;
 
         /// <summary>
         /// 初始化作业视图服务，热视图由 <paramref name="hotView"/> 提供（可以为空缓存）。
         /// </summary>
-        public JobViewService(IJobDbContext context, IJobHotView hotView, IServiceProvider serviceProvider)
+        public JobViewService(IJobReadStore jobs, IJobHotView hotView, IServiceProvider serviceProvider)
         {
-            _context = context;
+            _jobs = jobs;
             _hotView = hotView;
             _serviceProvider = serviceProvider;
         }
@@ -42,35 +40,7 @@ namespace CodexFlow.Services.Background
         {
             // Try Redis first
             var redisData = await _hotView.GetAsync(jobId);
-            var dbSnapshotRaw = await _context.BackgroundJobs
-                .Where(j => j.JobId == jobId)
-                .Select(j => new
-                {
-                    j.JobId,
-                    j.SessionId,
-                    j.TaskId,
-                    j.JobType,
-                    RunnerId = j.RunnerId,
-                    j.Attempt,
-                    Status = j.Status.ToString(),
-                    j.UpdatedAtUtc,
-                    j.PayloadJson,
-                    j.ResultPayloadJson,
-                    j.ShortSummary,
-                    j.ErrorMessage,
-                    WaitingUser = j.Status == Domain.Jobs.BackgroundJobStatus.WaitingUser,
-                    j.WaitingReason,
-                    ResumeToken = j.Checkpoints
-                        .OrderByDescending(c => c.SequenceNumber)
-                        .Select(c => c.ResumeToken)
-                        .FirstOrDefault(),
-                    LatestCheckpointStep = j.Checkpoints
-                        .OrderByDescending(c => c.SequenceNumber)
-                        .Select(c => c.CurrentStep)
-                        .FirstOrDefault(),
-                    LatestSeq = j.LastEventSeq
-                })
-                .FirstOrDefaultAsync();
+            var dbSnapshotRaw = await _jobs.FindViewAsync(jobId);
 
             var dbSnapshot = dbSnapshotRaw == null
                 ? null
@@ -205,36 +175,7 @@ namespace CodexFlow.Services.Background
         {
             // For listing, we usually hit DB as Redis doesn't maintain a full secondary index for sessions in MVP
             // unless we specifically build one.
-            var jobs = await _context.BackgroundJobs
-                .Where(j => j.SessionId == sessionId)
-                .OrderByDescending(j => j.CreatedAtUtc)
-                .Select(j => new
-                {
-                    j.JobId,
-                    j.SessionId,
-                    j.TaskId,
-                    RunnerId = j.RunnerId,
-                    j.JobType,
-                    j.Attempt,
-                    Status = j.Status.ToString(),
-                    j.UpdatedAtUtc,
-                    j.PayloadJson,
-                    j.ResultPayloadJson,
-                    j.ShortSummary,
-                    j.ErrorMessage,
-                    WaitingUser = j.Status == Domain.Jobs.BackgroundJobStatus.WaitingUser,
-                    j.WaitingReason,
-                    ResumeToken = j.Checkpoints
-                        .OrderByDescending(c => c.SequenceNumber)
-                        .Select(c => c.ResumeToken)
-                        .FirstOrDefault(),
-                    LatestCheckpointStep = j.Checkpoints
-                        .OrderByDescending(c => c.SequenceNumber)
-                        .Select(c => c.CurrentStep)
-                        .FirstOrDefault(),
-                    LatestSeq = j.LastEventSeq
-                })
-                .ToListAsync();
+            var jobs = await _jobs.ReadSessionViewsAsync(sessionId);
 
             return jobs.Select(job => new BackgroundJobDto
             {

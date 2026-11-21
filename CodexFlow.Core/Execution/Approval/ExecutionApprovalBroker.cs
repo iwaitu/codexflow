@@ -344,7 +344,7 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
             if (!entry.TryCommitExposure(_options))
             {
                 _pending.TryRemove(approvalId, out _);
-                entry.DisposeWatcher();
+                entry.Dispose();
                 continue;
             }
 
@@ -355,33 +355,33 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
                 ScheduleSuspendedExpirationTimer(approvalId, entry);
             }
 
-            await PublishSseAsync(request.SessionId, GatewaySseEventType.ToolApprovalRequest, new
+            await PublishSseAsync(request.SessionId, GatewaySseEventType.ToolApprovalRequest, new Dictionary<string, object?>
             {
-                approvalId = item.ApprovalId,
-                requestDigest = item.RequestDigest,
-                sessionId = item.SessionId,
-                tool = item.Tool,
-                executable = item.Executable,
-                interpreterChain = item.InterpreterChain,
-                argv = item.Argv,
-                cwd = item.Cwd,
-                stdinSha256 = item.StdinSha256,
-                codeSha256 = item.CodeSha256,
-                scriptSha256 = item.ScriptSha256,
-                inputsManifestSha256 = item.InputsManifestSha256,
-                backend = item.Backend,
-                network = item.Network,
-                filesystem = item.Filesystem,
-                reason = item.Reason,
-                executesWorkspaceCode = item.ExecutesWorkspaceCode,
-                workspaceCodeWarning = item.WorkspaceCodeWarning,
-                allowedDecisions = item.AllowedDecisions,
-                expiresAt = item.ExpiresAtUtc,
-                scriptPreview = item.ScriptPreview,
-                scriptLength = item.ScriptLength,
-                shell = item.Shell,
-                backendNotice = item.BackendNotice,
-                origin = item.Origin
+                ["approvalId"] = item.ApprovalId,
+                ["requestDigest"] = item.RequestDigest,
+                ["sessionId"] = item.SessionId,
+                ["tool"] = item.Tool,
+                ["executable"] = item.Executable,
+                ["interpreterChain"] = item.InterpreterChain,
+                ["argv"] = item.Argv,
+                ["cwd"] = item.Cwd,
+                ["stdinSha256"] = item.StdinSha256,
+                ["codeSha256"] = item.CodeSha256,
+                ["scriptSha256"] = item.ScriptSha256,
+                ["inputsManifestSha256"] = item.InputsManifestSha256,
+                ["backend"] = item.Backend,
+                ["network"] = item.Network,
+                ["filesystem"] = item.Filesystem,
+                ["reason"] = item.Reason,
+                ["executesWorkspaceCode"] = item.ExecutesWorkspaceCode,
+                ["workspaceCodeWarning"] = item.WorkspaceCodeWarning,
+                ["allowedDecisions"] = item.AllowedDecisions,
+                ["expiresAt"] = item.ExpiresAtUtc,
+                ["scriptPreview"] = item.ScriptPreview,
+                ["scriptLength"] = item.ScriptLength,
+                ["shell"] = item.Shell,
+                ["backendNotice"] = item.BackendNotice,
+                ["origin"] = item.Origin
             }, ct).ConfigureAwait(false);
 
             if (shouldSuspendUnsubscribedJob && waitTimeout <= TimeSpan.Zero)
@@ -428,7 +428,7 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
                 if (!keepEntryForSuspendedJob)
                 {
                     _pending.TryRemove(approvalId, out _);
-                    entry.DisposeWatcher();
+                    entry.Dispose();
                 }
             }
 
@@ -577,7 +577,7 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
         if (route == ForegroundResolutionRoute.ResolvedForeground)
         {
             _pending.TryRemove(approvalId, out _);
-            entry.DisposeWatcher();
+            entry.Dispose();
             await PublishResolvedSseAsync(entry.Item, ToWireDecision(submission.Decision), submission.Note, ct).ConfigureAwait(false);
             return new ApprovalSubmissionResult(
                 ApprovalSubmissionOutcome.Resolved,
@@ -619,7 +619,7 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
         if (!committed)
         {
             _pending.TryRemove(approvalId, out _);
-            entry.DisposeWatcher();
+            entry.Dispose();
             return new ApprovalSubmissionResult(
                 ApprovalSubmissionOutcome.AlreadyResolvedOrExpired,
                 "Suspended background job failed to persist WaitingUser state or was cancelled.",
@@ -721,7 +721,7 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
                     entry.MarkAlreadyLeftWaitingUser();
                     _pending.TryRemove(approvalId, out _);
                     _pendingTerminations.TryRemove(approvalId, out _);
-                    entry.DisposeWatcher();
+                    entry.Dispose();
                     return new ApprovalSubmissionResult(
                         ApprovalSubmissionOutcome.AlreadyResolvedOrExpired,
                         "Suspended background job already left WaitingUser.",
@@ -783,7 +783,7 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
             entry.CommitSuspendedUserDecision();
             _pending.TryRemove(approvalId, out _);
             _pendingTerminations.TryRemove(approvalId, out _);
-            entry.DisposeWatcher();
+            entry.Dispose();
             ReleaseOwnedPublishGate();
         }
         catch (Exception ex)
@@ -992,7 +992,7 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
 
     private void EnqueueSystemTermination(string approvalId, PendingApprovalEntry entry, string reason)
     {
-        entry.DisposeWatcher();
+        entry.Dispose();
         if (!entry.IsSuspendedToBackgroundJob(out _))
         {
             return;
@@ -1004,7 +1004,7 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
 
     private async Task EnqueueSystemTerminationAndTryOnceAsync(string approvalId, PendingApprovalEntry entry, string reason)
     {
-        entry.DisposeWatcher();
+        entry.Dispose();
         if (!entry.IsSuspendedToBackgroundJob(out _))
         {
             return;
@@ -1032,12 +1032,12 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
 
         foreach (var (_, entry) in _pending)
         {
-            entry.DisposeWatcher();
+            entry.Dispose();
         }
 
         foreach (var (_, item) in _pendingTerminations)
         {
-            item.Entry.DisposeWatcher();
+            item.Entry.Dispose();
         }
 
         foreach (var (_, gate) in _inFlightResumePublishGates)
@@ -1066,20 +1066,14 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
             dueMs = int.MaxValue - 1;
         }
 
-        var timer = new Timer(
+        entry.ScheduleExpiryTimer(
             static state =>
             {
                 var (broker, id, targetEntry) = ((ExecutionApprovalBroker, string, PendingApprovalEntry))state!;
                 broker.OnSuspendedEntryTimerExpired(id, targetEntry);
             },
             (this, approvalId, entry),
-            dueTime: (int)Math.Max(1, dueMs),
-            period: Timeout.Infinite);
-
-        if (!entry.TryAttachExpiryTimer(timer))
-        {
-            timer.Dispose();
-        }
+            (int)Math.Max(1, dueMs));
     }
 
     private void OnSuspendedEntryTimerExpired(string approvalId, PendingApprovalEntry entry)
@@ -1164,7 +1158,7 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
         string reason)
     {
         _ = approvalId;
-        entry.DisposeWatcher();
+        entry.Dispose();
         if (JobResumer is not { } resumer)
         {
             return TerminationAttemptOutcome.Completed;
@@ -1344,13 +1338,13 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
     }
 
     private Task PublishResolvedSseAsync(PendingApprovalItem item, string decision, string? note, CancellationToken ct)
-        => PublishSseAsync(item.SessionId, GatewaySseEventType.ToolApprovalResolved, new
+        => PublishSseAsync(item.SessionId, GatewaySseEventType.ToolApprovalResolved, new Dictionary<string, object?>
         {
-            approvalId = item.ApprovalId,
-            requestDigest = item.RequestDigest,
-            sessionId = item.SessionId,
-            decision,
-            note
+            ["approvalId"] = item.ApprovalId,
+            ["requestDigest"] = item.RequestDigest,
+            ["sessionId"] = item.SessionId,
+            ["decision"] = decision,
+            ["note"] = note
         }, ct);
 
     private async Task RecordAuditAsync(
@@ -1459,7 +1453,7 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
         ExecutionRequest request,
         IReadOnlyList<ExecutionApprovalDecisionKind> allowedDecisions,
         ExecutionBackend backendSnapshot,
-        ExecutionPermissionMode modeSnapshot)
+        ExecutionPermissionMode modeSnapshot) : IDisposable
     {
         private readonly object _suspendLock = new();
         private int _consumed;
@@ -1493,7 +1487,7 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
             }
         }
 
-        public void DisposeWatcher()
+        public void Dispose()
         {
             IDisposable? w;
             Timer? t;
@@ -1509,22 +1503,21 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
             t?.Dispose();
         }
 
-        public bool TryAttachExpiryTimer(Timer timer)
+        public void ScheduleExpiryTimer(TimerCallback callback, object state, int dueTime)
         {
             Timer? oldTimer;
             lock (_suspendLock)
             {
                 if (_invalidated || _suspendedJobResolved || _suspendedTerminationCompleted)
                 {
-                    return false;
+                    return;
                 }
 
                 oldTimer = _expiryTimer;
-                _expiryTimer = timer;
+                _expiryTimer = new Timer(callback, state, dueTime, Timeout.Infinite);
             }
 
             oldTimer?.Dispose();
-            return true;
         }
 
         public bool TryExpireSuspendedFromTimer()

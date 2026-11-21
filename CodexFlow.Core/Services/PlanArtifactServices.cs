@@ -228,7 +228,10 @@ public sealed class DefaultPlanApprovalService(IPlanArtifactStore store) : IPlan
         return artifact;
     }
 
-    public async Task<PlanArtifact> ApproveAsync(string planArtifactId, string userId, string? feedback = null, CancellationToken ct = default, bool acceptExistingDependencyDebt = false)
+    public Task<PlanArtifact> ApproveAsync(string planArtifactId, string userId, string? feedback, CancellationToken cancellationToken)
+        => ApproveAsync(planArtifactId, userId, feedback, ct: cancellationToken);
+
+    public async Task<PlanArtifact> ApproveAsync(string planArtifactId, string userId, string? feedback = null, bool acceptExistingDependencyDebt = false, CancellationToken ct = default)
     {
         var artifact = await LoadAsync(planArtifactId, ct).ConfigureAwait(false);
         if (artifact.Status != PlanArtifactStatus.ReadyForApproval)

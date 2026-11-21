@@ -16,13 +16,13 @@ using CodexFlow.Core.Models;
 using CodexFlow.Logging;
 using CodexFlow.Orchestration.Hosting;
 using CodexFlow.Orchestration.Services;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.AI;
-using Newtonsoft.Json;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using Microsoft.AspNetCore.Http.Features;
 using System.Net;
 using System.Globalization;
+using CodexFlow.Gateway.Http;
 
 namespace CodexFlow.Controllers;
 
@@ -34,10 +34,7 @@ namespace CodexFlow.Controllers;
 /// session/bootstrap POST — Session 初始化单入口
 /// </para>
 /// </summary>
-[ApiController]
-[Route("api/gateway")]
-[Authorize(AuthenticationSchemes = JwtBearerDefaults.AuthenticationScheme, Policy = "ActiveUser")]
-public class CodexGatewayController : ControllerBase
+public class CodexGatewayController : GatewayEndpointHandler
 {
     private readonly ICodexGateway _gateway;
     private readonly IChatService _chatService;
@@ -106,8 +103,7 @@ public class CodexGatewayController : ControllerBase
     /// 若未传入或验证失败，返回/创建默认工作区
     /// </para>
     /// </summary>
-    [HttpPost("session/bootstrap")]
-    public async Task<IActionResult> BootstrapSession([FromBody] BootstrapRequest? request, CancellationToken ct)
+    public async Task<IResult> BootstrapSession(BootstrapRequest? request, CancellationToken ct)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrEmpty(userId)) return Unauthorized();
@@ -128,12 +124,10 @@ public class CodexGatewayController : ControllerBase
                         (Uri?)null);
 
                     _logger.LogInformation("[Gateway] BootstrapSession: 恢复用户指定 SessionId={SessionId}", request.TargetSessionId);
-                    FullTextAuditLogger.Log(_logger, "session_bootstrap", request.TargetSessionId, 0, 0, new
-                    {
-                        userId,
-                        restored = true,
-                        sessionId = request.TargetSessionId
-                    });
+                    FullTextAuditLogger.Log(_logger, "session_bootstrap", request.TargetSessionId, 0, 0, FullTextAuditLogger.Fields(
+                        ("userId", userId),
+                        ("restored", true),
+                        ("sessionId", request.TargetSessionId)));
 
                     return Ok(new SessionBootstrapResponse
                     {
@@ -166,12 +160,10 @@ public class CodexGatewayController : ControllerBase
                 sessionId,
                 0,
                 0,
-                new
-                {
-                    userId,
-                    created,
-                    workspacePath
-                });
+                FullTextAuditLogger.Fields(
+                    ("userId", userId),
+                    ("created", created),
+                    ("workspacePath", workspacePath)));
 
             return Ok(new SessionBootstrapResponse
             {
@@ -189,7 +181,7 @@ public class CodexGatewayController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "[Gateway] BootstrapSession failed for user {UserId}", userId);
-            return StatusCode(500, new { error = "Failed to bootstrap session" });
+            return StatusCode(500, new BootstrapErrorResponse("Failed to bootstrap session"));
         }
     }
 
@@ -198,8 +190,7 @@ public class CodexGatewayController : ControllerBase
     /// </summary>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>The current user's workspace list.</returns>
-    [HttpGet("workspaces")]
-    public async Task<IActionResult> GetWorkspaces(CancellationToken ct = default)
+    public async Task<IResult> GetWorkspaces(CancellationToken ct = default)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrEmpty(userId)) return Unauthorized();
@@ -213,14 +204,8 @@ public class CodexGatewayController : ControllerBase
     /// persisting it to <c>Workspace:AllowedLocalRepositoryRoots</c>, and recording an audit entry.
     /// Requires control-plane credentials.
     /// </summary>
-    [HttpPost("workspaces")]
-    [Authorize(Policy = ControlPlaneAuthConstants.ControlPlanePolicy)]
-    [ProducesResponseType(typeof(OpenLocalWorkspaceResponse), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status403Forbidden)]
-    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status503ServiceUnavailable)]
-    public async Task<IActionResult> OpenLocalWorkspace(
-        [FromBody] OpenLocalWorkspaceRequest request,
+    public async Task<IResult> OpenLocalWorkspace(
+        OpenLocalWorkspaceRequest request,
         CancellationToken ct = default)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -287,28 +272,21 @@ public class CodexGatewayController : ControllerBase
             sessionId,
             0,
             0,
-            new
-            {
-                userId,
-                workspacePath = decision.CanonicalPath,
-                workspaceName,
-                created,
-                addedToAllowedRoots,
-                selfApprovalProtection
-            });
+            FullTextAuditLogger.Fields(
+                ("userId", userId),
+                ("workspacePath", decision.CanonicalPath),
+                ("workspaceName", workspaceName),
+                ("created", created),
+                ("addedToAllowedRoots", addedToAllowedRoots),
+                ("selfApprovalProtection", selfApprovalProtection)));
 
         if (_auditStore is not null)
         {
             var auditId = $"ws-{Guid.NewGuid():N}";
-            var payloadJson = System.Text.Json.JsonSerializer.Serialize(new
-            {
-                userId,
-                workspacePath = decision.CanonicalPath,
-                workspaceName,
-                created,
-                addedToAllowedRoots,
-                selfApprovalProtection
-            });
+            var payloadJson = JsonSerializer.Serialize(
+                new WorkspaceOpenedAuditPayload(userId, decision.CanonicalPath, workspaceName, created,
+                    addedToAllowedRoots, selfApprovalProtection),
+                StreamingGatewayJsonContext.Default.WorkspaceOpenedAuditPayload);
             await _auditStore.StartAsync(new WorkflowRunRecord
             {
                 Id = auditId,
@@ -335,9 +313,7 @@ public class CodexGatewayController : ControllerBase
     /// <summary>
     /// Gets or creates the dedicated protected Daily Assistant workspace for quick desktop access.
     /// </summary>
-    [HttpPost("session/daily-assistant")]
-    [ProducesResponseType(typeof(SessionBootstrapResponse), StatusCodes.Status200OK)]
-    public async Task<IActionResult> GetOrCreateDailyAssistantSession(CancellationToken ct = default)
+    public async Task<IResult> GetOrCreateDailyAssistantSession(CancellationToken ct = default)
     {
         _ = ct;
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -368,10 +344,9 @@ public class CodexGatewayController : ControllerBase
     /// <param name="workMode">Optional immutable work mode (<c>development</c> or <c>daily</c>; defaults to <c>development</c>).</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>The new session identifier and policy snapshot.</returns>
-    [HttpPost("session")]
-    public async Task<IActionResult> CreateSession(
-        [FromQuery] string name = "New Workspace",
-        [FromQuery] string? workMode = null,
+    public async Task<IResult> CreateSession(
+        string name = "New Workspace",
+        string? workMode = null,
         CancellationToken ct = default)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -398,11 +373,7 @@ public class CodexGatewayController : ControllerBase
             await _workspaceVectorStoreService.EnsureCollectionAsync(sessionId);
         }
 
-        return Ok(new
-        {
-            sessionId,
-            workMode = parsedWorkMode.ToString()
-        });
+        return Ok(new SessionCreationResponse(sessionId, parsedWorkMode.ToString()));
     }
 
     private static bool TryParseWorkMode(string? raw, out CodexFlow.Core.Models.SessionWorkMode mode)
@@ -433,8 +404,7 @@ public class CodexGatewayController : ControllerBase
     /// <param name="sessionId">Session identifier.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>The latest task list snapshot JSON when available.</returns>
-    [HttpGet("session/{sessionId}/tasklist")]
-    public async Task<IActionResult> GetTaskList(string sessionId, CancellationToken ct = default)
+    public async Task<IResult> GetTaskList(string sessionId, CancellationToken ct = default)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrEmpty(userId)) return Unauthorized();
@@ -456,8 +426,7 @@ public class CodexGatewayController : ControllerBase
     /// <param name="sessionId">Session identifier.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>Estimated context usage, model budget, compression threshold, and cumulative token totals.</returns>
-    [HttpGet("session/{sessionId}/context-window")]
-    public async Task<IActionResult> GetContextWindowSnapshot(string sessionId, CancellationToken ct = default)
+    public async Task<IResult> GetContextWindowSnapshot(string sessionId, CancellationToken ct = default)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrEmpty(userId)) return Unauthorized();
@@ -482,14 +451,10 @@ public class CodexGatewayController : ControllerBase
     /// <param name="chatClient">Optional active model client used to synthesize a concise summary.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>Compaction outcome along with the refreshed context-window usage snapshot.</returns>
-    [HttpPost("session/{sessionId}/compact")]
-    [ProducesResponseType(typeof(CompactSessionContextResponse), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status404NotFound)]
-    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status409Conflict)]
-    public async Task<IActionResult> CompactSessionContext(
+    public async Task<IResult> CompactSessionContext(
         string sessionId,
-        [FromBody] CompactSessionContextRequest? request = null,
-        [FromServices] IChatClient? chatClient = null,
+        CompactSessionContextRequest? request = null,
+        IChatClient? chatClient = null,
         CancellationToken ct = default)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -671,8 +636,7 @@ public class CodexGatewayController : ControllerBase
     /// <param name="conversationId">Conversation identifier.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>Ordered message history with assistant thinking content normalized for the UI.</returns>
-    [HttpGet("history/{conversationId}")]
-    public async Task<IActionResult> GetHistory(string conversationId, CancellationToken ct = default)
+    public async Task<IResult> GetHistory(string conversationId, CancellationToken ct = default)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrEmpty(userId)) return Unauthorized();
@@ -681,36 +645,41 @@ public class CodexGatewayController : ControllerBase
         if (conversation == null || conversation.UserId != userId) return NotFound("Conversation not found");
 
         var messages = await _chatService.GetConversationMessages(conversationId);
-        var result = new List<object>();
+        var result = new JsonArray();
         foreach (var m in messages)
         {
             if (!string.IsNullOrWhiteSpace(m.MessageType))
             {
-                result.Add(new
+                result.Add((JsonNode)new JsonObject
                 {
-                    id = m.Id + "_n",
-                    role = "system",
-                    content = m.AiContent ?? string.Empty,
-                    messageType = m.MessageType,
-                    notificationMeta = m.NotificationMeta
+                    ["id"] = m.Id + "_n",
+                    ["role"] = "system",
+                    ["content"] = m.AiContent ?? string.Empty,
+                    ["messageType"] = m.MessageType,
+                    ["notificationMeta"] = m.NotificationMeta
                 });
                 continue;
             }
 
             if (!string.IsNullOrEmpty(m.UserContent))
             {
-                result.Add(new { id = m.Id + "_u", role = "user", content = m.UserContent });
+                result.Add((JsonNode)new JsonObject
+                {
+                    ["id"] = m.Id + "_u",
+                    ["role"] = "user",
+                    ["content"] = m.UserContent
+                });
             }
 
             if (!string.IsNullOrEmpty(m.AiContent) || !string.IsNullOrEmpty(m.ThinkingContent))
             {
                 var (cleanContent, normalizedThinking) = NormalizeAssistantContentForHistory(m.AiContent, m.ThinkingContent);
-                result.Add(new
+                result.Add((JsonNode)new JsonObject
                 {
-                    id = m.Id + "_a",
-                    role = "assistant",
-                    content = cleanContent,
-                    thinkingContent = normalizedThinking
+                    ["id"] = m.Id + "_a",
+                    ["role"] = "assistant",
+                    ["content"] = cleanContent,
+                    ["thinkingContent"] = normalizedThinking
                 });
             }
         }
@@ -721,14 +690,8 @@ public class CodexGatewayController : ControllerBase
     /// <summary>
     /// 上传单个本地文件到会话工作区的 <c>.codexflow-attachments/</c> 目录，返回工作区相对路径与元数据。
     /// </summary>
-    [HttpPost("session/{sessionId}/attachments")]
-    [RequestSizeLimit(GatewayAttachmentService.MaxAttachmentBytes + 1024 * 1024)]
-    [ProducesResponseType(typeof(UploadedAttachmentDto), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<UploadedAttachmentDto>> UploadAttachment(
-        [FromRoute] string sessionId,
-        IFormFile? file,
+    public async Task<IResult> UploadAttachment(
+        string sessionId,
         CancellationToken ct = default)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -738,6 +701,37 @@ public class CodexGatewayController : ControllerBase
         if (dbSession is null || !string.Equals(dbSession.UserId, userId, StringComparison.Ordinal))
         {
             return NotFound("Session not found");
+        }
+
+        const long requestSizeLimit = GatewayAttachmentService.MaxAttachmentBytes + 1024 * 1024;
+        if (Request.ContentLength > requestSizeLimit)
+        {
+            return StatusCode(StatusCodes.Status413PayloadTooLarge);
+        }
+
+        if (HttpContext.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } requestSize)
+        {
+            requestSize.MaxRequestBodySize = requestSizeLimit;
+        }
+
+        IFormFile? file = null;
+        if (Request.HasFormContentType)
+        {
+            try
+            {
+                var form = await Request.ReadFormAsync(ct).ConfigureAwait(false);
+                file = form.Files.FirstOrDefault(part =>
+                    (part.Length > 0 || !string.IsNullOrEmpty(part.FileName)) &&
+                    string.Equals(part.Name, "file", StringComparison.OrdinalIgnoreCase));
+            }
+            catch (BadHttpRequestException ex) when (ex.StatusCode == StatusCodes.Status413PayloadTooLarge)
+            {
+                return StatusCode(StatusCodes.Status413PayloadTooLarge);
+            }
+            catch (Exception ex) when (ex is InvalidDataException or IOException && !ct.IsCancellationRequested)
+            {
+                return GatewayBinding.ValidationError(HttpContext, string.Empty, $"Failed to read the request form. {ex.Message}");
+            }
         }
 
         if (file is null)
@@ -771,8 +765,7 @@ public class CodexGatewayController : ControllerBase
     /// <summary>
     /// 发送用户消息 — 入队到 Gateway，立即返回 202 Accepted
     /// </summary>
-    [HttpPost("chat")]
-    public async Task<IActionResult> Chat([FromBody] GatewayChatRequest request, CancellationToken ct)
+    public async Task<IResult> Chat(GatewayChatRequest request, CancellationToken ct)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrEmpty(userId)) return Unauthorized();
@@ -838,17 +831,15 @@ public class CodexGatewayController : ControllerBase
             request.SessionId,
             0,
             0,
-            new
-            {
-                userId,
-                conversationId = request.ConversationId,
-                taskId = request.TaskId,
-                messageLength = messageContent.Length,
-                attachmentCount,
-                hasGitRepoUrl = !string.IsNullOrWhiteSpace(request.GitRepoUrl),
-                branch = request.Branch,
-                approveGitPush = request.ApproveGitPush
-            });
+            FullTextAuditLogger.Fields(
+                ("userId", userId),
+                ("conversationId", request.ConversationId),
+                ("taskId", request.TaskId),
+                ("messageLength", messageContent.Length),
+                ("attachmentCount", attachmentCount),
+                ("hasGitRepoUrl", !string.IsNullOrWhiteSpace(request.GitRepoUrl)),
+                ("branch", request.Branch),
+                ("approveGitPush", request.ApproveGitPush)));
 
         var message = new GatewayMessage
         {
@@ -906,22 +897,14 @@ public class CodexGatewayController : ControllerBase
                 request.SessionId,
                 0,
                 0,
-                new
-                {
-                    userId,
-                    conversationId = request.ConversationId,
-                    taskId = request.TaskId,
-                    reason = ex.Reason,
-                    message = ex.Message
-                });
+                FullTextAuditLogger.Fields(
+                    ("userId", userId),
+                    ("conversationId", request.ConversationId),
+                    ("taskId", request.TaskId),
+                    ("reason", ex.Reason),
+                    ("message", ex.Message)));
 
-            return Conflict(new
-            {
-                success = false,
-                reason = ex.Reason,
-                message = ex.Message,
-                sessionId = request.SessionId
-            });
+            return Conflict(new GatewayChatRejectedResponse(false, ex.Reason, ex.Message, request.SessionId));
         }
 
         FullTextAuditLogger.Log(
@@ -930,15 +913,13 @@ public class CodexGatewayController : ControllerBase
             request.SessionId,
             0,
             0,
-            new
-            {
-                userId,
-                messageId,
-                conversationId = request.ConversationId,
-                taskId = request.TaskId
-            });
+            FullTextAuditLogger.Fields(
+                ("userId", userId),
+                ("messageId", messageId),
+                ("conversationId", request.ConversationId),
+                ("taskId", request.TaskId)));
 
-        return Accepted(new { messageId, sessionId = request.SessionId });
+        return Accepted(new GatewayChatAcceptedResponse(messageId, request.SessionId));
     }
 
     /// <summary>
@@ -947,12 +928,11 @@ public class CodexGatewayController : ControllerBase
     /// 支持断线重连：传入 Last-Event-ID header 或 lastEventId query param
     /// </para>
     /// </summary>
-    [HttpGet("sse")]
     public async Task Sse(
-        [FromQuery] string sessionId,
-        [FromQuery] long lastEventId = 0,
+        string sessionId,
+        long lastEventId = 0,
         CancellationToken ct = default,
-        [FromQuery] string? epoch = null)
+        string? epoch = null)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrEmpty(userId))
@@ -995,18 +975,16 @@ public class CodexGatewayController : ControllerBase
             sessionId,
             0,
             0,
-            new
-            {
-                userId,
-                lastEventId,
-                userAgent = Request.Headers.UserAgent.ToString()
-            });
+            FullTextAuditLogger.Fields(
+                ("userId", userId),
+                ("lastEventId", lastEventId),
+                ("userAgent", Request.Headers.UserAgent.ToString())));
 
         try
         {
-            await foreach (var evt in _gateway.SubscribeAsync(sessionId, userId, lastEventId, ct, epoch))
+            await foreach (var evt in _gateway.SubscribeAsync(sessionId, userId, lastEventId: lastEventId, ct: ct, channelEpoch: epoch))
             {
-                var data = JsonConvert.SerializeObject(evt.Payload);
+                var data = StreamingGatewayEventJson.Serialize(evt.Payload);
 
                 // SSE 标准格式：id + event + data
                 if (evt.Seq > 0)
@@ -1034,18 +1012,15 @@ public class CodexGatewayController : ControllerBase
             sessionId,
             0,
             0,
-            new
-            {
-                userId,
-                lastEventId
-            });
+            FullTextAuditLogger.Fields(
+                ("userId", userId),
+                ("lastEventId", lastEventId)));
     }
 
     /// <summary>
     /// 检查 Session 是否有活跃的 Gateway 通道
     /// </summary>
-    [HttpGet("status")]
-    public async Task<IActionResult> GetGatewayStatus([FromQuery] string sessionId)
+    public async Task<IResult> GetGatewayStatus(string sessionId)
     {
         if (string.IsNullOrWhiteSpace(sessionId))
             return BadRequest("sessionId is required");
@@ -1054,12 +1029,8 @@ public class CodexGatewayController : ControllerBase
         if (string.IsNullOrEmpty(statusUserId)) return Unauthorized();
         if (!await IsSessionOwnerAsync(sessionId, statusUserId)) return NotFound("Session not found");
 
-        return Ok(new
-        {
-            sessionId,
-            active = _gateway.IsSessionActive(sessionId),
-            hasSubscribers = _gateway.HasActiveSubscribers(sessionId)
-        });
+        return Ok(new GatewayStatusResponse(
+            sessionId, _gateway.IsSessionActive(sessionId), _gateway.HasActiveSubscribers(sessionId)));
     }
 
     private async Task<bool> IsSessionOwnerAsync(string sessionId, string userId)
@@ -1362,6 +1333,24 @@ public sealed record OpenLocalWorkspaceResponse(
 public sealed record GatewayErrorResponse(
     string Code,
     string Message);
+
+internal sealed record BootstrapErrorResponse(string Error);
+
+internal sealed record SessionCreationResponse(string SessionId, string WorkMode);
+
+internal sealed record GatewayChatAcceptedResponse(string MessageId, string SessionId);
+
+internal sealed record GatewayChatRejectedResponse(bool Success, string Reason, string Message, string SessionId);
+
+internal sealed record GatewayStatusResponse(string SessionId, bool Active, bool HasSubscribers);
+
+internal sealed record WorkspaceOpenedAuditPayload(
+    string UserId,
+    string WorkspacePath,
+    string WorkspaceName,
+    bool Created,
+    bool AddedToAllowedRoots,
+    bool SelfApprovalProtection);
 
 /// <summary>Validates a structured action request and turns it into the trusted action; the controller attaches the result.</summary>
 public static class GatewayStructuredActionMapper

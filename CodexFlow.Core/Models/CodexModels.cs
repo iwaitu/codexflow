@@ -50,7 +50,7 @@ public class CodexTask
     /// authority: a path in it is closed to the task whatever else the plan declares, and the prose no longer takes files away.
     /// Limits on the CONTENT of a file ("do not change other dependency versions") do not belong here, only whole files and directories.
     /// </summary>
-    public List<string>? ForbiddenPaths { get; set; }
+    public IReadOnlyList<string>? ForbiddenPaths { get; set; }
 
     /// <summary>
     /// 任务风险等级: Low, Medium, High (Level 3 新增)

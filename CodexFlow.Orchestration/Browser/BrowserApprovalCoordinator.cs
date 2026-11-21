@@ -6,6 +6,7 @@ using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using CodexFlow.Orchestration.Persistence;
 using CodexFlow.Contracts.Browser;
 using CodexFlow.Core.Browser;
 using CodexFlow.Core.Execution.Approval;
@@ -100,7 +101,7 @@ public sealed class BrowserApprovalCoordinator : IBrowserApprovalCoordinator
             SessionId: prompt.SessionId,
             Tool: prompt.Tool,
             Action: prompt.Action,
-            TargetUrl: prompt.TargetUrl,
+            TargetUrl: prompt.TargetAddress,
             TargetOrigin: prompt.TargetOrigin,
             TargetDescription: prompt.TargetDescription,
             RiskReason: prompt.RiskReason,
@@ -312,14 +313,14 @@ public sealed class BrowserApprovalCoordinator : IBrowserApprovalCoordinator
         => PublishEventAsync(
             request.SessionId,
             GatewaySseEventType.BrowserApprovalResolved,
-            new
+            new Dictionary<string, object?>
             {
-                approvalId = request.ApprovalId,
-                sessionId = request.SessionId,
-                decision,
-                decidedBy,
-                note,
-                resolvedAtUtc = DateTimeOffset.UtcNow
+                ["approvalId"] = request.ApprovalId,
+                ["sessionId"] = request.SessionId,
+                ["decision"] = decision,
+                ["decidedBy"] = decidedBy,
+                ["note"] = note,
+                ["resolvedAtUtc"] = DateTimeOffset.UtcNow
             },
             CancellationToken.None);
 
@@ -345,18 +346,10 @@ public sealed class BrowserApprovalCoordinator : IBrowserApprovalCoordinator
 
     private static string ComputeDigest(BrowserApprovalPrompt prompt, IReadOnlyList<string> allowedDecisions)
     {
-        var canonical = JsonSerializer.Serialize(new
-        {
-            v = "cf-browser-approval-v2",
-            sessionId = prompt.SessionId,
-            tool = prompt.Tool,
-            action = prompt.Action,
-            targetOrigin = prompt.TargetOrigin,
-            targetUrl = prompt.TargetUrl,
-            targetDescription = prompt.TargetDescription,
-            expressionOrPath = prompt.ExpressionOrPath ?? string.Empty,
-            allowedDecisions
-        });
+        var payload = new BrowserApprovalDigestPayload(
+            "cf-browser-approval-v2", prompt.SessionId, prompt.Tool, prompt.Action, prompt.TargetOrigin, prompt.TargetAddress,
+            prompt.TargetDescription, prompt.ExpressionOrPath ?? string.Empty, allowedDecisions);
+        var canonical = JsonSerializer.Serialize(payload, OrchestrationSnapshotJsonContext.CamelCase.BrowserApprovalDigestPayload);
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(canonical));
         return Convert.ToHexString(hash).ToLowerInvariant();
     }

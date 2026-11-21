@@ -56,7 +56,7 @@ internal sealed class CdpRemoteBrowserRuntime : ICdpBrowserRuntime
         Connection = connection;
         RuntimeKey = $"remote:{normalizedWsUrl}";
         _logger = logger;
-        Connection.Disconnected += _ => RaiseTerminated();
+        Connection.Disconnected += (_, _) => RaiseTerminated();
     }
 
     public static async Task<CdpRemoteBrowserRuntime> ConnectAsync(
@@ -77,27 +77,23 @@ internal sealed class CdpRemoteBrowserRuntime : ICdpBrowserRuntime
                 verification.ErrorMessage ?? "远端 CDP WebSocket 地址安全校验失败。");
         }
 
-        var conn = await CdpConnection
-            .ConnectVerifiedAsync(verification.NormalizedUri, verification.VerifiedAddresses, logger, ct)
-            .ConfigureAwait(false);
+        await using var connectionOwner = new AsyncResourceOwner<CdpConnection>();
+        var conn = await connectionOwner.AcquireAsync(() => CdpConnection.ConnectVerifiedAsync(
+            verification.NormalizedUri, verification.VerifiedAddresses, logger, ct)).ConfigureAwait(false);
         try
         {
             using var probeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             probeCts.CancelAfter(TimeSpan.FromSeconds(8));
             await conn.SendAsync("Browser.getVersion", ct: probeCts.Token).ConfigureAwait(false);
-            return new CdpRemoteBrowserRuntime(conn, verification.NormalizedUri.AbsoluteUri, logger);
+            var runtime = new CdpRemoteBrowserRuntime(conn, verification.NormalizedUri.AbsoluteUri, logger);
+            connectionOwner.RelinquishOwnership();
+            return runtime;
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
-            await conn.DisposeAsync().ConfigureAwait(false);
             throw new InvalidOperationException(
                 $"连接或验证远端 CDP 浏览器失败 ({BrowserRemoteEndpointGuard.MaskRemoteCdpWsUrl(verification.NormalizedUri.AbsoluteUri)}): {ex.Message}",
                 ex);
-        }
-        catch
-        {
-            await conn.DisposeAsync().ConfigureAwait(false);
-            throw;
         }
     }
 

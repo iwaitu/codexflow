@@ -454,17 +454,17 @@ public sealed class EnterPlanModeTool(
 
         return CodexToolResult.Succeeded(
             "PLAN_MODE_ENTERED",
-            metadata: new
+            metadata: new Dictionary<string, object?>
             {
-                kind = "plan_mode",
-                ui_event = "plan_mode_changed",
-                contract_version = 1,
-                active = true,
-                plan_mode_version = planModeVersion,
-                session_id = sessionId,
-                reason,
-                objective,
-                entered_at_utc = enteredAtUtc
+                ["kind"] = "plan_mode",
+                ["ui_event"] = "plan_mode_changed",
+                ["contract_version"] = 1,
+                ["active"] = true,
+                ["plan_mode_version"] = planModeVersion,
+                ["session_id"] = sessionId,
+                ["reason"] = reason,
+                ["objective"] = objective,
+                ["entered_at_utc"] = enteredAtUtc
             },
             summary: string.IsNullOrWhiteSpace(objective) ? "entered plan mode" : $"entered plan mode: {objective}");
     }
@@ -530,18 +530,18 @@ public sealed class ExitPlanModeTool(
 
         return CodexToolResult.Succeeded(
             output,
-            metadata: new
+            metadata: new Dictionary<string, object?>
             {
-                kind = "plan_mode_exit_requested",
-                ui_event = "plan_mode_exit_requested",
-                contract_version = 1,
-                active = true,
-                plan_mode_version = planModeVersion,
-                ignored_approved_arg = ignoredApprovedArg,
-                session_id = sessionId,
-                planSummary = planSummary.Trim(),
-                reason,
-                requested_at_utc = requestedAtUtc
+                ["kind"] = "plan_mode_exit_requested",
+                ["ui_event"] = "plan_mode_exit_requested",
+                ["contract_version"] = 1,
+                ["active"] = true,
+                ["plan_mode_version"] = planModeVersion,
+                ["ignored_approved_arg"] = ignoredApprovedArg,
+                ["session_id"] = sessionId,
+                ["planSummary"] = planSummary.Trim(),
+                ["reason"] = reason,
+                ["requested_at_utc"] = requestedAtUtc
             },
             summary: "plan mode exit requested (awaiting user confirmation)");
     }

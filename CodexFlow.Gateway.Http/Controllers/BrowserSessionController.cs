@@ -10,9 +10,7 @@ using CodexFlow.Core.Browser;
 using CodexFlow.Core.Configuration;
 using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Core.Security;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Mvc;
+using CodexFlow.Gateway.Http;
 using Microsoft.Extensions.Options;
 
 namespace CodexFlow.Controllers;
@@ -29,8 +27,7 @@ public sealed record BrowserApiErrorDto(
 /// Endpoints for inspecting per-session managed browser state/screenshots, closing browser contexts,
 /// and reading/updating browser settings (with control-plane protection).
 /// </summary>
-[ApiController]
-[Authorize(AuthenticationSchemes = JwtBearerDefaults.AuthenticationScheme)]
+
 public sealed class BrowserSessionController(
     IBrowserSessionManager browserSessionManager,
     IChatService chatService,
@@ -39,14 +36,11 @@ public sealed class BrowserSessionController(
     BrowserPermissionClamp permissionClamp,
     IBrowserSettingsService? browserSettingsService = null,
     IControlPlaneStateProvider? controlPlane = null,
-    ProtectedLocalPortRegistry? portRegistry = null) : ControllerBase
+    ProtectedLocalPortRegistry? portRegistry = null) : GatewayEndpointHandler
 {
-    [HttpGet("api/gateway/session/{sessionId}/browser")]
-    [Authorize(Policy = "ActiveUser")]
-    [ProducesResponseType(typeof(BrowserSessionStateDto), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(BrowserApiErrorDto), StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<BrowserSessionStateDto>> GetBrowserState(
-        [FromRoute] string sessionId,
+
+    public async Task<IResult> GetBrowserState(
+        string sessionId,
         CancellationToken ct = default)
     {
         _ = ct;
@@ -65,14 +59,8 @@ public sealed class BrowserSessionController(
         return Ok(browserSessionManager.GetSessionState(sessionId));
     }
 
-    [HttpGet("api/gateway/session/{sessionId}/browser/screenshot")]
-    [Authorize(Policy = "ActiveUser")]
-    [ProducesResponseType(StatusCodes.Status200OK)]
-    [ProducesResponseType(StatusCodes.Status204NoContent)]
-    [ProducesResponseType(StatusCodes.Status304NotModified)]
-    [ProducesResponseType(typeof(BrowserApiErrorDto), StatusCodes.Status404NotFound)]
-    public async Task<IActionResult> GetBrowserScreenshot(
-        [FromRoute] string sessionId,
+    public async Task<IResult> GetBrowserScreenshot(
+        string sessionId,
         CancellationToken ct = default)
     {
         _ = ct;
@@ -108,12 +96,8 @@ public sealed class BrowserSessionController(
         return File(screenshot.Bytes.ToArray(), screenshot.MimeType);
     }
 
-    [HttpPost("api/gateway/session/{sessionId}/browser/close")]
-    [Authorize(Policy = ControlPlaneAuthConstants.ControlPlanePolicy)]
-    [ProducesResponseType(typeof(BrowserSessionCloseResponse), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(BrowserApiErrorDto), StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<BrowserSessionCloseResponse>> CloseBrowserSession(
-        [FromRoute] string sessionId,
+    public async Task<IResult> CloseBrowserSession(
+        string sessionId,
         CancellationToken ct = default)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -137,14 +121,9 @@ public sealed class BrowserSessionController(
         return Ok(new BrowserSessionCloseResponse(true, sessionId));
     }
 
-    [HttpPost("api/gateway/session/{sessionId}/browser/takeover/start")]
-    [Authorize(Policy = ControlPlaneAuthConstants.ControlPlanePolicy)]
-    [ProducesResponseType(typeof(BrowserTakeoverResponse), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(BrowserApiErrorDto), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(typeof(BrowserApiErrorDto), StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<BrowserTakeoverResponse>> StartBrowserTakeover(
-        [FromRoute] string sessionId,
-        [FromBody] BrowserTakeoverStartRequest? request = null,
+    public async Task<IResult> StartBrowserTakeover(
+        string sessionId,
+        BrowserTakeoverStartRequest? request = null,
         CancellationToken ct = default)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -181,13 +160,9 @@ public sealed class BrowserSessionController(
         return Ok(new BrowserTakeoverResponse(true, sessionId, result.Summary));
     }
 
-    [HttpPost("api/gateway/session/{sessionId}/browser/takeover/complete")]
-    [Authorize(Policy = ControlPlaneAuthConstants.ControlPlanePolicy)]
-    [ProducesResponseType(typeof(BrowserTakeoverResponse), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(BrowserApiErrorDto), StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<BrowserTakeoverResponse>> CompleteBrowserTakeover(
-        [FromRoute] string sessionId,
-        [FromBody] BrowserTakeoverCompleteRequest? request = null,
+    public async Task<IResult> CompleteBrowserTakeover(
+        string sessionId,
+        BrowserTakeoverCompleteRequest? request = null,
         CancellationToken ct = default)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -218,23 +193,14 @@ public sealed class BrowserSessionController(
         return Ok(new BrowserTakeoverResponse(false, sessionId, result.Summary));
     }
 
-    [HttpGet("api/settings/browser")]
-    [Authorize(Policy = "ActiveUser")]
-    [ProducesResponseType(typeof(BrowserSettingsDto), StatusCodes.Status200OK)]
-    public ActionResult<BrowserSettingsDto> GetBrowserSettings()
+    public IResult GetBrowserSettings()
     {
         var effective = browserOptions.CurrentValue;
         var detected = executableLocator.Detect(effective.ExecutablePath);
         return Ok(ToDto(effective, detected));
     }
 
-    [HttpPut("api/settings/browser")]
-    [Authorize(Policy = ControlPlaneAuthConstants.ControlPlanePolicy)]
-    [ProducesResponseType(typeof(BrowserSettingsDto), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(BrowserApiErrorDto), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status403Forbidden)]
-    [ProducesResponseType(typeof(BrowserApiErrorDto), StatusCodes.Status503ServiceUnavailable)]
-    public ActionResult<BrowserSettingsDto> UpdateBrowserSettings([FromBody] UpdateBrowserSettingsRequest request)
+    public IResult UpdateBrowserSettings(UpdateBrowserSettingsRequest request)
     {
         if (!ControlPlaneAuthConstants.IsControlPlanePrincipal(User, controlPlane))
         {
@@ -300,6 +266,6 @@ public sealed class BrowserSessionController(
             MaxConcurrentSessions: opts.MaxConcurrentSessions,
             DetectedBrowser: detected,
             AllowControlledDownloads: opts.AllowControlledDownloads,
-            RemoteCdpWsUrl: BrowserRemoteEndpointGuard.MaskRemoteCdpWsUrl(opts.RemoteCdpWsUrl),
-            IsRemoteCdpConfigured: !string.IsNullOrWhiteSpace(opts.RemoteCdpWsUrl));
+            RemoteCdpWsUrl: BrowserRemoteEndpointGuard.MaskRemoteCdpWsUrl(opts.RemoteCdpAddress),
+            IsRemoteCdpConfigured: !string.IsNullOrWhiteSpace(opts.RemoteCdpAddress));
 }

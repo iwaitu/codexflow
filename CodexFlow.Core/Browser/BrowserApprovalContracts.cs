@@ -11,7 +11,7 @@ public sealed record BrowserApprovalPrompt(
     string SessionId,
     string Tool,
     string Action,
-    string TargetUrl,
+    string TargetAddress,
     string TargetOrigin,
     string TargetDescription,
     string RiskReason,

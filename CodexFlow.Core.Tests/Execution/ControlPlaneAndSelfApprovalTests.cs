@@ -2,6 +2,7 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+using CodexFlow.Gateway.Http;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -380,7 +381,7 @@ public sealed class ControlPlaneAndSelfApprovalTests : IDisposable
 
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCodexFlowSqliteStorage(sqlitePath);
+        services.AddTestSqliteStorage(sqlitePath);
         services.AddCodexFlowLocalDefaults();
         services.AddSingleton(new Mock<IOutboxSignal>().Object);
         services.AddSingleton(new Mock<IBackgroundJobSignal>().Object);
@@ -926,7 +927,7 @@ public sealed class ControlPlaneAndSelfApprovalTests : IDisposable
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
         builder.Logging.ClearProviders();
-        builder.Services.AddControllers().AddApplicationPart(typeof(ExecutionSettingsController).Assembly);
+        builder.Services.AddCodexFlowGateway();
         builder.Services.AddCodexIsolatedExecution();
         builder.Services.AddSingleton(creds);
         builder.Services.AddSingleton<IControlPlaneStateProvider>(creds);
@@ -947,7 +948,8 @@ public sealed class ControlPlaneAndSelfApprovalTests : IDisposable
 
         app.UseAuthentication();
         app.UseAuthorization();
-        app.MapControllers();
+        app.UseCodexFlowGatewayBindingErrors();
+        app.MapCodexFlowGateway();
         await app.StartAsync();
 
         var baseUri = new Uri(app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First());
@@ -1025,7 +1027,7 @@ public sealed class ControlPlaneAndSelfApprovalTests : IDisposable
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCodexFlowSqliteStorage(dbPath);
+        services.AddTestSqliteStorage(dbPath);
         services.AddCodexFlowLocalDefaults();
         services.AddSingleton(new Mock<IBackgroundJobSignal>().Object);
 
@@ -1346,7 +1348,7 @@ public sealed class ControlPlaneAndSelfApprovalTests : IDisposable
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCodexFlowSqliteStorage(dbPath);
+        services.AddTestSqliteStorage(dbPath);
         services.AddCodexFlowLocalDefaults();
         services.AddSingleton(new Mock<IBackgroundJobSignal>().Object);
 
@@ -1800,7 +1802,7 @@ public sealed class ControlPlaneAndSelfApprovalTests : IDisposable
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCodexFlowSqliteStorage(dbPath);
+        services.AddTestSqliteStorage(dbPath);
         services.AddCodexFlowLocalDefaults();
         services.AddSingleton(new Mock<IBackgroundJobSignal>().Object);
 
@@ -2127,7 +2129,7 @@ public sealed class ControlPlaneAndSelfApprovalTests : IDisposable
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCodexFlowSqliteStorage(dbPath);
+        services.AddTestSqliteStorage(dbPath);
         services.AddCodexFlowLocalDefaults();
         services.AddSingleton(new Mock<IBackgroundJobSignal>().Object);
 
@@ -2300,7 +2302,7 @@ public sealed class ControlPlaneAndSelfApprovalTests : IDisposable
 
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCodexFlowSqliteStorage(dbPath);
+        services.AddTestSqliteStorage(dbPath);
         services.AddCodexFlowLocalDefaults();
         services.AddSingleton(new Mock<IBackgroundJobSignal>().Object);
 
@@ -2743,8 +2745,7 @@ public sealed class ControlPlaneAndSelfApprovalTests : IDisposable
             controlPlane: credentials,
             jobResumer: customJobResumer);
 
-        builder.Services.AddControllers()
-            .AddApplicationPart(typeof(GatewayApprovalController).Assembly);
+        builder.Services.AddCodexFlowGateway();
         builder.Services.AddSingleton(credentials);
         builder.Services.AddSingleton<IControlPlaneStateProvider>(credentials);
         builder.Services.AddSingleton<IOptionsMonitor<ExecutionOptions>>(optionsMonitor);
@@ -2785,7 +2786,8 @@ public sealed class ControlPlaneAndSelfApprovalTests : IDisposable
         });
         app.UseAuthentication();
         app.UseAuthorization();
-        app.MapControllers();
+        app.UseCodexFlowGatewayBindingErrors();
+        app.MapCodexFlowGateway();
         await app.StartAsync();
 
         var address = app.Services.GetRequiredService<IServer>()

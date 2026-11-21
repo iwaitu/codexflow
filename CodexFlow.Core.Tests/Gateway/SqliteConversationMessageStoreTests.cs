@@ -123,7 +123,7 @@ public sealed class SqliteConversationMessageStoreTests
         await using (var scope = database.Ef.CreateAsyncScope())
         {
             var context = scope.ServiceProvider.GetRequiredService<JobDbContext>();
-            var direct = new ChatService(context, NullLogger<ChatService>.Instance, null);
+            var direct = new ChatService(new EfChatPersistence(context), NullLogger<ChatService>.Instance, null, new EfConversationMessageStore(context));
             var persisted = Assert.IsType<IvilsonConversation>(await direct.Get(ConversationId));
             Assert.Equal(3, persisted.ChatMessages.Count);
             Assert.Equal("01234567890123456789", persisted.Name);
@@ -322,8 +322,8 @@ public sealed class SqliteConversationMessageStoreTests
         {
             var directory = Directory.CreateTempSubdirectory("codexflow-sqlite-messages-");
             var path = Path.Combine(directory.FullName, "state.db");
-            var efServices = new ServiceCollection().AddLogging().AddCodexFlowSqliteStorage(path);
-            var pilotServices = new ServiceCollection().AddLogging().AddCodexFlowSqliteStorage(path, true);
+            var efServices = new ServiceCollection().AddLogging().AddTestSqliteStorage(path, useSqliteConversationMessages: false);
+            var pilotServices = new ServiceCollection().AddLogging().AddTestSqliteStorage(path, true);
             if (browserSessionManager is not null)
             {
                 efServices.AddSingleton(browserSessionManager);
@@ -353,6 +353,10 @@ public sealed class SqliteConversationMessageStoreTests
             {
                 var db = scope.ServiceProvider.GetRequiredService<JobDbContext>();
                 SqliteConnection.ClearPool((SqliteConnection)db.Database.GetDbConnection());
+            }
+            await using (var connection = Ef.GetRequiredService<SqliteConnectionFactory>().Open())
+            {
+                SqliteConnection.ClearPool(connection);
             }
 
             await Pilot.DisposeAsync();
