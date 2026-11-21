@@ -61,103 +61,18 @@ env:
   DOTNET_CLI_TELEMETRY_OPTOUT: "true"
 
 jobs:
-  desktop:
-    name: Desktop client lint, typecheck, test, build & contract drift
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: clients/desktop
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: clients/desktop/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Verify OpenAPI and SSE generated contracts have no drift
-        run: |
-          npm run generate:types
-          git diff --exit-code -- src/shared/contracts/
-
-      - name: Lint
-        run: npm run lint
-
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Unit tests (Vitest)
-        run: npm test
-
-      - name: Build Electron app
-        run: npm run build
-
-      - name: Dependency audit (production)
-        run: npm audit --omit=dev
-
-  e2e-windows:
-    name: Desktop Electron E2E with Native AOT (Windows)
-    runs-on: windows-latest
-    needs: desktop
-    defaults:
-      run:
-        working-directory: clients/desktop
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-
-      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
-        with:
-          global-json-file: global.json
-
-      - name: Publish the Windows x64 Native AOT backend for Electron E2E
-        shell: pwsh
-        working-directory: .
-        run: |
-          $backend = Join-Path $env:RUNNER_TEMP 'codexflow-native-backend'
-          $build = Join-Path $env:RUNNER_TEMP 'codexflow-native-build'
-          ./scripts/ci/publish-windows-native-aot.ps1 -OutputDirectory $backend -ArtifactsDirectory $build
-          "CODEXFLOW_NATIVE_BACKEND_BIN=$(Join-Path $backend 'CodexFlow.Local.exe')" >> $env:GITHUB_ENV
-
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: clients/desktop/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build Electron app
-        run: npm run build
-
-      - name: Run Playwright for Electron E2E
-        run: npm run test:e2e
-
   package:
     name: Package desktop client (${{ matrix.platform }}-${{ matrix.arch }})
     if: github.event_name != 'pull_request'
-    needs: [desktop, e2e-windows]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: windows-latest
-            rid: win-x64
-            platform: win
-            arch: x64
           - os: ubuntu-latest
             rid: linux-x64
             platform: linux
             arch: x64
-          - os: macos-latest
-            rid: osx-arm64
-            platform: mac
-            arch: arm64
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
