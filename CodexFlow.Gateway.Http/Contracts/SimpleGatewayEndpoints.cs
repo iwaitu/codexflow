@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using CodexFlow.Application.Jobs.Dtos;
 using CodexFlow.Contracts;
+using CodexFlow.Contracts.ComputerUse;
 using CodexFlow.Controllers;
 using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Core.Models.Jobs;
@@ -249,6 +250,8 @@ internal static class SimpleGatewayEndpoints
 [JsonSerializable(typeof(BackgroundJobDto[]))]
 [JsonSerializable(typeof(JobEventLogEntry[]))]
 [JsonSerializable(typeof(PendingApprovalsResponse))]
+[JsonSerializable(typeof(ComputerApprovalRequestDto))]
+[JsonSerializable(typeof(IReadOnlyList<ComputerApprovalRequestDto>))]
 [JsonSerializable(typeof(PendingApprovalScriptSnapshot))]
 [JsonSerializable(typeof(SubmitExecutionApprovalRequest))]
 [JsonSerializable(typeof(SubmitExecutionApprovalResponse))]

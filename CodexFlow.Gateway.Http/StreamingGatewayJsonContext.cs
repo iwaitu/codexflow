@@ -7,6 +7,7 @@ using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using CodexFlow.Contracts;
 using CodexFlow.Contracts.Browser;
+using CodexFlow.Contracts.ComputerUse;
 using CodexFlow.Controllers;
 using CodexFlow.Core.Gateway;
 using CodexFlow.Orchestration.Persistence;
@@ -52,6 +53,8 @@ namespace CodexFlow.Gateway.Http;
 [JsonSerializable(typeof(SessionSnapshotDto))]
 [JsonSerializable(typeof(GatewayChannelToolResultSnapshot[]))]
 [JsonSerializable(typeof(GatewayChannelToolOutputSnapshot[]))]
+[JsonSerializable(typeof(ComputerApprovalRequestDto))]
+[JsonSerializable(typeof(ComputerSessionStateDto))]
 internal partial class StreamingGatewayJsonContext : JsonSerializerContext;
 
 [JsonSourceGenerationOptions(GenerationMode = JsonSourceGenerationMode.Metadata)]
@@ -68,6 +71,10 @@ internal static class StreamingGatewayEventJson
             StreamingGatewayEventJsonContext.Default.BrowserApprovalRequestDto),
         BrowserSessionStateDto state => JsonSerializer.Serialize(state,
             StreamingGatewayEventJsonContext.Default.BrowserSessionStateDto),
+        ComputerApprovalRequestDto computerApproval => JsonSerializer.Serialize(computerApproval,
+            StreamingGatewayJsonContext.Default.ComputerApprovalRequestDto),
+        ComputerSessionStateDto computerState => JsonSerializer.Serialize(computerState,
+            StreamingGatewayJsonContext.Default.ComputerSessionStateDto),
         _ => OrchestrationPayloadJson.Token(payload).ToString(Newtonsoft.Json.Formatting.None)
     };
 }

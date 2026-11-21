@@ -117,9 +117,11 @@ public sealed class CodexGateway : ICodexGateway, IAsyncDisposable
         {
             var approvalBroker = _serviceProvider.GetService<CodexFlow.Core.Execution.Approval.IExecutionApprovalBroker>();
             var browserApprovalCoordinator = _serviceProvider.GetService<CodexFlow.Core.Browser.IBrowserApprovalCoordinator>();
+            var computerApprovalCoordinator = _serviceProvider.GetService<CodexFlow.Core.ComputerUse.IComputerApprovalCoordinator>();
             int GetTotalPendingApprovals() =>
                 (approvalBroker?.GetPendingApprovalCount(sessionId) ?? 0) +
-                (browserApprovalCoordinator?.GetPendingApprovalsForSession(sessionId).Count ?? 0);
+                (browserApprovalCoordinator?.GetPendingApprovalsForSession(sessionId).Count ?? 0) +
+                (computerApprovalCoordinator?.GetPendingApprovalsForSession(sessionId).Count ?? 0);
 
             // 发送初始连接确认事件
             yield return new GatewaySseEvent
@@ -229,6 +231,18 @@ public sealed class CodexGateway : ICodexGateway, IAsyncDisposable
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "[Gateway] 关闭 Session {SessionId} 关联浏览器上下文失败，继续释放通道。", sessionId);
+            }
+        }
+
+        if (_serviceProvider.GetService<CodexFlow.Core.ComputerUse.IComputerSessionManager>() is { } computerManager)
+        {
+            try
+            {
+                await computerManager.CloseSessionAsync(sessionId, "session_closed").ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Gateway] 关闭 Session {SessionId} 关联桌面 Computer Use 会话失败，继续释放通道。", sessionId);
             }
         }
 

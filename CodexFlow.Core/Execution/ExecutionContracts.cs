@@ -14,7 +14,9 @@ public enum ToolCapability
     WorkspaceWrite,
     ExecuteUntrustedCode,
     BrowserRead,
-    BrowserInteract
+    BrowserInteract,
+    ComputerRead,
+    ComputerInteract
 }
 
 public enum ExecutionDecisionKind

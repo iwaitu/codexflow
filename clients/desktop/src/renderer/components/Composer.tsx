@@ -51,8 +51,10 @@ interface ComposerProps {
   workMode?: SessionWorkMode;
   planModeActive?: boolean;
   controlPlaneAvailable?: boolean;
+  isComputerActive?: boolean;
   onSend: (text: string, attachments?: PendingAttachment[]) => Promise<void>;
   onCancel: () => Promise<void>;
+  onEmergencyStop?: () => Promise<void>;
   onSlashCommand?: (action: { kind: 'plan-on' | 'plan-off' | 'compact' | 'daily' | 'dev'; argument?: string }) => Promise<void>;
   onOpenDailyAssistant?: () => Promise<void>;
 }
@@ -69,8 +71,10 @@ export const Composer: React.FC<ComposerProps> = ({
   workMode = 'Development',
   planModeActive = false,
   controlPlaneAvailable = true,
+  isComputerActive = false,
   onSend,
   onCancel,
+  onEmergencyStop,
   onSlashCommand,
   onOpenDailyAssistant,
 }) => {
@@ -110,6 +114,7 @@ export const Composer: React.FC<ComposerProps> = ({
     if (!lightboxImage) return undefined;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        e.stopPropagation();
         setLightboxImage(null);
       }
     };
@@ -682,6 +687,7 @@ export const Composer: React.FC<ComposerProps> = ({
               }
               if (e.key === 'Escape') {
                 e.preventDefault();
+                e.stopPropagation();
                 setSlashDismissed(true);
                 return;
               }
@@ -693,6 +699,22 @@ export const Composer: React.FC<ComposerProps> = ({
                   return;
                 }
               }
+            }
+            if (
+              isTurnRunning &&
+              !lightboxImage &&
+              (e.key === 'Escape' || ((e.ctrlKey || e.metaKey) && e.key === '.'))
+            ) {
+              e.preventDefault();
+              e.stopPropagation();
+              if (isComputerActive && onEmergencyStop) {
+                void onEmergencyStop().finally(() => {
+                  void onCancel();
+                });
+              } else {
+                void onCancel();
+              }
+              return;
             }
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();

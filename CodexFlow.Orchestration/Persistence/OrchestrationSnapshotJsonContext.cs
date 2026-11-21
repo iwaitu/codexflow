@@ -26,6 +26,7 @@ namespace CodexFlow.Orchestration.Persistence;
 [JsonSerializable(typeof(List<ValidatedChatAttachment>), TypeInfoPropertyName = "Attachments")]
 [JsonSerializable(typeof(HostManagedNuGetAdvisoryProvider.CacheDocument), TypeInfoPropertyName = "NuGetAdvisoryCache")]
 [JsonSerializable(typeof(BrowserApprovalDigestPayload))]
+[JsonSerializable(typeof(ComputerApprovalDigestPayload))]
 [JsonSerializable(typeof(PlanModeAuditPayload))]
 [JsonSerializable(typeof(ReviewedDependencyList))]
 [JsonSerializable(typeof(ForgeArtifactManifest))]
@@ -59,6 +60,11 @@ internal sealed record GatewayToolHistoryEnvelope(
 internal sealed record BrowserApprovalDigestPayload(
     string V, string SessionId, string Tool, string Action, string TargetOrigin, string TargetUrl,
     string TargetDescription, string ExpressionOrPath, IReadOnlyList<string> AllowedDecisions);
+
+internal sealed record ComputerApprovalDigestPayload(
+    string V, string SessionId, string Tool, string Action, string TargetProcessName,
+    string TargetWindowTitle, string TargetWindowHandle, string ActionSummary,
+    int? TargetX, int? TargetY, IReadOnlyList<string> AllowedDecisions);
 
 internal sealed record PlanModeAuditPayload(
     string UserId, string SessionId, string WorkMode, int ModeVersion, bool PlanModeActive, int PlanModeVersion,

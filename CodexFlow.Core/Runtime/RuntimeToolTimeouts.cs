@@ -23,6 +23,10 @@ internal static class RuntimeToolTimeouts
     private static readonly TimeSpan BrowserTakeover = TimeSpan.FromMinutes(16);
     // browser_act / navigate / tabs: 5m control-plane approval wait + browser settlement/staging margin.
     private static readonly TimeSpan BrowserInteractive = TimeSpan.FromMinutes(8);
+    // computer_request_takeover: max 15m human takeover wait + post-takeover screenshot.
+    private static readonly TimeSpan ComputerTakeover = TimeSpan.FromMinutes(16);
+    // computer_act / screenshot / screen_info: 5m control-plane approval wait + host window avoidance + action margin.
+    private static readonly TimeSpan ComputerInteractive = TimeSpan.FromMinutes(8);
 
     public static TimeSpan For(string? toolName)
     {
@@ -34,6 +38,8 @@ internal static class RuntimeToolTimeouts
             "run_business_skill" => BusinessSkillRun,
             "browser_request_takeover" => BrowserTakeover,
             "browser_act" or "browser_navigate" or "browser_tabs" or "browser_evaluate" => BrowserInteractive,
+            "computer_request_takeover" => ComputerTakeover,
+            "computer_act" or "computer_screenshot" or "computer_screen_info" => ComputerInteractive,
             "run_tests" or "exec_cmd" or "run_command" => BuildOrTest,
             _ => EngineDefault
         };

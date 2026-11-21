@@ -113,6 +113,9 @@ public static class CodexToolFunctionAdapterFactory
             BrowserToolNames.Tabs => CreateForBrowserTabs(tool, description),
             BrowserToolNames.RequestTakeover => CreateForBrowserRequestTakeover(tool, description),
             BrowserToolNames.Evaluate => CreateForBrowserEvaluate(tool, description),
+            ComputerToolNames.ScreenInfo or ComputerToolNames.Screenshot
+                or ComputerToolNames.Act or ComputerToolNames.RequestTakeover
+                => SourceGeneratedToolFunction.Computer(tool, canonicalName, description),
             "skill"                 => CreateForSkill(tool, description),
             "list_mcp_resources"    => CreateForListMcpResources(tool, description),
             "read_mcp_resource"     => CreateForReadMcpResource(tool, description),

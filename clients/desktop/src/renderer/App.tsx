@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Cpu, FileDiff, FolderTree, Globe } from 'lucide-react';
+import { Cpu, FileDiff, FolderTree, Globe, Monitor } from 'lucide-react';
 import { BusinessSkillsHub } from './components/business-skills/BusinessSkillsHub';
 import { AboutModal } from './components/AboutModal';
 import { ChatView } from './components/ChatView';
@@ -81,7 +81,9 @@ export const App: React.FC = () => {
     pendingApprovals,
     pendingBusinessApprovals,
     pendingBrowserApprovals,
+    pendingComputerApprovals,
     browserState,
+    computerState,
     currentPlan,
     jobs,
     verificationReceipts,
@@ -110,7 +112,9 @@ export const App: React.FC = () => {
     reconcileApprovals,
     removeBusinessApproval,
     removeBrowserApproval,
+    removeComputerApproval,
     setBrowserState,
+    setComputerState,
     setVerificationReceipt,
     setContextWindow,
     setJobs,
@@ -203,6 +207,12 @@ export const App: React.FC = () => {
     enabled: Boolean(auth),
   });
 
+  const computerSettingsQuery = useQuery({
+    queryKey: ['computer-settings', instanceKey, auth?.baseUrl],
+    queryFn: () => apiClient.getComputerSettings(auth!),
+    enabled: Boolean(auth),
+  });
+
   const sessionsQuery = useQuery({
     queryKey: ['sessions', instanceKey, auth?.baseUrl],
     queryFn: () => apiClient.listSessions(auth!),
@@ -261,7 +271,12 @@ export const App: React.FC = () => {
   });
 
   useEffect(() => {
-    if (activeWorkMode === 'Daily' && inspectorTab !== 'files' && inspectorTab !== 'browser') {
+    if (
+      activeWorkMode === 'Daily' &&
+      inspectorTab !== 'files' &&
+      inspectorTab !== 'browser' &&
+      inspectorTab !== 'computer'
+    ) {
       setInspectorTab('files');
     }
   }, [activeWorkMode, inspectorTab, setInspectorTab]);
@@ -415,6 +430,7 @@ export const App: React.FC = () => {
     void queryClient.invalidateQueries({ queryKey: ['execution-settings'] });
     void queryClient.invalidateQueries({ queryKey: ['model-settings'] });
     void queryClient.invalidateQueries({ queryKey: ['browser-settings'] });
+    void queryClient.invalidateQueries({ queryKey: ['computer-settings'] });
     void queryClient.invalidateQueries({ queryKey: ['sessions'] });
     if (auth && activeSessionId) {
       const targetSessionId = activeSessionId;
@@ -523,6 +539,108 @@ export const App: React.FC = () => {
       setCancellingTurn(false);
     }
   };
+
+  const hostAvoidedRef = useRef(false);
+
+  const handleEmergencyStopComputer = async (reason = 'user_emergency_stop') => {
+    const bridge = window.codexflow;
+    if (!bridge?.emergencyStopComputer) return;
+    hostAvoidedRef.current = false;
+    try {
+      await bridge.emergencyStopComputer({
+        sessionId: activeSessionId ?? undefined,
+        reason,
+      });
+      if (auth && activeSessionId) {
+        const fresh = await apiClient.getComputerState(auth, activeSessionId).catch(() => null);
+        if (fresh) {
+          setComputerState(fresh);
+        }
+      }
+    } catch {
+      // ignore emergency stop errors during cancellation
+    }
+  };
+
+  useEffect(() => {
+    const bridge = window.codexflow;
+    if (!bridge?.avoidHostWindowForComputer || !bridge?.restoreHostWindowForComputer) return;
+    const needsAttention =
+      pendingComputerApprovals.length > 0 ||
+      Boolean(computerState?.takeoverPending) ||
+      Boolean(computerState?.emergencyStopped);
+    const shouldAvoid =
+      !needsAttention &&
+      Boolean(computerState?.active && computerState.hostWindowAvoidanceRequested);
+
+    if (shouldAvoid) {
+      if (!hostAvoidedRef.current) {
+        hostAvoidedRef.current = true;
+        void bridge.avoidHostWindowForComputer();
+      }
+    } else if (hostAvoidedRef.current || (Boolean(computerState?.active) && needsAttention)) {
+      hostAvoidedRef.current = false;
+      void bridge.restoreHostWindowForComputer();
+    }
+  }, [
+    pendingComputerApprovals.length,
+    computerState?.active,
+    computerState?.hostWindowAvoidanceRequested,
+    computerState?.takeoverPending,
+    computerState?.emergencyStopped,
+  ]);
+
+  useEffect(() => {
+    const bridge = window.codexflow;
+    if (!bridge?.setComputerControlActive) return;
+    const isActiveControl = Boolean(
+      activeSessionId && computerState?.active && !computerState.emergencyStopped,
+    );
+    void bridge.setComputerControlActive({
+      active: isActiveControl,
+      sessionId: activeSessionId,
+      status: computerState?.status ?? null,
+      summary:
+        computerState?.lastActionSummary ??
+        (computerState?.pinnedProcessName ? `正在操作 ${computerState.pinnedProcessName}` : null),
+      shortcut: computerSettingsQuery.data?.emergencyStopShortcut ?? 'CommandOrControl+.',
+      hostWindowMinimized: hostAvoidedRef.current,
+    });
+  }, [
+    activeSessionId,
+    computerState?.active,
+    computerState?.emergencyStopped,
+    computerState?.status,
+    computerState?.lastActionSummary,
+    computerState?.pinnedProcessName,
+    computerSettingsQuery.data?.emergencyStopShortcut,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      void window.codexflow?.setComputerControlActive?.({ active: false, sessionId: null });
+    };
+  }, []);
+
+  useEffect(() => {
+    const bridge = window.codexflow;
+    if (!bridge?.onComputerEmergencyStopped) return;
+    return bridge.onComputerEmergencyStopped((evt) => {
+      hostAvoidedRef.current = false;
+      const curState = useAppStore.getState();
+      const sid = evt.sessionId ?? curState.activeSessionId;
+      setTurnNotice('已触发桌面操控紧急停止，所有桌面键鼠注入已中止。');
+      if (curState.isTurnRunning && auth && sid) {
+        void apiClient.cancelTurn(auth, sid).catch(() => undefined);
+      }
+      if (auth && sid && sid === curState.activeSessionId) {
+        void apiClient
+          .getComputerState(auth, sid)
+          .then((fresh) => setComputerState(fresh))
+          .catch(() => undefined);
+      }
+    });
+  }, [auth, setComputerState, setTurnNotice]);
 
   const handleCreateSession = async (
     workMode: 'daily' | 'development' = 'daily',
@@ -921,8 +1039,32 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.isComposing) return;
+      if (event.isComposing || event.keyCode === 229) return;
       const mod = event.ctrlKey || event.metaKey;
+
+      if (
+        isTurnRunning &&
+        !event.shiftKey &&
+        !event.altKey &&
+        ((mod && event.key === '.') ||
+          (event.key === 'Escape' &&
+            !isSettingsOpen &&
+            !isCommandPaletteOpen &&
+            !isAboutOpen &&
+            !isUpdateModalOpen &&
+            !chatSearchOpen))
+      ) {
+        event.preventDefault();
+        if (computerState?.active && !computerState.emergencyStopped) {
+          void handleEmergencyStopComputer('window_shortcut').finally(() => {
+            void handleCancel();
+          });
+        } else {
+          void handleCancel();
+        }
+        return;
+      }
+
       if (!mod) return;
       const key = event.key.toLowerCase();
       const actions = commandActionsRef.current;
@@ -971,7 +1113,20 @@ export const App: React.FC = () => {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [activeSessionId, controlPlaneAvailable, primaryView, isSettingsOpen, isCommandPaletteOpen]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    activeSessionId,
+    controlPlaneAvailable,
+    primaryView,
+    isSettingsOpen,
+    isCommandPaletteOpen,
+    isAboutOpen,
+    isUpdateModalOpen,
+    chatSearchOpen,
+    isTurnRunning,
+    computerState?.active,
+    computerState?.emergencyStopped,
+  ]);
 
   const commandPaletteItems = useMemo<CommandPaletteItem[]>(
     () => [
@@ -1338,6 +1493,24 @@ export const App: React.FC = () => {
                       <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
                     )}
                   </button>
+                  <button
+                    type="button"
+                    data-testid="toolbar-computer-btn"
+                    disabled={!activeSessionId}
+                    onClick={() => toggleInspectorTab('computer')}
+                    aria-label={t('workspace.computerAria')}
+                    className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium disabled:opacity-40 ${
+                      isInspectorOpen && inspectorTab === 'computer'
+                        ? 'border-indigo-500/60 bg-indigo-500/20 text-indigo-200'
+                        : 'border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800'
+                    }`}
+                  >
+                    <Monitor className="h-3.5 w-3.5" />
+                    <span>{t('workspace.computer')}</span>
+                    {computerState?.active && !computerState.emergencyStopped && (
+                      <span className="h-1.5 w-1.5 rounded-full bg-rose-400 animate-pulse" />
+                    )}
+                  </button>
                 </div>
               </div>
 
@@ -1354,6 +1527,7 @@ export const App: React.FC = () => {
                 pendingApprovals={pendingApprovals}
                 pendingBusinessApprovals={pendingBusinessApprovals}
                 pendingBrowserApprovals={pendingBrowserApprovals}
+                pendingComputerApprovals={pendingComputerApprovals}
                 currentPlan={currentPlan}
                 jobs={jobs}
                 verificationReceipts={verificationReceipts}
@@ -1373,6 +1547,7 @@ export const App: React.FC = () => {
                 onApprovalResolved={() => void reconcileApprovals()}
                 onBusinessApprovalResolved={(approvalId) => removeBusinessApproval(approvalId)}
                 onBrowserApprovalResolved={(approvalId) => removeBrowserApproval(approvalId)}
+                onComputerApprovalResolved={(approvalId) => removeComputerApproval(approvalId)}
                 onPlanActionSubmitted={() =>
                   void reconcileSession('plan_action', {
                     onCursorSynced: (eid, epoch) => sseRef.current?.updateCursor(eid, epoch),
@@ -1405,8 +1580,10 @@ export const App: React.FC = () => {
                 workMode={activeWorkMode}
                 planModeActive={planModeActive}
                 controlPlaneAvailable={controlPlaneAvailable}
+                isComputerActive={Boolean(computerState?.active && !computerState.emergencyStopped)}
                 onSend={handleSend}
                 onCancel={handleCancel}
+                onEmergencyStop={() => handleEmergencyStopComputer('composer_shortcut')}
                 onSlashCommand={handleSlashCommand}
                 onOpenDailyAssistant={handleOpenDailyAssistant}
               />
@@ -1429,8 +1606,11 @@ export const App: React.FC = () => {
           verificationReceipts={verificationReceipts}
           executionBackend={systemStatusQuery.data?.executionBackend ?? executionSettingsQuery.data?.backend ?? null}
           browserState={browserState}
+          computerState={computerState}
           controlPlaneAvailable={controlPlaneAvailable}
           onBrowserStateUpdated={setBrowserState}
+          onComputerStateUpdated={setComputerState}
+          onComputerEmergencyStopped={() => void handleCancel()}
           onSelectTab={setInspectorTab}
           onClose={() => setInspectorOpen(false)}
           onRefreshChanges={() => void changesQuery.refetch()}
@@ -1478,6 +1658,7 @@ export const App: React.FC = () => {
         executionSettings={executionSettingsQuery.data ?? null}
         modelSettings={modelSettingsQuery.data ?? null}
         browserSettings={browserSettingsQuery.data ?? null}
+        computerSettings={computerSettingsQuery.data ?? null}
         controlPlaneAvailable={controlPlaneAvailable}
         onClose={() => setSettingsOpen(false)}
         onUpdated={refreshMetadata}

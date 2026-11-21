@@ -322,6 +322,65 @@ public static class SseEventContractSchema
                     ("decidedBy", NullableStr()),
                     ("note", NullableStr()),
                     ("resolvedAtUtc", Str())),
+                required: ["approvalId", "sessionId", "decision", "resolvedAtUtc"]),
+            [GatewaySseEventType.ComputerStateUpdated] = EventDef(
+                "Throttled snapshot of the session's desktop Computer Use state (pinned window, screenshotSeq, coordinateMode, takeover, emergency stop, host avoidance).",
+                Props(
+                    ("sessionId", Str()),
+                    ("status", Str()),
+                    ("active", Bool()),
+                    ("enabled", Bool()),
+                    ("pinnedWindowHandle", NullableStr()),
+                    ("pinnedProcessName", NullableStr()),
+                    ("pinnedWindowTitle", NullableStr()),
+                    ("screenshotSeq", Int()),
+                    ("imageWidth", OptionalInt()),
+                    ("imageHeight", OptionalInt()),
+                    ("coordinateMode", Str()),
+                    ("lastActionSummary", NullableStr()),
+                    ("takeoverPending", Bool()),
+                    ("takeoverReason", NullableStr()),
+                    ("takeoverStartedAtUtc", NullableStr()),
+                    ("emergencyStopped", Bool()),
+                    ("hostWindowAvoidanceRequested", Bool()),
+                    ("updatedAtUtc", NullableStr())),
+                required: ["sessionId", "status", "active", "enabled", "screenshotSeq", "coordinateMode"]),
+            [GatewaySseEventType.ComputerApprovalRequested] = EventDef(
+                "Interactive control-plane approval request for a desktop Computer Use interaction.",
+                Props(
+                    ("approvalId", Str()),
+                    ("requestDigest", Str()),
+                    ("sessionId", Str()),
+                    ("tool", Str()),
+                    ("action", Str()),
+                    ("targetProcessName", Str()),
+                    ("targetWindowTitle", Str()),
+                    ("targetWindowHandle", Str()),
+                    ("actionSummary", Str()),
+                    ("riskReason", Str()),
+                    ("targetX", OptionalInt()),
+                    ("targetY", OptionalInt()),
+                    ("expiresAtUtc", Str()),
+                    ("allowedDecisions", StrArray()),
+                    ("controlPlaneAvailable", Bool()),
+                    ("selfApprovalProtection", Bool()),
+                    ("previewImageBase64", NullableStr())),
+                required:
+                [
+                    "approvalId", "requestDigest", "sessionId", "tool", "action",
+                    "targetProcessName", "targetWindowTitle", "targetWindowHandle",
+                    "actionSummary", "riskReason", "expiresAtUtc", "allowedDecisions",
+                    "controlPlaneAvailable", "selfApprovalProtection"
+                ]),
+            [GatewaySseEventType.ComputerApprovalResolved] = EventDef(
+                "Resolution outcome for a pending Computer Use approval request.",
+                Props(
+                    ("approvalId", Str()),
+                    ("sessionId", Str()),
+                    ("decision", Str()),
+                    ("decidedBy", NullableStr()),
+                    ("note", NullableStr()),
+                    ("resolvedAtUtc", Str())),
                 required: ["approvalId", "sessionId", "decision", "resolvedAtUtc"])
         };
 

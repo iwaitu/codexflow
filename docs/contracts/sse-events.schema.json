@@ -50,7 +50,10 @@
         "plan_mode_exit_requested",
         "browser_state_updated",
         "browser_approval_requested",
-        "browser_approval_resolved"
+        "browser_approval_resolved",
+        "computer_state_updated",
+        "computer_approval_requested",
+        "computer_approval_resolved"
       ]
     },
     "data": {
@@ -541,6 +544,48 @@
         },
         "data": {
           "$ref": "#/$defs/browser_approval_resolved"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "computer_state_updated"
+        },
+        "data": {
+          "$ref": "#/$defs/computer_state_updated"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "computer_approval_requested"
+        },
+        "data": {
+          "$ref": "#/$defs/computer_approval_requested"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "properties": {
+        "event": {
+          "const": "computer_approval_resolved"
+        },
+        "data": {
+          "$ref": "#/$defs/computer_approval_resolved"
         }
       },
       "required": [
@@ -1824,6 +1869,225 @@
     "browser_approval_resolved": {
       "type": "object",
       "description": "Resolution outcome for a pending browser approval request.",
+      "additionalProperties": true,
+      "properties": {
+        "approvalId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "decision": {
+          "type": "string"
+        },
+        "decidedBy": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resolvedAtUtc": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "approvalId",
+        "sessionId",
+        "decision",
+        "resolvedAtUtc"
+      ]
+    },
+    "computer_state_updated": {
+      "type": "object",
+      "description": "Throttled snapshot of the session\u0027s desktop Computer Use state (pinned window, screenshotSeq, coordinateMode, takeover, emergency stop, host avoidance).",
+      "additionalProperties": true,
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "pinnedWindowHandle": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pinnedProcessName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pinnedWindowTitle": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "screenshotSeq": {
+          "type": "integer"
+        },
+        "imageWidth": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "imageHeight": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "coordinateMode": {
+          "type": "string"
+        },
+        "lastActionSummary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "takeoverPending": {
+          "type": "boolean"
+        },
+        "takeoverReason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "takeoverStartedAtUtc": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "emergencyStopped": {
+          "type": "boolean"
+        },
+        "hostWindowAvoidanceRequested": {
+          "type": "boolean"
+        },
+        "updatedAtUtc": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "sessionId",
+        "status",
+        "active",
+        "enabled",
+        "screenshotSeq",
+        "coordinateMode"
+      ]
+    },
+    "computer_approval_requested": {
+      "type": "object",
+      "description": "Interactive control-plane approval request for a desktop Computer Use interaction.",
+      "additionalProperties": true,
+      "properties": {
+        "approvalId": {
+          "type": "string"
+        },
+        "requestDigest": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string"
+        },
+        "targetProcessName": {
+          "type": "string"
+        },
+        "targetWindowTitle": {
+          "type": "string"
+        },
+        "targetWindowHandle": {
+          "type": "string"
+        },
+        "actionSummary": {
+          "type": "string"
+        },
+        "riskReason": {
+          "type": "string"
+        },
+        "targetX": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "targetY": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "expiresAtUtc": {
+          "type": "string"
+        },
+        "allowedDecisions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "controlPlaneAvailable": {
+          "type": "boolean"
+        },
+        "selfApprovalProtection": {
+          "type": "boolean"
+        },
+        "previewImageBase64": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "approvalId",
+        "requestDigest",
+        "sessionId",
+        "tool",
+        "action",
+        "targetProcessName",
+        "targetWindowTitle",
+        "targetWindowHandle",
+        "actionSummary",
+        "riskReason",
+        "expiresAtUtc",
+        "allowedDecisions",
+        "controlPlaneAvailable",
+        "selfApprovalProtection"
+      ]
+    },
+    "computer_approval_resolved": {
+      "type": "object",
+      "description": "Resolution outcome for a pending Computer Use approval request.",
       "additionalProperties": true,
       "properties": {
         "approvalId": {

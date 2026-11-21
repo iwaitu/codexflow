@@ -5755,6 +5755,684 @@
           }
         }
       }
+    },
+    "/api/gateway/session/{sessionId}/computer": {
+      "get": {
+        "tags": [
+          "ComputerSession"
+        ],
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerSessionStateDto"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerSessionStateDto"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerSessionStateDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerApiErrorDto"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerApiErrorDto"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerApiErrorDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/gateway/session/{sessionId}/computer/screenshot": {
+      "get": {
+        "tags": [
+          "ComputerSession"
+        ],
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "204": {
+            "description": "No Content"
+          },
+          "304": {
+            "description": "Not Modified"
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerApiErrorDto"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerApiErrorDto"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerApiErrorDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/gateway/session/{sessionId}/computer/close": {
+      "post": {
+        "tags": [
+          "ComputerSession"
+        ],
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerSessionCloseResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerSessionCloseResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerSessionCloseResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerApiErrorDto"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerApiErrorDto"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerApiErrorDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/gateway/session/{sessionId}/computer/takeover/start": {
+      "post": {
+        "tags": [
+          "ComputerSession"
+        ],
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ComputerTakeoverStartRequest"
+                  }
+                ]
+              }
+            },
+            "text/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ComputerTakeoverStartRequest"
+                  }
+                ]
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ComputerTakeoverStartRequest"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerTakeoverResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerTakeoverResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerTakeoverResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerApiErrorDto"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerApiErrorDto"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerApiErrorDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerApiErrorDto"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerApiErrorDto"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerApiErrorDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/gateway/session/{sessionId}/computer/takeover/complete": {
+      "post": {
+        "tags": [
+          "ComputerSession"
+        ],
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ComputerTakeoverCompleteRequest"
+                  }
+                ]
+              }
+            },
+            "text/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ComputerTakeoverCompleteRequest"
+                  }
+                ]
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ComputerTakeoverCompleteRequest"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerTakeoverResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerTakeoverResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerTakeoverResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerApiErrorDto"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerApiErrorDto"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerApiErrorDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/gateway/computer/emergency-stop": {
+      "post": {
+        "tags": [
+          "ComputerSession"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ComputerEmergencyStopRequest"
+                  }
+                ]
+              }
+            },
+            "text/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ComputerEmergencyStopRequest"
+                  }
+                ]
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ComputerEmergencyStopRequest"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerEmergencyStopResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerEmergencyStopResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerEmergencyStopResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerApiErrorDto"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerApiErrorDto"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerApiErrorDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/gateway/computer/protected-windows": {
+      "post": {
+        "tags": [
+          "ComputerSession"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterProtectedWindowsRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterProtectedWindowsRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterProtectedWindowsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegisterProtectedWindowsResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegisterProtectedWindowsResponse"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegisterProtectedWindowsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerApiErrorDto"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerApiErrorDto"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerApiErrorDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/settings/computer": {
+      "get": {
+        "tags": [
+          "ComputerSession"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerSettingsDto"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerSettingsDto"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerSettingsDto"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "ComputerSession"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateComputerSettingsRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateComputerSettingsRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateComputerSettingsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerSettingsDto"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerSettingsDto"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerSettingsDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerApiErrorDto"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerApiErrorDto"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerApiErrorDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerApiErrorDto"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerApiErrorDto"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerApiErrorDto"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -7503,6 +8181,540 @@
           }
         }
       },
+      "ComputerActionRecordDto": {
+        "required": [
+          "seq",
+          "tool",
+          "action",
+          "targetProcessName",
+          "targetWindowTitle",
+          "targetX",
+          "targetY",
+          "succeeded",
+          "summary",
+          "durationMs",
+          "timestampUtc"
+        ],
+        "type": "object",
+        "properties": {
+          "seq": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "tool": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "targetProcessName": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "targetWindowTitle": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "targetX": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "targetY": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "succeeded": {
+            "type": "boolean"
+          },
+          "summary": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "durationMs": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "timestampUtc": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ComputerApiErrorDto": {
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "ComputerApprovalRequestDto": {
+        "required": [
+          "approvalId",
+          "requestDigest",
+          "sessionId",
+          "tool",
+          "action",
+          "targetProcessName",
+          "targetWindowTitle",
+          "targetWindowHandle",
+          "actionSummary",
+          "riskReason",
+          "targetX",
+          "targetY",
+          "expiresAtUtc",
+          "allowedDecisions",
+          "controlPlaneAvailable",
+          "selfApprovalProtection"
+        ],
+        "type": "object",
+        "properties": {
+          "approvalId": {
+            "type": "string"
+          },
+          "requestDigest": {
+            "type": "string"
+          },
+          "sessionId": {
+            "type": "string"
+          },
+          "tool": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "targetProcessName": {
+            "type": "string"
+          },
+          "targetWindowTitle": {
+            "type": "string"
+          },
+          "targetWindowHandle": {
+            "type": "string"
+          },
+          "actionSummary": {
+            "type": "string"
+          },
+          "riskReason": {
+            "type": "string"
+          },
+          "targetX": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "targetY": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "expiresAtUtc": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "allowedDecisions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "controlPlaneAvailable": {
+            "type": "boolean"
+          },
+          "selfApprovalProtection": {
+            "type": "boolean"
+          },
+          "previewImageBase64": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
+      "ComputerDriverStatusDto": {
+        "required": [
+          "available",
+          "platform",
+          "driverName",
+          "screenCaptureGranted",
+          "accessibilityGranted",
+          "displayCount"
+        ],
+        "type": "object",
+        "properties": {
+          "available": {
+            "type": "boolean"
+          },
+          "platform": {
+            "type": "string"
+          },
+          "driverName": {
+            "type": "string"
+          },
+          "screenCaptureGranted": {
+            "type": "boolean"
+          },
+          "accessibilityGranted": {
+            "type": "boolean"
+          },
+          "displayCount": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "diagnosticMessage": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "permissionGuide": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "emergencyStopShortcut": {
+            "type": "string",
+            "default": "CommandOrControl+."
+          }
+        }
+      },
+      "ComputerEmergencyStopRequest": {
+        "type": "object",
+        "properties": {
+          "sessionId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "reason": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
+      "ComputerEmergencyStopResponse": {
+        "required": [
+          "stopped",
+          "cancelledSessions",
+          "message"
+        ],
+        "type": "object",
+        "properties": {
+          "stopped": {
+            "type": "boolean"
+          },
+          "cancelledSessions": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "ComputerSessionCloseResponse": {
+        "required": [
+          "closed",
+          "sessionId"
+        ],
+        "type": "object",
+        "properties": {
+          "closed": {
+            "type": "boolean"
+          },
+          "sessionId": {
+            "type": "string"
+          }
+        }
+      },
+      "ComputerSessionStateDto": {
+        "required": [
+          "sessionId",
+          "status",
+          "active",
+          "enabled",
+          "pinnedWindowHandle",
+          "pinnedProcessName",
+          "pinnedWindowTitle",
+          "screenshotSeq",
+          "imageWidth",
+          "imageHeight",
+          "coordinateMode",
+          "lastActionSummary",
+          "recentActions"
+        ],
+        "type": "object",
+        "properties": {
+          "sessionId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "pinnedWindowHandle": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "pinnedProcessName": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "pinnedWindowTitle": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "screenshotSeq": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "imageWidth": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "imageHeight": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "coordinateMode": {
+            "type": "string"
+          },
+          "lastActionSummary": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "recentActions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ComputerActionRecordDto"
+            }
+          },
+          "takeoverPending": {
+            "type": "boolean",
+            "default": false
+          },
+          "takeoverReason": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "takeoverStartedAtUtc": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "date-time"
+          },
+          "emergencyStopped": {
+            "type": "boolean",
+            "default": false
+          },
+          "hostWindowAvoidanceRequested": {
+            "type": "boolean",
+            "default": false
+          },
+          "updatedAtUtc": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
+      "ComputerSettingsDto": {
+        "required": [
+          "enabled",
+          "interactionApprovalPolicy",
+          "coordinateMode",
+          "maxImageLongEdge",
+          "maxScreenshotsPerTurn",
+          "enableGridOverlay",
+          "autoMinimizeHostWindow",
+          "blockedProcessNames",
+          "emergencyStopShortcut",
+          "idleTimeoutMinutes",
+          "driverStatus"
+        ],
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "interactionApprovalPolicy": {
+            "type": "string"
+          },
+          "coordinateMode": {
+            "type": "string"
+          },
+          "maxImageLongEdge": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "maxScreenshotsPerTurn": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "enableGridOverlay": {
+            "type": "boolean"
+          },
+          "autoMinimizeHostWindow": {
+            "type": "boolean"
+          },
+          "blockedProcessNames": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "emergencyStopShortcut": {
+            "type": "string"
+          },
+          "idleTimeoutMinutes": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "driverStatus": {
+            "$ref": "#/components/schemas/ComputerDriverStatusDto"
+          }
+        }
+      },
+      "ComputerTakeoverCompleteRequest": {
+        "type": "object",
+        "properties": {
+          "note": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
+      "ComputerTakeoverResponse": {
+        "required": [
+          "active",
+          "sessionId"
+        ],
+        "type": "object",
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "sessionId": {
+            "type": "string"
+          },
+          "message": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
+      "ComputerTakeoverStartRequest": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
       "ContinueWorkerHttpRequest": {
         "type": "object",
         "properties": {
@@ -8589,6 +9801,15 @@
             "items": {
               "$ref": "#/components/schemas/BrowserApprovalRequestDto"
             }
+          },
+          "computerApprovals": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ComputerApprovalRequestDto"
+            }
           }
         }
       },
@@ -9099,6 +10320,56 @@
             "items": {
               "type": "string"
             }
+          }
+        }
+      },
+      "RegisterProtectedWindowsRequest": {
+        "required": [
+          "processId"
+        ],
+        "type": "object",
+        "properties": {
+          "processId": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "windowHandles": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "RegisterProtectedWindowsResponse": {
+        "required": [
+          "registeredProcessCount",
+          "registeredWindowCount"
+        ],
+        "type": "object",
+        "properties": {
+          "registeredProcessCount": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "registeredWindowCount": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
           }
         }
       },
@@ -11133,6 +12404,83 @@
           }
         }
       },
+      "UpdateComputerSettingsRequest": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          },
+          "interactionApprovalPolicy": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "coordinateMode": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "maxImageLongEdge": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "maxScreenshotsPerTurn": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "enableGridOverlay": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          },
+          "autoMinimizeHostWindow": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          },
+          "blockedProcessNames": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "emergencyStopShortcut": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "idleTimeoutMinutes": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          }
+        }
+      },
       "UpdateConversationRequest": {
         "type": "object",
         "properties": {
@@ -11605,6 +12953,9 @@
     },
     {
       "name": "BrowserSession"
+    },
+    {
+      "name": "ComputerSession"
     }
   ]
 }

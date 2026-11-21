@@ -28,7 +28,8 @@ public static class PlanSafeToolPolicy
         "cron_create", "cron_delete", "cron_list", "monitor", "remote_trigger", "push_notification",
         "approve_plan", "reject_plan", "project_plan_to_tasks",
         "download_artifact", "report_task_status",
-        "browser_act", "browser_evaluate", "browser_request_takeover"
+        "browser_act", "browser_evaluate", "browser_request_takeover",
+        "computer_act", "computer_request_takeover"
     };
 
     private static readonly HashSet<string> CommonAllowedTools = new(StringComparer.OrdinalIgnoreCase)
@@ -51,6 +52,8 @@ public static class PlanSafeToolPolicy
         "browser_navigate",
         "browser_snapshot",
         "browser_tabs",
+        "computer_screen_info",
+        "computer_screenshot",
         "ask_user_question",
         "tool_search",
         "user_learn_preference",
@@ -93,7 +96,7 @@ public static class PlanSafeToolPolicy
         }
 
         var capability = ToolCapabilityCatalog.Resolve(trimmed);
-        if (capability is ToolCapability.WorkspaceWrite or ToolCapability.ExecuteUntrustedCode or ToolCapability.BrowserInteract)
+        if (capability is ToolCapability.WorkspaceWrite or ToolCapability.ExecuteUntrustedCode or ToolCapability.BrowserInteract or ToolCapability.ComputerInteract)
         {
             return false;
         }
@@ -114,13 +117,13 @@ public static class PlanSafeToolPolicy
             return false;
         }
 
-        if (tool.Capability is ToolCapability.WorkspaceWrite or ToolCapability.ExecuteUntrustedCode or ToolCapability.BrowserInteract)
+        if (tool.Capability is ToolCapability.WorkspaceWrite or ToolCapability.ExecuteUntrustedCode or ToolCapability.BrowserInteract or ToolCapability.ComputerInteract)
         {
             return false;
         }
 
         var catalogCap = ToolCapabilityCatalog.Resolve(tool.Name);
-        if (catalogCap is ToolCapability.WorkspaceWrite or ToolCapability.ExecuteUntrustedCode or ToolCapability.BrowserInteract)
+        if (catalogCap is ToolCapability.WorkspaceWrite or ToolCapability.ExecuteUntrustedCode or ToolCapability.BrowserInteract or ToolCapability.ComputerInteract)
         {
             return false;
         }

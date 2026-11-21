@@ -4,6 +4,8 @@ import {
   type AppUpdateState,
   type BackendConnectionPublicInfo,
   type BusinessSkillRetentionPruneRequest,
+  type ComputerControlOverlayState,
+  type ComputerEmergencyStoppedEvent,
   type ConnectStandalonePayload,
   type CreateBusinessPluginRequest,
   type CredentialSlotKind,
@@ -25,6 +27,7 @@ import {
   type SubmitToolApprovalPayload,
   type UpdateBrowserSettingsRequest,
   type UpdateCapabilityRiskRequest,
+  type UpdateComputerSettingsRequest,
   type UpdateExecutionSettingsPayload,
   type UpdateModelSettingsPayload,
   type UpdatePluginConnectionRequest,
@@ -62,6 +65,31 @@ const api: DesktopBridge = {
     ipcRenderer.invoke(IPC_CHANNELS.startBrowserTakeover, sessionId, reason),
   completeBrowserTakeover: (sessionId: string, note?: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.completeBrowserTakeover, sessionId, note),
+  updateComputerSettings: (payload: UpdateComputerSettingsRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.updateComputerSettings, payload),
+  closeComputerSession: (sessionId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.closeComputerSession, sessionId),
+  startComputerTakeover: (sessionId: string, reason?: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.startComputerTakeover, sessionId, reason),
+  completeComputerTakeover: (sessionId: string, note?: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.completeComputerTakeover, sessionId, note),
+  emergencyStopComputer: (payload?: { sessionId?: string; reason?: string }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.emergencyStopComputer, payload ?? {}),
+  avoidHostWindowForComputer: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.avoidHostWindowForComputer),
+  restoreHostWindowForComputer: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.restoreHostWindowForComputer),
+  setComputerControlActive: (state: ComputerControlOverlayState) =>
+    ipcRenderer.invoke(IPC_CHANNELS.setComputerControlActive, state),
+  onComputerEmergencyStopped: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, eventPayload: ComputerEmergencyStoppedEvent) => {
+      listener(eventPayload);
+    };
+    ipcRenderer.on(IPC_CHANNELS.computerEmergencyStopped, handler);
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.computerEmergencyStopped, handler);
+    };
+  },
   listPermissionRules: () => ipcRenderer.invoke(IPC_CHANNELS.listPermissionRules),
   deletePermissionRule: (ruleId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.deletePermissionRule, ruleId),
