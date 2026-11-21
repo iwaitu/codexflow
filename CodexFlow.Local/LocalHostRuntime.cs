@@ -104,12 +104,7 @@ public static class LocalHostRuntime
 
     public static string FormatReadyLine(int port, int pid, string instanceId)
     {
-        var payload = JsonSerializer.Serialize(new
-        {
-            port,
-            pid,
-            instanceId
-        });
+        var payload = JsonSerializer.Serialize(new LocalHostReadyInfo(port, pid, instanceId), LocalHostJsonContext.Default.LocalHostReadyInfo);
         return $"CODEXFLOW_READY {payload}";
     }
 }

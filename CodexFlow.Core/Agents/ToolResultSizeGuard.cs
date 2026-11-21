@@ -2,7 +2,6 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-using System.Text.Json;
 using System.Text.Json.Nodes;
 
 namespace CodexFlow.Core.Agents;
@@ -85,8 +84,20 @@ internal static class ToolResultSizeGuard
     /// <summary>The same bound for the gateway's dictionary envelope: the text fields are replaced in place when they had to be cut.</summary>
     internal static Dictionary<string, object?> Apply(Dictionary<string, object?> payload)
     {
-        var node = JsonSerializer.SerializeToNode(payload) as JsonObject;
-        if (node is null || Size(node) <= MaxEnvelopeChars)
+        // The gateway's wrapped payload contains only text, flags and nulls.
+        var node = new JsonObject();
+        foreach (var (key, value) in payload)
+        {
+            node[key] = value switch
+            {
+                null => null,
+                string text => JsonValue.Create(text),
+                bool flag => JsonValue.Create(flag),
+                _ => throw new InvalidOperationException("Unexpected value in the gateway tool-result payload.")
+            };
+        }
+
+        if (Size(node) <= MaxEnvelopeChars)
         {
             return payload;
         }

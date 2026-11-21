@@ -3,10 +3,8 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 using CodexFlow.Orchestration.Hosting;
-using CodexFlow.Orchestration.Jobs;
 using CodexFlow.Application.Jobs;
 using CodexFlow.Domain.Jobs;
-using Microsoft.EntityFrameworkCore;
 using CodexFlow.Core.Models.Jobs;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Agents;
@@ -21,7 +19,7 @@ namespace CodexFlow.Services.Background
     /// </summary>
     public class OutboxProjector : IOutboxProjector
     {
-        private readonly IJobDbContext _context;
+        private readonly IOutboxStore _store;
         private readonly IRealtimeNotifier _hubContext;
         private readonly ILogger<OutboxProjector> _logger;
         private readonly IJobEventLog _eventLog;
@@ -31,21 +29,21 @@ namespace CodexFlow.Services.Background
         /// <summary>
         /// Initializes the outbox projector.
         /// </summary>
-        /// <param name="context">Database context used to read and acknowledge outbox events.</param>
+        /// <param name="store">Store used to read and acknowledge outbox events.</param>
         /// <param name="hubContext">SignalR hub used to broadcast projected job updates.</param>
         /// <param name="logger">Logger used for projection diagnostics.</param>
         /// <param name="eventLog">Store for the immutable job event history.</param>
-        /// <param name="redis">Redis connection used for hot job views.</param>
+        /// <param name="hotView">Store used for hot job views.</param>
         /// <param name="serviceProvider">Service provider used to resolve scoped dependencies for derived projections.</param>
         public OutboxProjector(
-            IJobDbContext context, 
+            IOutboxStore store,
             IRealtimeNotifier hubContext, 
             ILogger<OutboxProjector> logger,
             IJobEventLog eventLog,
             IJobHotView hotView,
             IServiceProvider serviceProvider)
         {
-            _context = context;
+            _store = store;
             _hubContext = hubContext;
             _logger = logger;
             _eventLog = eventLog;
@@ -62,30 +60,29 @@ namespace CodexFlow.Services.Background
         {
             // Fetch pending events with a small buffer for late-committing transactions
             var cutoff = DateTime.UtcNow.AddMilliseconds(-200);
-            var events = await _context.OutboxEvents
-                .Where(e => e.ProcessedAt == null && e.OccurredAtUtc < cutoff)
-                .OrderBy(e => e.Seq)
-                .Take(50)
-                .ToListAsync(ct);
-
+            var events = await _store.ReadPendingAsync(cutoff, 50, ct).ConfigureAwait(false);
             if (events.Count == 0) return 0;
 
+            var results = new List<OutboxProjectionResult>(events.Count);
             foreach (var ev in events)
             {
                 try
                 {
-                    await DispatchEventAsync(ev, ct);
-                    ev.ProcessedAt = DateTime.UtcNow;
+                    await DispatchEventAsync(ev, ct).ConfigureAwait(false);
+                    results.Add(new OutboxProjectionResult(ev.EventId, DateTime.UtcNow, null));
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Failed to project outbox event {EventId}", ev.EventId);
-                    ev.RetryCount++;
-                    ev.LastError = ex.Message;
+                    results.Add(new OutboxProjectionResult(ev.EventId, null, ex.Message));
                 }
             }
 
-            await _context.SaveChangesAsync(ct);
+            await _store.RecordProjectionAsync(results, ct).ConfigureAwait(false);
             return events.Count;
         }
 
@@ -116,25 +113,8 @@ namespace CodexFlow.Services.Background
             // 5. Maintain LastEventSeq on the BackgroundJob entity
             if (!string.IsNullOrEmpty(ev.JobId))
             {
-                await AdvanceLastEventSeqAsync(_context, ev.JobId, ev.Seq, ct);
+                await _store.AdvanceLastEventSeqAsync(ev.JobId, ev.Seq, DateTime.UtcNow, ct).ConfigureAwait(false);
             }
-        }
-
-        /// <summary>
-        /// Moves <c>LastEventSeq</c> of a job forward to <paramref name="seq"/>; an older or equal sequence number
-        /// leaves the job untouched. Provider-neutral: it works on any relational provider.
-        /// </summary>
-        /// <returns>The number of jobs updated (0 or 1).</returns>
-        public static Task<int> AdvanceLastEventSeqAsync(IJobDbContext context, string jobId, long seq, CancellationToken ct)
-        {
-            var now = DateTime.UtcNow;
-            return context.BackgroundJobs
-                .Where(job => job.JobId == jobId && job.LastEventSeq < seq)
-                .ExecuteUpdateAsync(
-                    setters => setters
-                        .SetProperty(job => job.LastEventSeq, seq)
-                        .SetProperty(job => job.UpdatedAtUtc, now),
-                    ct);
         }
 
         private async Task UpdateTaskListProjectionAsync(OutboxEvent ev, CancellationToken ct)
@@ -421,53 +401,33 @@ namespace CodexFlow.Services.Background
                 return null;
             }
 
-            var snapshot = await _context.BackgroundJobs
-                .Where(j => j.JobId == jobId)
-                .Select(j => new
-                {
-                    j.JobId,
-                    j.SessionId,
-                    j.TaskId,
-                    j.JobType,
-                    j.RunnerId,
-                    j.Attempt,
-                    Status = j.Status.ToString(),
-                    j.PayloadJson,
-                    j.ResultPayloadJson,
-                    j.ShortSummary,
-                    j.WaitingReason,
-                    j.ErrorMessage,
-                    LatestCheckpointStep = j.Checkpoints
-                        .OrderByDescending(c => c.SequenceNumber)
-                        .Select(c => c.CurrentStep)
-                        .FirstOrDefault()
-                })
-                .FirstOrDefaultAsync(ct);
+            var snapshot = await _store.FindJobAsync(jobId, ct).ConfigureAwait(false);
 
             if (snapshot == null)
             {
                 return null;
             }
 
+            var status = snapshot.Status.ToString();
             return new JobProjectionSnapshot(
                 snapshot.JobId,
                 snapshot.SessionId,
                 snapshot.TaskId,
                 snapshot.JobType,
                 snapshot.RunnerId,
-                snapshot.Status,
+                status,
                 WorkerProjectionHelpers.ResolveWorkerType(snapshot.JobType),
                 WorkerProjectionHelpers.ResolveStateKind(
-                    snapshot.Status,
+                    status,
                     snapshot.ResultPayloadJson,
                     snapshot.Attempt,
                     snapshot.LatestCheckpointStep),
-                WorkerProjectionHelpers.ResolveRecoveryNeeded(snapshot.Status, snapshot.ResultPayloadJson),
+                WorkerProjectionHelpers.ResolveRecoveryNeeded(status, snapshot.ResultPayloadJson),
                 WorkerProjectionHelpers.ResolveRecoveryReason(snapshot.ResultPayloadJson),
                 WorkerProjectionHelpers.ResolveResumeStrategy(snapshot.ResultPayloadJson),
                 WorkerProjectionHelpers.ResolveResumeGuidance(snapshot.ResultPayloadJson),
                 WorkerProjectionHelpers.BuildSummary(
-                    snapshot.Status,
+                    status,
                     snapshot.PayloadJson,
                     snapshot.ResultPayloadJson,
                     snapshot.ShortSummary,

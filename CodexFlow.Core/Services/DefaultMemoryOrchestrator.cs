@@ -5,6 +5,7 @@
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Models;
 using Microsoft.Extensions.Logging;
+using System.Text.Json;
 
 namespace CodexFlow.Core.Services;
 
@@ -227,7 +228,7 @@ public sealed class DefaultMemoryOrchestrator : IMemoryOrchestrator
 
         // Persist a typed fact so future sessions can deserialise the freshness state.
         var state = new MemoryFreshnessState(isStale, reason, DateTime.UtcNow);
-        var json = System.Text.Json.JsonSerializer.Serialize(state);
+        var json = JsonSerializer.Serialize(state, MemoryFactJsonContext.Default.MemoryFreshnessState);
         await BestEffortAsync(
             () => _memoryService.LearnFactAsync(
                 session.Id,

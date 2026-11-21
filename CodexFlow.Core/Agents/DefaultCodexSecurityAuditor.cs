@@ -8,7 +8,8 @@ using Microsoft.Extensions.Logging;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Models;
 using CodexFlow.Core.Constants;
-using System.Diagnostics.CodeAnalysis;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace CodexFlow.Core.Agents;
 
@@ -166,19 +167,14 @@ public partial class DefaultCodexSecurityAuditor : ICodexSecurityAuditor
         // Step 4: Deserialize with lenient options
         try
         {
-            var options = new System.Text.Json.JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true,
-                AllowTrailingCommas = true,
-            };
-            var auditData = System.Text.Json.JsonSerializer.Deserialize<AuditDto>(trimmed, options);
+            var auditData = JsonSerializer.Deserialize(trimmed, SecurityAuditJsonContext.Default.AuditDto);
             if (auditData == null)
             {
                 return ParseResult<AuditDto?>.Fail("Deserialized to null (JSON structure mismatch)");
             }
             return ParseResult<AuditDto?>.Ok(auditData);
         }
-        catch (System.Text.Json.JsonException ex)
+        catch (JsonException ex)
         {
             return ParseResult<AuditDto?>.Fail($"JSON parse error: {ex.Message}");
         }
@@ -245,8 +241,7 @@ public partial class DefaultCodexSecurityAuditor : ICodexSecurityAuditor
         return text.Length <= maxLength ? text : text[..maxLength] + "...";
     }
 
-    [SuppressMessage("Performance", "CA1812:Avoid uninstantiated internal classes", Justification = "Used by System.Text.Json deserialization.")]
-    private sealed class AuditDto
+    internal sealed class AuditDto
     {
         public bool IsPassed { get; set; }
         public string? Summary { get; set; }
@@ -264,4 +259,11 @@ public partial class DefaultCodexSecurityAuditor : ICodexSecurityAuditor
     [GeneratedRegex(@"```(?:json)?\s*", RegexOptions.IgnoreCase)]
     private static partial Regex MarkdownCodeFenceRegex();
 }
+
+[JsonSourceGenerationOptions(
+    GenerationMode = JsonSourceGenerationMode.Metadata,
+    PropertyNameCaseInsensitive = true,
+    AllowTrailingCommas = true)]
+[JsonSerializable(typeof(DefaultCodexSecurityAuditor.AuditDto))]
+internal sealed partial class SecurityAuditJsonContext : JsonSerializerContext;
 

@@ -731,7 +731,7 @@ public partial class DefaultCodexKernel : ICodexAgentKernel
                     foreach (var fc in toolCalls.Where(f => f != null))
                     {
                         var args = ToolArgumentNormalizer.NormalizeCopy(fc.Arguments);
-                        normalizedActionsList.Add($"工具: {fc.Name}, 参数: {JsonConvert.SerializeObject(args)}");
+                        normalizedActionsList.Add($"工具: {fc.Name}, 参数: {SerializeArgumentsForLog(args)}");
                     }
 
                     var proposedActions = string.Join("\n", normalizedActionsList);
@@ -805,49 +805,49 @@ public partial class DefaultCodexKernel : ICodexAgentKernel
                     consecutiveEmptyToolNameRounds++;
                     if (consecutiveEmptyToolNameRounds >= 2)
                     {
-                        var contentDiagnostics = new List<object>();
+                        var contentDiagnostics = new JArray();
                         for (var i = 0; i < lastMessage.Contents.Count; i++)
                         {
                             var content = lastMessage.Contents[i];
                             if (content == null)
                             {
-                                contentDiagnostics.Add(new
+                                contentDiagnostics.Add(new JObject
                                 {
-                                    Index = i,
-                                    Type = "null"
+                                    ["Index"] = i,
+                                    ["Type"] = "null"
                                 });
                                 continue;
                             }
 
                             if (content is TextContent tc)
                             {
-                                contentDiagnostics.Add(new
+                                contentDiagnostics.Add(new JObject
                                 {
-                                    Index = i,
-                                    Type = nameof(TextContent),
-                                    TextLength = tc.Text?.Length ?? 0,
-                                    TextPreview = TruncateForLog(tc.Text, 300)
+                                    ["Index"] = i,
+                                    ["Type"] = nameof(TextContent),
+                                    ["TextLength"] = tc.Text?.Length ?? 0,
+                                    ["TextPreview"] = TruncateForLog(tc.Text, 300)
                                 });
                                 continue;
                             }
 
                             if (content is FunctionCallContent fcDiag)
                             {
-                                contentDiagnostics.Add(new
+                                contentDiagnostics.Add(new JObject
                                 {
-                                    Index = i,
-                                    Type = nameof(FunctionCallContent),
-                                    fcDiag.CallId,
-                                    Name = fcDiag.Name,
-                                    ArgumentKeys = fcDiag.Arguments?.Keys?.ToList() ?? new List<string>()
+                                    ["Index"] = i,
+                                    ["Type"] = nameof(FunctionCallContent),
+                                    ["CallId"] = fcDiag.CallId,
+                                    ["Name"] = fcDiag.Name,
+                                    ["ArgumentKeys"] = new JArray(fcDiag.Arguments?.Keys ?? Array.Empty<string>())
                                 });
                                 continue;
                             }
 
-                            contentDiagnostics.Add(new
+                            contentDiagnostics.Add(new JObject
                             {
-                                Index = i,
-                                Type = content.GetType().FullName ?? content.GetType().Name
+                                ["Index"] = i,
+                                ["Type"] = content.GetType().FullName ?? content.GetType().Name
                             });
                         }
 
@@ -857,7 +857,7 @@ public partial class DefaultCodexKernel : ICodexAgentKernel
                             guard,
                             response.Messages.Count,
                             lastMessage.Role.ToString(),
-                            JsonConvert.SerializeObject(contentDiagnostics));
+                            contentDiagnostics.ToString(Formatting.None));
 
                         Log.EmptyToolNameAbortDiagnosticsResponseText(
                             _logger,
@@ -866,14 +866,14 @@ public partial class DefaultCodexKernel : ICodexAgentKernel
 
                         Log.EmptyToolNameAbortDiagnosticsToolCalls(
                             _logger,
-                            JsonConvert.SerializeObject(
-                                toolCalls.Where(fc => fc != null).Select(fc => new
+                            new JArray(
+                                toolCalls.Where(fc => fc != null).Select(fc => new JObject
                                 {
-                                    fc.CallId,
-                                    Name = fc.Name,
-                                    ArgumentKeys = fc.Arguments?.Keys?.ToList() ?? new List<string>(),
-                                    RawArguments = fc.Arguments
-                                })));
+                                    ["CallId"] = fc.CallId,
+                                    ["Name"] = fc.Name,
+                                    ["ArgumentKeys"] = new JArray(fc.Arguments?.Keys ?? Array.Empty<string>()),
+                                    ["RawArguments"] = RuntimeToolArgumentJson.SerializeForDiagnostics(fc.Arguments)
+                                })).ToString(Formatting.None));
 
                         Log.ConsecutiveEmptyToolNameRoundsReached(_logger, consecutiveEmptyToolNameRounds);
                         throw new InvalidOperationException($"模型连续 {consecutiveEmptyToolNameRounds} 次返回无效工具调用（空工具名），推理循环已中止。可能是模型服务不稳定或提示词过长导致响应截断。");
@@ -1430,7 +1430,7 @@ public partial class DefaultCodexKernel : ICodexAgentKernel
                || toolName.Equals("analyze_code", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static string BuildRepeatedToolCallSignature(string toolName, IDictionary<string, object?>? rawArgs)
+    private static string? BuildRepeatedToolCallSignature(string toolName, IDictionary<string, object?>? rawArgs)
     {
         var args = rawArgs != null
             ? new Dictionary<string, object?>(rawArgs, StringComparer.OrdinalIgnoreCase)
@@ -1444,7 +1444,9 @@ public partial class DefaultCodexKernel : ICodexAgentKernel
         args.Remove("project_root");
 
         var sorted = new SortedDictionary<string, object?>(args, StringComparer.OrdinalIgnoreCase);
-        return $"{toolName.Trim().ToUpperInvariant()}::{JsonConvert.SerializeObject(sorted)}";
+        return RuntimeToolArgumentJson.TrySerialize(sorted) is { } json
+            ? $"{toolName.Trim().ToUpperInvariant()}::{json}"
+            : null;
     }
 
     private static (long Total, long Failed, double FailureRate) RecordToolCallStats(long totalDelta, long failedDelta)
@@ -1468,7 +1470,7 @@ public partial class DefaultCodexKernel : ICodexAgentKernel
         int totalFunctionResults = 0;
 
         var roleCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        var messageSummaries = new List<object>();
+        var messageSummaries = new List<JObject>();
 
         for (int i = 0; i < messages.Count; i++)
         {
@@ -1498,7 +1500,7 @@ public partial class DefaultCodexKernel : ICodexAgentKernel
                 {
                     functionCalls++;
                     totalFunctionCalls++;
-                    var argsLen = JsonConvert.SerializeObject(fc.Arguments)?.Length ?? 0;
+                    var argsLen = SerializeArgumentsForLog(fc.Arguments).Length;
                     textChars += (fc.Name?.Length ?? 0) + argsLen;
                     continue;
                 }
@@ -1514,31 +1516,31 @@ public partial class DefaultCodexKernel : ICodexAgentKernel
                 textChars += content.ToString()?.Length ?? 0;
             }
 
-            messageSummaries.Add(new
+            messageSummaries.Add(new JObject
             {
-                Index = i,
-                Role = msgRole,
-                ContentCount = contentCount,
-                TextChars = textChars,
-                FunctionCalls = functionCalls,
-                FunctionResults = functionResults
+                ["Index"] = i,
+                ["Role"] = msgRole,
+                ["ContentCount"] = contentCount,
+                ["TextChars"] = textChars,
+                ["FunctionCalls"] = functionCalls,
+                ["FunctionResults"] = functionResults
             });
         }
 
-        var diagnostics = new
+        var diagnostics = new JObject
         {
-            Role = roleName,
-            Round = round,
-            MessageCount = messages.Count,
-            AvailableToolCount = availableToolCount,
-            ApproxContextChars = totalTextChars,
-            TotalFunctionCalls = totalFunctionCalls,
-            TotalFunctionResults = totalFunctionResults,
-            RoleCounts = roleCounts,
-            LastMessages = messageSummaries.TakeLast(6).ToList()
+            ["Role"] = roleName,
+            ["Round"] = round,
+            ["MessageCount"] = messages.Count,
+            ["AvailableToolCount"] = availableToolCount,
+            ["ApproxContextChars"] = totalTextChars,
+            ["TotalFunctionCalls"] = totalFunctionCalls,
+            ["TotalFunctionResults"] = totalFunctionResults,
+            ["RoleCounts"] = new JObject(roleCounts.Select(pair => new JProperty(pair.Key, pair.Value))),
+            ["LastMessages"] = new JArray(messageSummaries.TakeLast(6))
         };
 
-        return JsonConvert.SerializeObject(diagnostics);
+        return diagnostics.ToString(Formatting.None);
     }
 
     private async Task<string> ExecuteLegacyTextToolCallAsync(
@@ -1694,7 +1696,7 @@ public partial class DefaultCodexKernel : ICodexAgentKernel
             return;
         }
 
-        var serializedArguments = JsonConvert.SerializeObject(arguments);
+        var serializedArguments = SerializeArgumentsForLog(arguments);
         Log.AgentCallingTool(_logger, toolName, serializedArguments);
     }
 
@@ -1705,7 +1707,7 @@ public partial class DefaultCodexKernel : ICodexAgentKernel
             return;
         }
 
-        var serializedArguments = JsonConvert.SerializeObject(arguments);
+        var serializedArguments = SerializeArgumentsForLog(arguments);
         Log.AgentCallingToolLegacy(_logger, toolName, serializedArguments);
     }
 
@@ -1716,11 +1718,14 @@ public partial class DefaultCodexKernel : ICodexAgentKernel
             return;
         }
 
-        var serializedArguments = JsonConvert.SerializeObject(arguments);
+        var serializedArguments = SerializeArgumentsForLog(arguments);
         var sessionId = session.Id ?? string.Empty;
         var taskId = session.ActiveTaskId ?? string.Empty;
         Log.ToolCallTrace(_logger, sessionId, taskId, toolName, source, elapsedMs, failed, serializedArguments, output);
     }
+
+    private static string SerializeArgumentsForLog(object? arguments) =>
+        RuntimeToolArgumentJson.TrySerialize(arguments) ?? "\"(Unsupported tool argument value)\"";
 
     private void LogToolExecutionCompletedIfEnabled(string toolName, string source, long elapsedMs, bool failed, string output)
     {
@@ -1859,7 +1864,7 @@ public partial class DefaultCodexKernel : ICodexAgentKernel
 
         if (argumentsToken is JObject argsObj)
         {
-            return argsObj.ToObject<Dictionary<string, object?>>() ?? new Dictionary<string, object?>();
+            return RuntimeToolArgumentJson.ReadObject(argsObj);
         }
 
         if (argumentsToken.Type == JTokenType.String)
@@ -1872,7 +1877,7 @@ public partial class DefaultCodexKernel : ICodexAgentKernel
                     var parsed = JToken.Parse(s);
                     if (parsed is JObject parsedObj)
                     {
-                        return parsedObj.ToObject<Dictionary<string, object?>>() ?? new Dictionary<string, object?>();
+                        return RuntimeToolArgumentJson.ReadObject(parsedObj);
                     }
                 }
                 catch (JsonReaderException)
@@ -2059,7 +2064,7 @@ public partial class DefaultCodexKernel : ICodexAgentKernel
 
             if (indexFact != null && !string.IsNullOrEmpty(indexFact.Value))
             {
-                index = JsonConvert.DeserializeObject<List<FileIndexEntry>>(indexFact.Value) ?? new();
+                index = ProjectIndexJson.Deserialize(indexFact.Value) ?? new();
             }
             else
             {
@@ -2090,7 +2095,7 @@ public partial class DefaultCodexKernel : ICodexAgentKernel
                 index.Add(entry);
 
                 // Save back
-                var json = JsonConvert.SerializeObject(index);
+                var json = ProjectIndexJson.Serialize(index);
                 var dynamicIndexMeta = new MemoryEntryMetadata(
                     Scope: MemoryFactScope.Session,
                     Source: "kernel_dynamic_index_sync",

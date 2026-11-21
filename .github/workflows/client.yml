@@ -6,16 +6,32 @@ on:
     paths:
       - 'clients/desktop/**'
       - 'docs/contracts/**'
+      - 'global.json'
       - 'Directory.Build.props'
+      - 'CodexFlow.CodeAnalysis.Worker/**'
+      - 'CodexFlow.Contracts/**'
+      - 'CodexFlow.Core/**'
+      - 'CodexFlow.Gateway.Http/**'
       - 'CodexFlow.Local/**'
+      - 'CodexFlow.Orchestration/**'
+      - 'CodexFlow.Storage.Sqlite/**'
+      - 'scripts/ci/publish-windows-native-aot.ps1'
       - '.github/workflows/client.yml'
   pull_request:
     branches: [main]
     paths:
       - 'clients/desktop/**'
       - 'docs/contracts/**'
+      - 'global.json'
       - 'Directory.Build.props'
+      - 'CodexFlow.CodeAnalysis.Worker/**'
+      - 'CodexFlow.Contracts/**'
+      - 'CodexFlow.Core/**'
+      - 'CodexFlow.Gateway.Http/**'
       - 'CodexFlow.Local/**'
+      - 'CodexFlow.Orchestration/**'
+      - 'CodexFlow.Storage.Sqlite/**'
+      - 'scripts/ci/publish-windows-native-aot.ps1'
       - '.github/workflows/client.yml'
   workflow_call:
     inputs:
@@ -84,7 +100,7 @@ jobs:
         run: npm audit --omit=dev
 
   e2e-windows:
-    name: Desktop Electron E2E (Windows)
+    name: Desktop Electron E2E with Native AOT (Windows)
     runs-on: windows-latest
     needs: desktop
     defaults:
@@ -92,6 +108,19 @@ jobs:
         working-directory: clients/desktop
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+
+      - name: Publish the Windows x64 Native AOT backend for Electron E2E
+        shell: pwsh
+        working-directory: .
+        run: |
+          $backend = Join-Path $env:RUNNER_TEMP 'codexflow-native-backend'
+          $build = Join-Path $env:RUNNER_TEMP 'codexflow-native-build'
+          ./scripts/ci/publish-windows-native-aot.ps1 -OutputDirectory $backend -ArtifactsDirectory $build
+          "CODEXFLOW_NATIVE_BACKEND_BIN=$(Join-Path $backend 'CodexFlow.Local.exe')" >> $env:GITHUB_ENV
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -166,13 +195,32 @@ jobs:
           echo "version=$target_version" >> "$GITHUB_OUTPUT"
           echo "Packaging CodexFlow Desktop version: $target_version"
 
+      - name: Publish Windows x64 Native AOT backend
+        if: matrix.platform == 'win'
+        shell: pwsh
+        env:
+          CODEXFLOW_DESKTOP_BUILD_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          $build = Join-Path $env:RUNNER_TEMP 'codexflow-native-build'
+          ./scripts/ci/publish-windows-native-aot.ps1 -OutputDirectory clients/desktop/resources/backend `
+            -ArtifactsDirectory $build -Version $env:CODEXFLOW_DESKTOP_BUILD_VERSION
+
       - name: Publish self-contained CodexFlow.Local backend (${{ matrix.rid }})
+        if: matrix.platform != 'win'
         shell: bash
         run: |
+          aot_args=()
+          case "${{ matrix.rid }}" in
+            osx-arm64|linux-x64)
+              aot_args=(-p:PublishAot=true -p:RuntimeFrameworkVersion=10.0.15 -p:TrimmerSingleWarn=false
+                        -p:TreatWarningsAsErrors=true -p:ILLinkTreatWarningsAsErrors=true -warnaserror)
+              ;;
+          esac
           dotnet publish CodexFlow.Local/CodexFlow.Local.csproj \
             -c Release \
             -r "${{ matrix.rid }}" \
             --self-contained true \
+            "${aot_args[@]}" \
             -p:PublishSingleFile=false \
             -p:SatelliteResourceLanguages=en \
             -p:DebugType=none \
@@ -219,15 +267,19 @@ jobs:
           fi
           npx electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish never
 
-      - name: Verify macOS bundle signature and bundled backend startup
-        if: matrix.platform == 'mac'
+      - name: Verify bundled backend startup and Roslyn worker on macOS and Linux
+        if: matrix.platform == 'mac' || matrix.platform == 'linux'
         shell: bash
         working-directory: clients/desktop
         run: |
-          app_path="dist/mac-${{ matrix.arch }}/CodexFlow Desktop.app"
-          test -d "$app_path"
-          codesign --verify --deep --strict --verbose=2 "$app_path"
-          backend_bin="$(pwd)/$app_path/Contents/Resources/backend/CodexFlow.Local"
+          if [ "${{ matrix.platform }}" = "mac" ]; then
+            app_path="dist/mac-${{ matrix.arch }}/CodexFlow Desktop.app"
+            test -d "$app_path"
+            codesign --verify --deep --strict --verbose=2 "$app_path"
+            backend_bin="$(pwd)/$app_path/Contents/Resources/backend/CodexFlow.Local"
+          else
+            backend_bin="$(pwd)/dist/linux-unpacked/resources/backend/CodexFlow.Local"
+          fi
           test -x "$backend_bin"
           smoke_dir="$(mktemp -d)"
           trap 'rm -rf "$smoke_dir"' EXIT
@@ -259,7 +311,7 @@ jobs:
               if (output.includes("CODEXFLOW_READY ")) {
                 clearTimeout(timer);
                 child.kill("SIGTERM");
-                console.log("Bundled macOS CodexFlow.Local reported CODEXFLOW_READY.");
+                console.log("Bundled CodexFlow.Local reported CODEXFLOW_READY.");
                 process.exit(0);
               }
             });
@@ -272,6 +324,33 @@ jobs:
               }
             });
           ' "$backend_bin" "$smoke_dir"
+
+          analysis_dir="$(dirname "$backend_bin")/code-analysis"
+          worker_bin="$analysis_dir/worker/CodexFlow.CodeAnalysis.Worker"
+          test -x "$worker_bin"
+          node - "$worker_bin" "$analysis_dir/net10.0" <<'NODE'
+          const assert = require('node:assert/strict');
+          const { spawn } = require('node:child_process');
+          const { createInterface } = require('node:readline');
+          const [bin, referenceDirectory] = process.argv.slice(2);
+          const worker = spawn(bin, [], { stdio: ['pipe', 'pipe', 'inherit'] });
+          const timer = setTimeout(() => worker.kill('SIGKILL'), 20000);
+          let reply;
+          createInterface({ input: worker.stdout }).once('line', (line) => {
+            reply = JSON.parse(line);
+            worker.stdin.end();
+          });
+          worker.on('close', (code) => {
+            clearTimeout(timer);
+            assert.equal(code, 0, 'Bundled Roslyn worker failed or timed out');
+            assert.equal(reply?.id, 1);
+            assert.ok(reply.diagnostics?.some(diagnostic => diagnostic.id === 'CS0029'));
+            console.log('Bundled Roslyn worker returned CS0029.');
+          });
+          worker.stdin.write(JSON.stringify({
+            version: 1, id: 1, referenceDirectory, code: 'class Probe { int Run() => "wrong"; }',
+          }) + '\n');
+          NODE
 
       - name: Collect distributable installers and checksums
         shell: bash

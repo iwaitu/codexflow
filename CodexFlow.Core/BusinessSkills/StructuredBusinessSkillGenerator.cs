@@ -5,7 +5,6 @@
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using CodexFlow.Contracts.BusinessSkills;
 using Microsoft.Extensions.AI;
@@ -49,12 +48,6 @@ public interface IBusinessSkillGenerator
 /// </summary>
 public sealed partial class StructuredBusinessSkillGenerator : IBusinessSkillGenerator
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
-    {
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-        AllowOutOfOrderMetadataProperties = true
-    };
-
     private const string SystemInstruction =
         "You are a strict enterprise business-skill compiler. Output ONLY a single valid JSON object, with no markdown fences or commentary. " +
         "Required top-level JSON fields: name (string), description (string), usedCapabilityIds (string[]), " +
@@ -405,7 +398,7 @@ public sealed partial class StructuredBusinessSkillGenerator : IBusinessSkillGen
 
         try
         {
-            var parsed = JsonSerializer.Deserialize<SkillDefinitionV1>(cleaned, JsonOptions);
+            var parsed = BusinessSkillDefinitionJsonReader.Read(cleaned);
             if (parsed is null)
             {
                 return new ParseAttemptResult(false, null, "Deserialized skill candidate was null.", truncatedByReason);

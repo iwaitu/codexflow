@@ -5,7 +5,6 @@
 using System.IO;
 using System.Net.Http;
 using System.Text.RegularExpressions;
-using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using CodexFlow.Core.Models;
@@ -113,13 +112,7 @@ public class DefaultCodexTestDesigner : ICodexTestDesigner
                     .Trim();
             }
 
-            var result = JsonConvert.DeserializeObject<TestDesignResult>(json);
-            var rawFiles = result?.Files?.Select(f => new TestFile
-            {
-                FilePath = f.Path,
-                Content = f.Content,
-                TargetClassOrModule = "Unknown"
-            }).ToList() ?? new List<TestFile>();
+            var (reasoning, rawFiles) = ReadTestDesign(json);
 
             var scopedFiles = FilterByTaskScope(rawFiles, taskScope);
 
@@ -128,7 +121,7 @@ public class DefaultCodexTestDesigner : ICodexTestDesigner
                 TaskId = task.Id,
                 Language = language,
                 Framework = adapter.FrameworkName,
-                Reasoning = result?.Reasoning ?? "Auto-generated"
+                Reasoning = reasoning ?? "Auto-generated"
             };
             plan.ReplaceTestFiles(scopedFiles);
 
@@ -239,19 +232,135 @@ public class DefaultCodexTestDesigner : ICodexTestDesigner
         return "csharp";
     }
 
-    // 内部类用于 JSON 反序列化
-    [SuppressMessage("Performance", "CA1812:Avoid uninstantiated internal classes", Justification = "Used by JSON deserialization.")]
-    private sealed class TestDesignResult
+    private static (string? Reasoning, List<TestFile> Files) ReadTestDesign(string json)
     {
-        public required string Reasoning { get; set; }
-        public required List<TestDesignFile> Files { get; set; }
+        using var input = new StringReader(json);
+        using var reader = new JsonTextReader(input);
+        string? reasoning = null;
+        var files = new List<TestFile>();
+        if (!ReadContent(reader))
+        {
+            return (reasoning, files);
+        }
+
+        if (!IsEmptyValue(reader))
+        {
+            foreach (var name in ReadProperties(reader))
+            {
+                if (name.Equals("reasoning", StringComparison.OrdinalIgnoreCase))
+                {
+                    reasoning = reader.ReadAsString();
+                }
+                else if (name.Equals("files", StringComparison.OrdinalIgnoreCase))
+                {
+                    ReadTestFiles(reader, files);
+                }
+                else
+                {
+                    SkipPropertyValue(reader);
+                }
+            }
+        }
+
+        if (ReadContent(reader))
+        {
+            throw new JsonSerializationException("Unexpected content after the test design.");
+        }
+
+        return (reasoning, files);
     }
 
-    [SuppressMessage("Performance", "CA1812:Avoid uninstantiated internal classes", Justification = "Used by JSON deserialization.")]
-    private sealed class TestDesignFile
+    private static void ReadTestFiles(JsonTextReader reader, List<TestFile> files)
     {
-        public required string Path { get; set; }
-        public required string Content { get; set; }
+        if (!ReadContent(reader))
+        {
+            throw new JsonSerializationException("Missing test design files value.");
+        }
+
+        if (IsEmptyValue(reader))
+        {
+            files.Clear();
+            return;
+        }
+
+        if (reader.TokenType != JsonToken.StartArray)
+        {
+            throw new JsonSerializationException("Expected an array of test design files.");
+        }
+
+        while (ReadContent(reader) && reader.TokenType != JsonToken.EndArray)
+        {
+            var file = new TestFile { FilePath = null!, Content = null!, TargetClassOrModule = "Unknown" };
+            foreach (var name in ReadProperties(reader))
+            {
+                if (name.Equals("path", StringComparison.OrdinalIgnoreCase))
+                {
+                    file.FilePath = reader.ReadAsString()!;
+                }
+                else if (name.Equals("content", StringComparison.OrdinalIgnoreCase))
+                {
+                    file.Content = reader.ReadAsString()!;
+                }
+                else
+                {
+                    SkipPropertyValue(reader);
+                }
+            }
+
+            files.Add(file);
+        }
+
+        if (reader.TokenType != JsonToken.EndArray)
+        {
+            throw new JsonSerializationException("Unterminated test design files array.");
+        }
+    }
+
+    private static IEnumerable<string> ReadProperties(JsonTextReader reader)
+    {
+        if (reader.TokenType != JsonToken.StartObject)
+        {
+            throw new JsonSerializationException("Expected a test design object.");
+        }
+
+        while (ReadContent(reader))
+        {
+            if (reader.TokenType == JsonToken.EndObject)
+            {
+                yield break;
+            }
+
+            yield return (string)reader.Value!;
+        }
+
+        throw new JsonSerializationException("Expected a test design object property.");
+    }
+
+    private static void SkipPropertyValue(JsonTextReader reader)
+    {
+        if (!ReadContent(reader))
+        {
+            throw new JsonSerializationException("Missing test design property value.");
+        }
+
+        reader.Skip();
+    }
+
+    private static bool IsEmptyValue(JsonTextReader reader) =>
+        reader.TokenType is JsonToken.Null or JsonToken.Undefined ||
+        reader.TokenType == JsonToken.String && reader.Value is "";
+
+    private static bool ReadContent(JsonTextReader reader)
+    {
+        while (reader.Read())
+        {
+            if (reader.TokenType != JsonToken.Comment)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private sealed class TaskTestScope

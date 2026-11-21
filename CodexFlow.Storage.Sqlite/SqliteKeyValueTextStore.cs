@@ -4,48 +4,55 @@
 
 using System.Globalization;
 using CodexFlow.Core.Abstractions;
-using Microsoft.EntityFrameworkCore;
 
 namespace CodexFlow.Storage.Sqlite;
 
 /// <summary>
-/// <see cref="IKeyValueTextStore"/> in the <c>LocalKv</c> table of the project's SQLite file (created by the
-/// <c>LocalKv</c> migration). Expiry is an ISO-8601 UTC text column, so it compares as text.
+/// <see cref="IKeyValueTextStore"/> in the <c>LocalKv</c> table. Expiry is stored and compared as UTC text.
 /// </summary>
-public sealed class SqliteKeyValueTextStore : IKeyValueTextStore
+public sealed class SqliteKeyValueTextStore(SqliteConnectionFactory connections) : IKeyValueTextStore
 {
     private const string TimeFormat = "yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'";
-
-    private readonly CodexFlow.Orchestration.Jobs.IJobDbContext _context;
-
-    public SqliteKeyValueTextStore(CodexFlow.Orchestration.Jobs.IJobDbContext context)
-    {
-        _context = context;
-    }
 
     /// <inheritdoc />
     public async Task<string?> GetAsync(string key, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         var now = Format(DateTime.UtcNow);
-        var rows = await _context.Database
-            .SqlQuery<string>($@"SELECT ""Value"" AS ""Value"" FROM ""LocalKv"" WHERE ""Key"" = {key} AND ""ExpiresAtUtc"" > {now}")
-            .ToListAsync(ct);
-        return rows.Count == 0 ? null : rows[0];
+        await using var connection = connections.Open();
+        await using var command = connection.CreateCommand();
+        command.CommandText = """SELECT "Value" FROM "LocalKv" WHERE "Key" = $key AND "ExpiresAtUtc" > $now""";
+        command.Parameters.AddWithValue("$key", key);
+        command.Parameters.AddWithValue("$now", now);
+        return await command.ExecuteScalarAsync(ct).ConfigureAwait(false) as string;
     }
 
     /// <inheritdoc />
     public async Task SetAsync(string key, string value, TimeSpan ttl, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         var expires = Format(DateTime.UtcNow.Add(ttl));
-        await _context.Database.ExecuteSqlInterpolatedAsync($@"
-INSERT INTO ""LocalKv"" (""Key"", ""Value"", ""ExpiresAtUtc"") VALUES ({key}, {value}, {expires})
-ON CONFLICT(""Key"") DO UPDATE SET ""Value"" = excluded.""Value"", ""ExpiresAtUtc"" = excluded.""ExpiresAtUtc""", ct);
+        await using var connection = connections.Open();
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO "LocalKv" ("Key", "Value", "ExpiresAtUtc") VALUES ($key, $value, $expires)
+            ON CONFLICT("Key") DO UPDATE SET "Value" = excluded."Value", "ExpiresAtUtc" = excluded."ExpiresAtUtc"
+            """;
+        command.Parameters.AddWithValue("$key", key);
+        command.Parameters.AddWithValue("$value", value);
+        command.Parameters.AddWithValue("$expires", expires);
+        await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
     public async Task DeleteAsync(string key, CancellationToken ct = default)
     {
-        await _context.Database.ExecuteSqlInterpolatedAsync($@"DELETE FROM ""LocalKv"" WHERE ""Key"" = {key}", ct);
+        ct.ThrowIfCancellationRequested();
+        await using var connection = connections.Open();
+        await using var command = connection.CreateCommand();
+        command.CommandText = """DELETE FROM "LocalKv" WHERE "Key" = $key""";
+        command.Parameters.AddWithValue("$key", key);
+        await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
     private static string Format(DateTime utc) => utc.ToUniversalTime().ToString(TimeFormat, CultureInfo.InvariantCulture);

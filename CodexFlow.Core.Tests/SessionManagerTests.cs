@@ -300,6 +300,39 @@ public class SessionManagerTests
     }
 
     [Fact]
+    public void TryRestoreEvidenceLedgerFromSession_PreservesLegacyMissingCollections()
+    {
+        var session = new CodexSession { Id = "legacy" };
+        session.Metadata[QueryRuntimeCheckpoint.MetadataKey] = """
+            {/* persisted by a legacy client */
+              'round': '2',
+              'entryPoint': 'ForgeWorker',
+              'evidenceLedger': { 'files': [
+                { 'filePath': 'src/old.cs', 'toolName': 'hs_read', 'windowStartLine': '3', 'windowEndLine': 5, },
+              ], },
+            }
+            """;
+        var request = new QueryRuntimeRequest
+        {
+            SessionId = session.Id,
+            EntryPoint = QueryLoopEntryPoint.ForgeWorker,
+            InitialMessages = [],
+            Session = session
+        };
+        var state = new QueryRuntimeState();
+        state.EvidenceLedger.RepeatedEvidenceKeys.Add("earlier");
+
+        Assert.True(QueryRuntimeCheckpointBuilder.TryRestoreEvidenceLedgerFromSession(request, state));
+        var file = Assert.Single(state.EvidenceLedger.Files);
+        Assert.Equal("src/old.cs", file.FilePath);
+        Assert.Equal(3, file.WindowStartLine);
+        Assert.Equal(5, file.WindowEndLine);
+        Assert.Empty(state.EvidenceLedger.ToolResults);
+        Assert.Contains("hs_read|src/old.cs|range:3-5", state.EvidenceLedger.SeenReadEvidenceKeys.Keys);
+        Assert.Equal(new[] { "earlier" }, state.EvidenceLedger.RepeatedEvidenceKeys);
+    }
+
+    [Fact]
     public async Task RecordTaskCompletedAsync_ShouldAutoFlush_WhenFiveTasksAccumulate()
     {
         // Arrange

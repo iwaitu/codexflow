@@ -66,3 +66,6 @@
 # The host pins the SHA-256 of this file (ArtifactAudit:ExpectedGitleaksConfigSha256): every checkout must hold the same bytes.
 ###############################################################################
 docker/verification/gitleaks.toml -text
+
+# These patches apply to LF source archives and preserve blank patch context lines.
+CodexFlow.Local/NativeAotDependencies/*.patch text eol=lf whitespace=-blank-at-eol,-blank-at-eof

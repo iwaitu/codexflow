@@ -205,12 +205,16 @@ public sealed class GatewayGuardedPlanTool : ICodexTool
     private static CodexToolResult Denied(GatewayGateResult gate)
         => CodexToolResult.Error(
             $"[{gate.ReasonCode}] {gate.Message}",
-            metadata: new { reason_code = gate.ReasonCode, gateway_gate_denial = true });
+            metadata: new Dictionary<string, object?>
+            {
+                ["reason_code"] = gate.ReasonCode,
+                ["gateway_gate_denial"] = true
+            });
 
     /// <summary>True when the result is a refusal produced by this gate (structured marker, not output text).</summary>
     public static bool IsGateDenial(CodexToolResult result)
         => result.Status == ToolResultStatus.Failed &&
-           result.Metadata?.GetType().GetProperty("gateway_gate_denial")?.GetValue(result.Metadata) is true;
+           GatewayPayloadFields.Bool(result.Metadata, "gateway_gate_denial");
 
     private static string? ReadString(Dictionary<string, object?> arguments, string key)
     {

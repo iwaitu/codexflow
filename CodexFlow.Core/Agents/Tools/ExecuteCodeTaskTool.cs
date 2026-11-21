@@ -5,8 +5,8 @@
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Constants;
 using CodexFlow.Core.Models;
+using CodexFlow.Core.Planning.Artifacts;
 using Microsoft.Extensions.Logging;
-using Newtonsoft.Json;
 using System.IO;
 
 namespace CodexFlow.Core.Agents.Tools;
@@ -73,15 +73,10 @@ public class ExecuteCodeTaskTool(CodexOrchestrator orchestrator, ILogger<Execute
 
             var result = await orchestrator.ExecuteCodeTaskAsync(sessionId, taskId, workspacePath: effectiveWorkspace, ct: ct).ConfigureAwait(false);
 
-            var response = new
-            {
-                result.Success,
-                result.Message,
-                TaskId = taskId
-            };
+            var response = new ExecuteCodeTaskPayload(result.Success, result.Message, taskId);
 
             return result.Success
-                ? CodexToolResult.Succeeded(JsonConvert.SerializeObject(response))
+                ? CodexToolResult.Succeeded(PlanToolJson.Write(response))
                 : CodexToolResult.Error(result.Message);
         }
         catch (IOException ex)

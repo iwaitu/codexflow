@@ -4,13 +4,10 @@
 
 using System.Globalization;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using CodexFlow.Contracts.BusinessSkills;
 using CodexFlow.Core.BusinessSkills;
 using CodexFlow.Core.Gateway;
 using CodexFlow.Domain.BusinessSkills;
-using CodexFlow.Orchestration.Jobs;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -31,12 +28,9 @@ public interface IBusinessSkillRunService
 /// </summary>
 public sealed class BusinessSkillRunService : IBusinessSkillRunService
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
-    {
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
-    };
+    private static BusinessSkillJsonContext Json => BusinessSkillJsonContext.Run;
 
-    private readonly IJobDbContext _db;
+    private readonly IBusinessSkillExecutionStore _store;
     private readonly IBusinessPluginControlService _pluginControl;
     private readonly IBusinessCredentialStore _credentialStore;
     private readonly IBusinessSkillApprovalCoordinator _approvalCoordinator;
@@ -44,20 +38,20 @@ public sealed class BusinessSkillRunService : IBusinessSkillRunService
     private readonly ILogger<BusinessSkillRunService> _logger;
 
     public BusinessSkillRunService(
-        IJobDbContext db,
+        IBusinessSkillExecutionStore store,
         IBusinessPluginControlService pluginControl,
         IBusinessCredentialStore credentialStore,
         IBusinessSkillApprovalCoordinator approvalCoordinator,
         IServiceScopeFactory scopeFactory,
         ILogger<BusinessSkillRunService> logger)
     {
-        ArgumentNullException.ThrowIfNull(db);
+        ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(pluginControl);
         ArgumentNullException.ThrowIfNull(credentialStore);
         ArgumentNullException.ThrowIfNull(approvalCoordinator);
         ArgumentNullException.ThrowIfNull(scopeFactory);
         ArgumentNullException.ThrowIfNull(logger);
-        _db = db;
+        _store = store;
         _pluginControl = pluginControl;
         _credentialStore = credentialStore;
         _approvalCoordinator = approvalCoordinator;
@@ -83,7 +77,7 @@ public sealed class BusinessSkillRunService : IBusinessSkillRunService
             return BusinessServiceResult<SkillRunDto>.Ok(existing, 202);
         }
 
-        var draft = await _db.SkillDrafts.AsNoTracking().FirstOrDefaultAsync(d => d.Id == draftId, ct).ConfigureAwait(false);
+        var draft = await _store.FindDraftAsync(draftId, ct).ConfigureAwait(false);
         if (draft is null)
         {
             return BusinessServiceResult<SkillRunDto>.Fail(404, BusinessSkillErrorCodes.ValidationFailed, $"Draft '{draftId}' not found.");
@@ -91,15 +85,15 @@ public sealed class BusinessSkillRunService : IBusinessSkillRunService
 
         var candidate = string.IsNullOrWhiteSpace(draft.CandidateDefinitionJson)
             ? null
-            : JsonSerializer.Deserialize<SkillDefinitionV1>(draft.CandidateDefinitionJson, JsonOptions);
+            : JsonSerializer.Deserialize(draft.CandidateDefinitionJson, Json.SkillDefinitionV1);
         if (candidate is null)
         {
             return BusinessServiceResult<SkillRunDto>.Fail(422, BusinessSkillErrorCodes.ValidationFailed, "Draft has no candidateDefinition to test.");
         }
 
-        var plugin = await _db.BusinessPlugins.AsNoTracking().FirstOrDefaultAsync(p => p.Id == draft.PluginId, ct).ConfigureAwait(false);
-        var conn = plugin is null ? null : await _db.PluginConnections.AsNoTracking().FirstOrDefaultAsync(c => c.Id == plugin.ConnectionId, ct).ConfigureAwait(false);
-        var snap = await _db.CatalogSnapshots.AsNoTracking().FirstOrDefaultAsync(s => s.Id == draft.CatalogSnapshotId && s.PluginId == draft.PluginId, ct).ConfigureAwait(false);
+        var plugin = await _store.FindPluginAsync(draft.PluginId, ct).ConfigureAwait(false);
+        var conn = plugin is null ? null : await _store.FindConnectionAsync(plugin.ConnectionId, null, ct).ConfigureAwait(false);
+        var snap = await _store.FindSnapshotAsync(draft.CatalogSnapshotId, draft.PluginId, ct).ConfigureAwait(false);
         if (plugin is null || conn is null || snap is null || !plugin.Enabled)
         {
             return BusinessServiceResult<SkillRunDto>.Fail(422, BusinessSkillErrorCodes.ConnectionUnavailable, "Plugin must remain enabled with valid connection and snapshot.");
@@ -177,15 +171,14 @@ public sealed class BusinessSkillRunService : IBusinessSkillRunService
             return BusinessServiceResult<SkillRunDto>.Ok(existing, 202);
         }
 
-        var skill = await _db.PublishedSkills.AsNoTracking().FirstOrDefaultAsync(s => s.Id == skillId, ct).ConfigureAwait(false);
+        var skill = await _store.FindPublishedSkillAsync(skillId, ct).ConfigureAwait(false);
         if (skill is null)
         {
             return BusinessServiceResult<SkillRunDto>.Fail(404, BusinessSkillErrorCodes.ValidationFailed, $"Published skill '{skillId}' not found.");
         }
 
         var targetVersion = request.Version ?? skill.ActiveVersion;
-        var verEntity = await _db.PublishedSkillVersions.AsNoTracking()
-            .FirstOrDefaultAsync(v => v.SkillId == skillId && v.Version == targetVersion, ct)
+        var verEntity = await _store.FindPublishedVersionAsync(skillId, targetVersion, ct)
             .ConfigureAwait(false);
         if (verEntity is null)
         {
@@ -198,16 +191,15 @@ public sealed class BusinessSkillRunService : IBusinessSkillRunService
                 $"Skill '{skillId}' v{targetVersion} requires revalidation after plugin/catalog change before execution.");
         }
 
-        var plugin = await _db.BusinessPlugins.AsNoTracking().FirstOrDefaultAsync(p => p.Id == skill.PluginId, ct).ConfigureAwait(false);
-        var conn = plugin is null ? null : await _db.PluginConnections.AsNoTracking().FirstOrDefaultAsync(c => c.Id == plugin.ConnectionId, ct).ConfigureAwait(false);
+        var plugin = await _store.FindPluginAsync(skill.PluginId, ct).ConfigureAwait(false);
+        var conn = plugin is null ? null : await _store.FindConnectionAsync(plugin.ConnectionId, null, ct).ConfigureAwait(false);
         if (plugin is null || conn is null || !plugin.Enabled)
         {
             return BusinessServiceResult<SkillRunDto>.Fail(422, BusinessSkillErrorCodes.ConnectionUnavailable,
                 $"Plugin '{skill.PluginId}' is disabled or missing.");
         }
 
-        var snap = await _db.CatalogSnapshots.AsNoTracking()
-            .FirstOrDefaultAsync(s => s.Id == verEntity.CatalogSnapshotId && s.PluginId == plugin.Id, ct)
+        var snap = await _store.FindSnapshotAsync(verEntity.CatalogSnapshotId, plugin.Id, ct)
             .ConfigureAwait(false);
         if (snap is null)
         {
@@ -239,7 +231,7 @@ public sealed class BusinessSkillRunService : IBusinessSkillRunService
             }
         }
 
-        var def = JsonSerializer.Deserialize<SkillDefinitionV1>(verEntity.DefinitionJson, JsonOptions);
+        var def = JsonSerializer.Deserialize(verEntity.DefinitionJson, Json.SkillDefinitionV1);
         if (def is null)
         {
             return BusinessServiceResult<SkillRunDto>.Fail(422, BusinessSkillErrorCodes.ValidationFailed, "Published skill definition JSON is invalid.");
@@ -290,16 +282,13 @@ public sealed class BusinessSkillRunService : IBusinessSkillRunService
 
     public async Task<BusinessServiceResult<SkillRunDto>> GetRunAsync(string runId, CancellationToken ct = default)
     {
-        var run = await _db.SkillRuns.AsNoTracking().FirstOrDefaultAsync(r => r.RunId == runId, ct).ConfigureAwait(false);
+        var run = await _store.FindRunAsync(runId, ct).ConfigureAwait(false);
         if (run is null)
         {
             return BusinessServiceResult<SkillRunDto>.Fail(404, BusinessSkillErrorCodes.ValidationFailed, $"Run '{runId}' not found.");
         }
 
-        var steps = await _db.SkillRunSteps.AsNoTracking()
-            .Where(s => s.RunId == runId)
-            .OrderBy(s => s.Sequence)
-            .ToArrayAsync(ct)
+        var steps = await _store.ListRunStepsAsync([runId], ct)
             .ConfigureAwait(false);
 
         return BusinessServiceResult<SkillRunDto>.Ok(MapRunDto(run, steps, snapId: string.Empty, isTestRun: run.SkillId.StartsWith("draft:", StringComparison.Ordinal)));
@@ -307,17 +296,13 @@ public sealed class BusinessSkillRunService : IBusinessSkillRunService
 
     public async Task<BusinessServiceResult<IReadOnlyList<SkillRunDto>>> ListRunsForSkillAsync(string skillId, CancellationToken ct = default)
     {
-        var runs = await _db.SkillRuns.AsNoTracking()
-            .Where(r => r.SkillId == skillId)
-            .OrderByDescending(r => r.CreatedAtUtc)
-            .Take(50)
-            .ToListAsync(ct)
+        var runs = await _store.ListRecentRunsAsync(skillId, ct)
             .ConfigureAwait(false);
 
         var runIds = runs.Select(static r => r.RunId).ToArray();
         var steps = runIds.Length == 0
             ? []
-            : await _db.SkillRunSteps.AsNoTracking().Where(s => runIds.Contains(s.RunId)).ToListAsync(ct).ConfigureAwait(false);
+            : await _store.ListRunStepsAsync(runIds, ct).ConfigureAwait(false);
         var byRun = steps.GroupBy(static s => s.RunId, StringComparer.Ordinal)
             .ToDictionary(static g => g.Key, static g => g.OrderBy(x => x.Sequence).ToArray(), StringComparer.Ordinal);
 
@@ -332,22 +317,15 @@ public sealed class BusinessSkillRunService : IBusinessSkillRunService
 
     public async Task<BusinessServiceResult<SkillRunDto>> CancelRunAsync(string runId, CancellationToken ct = default)
     {
-        var run = await _db.SkillRuns.FirstOrDefaultAsync(r => r.RunId == runId, ct).ConfigureAwait(false);
+        var run = await _store.RequestStopAsync(runId, DateTime.UtcNow, ct).ConfigureAwait(false);
         if (run is null)
         {
             return BusinessServiceResult<SkillRunDto>.Fail(404, BusinessSkillErrorCodes.ValidationFailed, $"Run '{runId}' not found.");
         }
 
-        run.StopRequested = true;
-        run.UpdatedAtUtc = DateTime.UtcNow;
-        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
-
         _approvalCoordinator.RequestRunStop(runId, "Run cancellation requested by control-plane operator.");
 
-        var steps = await _db.SkillRunSteps.AsNoTracking()
-            .Where(s => s.RunId == runId)
-            .OrderBy(s => s.Sequence)
-            .ToArrayAsync(ct)
+        var steps = await _store.ListRunStepsAsync([runId], ct)
             .ConfigureAwait(false);
 
         return BusinessServiceResult<SkillRunDto>.Ok(MapRunDto(run, steps, snapId: string.Empty, isTestRun: run.SkillId.StartsWith("draft:", StringComparison.Ordinal)));
@@ -355,17 +333,7 @@ public sealed class BusinessSkillRunService : IBusinessSkillRunService
 
     public async Task ReconcileOrphanedRunsOnStartupAsync(CancellationToken ct = default)
     {
-        var activeStatuses = new[]
-        {
-            nameof(SkillRunStatus.Queued),
-            nameof(SkillRunStatus.Running),
-            nameof(SkillRunStatus.WaitingForApproval)
-        };
-
-        var orphans = await _db.SkillRuns
-            .Where(r => activeStatuses.Contains(r.Status))
-            .ToListAsync(ct)
-            .ConfigureAwait(false);
+        var orphans = await _store.ListActiveRunsAsync(ct).ConfigureAwait(false);
 
         if (orphans.Count == 0)
         {
@@ -373,18 +341,16 @@ public sealed class BusinessSkillRunService : IBusinessSkillRunService
         }
 
         var now = DateTime.UtcNow;
+        var recoveries = new List<SkillRunRecovery>(orphans.Count);
         foreach (var run in orphans)
         {
-            var steps = await _db.SkillRunSteps
-                .Where(s => s.RunId == run.RunId)
-                .OrderBy(s => s.Sequence)
-                .ToListAsync(ct)
-                .ConfigureAwait(false);
-
-            var hasDispatchingStep = steps.Any(static s => string.Equals(s.State, nameof(SkillRunStepState.Dispatching), StringComparison.Ordinal));
-            if (hasDispatchingStep)
+            var expectedStatus = run.Status;
+            var steps = await _store.ListRunStepsAsync([run.RunId], ct).ConfigureAwait(false);
+            var dispatching = steps.Where(static step => string.Equals(
+                step.State, nameof(SkillRunStepState.Dispatching), StringComparison.Ordinal)).ToArray();
+            if (dispatching.Length != 0)
             {
-                foreach (var ds in steps.Where(static s => string.Equals(s.State, nameof(SkillRunStepState.Dispatching), StringComparison.Ordinal)))
+                foreach (var ds in dispatching)
                 {
                     ds.State = nameof(SkillRunStepState.OutcomeUnknown);
                     ds.ErrorCode = BusinessSkillErrorCodes.OutcomeUnknown;
@@ -399,7 +365,7 @@ public sealed class BusinessSkillRunService : IBusinessSkillRunService
                     "Host restarted while a dispatched write request was in flight; please reconcile target state manually before retrying.",
                     [],
                     false,
-                    run.RunId), JsonOptions);
+                    run.RunId), Json.BusinessSkillErrorDto);
             }
             else if (string.Equals(run.Status, nameof(SkillRunStatus.WaitingForApproval), StringComparison.Ordinal))
             {
@@ -410,7 +376,7 @@ public sealed class BusinessSkillRunService : IBusinessSkillRunService
                     "Host restarted while waiting for write approval; pending approval was invalidated.",
                     [],
                     false,
-                    run.RunId), JsonOptions);
+                    run.RunId), Json.BusinessSkillErrorDto);
             }
             else
             {
@@ -421,13 +387,14 @@ public sealed class BusinessSkillRunService : IBusinessSkillRunService
                     "Host restarted before run completed.",
                     [],
                     true,
-                    run.RunId), JsonOptions);
+                    run.RunId), Json.BusinessSkillErrorDto);
             }
 
-            run.UpdatedAtUtc = now;
+            var state = new SkillRunFinalState(Enum.Parse<SkillRunStatus>(run.Status), null, null, null, run.ErrorJson, now, UpdateOutput: false);
+            recoveries.Add(new SkillRunRecovery(run.RunId, expectedStatus, state, dispatching));
         }
 
-        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+        await _store.RecoverRunsAsync(recoveries, ct).ConfigureAwait(false);
     }
 
     private async Task<BusinessServiceResult<SkillRunDto>> CreateAndLaunchRunAsync(PendingLaunchSpec spec, CancellationToken ct)
@@ -443,13 +410,18 @@ public sealed class BusinessSkillRunService : IBusinessSkillRunService
             StopRequested = false,
             ExternalRequestCount = 0,
             ReadOnlyRetryCount = 0,
-            InputsJson = JsonSerializer.Serialize(spec.ResolvedInputs, JsonOptions),
+            InputsJson = JsonSerializer.Serialize(spec.ResolvedInputs, Json.InputValues),
             CreatedAtUtc = now,
             UpdatedAtUtc = now
         };
 
-        _db.SkillRuns.Add(runEntity);
-        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+        var persisted = await _store.CreateRunAsync(runEntity, ct).ConfigureAwait(false);
+        if (persisted.RunId != runEntity.RunId)
+        {
+            var steps = await _store.ListRunStepsAsync([persisted.RunId], ct).ConfigureAwait(false);
+            return BusinessServiceResult<SkillRunDto>.Ok(MapRunDto(
+                persisted, steps, snapId: string.Empty, isTestRun: spec.IsTestRun), 202);
+        }
 
         _approvalCoordinator.RegisterActiveRun(spec.RunId, spec.Plugin.Id);
         _ = Task.Run(() => ExecuteRunInBackgroundAsync(spec), CancellationToken.None);
@@ -463,19 +435,14 @@ public sealed class BusinessSkillRunService : IBusinessSkillRunService
         try
         {
             await using var scope = _scopeFactory.CreateAsyncScope();
-            var db = scope.ServiceProvider.GetRequiredService<IJobDbContext>();
+            var store = scope.ServiceProvider.GetRequiredService<IBusinessSkillExecutionStore>();
             var engine = scope.ServiceProvider.GetRequiredService<SkillWorkflowEngine>();
             var gateway = scope.ServiceProvider.GetService<ICodexGateway>();
 
-            var runRow = await db.SkillRuns.FirstOrDefaultAsync(r => r.RunId == spec.RunId, CancellationToken.None).ConfigureAwait(false);
-            if (runRow is null)
+            if (!await store.StartQueuedRunAsync(spec.RunId, DateTime.UtcNow, CancellationToken.None).ConfigureAwait(false))
             {
                 return;
             }
-
-            runRow.Status = nameof(SkillRunStatus.Running);
-            runRow.UpdatedAtUtc = DateTime.UtcNow;
-            await db.SaveChangesAsync(CancellationToken.None).ConfigureAwait(false);
 
             var runtimeHost = new SqliteSkillRunRuntimeHost(spec.RunId, spec.Plugin.Id, _scopeFactory, _approvalCoordinator);
             var execContext = new SkillRunExecutionContext
@@ -484,7 +451,7 @@ public sealed class BusinessSkillRunService : IBusinessSkillRunService
                 Definition = spec.Definition,
                 PluginId = spec.Plugin.Id,
                 PluginName = spec.Plugin.Name,
-                SourceUrl = spec.Connection.SourceUrl,
+                SourceAddress = spec.Connection.SourceUrl,
                 Environment = spec.Connection.Environment,
                 ConnectionId = spec.Connection.Id,
                 ConnectionRevision = spec.Connection.Revision,
@@ -503,22 +470,20 @@ public sealed class BusinessSkillRunService : IBusinessSkillRunService
 
             var outcome = await engine.ExecuteAsync(execContext, runtimeHost, CancellationToken.None).ConfigureAwait(false);
 
-            runRow.Status = outcome.FinalStatus.ToString();
-            runRow.ExternalRequestCount = outcome.ExternalRequestsConsumed;
-            runRow.ReadOnlyRetryCount = outcome.ReadOnlyRetriesConsumed;
-            runRow.PendingApprovalJson = null;
-            runRow.OutputPayloadJson = outcome.OutputPayload.HasValue ? JsonSerializer.Serialize(outcome.OutputPayload.Value, JsonOptions) : null;
-            runRow.ErrorJson = outcome.Error is not null ? JsonSerializer.Serialize(outcome.Error, JsonOptions) : null;
-            runRow.UpdatedAtUtc = DateTime.UtcNow;
+            var state = new SkillRunFinalState(outcome.FinalStatus, outcome.ExternalRequestsConsumed, outcome.ReadOnlyRetriesConsumed,
+                outcome.OutputPayload.HasValue ? JsonSerializer.Serialize(outcome.OutputPayload.Value, Json.JsonElement) : null,
+                outcome.Error is not null ? JsonSerializer.Serialize(outcome.Error, Json.BusinessSkillErrorDto) : null,
+                DateTime.UtcNow);
+            SkillDraftRunEvidence? evidence = null;
 
             if (spec.DraftIdForEvidence is not null && outcome.FinalStatus == SkillRunStatus.Succeeded)
             {
-                var draft = await db.SkillDrafts.FirstOrDefaultAsync(d => d.Id == spec.DraftIdForEvidence, CancellationToken.None).ConfigureAwait(false);
+                var draft = await store.FindDraftAsync(spec.DraftIdForEvidence, CancellationToken.None).ConfigureAwait(false);
                 if (draft is not null &&
                     draft.Revision == spec.DraftRevisionForEvidence &&
                     !string.IsNullOrWhiteSpace(draft.CandidateDefinitionJson))
                 {
-                    var cand = JsonSerializer.Deserialize<SkillDefinitionV1>(draft.CandidateDefinitionJson, JsonOptions);
+                    var cand = JsonSerializer.Deserialize(draft.CandidateDefinitionJson, Json.SkillDefinitionV1);
                     if (cand is not null)
                     {
                         var evHash = BusinessSkillBuilderService.ComputeTestRunEvidenceHash(
@@ -539,29 +504,29 @@ public sealed class BusinessSkillRunService : IBusinessSkillRunService
                                 VerifiedAtUtc = DateTimeOffset.UtcNow
                             }
                         };
-                        draft.CandidateDefinitionJson = JsonSerializer.Serialize(updatedCand, JsonOptions);
-                        draft.UpdatedAtUtc = DateTime.UtcNow;
+                        evidence = new SkillDraftRunEvidence(draft.Id, draft.Revision, draft.CandidateDefinitionJson,
+                            JsonSerializer.Serialize(updatedCand, Json.SkillDefinitionV1), DateTime.UtcNow);
                     }
                 }
             }
 
-            await db.SaveChangesAsync(CancellationToken.None).ConfigureAwait(false);
+            var runRow = await store.FinishRunAsync(spec.RunId, state, evidence, CancellationToken.None).ConfigureAwait(false);
 
-            if (gateway is not null && !string.IsNullOrWhiteSpace(spec.SessionId))
+            if (runRow is not null && gateway is not null && !string.IsNullOrWhiteSpace(spec.SessionId))
             {
                 await gateway.PublishEventAsync(
                     spec.SessionId,
                     new GatewaySseEvent
                     {
                         Type = GatewaySseEventType.BusinessSkillRunUpdated,
-                        Payload = new
+                        Payload = new Dictionary<string, object?>
                         {
-                            runId = runRow.RunId,
-                            skillId = runRow.SkillId,
-                            skillVersion = runRow.SkillVersion,
-                            status = runRow.Status,
-                            stopRequested = runRow.StopRequested,
-                            updatedAtUtc = new DateTimeOffset(runRow.UpdatedAtUtc, TimeSpan.Zero).ToString("O")
+                            ["runId"] = runRow.RunId,
+                            ["skillId"] = runRow.SkillId,
+                            ["skillVersion"] = runRow.SkillVersion,
+                            ["status"] = runRow.Status,
+                            ["stopRequested"] = runRow.StopRequested,
+                            ["updatedAtUtc"] = new DateTimeOffset(runRow.UpdatedAtUtc, TimeSpan.Zero).ToString("O")
                         }
                     },
                     CancellationToken.None).ConfigureAwait(false);
@@ -573,18 +538,12 @@ public sealed class BusinessSkillRunService : IBusinessSkillRunService
             try
             {
                 await using var errScope = _scopeFactory.CreateAsyncScope();
-                var db = errScope.ServiceProvider.GetRequiredService<IJobDbContext>();
-                var runRow = await db.SkillRuns.FirstOrDefaultAsync(r => r.RunId == spec.RunId, CancellationToken.None).ConfigureAwait(false);
-                if (runRow is not null)
-                {
-                    runRow.Status = nameof(SkillRunStatus.Failed);
-                    runRow.PendingApprovalJson = null;
-                    runRow.ErrorJson = JsonSerializer.Serialize(
-                        new BusinessSkillErrorDto(BusinessSkillErrorCodes.ConnectionUnavailable, ex.Message, [], false, spec.RunId),
-                        JsonOptions);
-                    runRow.UpdatedAtUtc = DateTime.UtcNow;
-                    await db.SaveChangesAsync(CancellationToken.None).ConfigureAwait(false);
-                }
+                var store = errScope.ServiceProvider.GetRequiredService<IBusinessSkillExecutionStore>();
+                var error = JsonSerializer.Serialize(
+                    new BusinessSkillErrorDto(BusinessSkillErrorCodes.ConnectionUnavailable, ex.Message, [], false, spec.RunId),
+                    Json.BusinessSkillErrorDto);
+                var state = new SkillRunFinalState(SkillRunStatus.Failed, null, null, null, error, DateTime.UtcNow, UpdateOutput: false);
+                await store.FinishRunAsync(spec.RunId, state, null, CancellationToken.None).ConfigureAwait(false);
             }
             catch (Exception innerEx)
             {
@@ -599,18 +558,14 @@ public sealed class BusinessSkillRunService : IBusinessSkillRunService
 
     private async Task<SkillRunDto?> TryFindExistingIdempotentRunAsync(string skillId, string clientRequestId, CancellationToken ct)
     {
-        var run = await _db.SkillRuns.AsNoTracking()
-            .FirstOrDefaultAsync(r => r.SkillId == skillId && r.ClientRequestId == clientRequestId, ct)
+        var run = await _store.FindIdempotentRunAsync(skillId, clientRequestId, ct)
             .ConfigureAwait(false);
         if (run is null)
         {
             return null;
         }
 
-        var steps = await _db.SkillRunSteps.AsNoTracking()
-            .Where(s => s.RunId == run.RunId)
-            .OrderBy(s => s.Sequence)
-            .ToArrayAsync(ct)
+        var steps = await _store.ListRunStepsAsync([run.RunId], ct)
             .ConfigureAwait(false);
 
         return MapRunDto(run, steps, snapId: string.Empty, isTestRun: skillId.StartsWith("draft:", StringComparison.Ordinal));
@@ -618,9 +573,7 @@ public sealed class BusinessSkillRunService : IBusinessSkillRunService
 
     private async Task<Dictionary<string, CapabilityDetailDto>> LoadCapabilityMapAsync(string snapshotId, CancellationToken ct)
     {
-        var rows = await _db.CatalogCapabilities.AsNoTracking()
-            .Where(c => c.SnapshotId == snapshotId)
-            .ToListAsync(ct)
+        var rows = await _store.ListCapabilitiesAsync(snapshotId, ct)
             .ConfigureAwait(false);
 
         return rows.Select(static c => new CapabilityDetailDto
@@ -638,11 +591,11 @@ public sealed class BusinessSkillRunService : IBusinessSkillRunService
                 Risk = Enum.TryParse<CapabilityRiskLevel>(c.Risk, out var r) ? r : CapabilityRiskLevel.Unknown,
                 SuggestedSourceRiskHint = !string.IsNullOrEmpty(c.SuggestedSourceRiskHint) && Enum.TryParse<CapabilityRiskLevel>(c.SuggestedSourceRiskHint, out var sr) ? sr : null,
                 Executability = Enum.TryParse<CapabilityExecutabilityStatus>(c.Executability, out var ex) ? ex : CapabilityExecutabilityStatus.Unsupported,
-                Diagnostics = JsonSerializer.Deserialize<string[]>(c.DiagnosticsJson, JsonOptions) ?? []
+                Diagnostics = JsonSerializer.Deserialize(c.DiagnosticsJson, Json.StringArray) ?? []
             },
             InputSchemaJson = c.InputSchemaJson,
             OutputSchemaJson = c.OutputSchemaJson,
-            Invocation = JsonSerializer.Deserialize<CapabilityInvocationSpecDto>(c.InvocationJson, JsonOptions) ?? new CapabilityInvocationSpecDto()
+            Invocation = JsonSerializer.Deserialize(c.InvocationJson, Json.CapabilityInvocationSpecDto) ?? new CapabilityInvocationSpecDto()
         }).ToDictionary(static d => d.Summary.Id, StringComparer.Ordinal);
     }
 
@@ -659,8 +612,7 @@ public sealed class BusinessSkillRunService : IBusinessSkillRunService
             return (BusinessAuthKind.None, null, false);
         }
 
-        var meta = await _db.BusinessCredentialMetas.AsNoTracking()
-            .FirstOrDefaultAsync(m => m.CredentialRef == targetRef, ct)
+        var meta = await _store.FindCredentialAsync(targetRef, ct)
             .ConfigureAwait(false);
         if (meta is null || !Enum.TryParse<BusinessAuthKind>(meta.AuthKind, out var authKind) || authKind == BusinessAuthKind.None)
         {
@@ -678,7 +630,7 @@ public sealed class BusinessSkillRunService : IBusinessSkillRunService
 
     private static EndpointPolicyDto DeserializePolicy(string json, string fallbackSourceUrl)
     {
-        var parsed = JsonSerializer.Deserialize<EndpointPolicyDto>(json, JsonOptions);
+        var parsed = JsonSerializer.Deserialize(json, Json.EndpointPolicyDto);
         if (parsed is not null && !string.IsNullOrWhiteSpace(parsed.AllowedOrigin))
         {
             return parsed;
@@ -729,11 +681,11 @@ public sealed class BusinessSkillRunService : IBusinessSkillRunService
             }).ToArray(),
             PendingApproval = string.IsNullOrWhiteSpace(r.PendingApprovalJson)
                 ? null
-                : JsonSerializer.Deserialize<BusinessApprovalRequestDto>(r.PendingApprovalJson, JsonOptions),
+                : JsonSerializer.Deserialize(r.PendingApprovalJson, Json.BusinessApprovalRequestDto),
             OutputPayload = outEl,
             Error = string.IsNullOrWhiteSpace(r.ErrorJson)
                 ? null
-                : JsonSerializer.Deserialize<BusinessSkillErrorDto>(r.ErrorJson, JsonOptions),
+                : JsonSerializer.Deserialize(r.ErrorJson, Json.BusinessSkillErrorDto),
             CreatedAtUtc = new DateTimeOffset(r.CreatedAtUtc, TimeSpan.Zero),
             UpdatedAtUtc = new DateTimeOffset(r.UpdatedAtUtc, TimeSpan.Zero)
         };
@@ -759,80 +711,39 @@ public sealed class BusinessSkillRunService : IBusinessSkillRunService
             CancellationToken ct)
         {
             await using var scope = scopeFactory.CreateAsyncScope();
-            var db = scope.ServiceProvider.GetRequiredService<IJobDbContext>();
+            var store = scope.ServiceProvider.GetRequiredService<IBusinessSkillExecutionStore>();
 
             var isTerminal = state is SkillRunStepState.Succeeded or SkillRunStepState.Failed or SkillRunStepState.Cancelled or SkillRunStepState.OutcomeUnknown;
             var now = DateTime.UtcNow;
 
-            if (!_stepSequences.TryGetValue(stepId, out var seq))
+            var insert = !_stepSequences.TryGetValue(stepId, out var sequence);
+            if (insert)
             {
-                seq = _nextSeq++;
-                _stepSequences[stepId] = seq;
-                db.SkillRunSteps.Add(new SkillRunStepEntity
-                {
-                    RunId = runId,
-                    Sequence = seq,
-                    StepId = stepId,
-                    StepType = stepType,
-                    State = state.ToString(),
-                    RequestSummary = requestSummary,
-                    ResponseSummary = responseSummary,
-                    Evidence = evidence,
-                    ErrorCode = errorCode,
-                    StartedAtUtc = now,
-                    CompletedAtUtc = isTerminal ? now : null
-                });
-            }
-            else
-            {
-                var row = await db.SkillRunSteps.FirstOrDefaultAsync(s => s.RunId == runId && s.Sequence == seq, ct).ConfigureAwait(false);
-                if (row is not null)
-                {
-                    row.State = state.ToString();
-                    if (requestSummary is not null)
-                    {
-                        row.RequestSummary = requestSummary;
-                    }
-
-                    if (responseSummary is not null)
-                    {
-                        row.ResponseSummary = responseSummary;
-                    }
-
-                    if (evidence is not null)
-                    {
-                        row.Evidence = evidence;
-                    }
-
-                    if (errorCode is not null)
-                    {
-                        row.ErrorCode = errorCode;
-                    }
-
-                    if (isTerminal)
-                    {
-                        row.CompletedAtUtc = now;
-                    }
-                }
+                sequence = _nextSeq++;
+                _stepSequences[stepId] = sequence;
             }
 
-            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+            await store.PersistCheckpointAsync(new SkillRunStepEntity
+            {
+                RunId = runId,
+                Sequence = sequence,
+                StepId = stepId,
+                StepType = stepType,
+                State = state.ToString(),
+                RequestSummary = requestSummary,
+                ResponseSummary = responseSummary,
+                Evidence = evidence,
+                ErrorCode = errorCode,
+                StartedAtUtc = now,
+                CompletedAtUtc = isTerminal ? now : null
+            }, insert, ct).ConfigureAwait(false);
         }
 
         public async Task UpdateRunProgressAsync(int externalRequestsConsumed, int readOnlyRetriesConsumed, CancellationToken ct)
         {
             await using var scope = scopeFactory.CreateAsyncScope();
-            var db = scope.ServiceProvider.GetRequiredService<IJobDbContext>();
-            var row = await db.SkillRuns.FirstOrDefaultAsync(r => r.RunId == runId, ct).ConfigureAwait(false);
-            if (row is null)
-            {
-                return;
-            }
-
-            row.ExternalRequestCount = externalRequestsConsumed;
-            row.ReadOnlyRetryCount = readOnlyRetriesConsumed;
-            row.UpdatedAtUtc = DateTime.UtcNow;
-            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+            var store = scope.ServiceProvider.GetRequiredService<IBusinessSkillExecutionStore>();
+            await store.UpdateProgressAsync(runId, externalRequestsConsumed, readOnlyRetriesConsumed, DateTime.UtcNow, ct).ConfigureAwait(false);
         }
 
         public async Task<bool> IsStopOrInvalidationRequestedAsync(CancellationToken ct)
@@ -843,8 +754,8 @@ public sealed class BusinessSkillRunService : IBusinessSkillRunService
             }
 
             await using var scope = scopeFactory.CreateAsyncScope();
-            var db = scope.ServiceProvider.GetRequiredService<IJobDbContext>();
-            var row = await db.SkillRuns.AsNoTracking().FirstOrDefaultAsync(r => r.RunId == runId, ct).ConfigureAwait(false);
+            var store = scope.ServiceProvider.GetRequiredService<IBusinessSkillExecutionStore>();
+            var row = await store.FindRunAsync(runId, ct).ConfigureAwait(false);
             return row?.StopRequested == true;
         }
 

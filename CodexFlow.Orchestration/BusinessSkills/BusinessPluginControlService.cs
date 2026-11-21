@@ -7,8 +7,7 @@ using System.Text.Json;
 using CodexFlow.Contracts.BusinessSkills;
 using CodexFlow.Core.BusinessSkills;
 using CodexFlow.Domain.BusinessSkills;
-using CodexFlow.Orchestration.Jobs;
-using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace CodexFlow.Orchestration.BusinessSkills;
 
@@ -63,56 +62,40 @@ public interface IBusinessPluginControlService
 
 public sealed class BusinessPluginControlService : IBusinessPluginControlService
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static BusinessSkillJsonContext Json => BusinessSkillJsonContext.Default;
 
-    private readonly IJobDbContext _db;
+    private readonly IBusinessPluginStore _store;
     private readonly IBusinessCredentialStore _credentialStore;
     private readonly OutboundTargetPolicyGuard _targetGuard;
     private readonly OpenApiBusinessPluginAdapter _openApiAdapter;
     private readonly McpBusinessPluginAdapter _mcpAdapter;
     private readonly IBusinessSkillApprovalCoordinator? _approvalCoordinator;
+    private readonly ILogger<BusinessPluginControlService>? _logger;
 
     public BusinessPluginControlService(
-        IJobDbContext db,
+        IBusinessPluginStore store,
         IBusinessCredentialStore credentialStore,
         OutboundTargetPolicyGuard targetGuard,
         OpenApiBusinessPluginAdapter? openApiAdapter = null,
         McpBusinessPluginAdapter? mcpAdapter = null,
-        IBusinessSkillApprovalCoordinator? approvalCoordinator = null)
+        IBusinessSkillApprovalCoordinator? approvalCoordinator = null,
+        ILogger<BusinessPluginControlService>? logger = null)
     {
-        ArgumentNullException.ThrowIfNull(db);
+        ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(credentialStore);
         ArgumentNullException.ThrowIfNull(targetGuard);
-        _db = db;
+        _store = store;
         _credentialStore = credentialStore;
         _targetGuard = targetGuard;
         _openApiAdapter = openApiAdapter ?? new OpenApiBusinessPluginAdapter(targetGuard);
         _mcpAdapter = mcpAdapter ?? new McpBusinessPluginAdapter(targetGuard);
         _approvalCoordinator = approvalCoordinator;
+        _logger = logger;
     }
 
     public async Task<IReadOnlyList<BusinessPluginDto>> ListPluginsAsync(CancellationToken ct = default)
     {
-        var plugins = await _db.BusinessPlugins.AsNoTracking().OrderBy(p => p.CreatedAtUtc).ToListAsync(ct).ConfigureAwait(false);
-        var connections = await _db.PluginConnections.AsNoTracking().ToDictionaryAsync(c => c.Id, StringComparer.Ordinal, ct).ConfigureAwait(false);
-        var credMetas = await _db.BusinessCredentialMetas.AsNoTracking().ToDictionaryAsync(m => m.CredentialRef, StringComparer.Ordinal, ct).ConfigureAwait(false);
-
-        var activeSnapshotIds = plugins
-            .Select(p => p.ActiveSnapshotId)
-            .Where(id => !string.IsNullOrEmpty(id))
-            .Cast<string>()
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
-
-        var capabilityCounts = activeSnapshotIds.Length == 0
-            ? new Dictionary<string, int>(StringComparer.Ordinal)
-            : await _db.CatalogCapabilities.AsNoTracking()
-                .Where(c => activeSnapshotIds.Contains(c.SnapshotId))
-                .GroupBy(c => c.SnapshotId)
-                .Select(g => new { SnapshotId = g.Key, Count = g.Count() })
-                .ToDictionaryAsync(x => x.SnapshotId, x => x.Count, StringComparer.Ordinal, ct)
-                .ConfigureAwait(false);
-
+        var (plugins, connections, credMetas, capabilityCounts) = await _store.LoadDirectoryAsync(ct).ConfigureAwait(false);
         var result = new List<BusinessPluginDto>(plugins.Count);
         foreach (var plugin in plugins)
         {
@@ -168,7 +151,7 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
             PluginId = pluginId,
             SourceUrl = sourceUri.AbsoluteUri,
             Environment = string.IsNullOrWhiteSpace(request.Environment) ? "default" : request.Environment.Trim(),
-            EndpointPolicyJson = JsonSerializer.Serialize(policy, JsonOptions),
+            EndpointPolicyJson = JsonSerializer.Serialize(policy, Json.EndpointPolicyDto),
             Revision = 1,
             CredentialRevision = "none",
             IsEncryptedTransport = eval.IsEncryptedTransport,
@@ -176,9 +159,7 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
             UpdatedAtUtc = now
         };
 
-        _db.BusinessPlugins.Add(plugin);
-        _db.PluginConnections.Add(connection);
-        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+        await _store.CreatePluginAsync(plugin, connection, ct).ConfigureAwait(false);
 
         var credMetas = new Dictionary<string, BusinessCredentialMetaEntity>(StringComparer.Ordinal);
         return BusinessServiceResult<BusinessPluginDto>.Ok(MapPluginDto(plugin, connection, credMetas, 0), 201);
@@ -194,13 +175,13 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
             return BusinessServiceResult<BusinessPluginDto>.Fail(422, BusinessSkillErrorCodes.ValidationFailed, "Valid SourceUrl is required.");
         }
 
-        var plugin = await _db.BusinessPlugins.FirstOrDefaultAsync(p => p.Id == pluginId, ct).ConfigureAwait(false);
+        var plugin = await _store.FindPluginAsync(pluginId, ct).ConfigureAwait(false);
         if (plugin is null)
         {
             return BusinessServiceResult<BusinessPluginDto>.Fail(404, BusinessSkillErrorCodes.ConnectionUnavailable, $"Plugin '{pluginId}' not found.");
         }
 
-        var connection = await _db.PluginConnections.FirstOrDefaultAsync(c => c.Id == plugin.ConnectionId, ct).ConfigureAwait(false);
+        var connection = await _store.FindConnectionAsync(plugin.ConnectionId, ct).ConfigureAwait(false);
         if (connection is null)
         {
             return BusinessServiceResult<BusinessPluginDto>.Fail(404, BusinessSkillErrorCodes.ConnectionUnavailable, $"Connection for plugin '{pluginId}' not found.");
@@ -226,19 +207,14 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
 
         connection.SourceUrl = sourceUri.AbsoluteUri;
         connection.Environment = string.IsNullOrWhiteSpace(request.Environment) ? "default" : request.Environment.Trim();
-        connection.EndpointPolicyJson = JsonSerializer.Serialize(policy, JsonOptions);
+        connection.EndpointPolicyJson = JsonSerializer.Serialize(policy, Json.EndpointPolicyDto);
         connection.IsEncryptedTransport = eval.IsEncryptedTransport;
         connection.Revision += 1;
         connection.UpdatedAtUtc = DateTime.UtcNow;
         plugin.UpdatedAtUtc = connection.UpdatedAtUtc;
 
-        await MarkDependentDefinitionsNeedsRevalidationAsync(pluginId, ct).ConfigureAwait(false);
-
-        try
-        {
-            await _db.SaveChangesAsync(ct).ConfigureAwait(false);
-        }
-        catch (DbUpdateConcurrencyException)
+        var saved = await _store.TrySaveConnectionAsync(plugin, connection, request.ExpectedRevision, null, null, ct).ConfigureAwait(false);
+        if (!saved.Updated)
         {
             return BusinessServiceResult<BusinessPluginDto>.Fail(
                 409,
@@ -246,9 +222,11 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
                 "Concurrent connection update detected; reload latest connection state.");
         }
 
+        await InvalidateApprovalsAsync(pluginId, ct).ConfigureAwait(false);
+
         var capCount = plugin.ActiveSnapshotId is null
             ? 0
-            : await _db.CatalogCapabilities.CountAsync(c => c.SnapshotId == plugin.ActiveSnapshotId, ct).ConfigureAwait(false);
+            : await _store.CountCapabilitiesAsync(plugin.ActiveSnapshotId, ct).ConfigureAwait(false);
 
         return BusinessServiceResult<BusinessPluginDto>.Ok(MapPluginDto(plugin, connection, credMetas, capCount));
     }
@@ -277,13 +255,13 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
                 "OS-native encrypted credential storage is not available on this host; plaintext fallback is disabled.");
         }
 
-        var plugin = await _db.BusinessPlugins.FirstOrDefaultAsync(p => p.Id == pluginId, ct).ConfigureAwait(false);
+        var plugin = await _store.FindPluginAsync(pluginId, ct).ConfigureAwait(false);
         if (plugin is null)
         {
             return BusinessServiceResult<CredentialRefSummaryDto>.Fail(404, BusinessSkillErrorCodes.ConnectionUnavailable, $"Plugin '{pluginId}' not found.");
         }
 
-        var connection = await _db.PluginConnections.FirstOrDefaultAsync(c => c.Id == plugin.ConnectionId, ct).ConfigureAwait(false);
+        var connection = await _store.FindConnectionAsync(plugin.ConnectionId, ct).ConfigureAwait(false);
         if (connection is null)
         {
             return BusinessServiceResult<CredentialRefSummaryDto>.Fail(404, BusinessSkillErrorCodes.ConnectionUnavailable, $"Connection for plugin '{pluginId}' not found.");
@@ -306,6 +284,8 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
         }
 
         var credentialRef = $"cred:{pluginId}:{normalizedSlot}";
+        var previous = await _store.FindCredentialAsync(credentialRef, ct).ConfigureAwait(false);
+        var previousRevision = connection.Revision;
         var newCredentialRevision = Guid.NewGuid().ToString("N")[..12];
         var stored = await _credentialStore.StoreSecretAsync(
             credentialRef,
@@ -315,29 +295,16 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
             ct).ConfigureAwait(false);
 
         var now = DateTime.UtcNow;
-        var meta = await _db.BusinessCredentialMetas.FirstOrDefaultAsync(m => m.CredentialRef == credentialRef, ct).ConfigureAwait(false);
-        if (meta is null)
+        var meta = new BusinessCredentialMetaEntity
         {
-            meta = new BusinessCredentialMetaEntity
-            {
-                CredentialRef = credentialRef,
-                AuthKind = request.AuthKind.ToString(),
-                MaskedHint = stored.Summary.MaskedHint,
-                Revision = newCredentialRevision,
-                CipherFileName = stored.CipherFileName,
-                CreatedAtUtc = now,
-                UpdatedAtUtc = now
-            };
-            _db.BusinessCredentialMetas.Add(meta);
-        }
-        else
-        {
-            meta.AuthKind = request.AuthKind.ToString();
-            meta.MaskedHint = stored.Summary.MaskedHint;
-            meta.Revision = newCredentialRevision;
-            meta.CipherFileName = stored.CipherFileName;
-            meta.UpdatedAtUtc = now;
-        }
+            CredentialRef = credentialRef,
+            AuthKind = request.AuthKind.ToString(),
+            MaskedHint = stored.Summary.MaskedHint,
+            Revision = newCredentialRevision,
+            CipherFileName = stored.CipherFileName,
+            CreatedAtUtc = previous?.CreatedAtUtc ?? now,
+            UpdatedAtUtc = now,
+        };
 
         if (normalizedSlot == "document")
         {
@@ -353,9 +320,16 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
         connection.UpdatedAtUtc = now;
         plugin.UpdatedAtUtc = now;
 
-        await MarkDependentDefinitionsNeedsRevalidationAsync(pluginId, ct).ConfigureAwait(false);
-        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+        var saved = await _store.TrySaveConnectionAsync(plugin, connection, previousRevision, meta, null, ct).ConfigureAwait(false);
+        if (!saved.Updated)
+        {
+            await DeleteSupersededCipherAsync(credentialRef, meta.CipherFileName, previous?.CipherFileName).ConfigureAwait(false);
+            return BusinessServiceResult<CredentialRefSummaryDto>.Fail(409, BusinessSkillErrorCodes.CatalogChanged,
+                "Concurrent connection update detected; reload latest connection state.");
+        }
 
+        await DeleteSupersededCipherAsync(credentialRef, previous?.CipherFileName, meta.CipherFileName).ConfigureAwait(false);
+        await InvalidateApprovalsAsync(pluginId, ct).ConfigureAwait(false);
         return BusinessServiceResult<CredentialRefSummaryDto>.Ok(stored.Summary);
     }
 
@@ -370,13 +344,13 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
             return BusinessServiceResult<DeleteCredentialResponseDto>.Fail(422, BusinessSkillErrorCodes.ValidationFailed, "Credential slot must be 'document' or 'execution'.");
         }
 
-        var plugin = await _db.BusinessPlugins.FirstOrDefaultAsync(p => p.Id == pluginId, ct).ConfigureAwait(false);
+        var plugin = await _store.FindPluginAsync(pluginId, ct).ConfigureAwait(false);
         if (plugin is null)
         {
             return BusinessServiceResult<DeleteCredentialResponseDto>.Fail(404, BusinessSkillErrorCodes.ConnectionUnavailable, $"Plugin '{pluginId}' not found.");
         }
 
-        var connection = await _db.PluginConnections.FirstOrDefaultAsync(c => c.Id == plugin.ConnectionId, ct).ConfigureAwait(false);
+        var connection = await _store.FindConnectionAsync(plugin.ConnectionId, ct).ConfigureAwait(false);
         if (connection is null)
         {
             return BusinessServiceResult<DeleteCredentialResponseDto>.Fail(404, BusinessSkillErrorCodes.ConnectionUnavailable, $"Connection for plugin '{pluginId}' not found.");
@@ -388,12 +362,7 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
             return BusinessServiceResult<DeleteCredentialResponseDto>.Fail(404, BusinessSkillErrorCodes.AuthRequired, $"No credential bound to '{normalizedSlot}' slot.");
         }
 
-        var referencedByOthers = await _db.PluginConnections.AsNoTracking()
-            .Where(c => c.PluginId != pluginId && (c.DocumentCredentialRef == credRef || c.ExecutionCredentialRef == credRef))
-            .Select(c => c.PluginId)
-            .Distinct()
-            .ToListAsync(ct)
-            .ConfigureAwait(false);
+        var referencedByOthers = await _store.FindOtherCredentialUsersAsync(pluginId, credRef, ct).ConfigureAwait(false);
 
         var otherSlotStillUsesSameRef = normalizedSlot == "document"
             ? string.Equals(connection.ExecutionCredentialRef, credRef, StringComparison.Ordinal)
@@ -416,21 +385,26 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
             connection.ExecutionCredentialRef = null;
         }
 
+        var previousRevision = connection.Revision;
         connection.CredentialRevision = Guid.NewGuid().ToString("N")[..12];
         connection.Revision += 1;
         connection.UpdatedAtUtc = DateTime.UtcNow;
-        await MarkDependentDefinitionsNeedsRevalidationAsync(pluginId, ct).ConfigureAwait(false);
-
-        var meta = await _db.BusinessCredentialMetas.FirstOrDefaultAsync(m => m.CredentialRef == credRef, ct).ConfigureAwait(false);
+        var meta = await _store.FindCredentialAsync(credRef, ct).ConfigureAwait(false);
         var remaining = referencedByOthers.Count + (otherSlotStillUsesSameRef ? 1 : 0);
-        if (meta is not null && remaining == 0)
+        var saved = await _store.TrySaveConnectionAsync(
+            plugin, connection, previousRevision, null, remaining == 0 ? credRef : null, ct).ConfigureAwait(false);
+        if (!saved.Updated)
         {
-            await _credentialStore.DeleteSecretAsync(credRef, meta.CipherFileName, ct).ConfigureAwait(false);
-            _db.BusinessCredentialMetas.Remove(meta);
+            return BusinessServiceResult<DeleteCredentialResponseDto>.Fail(409, BusinessSkillErrorCodes.CatalogChanged,
+                "Concurrent connection update detected; reload latest connection state.");
         }
 
-        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+        if (saved.CredentialRemoved && meta is not null)
+        {
+            await DeleteSupersededCipherAsync(credRef, meta.CipherFileName, null).ConfigureAwait(false);
+        }
 
+        await InvalidateApprovalsAsync(pluginId, ct).ConfigureAwait(false);
         return BusinessServiceResult<DeleteCredentialResponseDto>.Ok(
             new DeleteCredentialResponseDto(true, credRef, remaining, referencedByOthers));
     }
@@ -439,18 +413,13 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
         string pluginId,
         CancellationToken ct = default)
     {
-        var plugin = await _db.BusinessPlugins.FirstOrDefaultAsync(p => p.Id == pluginId, ct).ConfigureAwait(false);
-        if (plugin is null)
+        var now = DateTime.UtcNow;
+        if (!await _store.DisablePluginAsync(pluginId, now, ct).ConfigureAwait(false))
         {
-            return BusinessServiceResult<DisablePluginResponseDto>.Fail(404, BusinessSkillErrorCodes.ConnectionUnavailable, $"Plugin '{pluginId}' not found.");
+            return BusinessServiceResult<DisablePluginResponseDto>.Fail(
+                404, BusinessSkillErrorCodes.ConnectionUnavailable, $"Plugin '{pluginId}' not found.");
         }
 
-        var now = DateTime.UtcNow;
-        plugin.Enabled = false;
-        plugin.ArchivedAtUtc ??= now;
-        plugin.UpdatedAtUtc = now;
-
-        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
         if (_approvalCoordinator is not null)
         {
             await _approvalCoordinator.InvalidatePluginApprovalsAndRunsAsync(
@@ -460,7 +429,7 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
         }
 
         return BusinessServiceResult<DisablePluginResponseDto>.Ok(
-            new DisablePluginResponseDto(plugin.Id, plugin.Enabled, new DateTimeOffset(now, TimeSpan.Zero)));
+            new DisablePluginResponseDto(pluginId, false, new DateTimeOffset(now, TimeSpan.Zero)));
     }
 
     public async Task<BusinessServiceResult<DiscoverPluginResultDto>> DiscoverAsync(
@@ -474,38 +443,13 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
         }
 
         var normalizedClientRequestId = request.ClientRequestId.Trim();
-        var existingOp = await _db.PluginOperations.AsNoTracking()
-            .FirstOrDefaultAsync(op => op.Kind == "discover" && op.TargetId == pluginId && op.ClientRequestId == normalizedClientRequestId, ct)
-            .ConfigureAwait(false);
-
+        var existingOp = await _store.FindRequestAsync("discover", pluginId, normalizedClientRequestId, ct).ConfigureAwait(false);
         if (existingOp is not null)
         {
-            var reusedAccepted = new PluginOperationAcceptedDto(
-                existingOp.OperationId,
-                existingOp.Kind,
-                Enum.TryParse<PluginOperationStatus>(existingOp.Status, out var st) ? st : PluginOperationStatus.Succeeded,
-                existingOp.Sequence,
-                existingOp.Version,
-                ReusedFromClientRequestId: true);
-
-            CatalogSnapshotDto? reusedSnapshot = null;
-            if (!string.IsNullOrEmpty(existingOp.SnapshotId))
-            {
-                var reusedSnapEntity = await _db.CatalogSnapshots.AsNoTracking()
-                    .FirstOrDefaultAsync(s => s.Id == existingOp.SnapshotId, ct)
-                    .ConfigureAwait(false);
-                if (reusedSnapEntity is not null)
-                {
-                    reusedSnapshot = MapSnapshotDto(reusedSnapEntity);
-                }
-            }
-
-            return BusinessServiceResult<DiscoverPluginResultDto>.Ok(
-                new DiscoverPluginResultDto(reusedAccepted, reusedSnapshot, null),
-                202);
+            return await ReplayDiscoveryAsync(existingOp, ct).ConfigureAwait(false);
         }
 
-        var plugin = await _db.BusinessPlugins.FirstOrDefaultAsync(p => p.Id == pluginId, ct).ConfigureAwait(false);
+        var plugin = await _store.FindPluginAsync(pluginId, ct).ConfigureAwait(false);
         if (plugin is null)
         {
             return BusinessServiceResult<DiscoverPluginResultDto>.Fail(404, BusinessSkillErrorCodes.ConnectionUnavailable, $"Plugin '{pluginId}' not found.");
@@ -516,7 +460,7 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
             return BusinessServiceResult<DiscoverPluginResultDto>.Fail(422, BusinessSkillErrorCodes.ConnectionUnavailable, $"Plugin '{pluginId}' is disabled.");
         }
 
-        var connection = await _db.PluginConnections.FirstOrDefaultAsync(c => c.Id == plugin.ConnectionId, ct).ConfigureAwait(false);
+        var connection = await _store.FindConnectionAsync(plugin.ConnectionId, ct).ConfigureAwait(false);
         if (connection is null)
         {
             return BusinessServiceResult<DiscoverPluginResultDto>.Fail(404, BusinessSkillErrorCodes.ConnectionUnavailable, $"Connection for plugin '{pluginId}' not found.");
@@ -548,8 +492,11 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
             CreatedAtUtc = now,
             UpdatedAtUtc = now
         };
-        _db.PluginOperations.Add(opEntity);
-        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+        var replay = await _store.TryRegisterOperationAsync(opEntity, ct).ConfigureAwait(false);
+        if (replay is not null)
+        {
+            return await ReplayDiscoveryAsync(replay, ct).ConfigureAwait(false);
+        }
 
         CatalogSnapshotDto? newSnapshotDto = null;
         IReadOnlyList<CapabilityDetailDto> discoveredCapabilities = [];
@@ -615,9 +562,9 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
             opEntity.Status = PluginOperationStatus.Failed.ToString();
             opEntity.Sequence = 2;
             opEntity.ResultMessage = effectiveErr.Message;
-            opEntity.ErrorJson = JsonSerializer.Serialize(effectiveErr, JsonOptions);
+            opEntity.ErrorJson = JsonSerializer.Serialize(effectiveErr, Json.BusinessSkillErrorDto);
             opEntity.UpdatedAtUtc = DateTime.UtcNow;
-            await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+            await _store.SaveOperationResultAsync(opEntity, ct).ConfigureAwait(false);
 
             var statusCode = effectiveErr.Code switch
             {
@@ -628,16 +575,11 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
             return new BusinessServiceResult<DiscoverPluginResultDto>(false, statusCode, null, effectiveErr);
         }
 
-        var previousCaps = string.IsNullOrEmpty(plugin.ActiveSnapshotId)
-            ? new List<CatalogCapabilityEntity>()
-            : await _db.CatalogCapabilities.AsNoTracking()
-                .Where(c => c.SnapshotId == plugin.ActiveSnapshotId)
-                .ToListAsync(ct)
-                .ConfigureAwait(false);
-
-        var diff = !string.IsNullOrEmpty(plugin.ActiveSnapshotId)
-            ? ComputeCatalogDiff(plugin.ActiveSnapshotId, snapshotId, previousCaps, discoveredCapabilities)
-            : null;
+        var previousSnapshotId = plugin.ActiveSnapshotId;
+        var diff = string.IsNullOrEmpty(previousSnapshotId)
+            ? null
+            : ComputeCatalogDiff(previousSnapshotId, snapshotId,
+                await _store.ReadCapabilitiesAsync(previousSnapshotId, ct).ConfigureAwait(false), discoveredCapabilities);
 
         var snapEntity = new CatalogSnapshotEntity
         {
@@ -654,15 +596,12 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
             ExecutableCount = newSnapshotDto.ExecutableCount,
             NeedsConfigurationCount = newSnapshotDto.NeedsConfigurationCount,
             UnsupportedCount = newSnapshotDto.UnsupportedCount,
-            DiagnosticsJson = JsonSerializer.Serialize(newSnapshotDto.Diagnostics, JsonOptions),
+            DiagnosticsJson = JsonSerializer.Serialize(newSnapshotDto.Diagnostics, Json.StringList),
             FetchedAtUtc = newSnapshotDto.FetchedAtUtc.UtcDateTime
         };
 
-        _db.CatalogSnapshots.Add(snapEntity);
-        foreach (var cap in discoveredCapabilities)
+        var capabilityRows = discoveredCapabilities.Select(cap => new CatalogCapabilityEntity
         {
-            _db.CatalogCapabilities.Add(new CatalogCapabilityEntity
-            {
                 SnapshotId = snapshotId,
                 Id = cap.Summary.Id,
                 NativeIdentity = cap.Summary.NativeIdentity,
@@ -674,12 +613,11 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
                 Risk = cap.Summary.Risk.ToString(),
                 SuggestedSourceRiskHint = cap.Summary.SuggestedSourceRiskHint?.ToString(),
                 Executability = cap.Summary.Executability.ToString(),
-                DiagnosticsJson = JsonSerializer.Serialize(cap.Summary.Diagnostics, JsonOptions),
+                DiagnosticsJson = JsonSerializer.Serialize(cap.Summary.Diagnostics, Json.StringList),
                 InputSchemaJson = cap.InputSchemaJson,
                 OutputSchemaJson = cap.OutputSchemaJson,
-                InvocationJson = JsonSerializer.Serialize(cap.Invocation, JsonOptions)
-            });
-        }
+                InvocationJson = JsonSerializer.Serialize(cap.Invocation, Json.CapabilityInvocationSpecDto)
+        }).ToArray();
 
         plugin.ActiveSnapshotId = snapshotId;
         plugin.LastDiscoveredAtUtc = newSnapshotDto.FetchedAtUtc.UtcDateTime;
@@ -691,12 +629,25 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
         opEntity.ResultMessage = $"Discovered {discoveredCapabilities.Count} capabilities.";
         opEntity.UpdatedAtUtc = DateTime.UtcNow;
 
-        if (diff is { TriggersNeedsRevalidation: true })
+        var needsRevalidation = diff is { TriggersNeedsRevalidation: true };
+        if (!await _store.TryActivateCatalogAsync(plugin, previousSnapshotId, snapEntity, capabilityRows, opEntity, needsRevalidation, ct)
+            .ConfigureAwait(false))
         {
-            await MarkDependentDefinitionsNeedsRevalidationAsync(plugin.Id, ct).ConfigureAwait(false);
+            var conflict = new BusinessSkillErrorDto(BusinessSkillErrorCodes.CatalogChanged,
+                "The plugin catalog or connection changed during discovery. Discover again with a new client request id.", [],
+                true, operationId);
+            opEntity.Status = PluginOperationStatus.Failed.ToString();
+            opEntity.SnapshotId = null;
+            opEntity.ResultMessage = conflict.Message;
+            opEntity.ErrorJson = JsonSerializer.Serialize(conflict, Json.BusinessSkillErrorDto);
+            await _store.SaveOperationResultAsync(opEntity, ct).ConfigureAwait(false);
+            return new BusinessServiceResult<DiscoverPluginResultDto>(false, 409, null, conflict);
         }
 
-        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+        if (needsRevalidation)
+        {
+            await InvalidateApprovalsAsync(plugin.Id, ct).ConfigureAwait(false);
+        }
 
         var acceptedDto = new PluginOperationAcceptedDto(
             operationId,
@@ -721,7 +672,7 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
         int pageSize,
         CancellationToken ct = default)
     {
-        var plugin = await _db.BusinessPlugins.AsNoTracking().FirstOrDefaultAsync(p => p.Id == pluginId, ct).ConfigureAwait(false);
+        var plugin = await _store.FindPluginAsync(pluginId, ct).ConfigureAwait(false);
         if (plugin is null)
         {
             return BusinessServiceResult<CapabilityPageResponseDto>.Fail(404, BusinessSkillErrorCodes.ConnectionUnavailable, $"Plugin '{pluginId}' not found.");
@@ -733,56 +684,26 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
             return BusinessServiceResult<CapabilityPageResponseDto>.Fail(404, BusinessSkillErrorCodes.CatalogIncomplete, "Plugin has no catalog snapshot yet.");
         }
 
-        var snap = await _db.CatalogSnapshots.AsNoTracking()
-            .FirstOrDefaultAsync(s => s.Id == targetSnapshotId && s.PluginId == pluginId, ct)
+        var snap = await _store.FindSnapshotAsync(targetSnapshotId, pluginId, ct)
             .ConfigureAwait(false);
         if (snap is null)
         {
             return BusinessServiceResult<CapabilityPageResponseDto>.Fail(404, BusinessSkillErrorCodes.CatalogIncomplete, $"Snapshot '{targetSnapshotId}' not found for plugin '{pluginId}'.");
         }
 
-        var query = _db.CatalogCapabilities.AsNoTracking().Where(c => c.SnapshotId == targetSnapshotId);
-
-        if (!string.IsNullOrWhiteSpace(groupTag))
-        {
-            var g = groupTag.Trim();
-            query = query.Where(c => c.GroupTag == g);
-        }
-
-        if (executableOnly)
-        {
-            query = query.Where(c => c.Executability == nameof(CapabilityExecutabilityStatus.Executable));
-        }
-
-        if (!string.IsNullOrWhiteSpace(search))
-        {
-            var term = search.Trim();
-            query = query.Where(c =>
-                c.Title.Contains(term) ||
-                c.Description.Contains(term) ||
-                c.NativeIdentity.Contains(term));
-        }
-
         var safePage = Math.Max(1, page);
         var safePageSize = Math.Clamp(pageSize, 1, 200);
-        var filteredCount = await query.CountAsync(ct).ConfigureAwait(false);
-
-        var rows = await query
-            .OrderBy(c => c.GroupTag)
-            .ThenBy(c => c.Title)
-            .ThenBy(c => c.Id)
-            .Skip((safePage - 1) * safePageSize)
-            .Take(safePageSize)
-            .ToListAsync(ct)
-            .ConfigureAwait(false);
-
-        var items = rows.Select(MapCapabilitySummary).ToArray();
+        var capabilityPage = await _store.QueryCapabilitiesAsync(
+            targetSnapshotId, string.IsNullOrWhiteSpace(search) ? null : search.Trim(),
+            string.IsNullOrWhiteSpace(groupTag) ? null : groupTag.Trim(), executableOnly,
+            safePage, safePageSize, ct).ConfigureAwait(false);
+        var items = capabilityPage.Capabilities.Select(MapCapabilitySummary).ToArray();
         return BusinessServiceResult<CapabilityPageResponseDto>.Ok(new CapabilityPageResponseDto(
             pluginId,
             snap.Id,
             snap.Complete,
             snap.TotalCapabilities,
-            filteredCount,
+            capabilityPage.FilteredCount,
             snap.ExecutableCount,
             snap.NeedsConfigurationCount,
             snap.UnsupportedCount,
@@ -802,14 +723,13 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
             return BusinessServiceResult<CapabilitySummaryDto>.Fail(422, BusinessSkillErrorCodes.ValidationFailed, "Request body is required.");
         }
 
-        var plugin = await _db.BusinessPlugins.AsNoTracking().FirstOrDefaultAsync(p => p.Id == pluginId, ct).ConfigureAwait(false);
+        var plugin = await _store.FindPluginAsync(pluginId, ct).ConfigureAwait(false);
         if (plugin?.ActiveSnapshotId is null)
         {
             return BusinessServiceResult<CapabilitySummaryDto>.Fail(404, BusinessSkillErrorCodes.CatalogIncomplete, $"Active catalog snapshot not found for plugin '{pluginId}'.");
         }
 
-        var cap = await _db.CatalogCapabilities
-            .FirstOrDefaultAsync(c => c.SnapshotId == plugin.ActiveSnapshotId && c.Id == capabilityId, ct)
+        var cap = await _store.FindCapabilityAsync(plugin.ActiveSnapshotId, capabilityId, ct)
             .ConfigureAwait(false);
         if (cap is null)
         {
@@ -817,8 +737,14 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
         }
 
         cap.Risk = request.Risk.ToString();
-        await MarkDependentDefinitionsNeedsRevalidationAsync(pluginId, ct).ConfigureAwait(false);
-        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+        if (!await _store.TryUpdateCapabilityRiskAsync(pluginId, plugin.ActiveSnapshotId, capabilityId, cap.Risk, ct)
+            .ConfigureAwait(false))
+        {
+            return BusinessServiceResult<CapabilitySummaryDto>.Fail(409, BusinessSkillErrorCodes.CatalogChanged,
+                "Active catalog snapshot changed; reload the capability.");
+        }
+
+        await InvalidateApprovalsAsync(pluginId, ct).ConfigureAwait(false);
 
         return BusinessServiceResult<CapabilitySummaryDto>.Ok(MapCapabilitySummary(cap));
     }
@@ -834,7 +760,7 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
             return BusinessServiceResult<CapabilityDetailDto>.Fail(422, BusinessSkillErrorCodes.ValidationFailed, "capabilityId is required.");
         }
 
-        var plugin = await _db.BusinessPlugins.AsNoTracking().FirstOrDefaultAsync(p => p.Id == pluginId, ct).ConfigureAwait(false);
+        var plugin = await _store.FindPluginAsync(pluginId, ct).ConfigureAwait(false);
         if (plugin is null)
         {
             return BusinessServiceResult<CapabilityDetailDto>.Fail(404, BusinessSkillErrorCodes.ConnectionUnavailable, $"Plugin '{pluginId}' not found.");
@@ -846,23 +772,21 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
             return BusinessServiceResult<CapabilityDetailDto>.Fail(404, BusinessSkillErrorCodes.CatalogIncomplete, "Plugin has no catalog snapshot yet.");
         }
 
-        var snap = await _db.CatalogSnapshots.AsNoTracking()
-            .FirstOrDefaultAsync(s => s.Id == targetSnapshotId && s.PluginId == pluginId, ct)
+        var snap = await _store.FindSnapshotAsync(targetSnapshotId, pluginId, ct)
             .ConfigureAwait(false);
         if (snap is null)
         {
             return BusinessServiceResult<CapabilityDetailDto>.Fail(404, BusinessSkillErrorCodes.CatalogIncomplete, $"Snapshot '{targetSnapshotId}' not found for plugin '{pluginId}'.");
         }
 
-        var cap = await _db.CatalogCapabilities.AsNoTracking()
-            .FirstOrDefaultAsync(c => c.SnapshotId == targetSnapshotId && c.Id == capabilityId.Trim(), ct)
+        var cap = await _store.FindCapabilityAsync(targetSnapshotId, capabilityId.Trim(), ct)
             .ConfigureAwait(false);
         if (cap is null)
         {
             return BusinessServiceResult<CapabilityDetailDto>.Fail(404, BusinessSkillErrorCodes.ValidationFailed, $"Capability '{capabilityId}' not found in snapshot '{targetSnapshotId}'.");
         }
 
-        var invocation = JsonSerializer.Deserialize<CapabilityInvocationSpecDto>(cap.InvocationJson, JsonOptions)
+        var invocation = JsonSerializer.Deserialize(cap.InvocationJson, Json.CapabilityInvocationSpecDto)
                          ?? new CapabilityInvocationSpecDto();
 
         return BusinessServiceResult<CapabilityDetailDto>.Ok(new CapabilityDetailDto
@@ -878,8 +802,7 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
         string operationId,
         CancellationToken ct = default)
     {
-        var op = await _db.PluginOperations.AsNoTracking()
-            .FirstOrDefaultAsync(o => o.OperationId == operationId, ct)
+        var op = await _store.FindOperationAsync(operationId, ct)
             .ConfigureAwait(false);
         if (op is null)
         {
@@ -889,7 +812,7 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
         BusinessSkillErrorDto? err = null;
         if (!string.IsNullOrEmpty(op.ErrorJson))
         {
-            err = JsonSerializer.Deserialize<BusinessSkillErrorDto>(op.ErrorJson, JsonOptions);
+            err = JsonSerializer.Deserialize(op.ErrorJson, Json.BusinessSkillErrorDto);
         }
 
         return BusinessServiceResult<PluginOperationStatusDto>.Ok(new PluginOperationStatusDto(
@@ -925,7 +848,7 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
                 continue;
             }
 
-            var currentInvJson = JsonSerializer.Serialize(curr.Invocation, JsonOptions);
+            var currentInvJson = JsonSerializer.Serialize(curr.Invocation, Json.CapabilityInvocationSpecDto);
             if (!string.Equals(old.InputSchemaJson, curr.InputSchemaJson, StringComparison.Ordinal) ||
                 !string.Equals(old.InvocationJson, currentInvJson, StringComparison.Ordinal))
             {
@@ -955,39 +878,40 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
         return new CatalogDiffDto(baseSnapshotId, targetSnapshotId, needsRevalidation, entries);
     }
 
-    private async Task MarkDependentDefinitionsNeedsRevalidationAsync(string pluginId, CancellationToken ct)
+    private Task InvalidateApprovalsAsync(string pluginId, CancellationToken ct)
+        => _approvalCoordinator?.InvalidatePluginApprovalsAndRunsAsync(
+            pluginId, $"Plugin '{pluginId}' connection, credential, risk, or catalog changed; pending approvals invalidated.", ct)
+            ?? Task.CompletedTask;
+
+    private async Task DeleteSupersededCipherAsync(string credentialRef, string? candidate, string? retained)
     {
-        var drafts = await _db.SkillDrafts.Where(d => d.PluginId == pluginId && !d.NeedsRevalidation).ToListAsync(ct).ConfigureAwait(false);
-        foreach (var d in drafts)
+        if (candidate is null || string.Equals(candidate, retained, StringComparison.Ordinal))
         {
-            d.NeedsRevalidation = true;
+            return;
         }
 
-        var skillIds = await _db.PublishedSkills.AsNoTracking()
-            .Where(s => s.PluginId == pluginId)
-            .Select(s => s.Id)
-            .ToArrayAsync(ct)
-            .ConfigureAwait(false);
-
-        if (skillIds.Length > 0)
+        try
         {
-            var versions = await _db.PublishedSkillVersions
-                .Where(v => skillIds.Contains(v.SkillId) && !v.NeedsRevalidation)
-                .ToListAsync(ct)
-                .ConfigureAwait(false);
-            foreach (var v in versions)
-            {
-                v.NeedsRevalidation = true;
-            }
+            await _credentialStore.DeleteSecretAsync(credentialRef, candidate, CancellationToken.None).ConfigureAwait(false);
         }
-
-        if (_approvalCoordinator is not null)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            await _approvalCoordinator.InvalidatePluginApprovalsAndRunsAsync(
-                pluginId,
-                $"Plugin '{pluginId}' connection, credential, risk, or catalog changed; pending approvals invalidated.",
-                ct).ConfigureAwait(false);
+            _logger?.LogWarning(ex, "Could not remove superseded encrypted credential for {CredentialRef}.", credentialRef);
         }
+    }
+
+    private async Task<BusinessServiceResult<DiscoverPluginResultDto>> ReplayDiscoveryAsync(
+        PluginOperationEntity operation, CancellationToken ct)
+    {
+        var accepted = new PluginOperationAcceptedDto(operation.OperationId, operation.Kind,
+            Enum.TryParse<PluginOperationStatus>(operation.Status, out var status) ? status : PluginOperationStatus.Succeeded,
+            operation.Sequence, operation.Version, ReusedFromClientRequestId: true);
+        var snapshot = string.IsNullOrEmpty(operation.SnapshotId)
+            ? null
+            : await _store.FindSnapshotAsync(operation.SnapshotId, null, ct).ConfigureAwait(false);
+
+        return BusinessServiceResult<DiscoverPluginResultDto>.Ok(
+            new DiscoverPluginResultDto(accepted, snapshot is null ? null : MapSnapshotDto(snapshot), null), 202);
     }
 
     private async Task<(BusinessAuthKind AuthKind, string? SecretJson)> ResolveDocumentCredentialSecretAsync(
@@ -999,8 +923,7 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
             return (BusinessAuthKind.None, null);
         }
 
-        var meta = await _db.BusinessCredentialMetas.AsNoTracking()
-            .FirstOrDefaultAsync(m => m.CredentialRef == connection.DocumentCredentialRef, ct)
+        var meta = await _store.FindCredentialAsync(connection.DocumentCredentialRef, ct)
             .ConfigureAwait(false);
 
         if (meta is null || !Enum.TryParse<BusinessAuthKind>(meta.AuthKind, out var authKind) || authKind == BusinessAuthKind.None)
@@ -1027,15 +950,17 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
             .Distinct(StringComparer.Ordinal)
             .ToArray();
 
-        if (refs.Length == 0)
+        var credentials = new Dictionary<string, BusinessCredentialMetaEntity>(StringComparer.Ordinal);
+        foreach (var credentialRef in refs)
         {
-            return new Dictionary<string, BusinessCredentialMetaEntity>(StringComparer.Ordinal);
+            var credential = await _store.FindCredentialAsync(credentialRef, ct).ConfigureAwait(false);
+            if (credential is not null)
+            {
+                credentials.Add(credentialRef, credential);
+            }
         }
 
-        return await _db.BusinessCredentialMetas.AsNoTracking()
-            .Where(m => refs.Contains(m.CredentialRef))
-            .ToDictionaryAsync(m => m.CredentialRef, StringComparer.Ordinal, ct)
-            .ConfigureAwait(false);
+        return credentials;
     }
 
     private static BusinessAuthKind ResolveEffectiveAuthKind(
@@ -1075,7 +1000,7 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
 
     private static EndpointPolicyDto DeserializePolicy(string json, string fallbackSourceUrl)
     {
-        var parsed = JsonSerializer.Deserialize<EndpointPolicyDto>(json, JsonOptions);
+        var parsed = JsonSerializer.Deserialize(json, Json.EndpointPolicyDto);
         if (parsed is not null && !string.IsNullOrWhiteSpace(parsed.AllowedOrigin))
         {
             return parsed;
@@ -1166,7 +1091,7 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
         ExecutableCount = s.ExecutableCount,
         NeedsConfigurationCount = s.NeedsConfigurationCount,
         UnsupportedCount = s.UnsupportedCount,
-        Diagnostics = JsonSerializer.Deserialize<string[]>(s.DiagnosticsJson, JsonOptions) ?? []
+        Diagnostics = JsonSerializer.Deserialize(s.DiagnosticsJson, Json.StringArray) ?? []
     };
 
     private static CapabilitySummaryDto MapCapabilitySummary(CatalogCapabilityEntity c) => new()
@@ -1182,6 +1107,6 @@ public sealed class BusinessPluginControlService : IBusinessPluginControlService
         Risk = Enum.TryParse<CapabilityRiskLevel>(c.Risk, out var r) ? r : CapabilityRiskLevel.Unknown,
         SuggestedSourceRiskHint = !string.IsNullOrEmpty(c.SuggestedSourceRiskHint) && Enum.TryParse<CapabilityRiskLevel>(c.SuggestedSourceRiskHint, out var sr) ? sr : null,
         Executability = Enum.TryParse<CapabilityExecutabilityStatus>(c.Executability, out var ex) ? ex : CapabilityExecutabilityStatus.Unsupported,
-        Diagnostics = JsonSerializer.Deserialize<string[]>(c.DiagnosticsJson, JsonOptions) ?? []
+        Diagnostics = JsonSerializer.Deserialize(c.DiagnosticsJson, Json.StringArray) ?? []
     };
 }

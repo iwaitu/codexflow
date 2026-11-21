@@ -112,6 +112,28 @@ public class ToolResultSizeGuardTests
     }
 
     [Fact]
+    public void TheGatewaysEnvelope_BoundsEscapedText_AndPreservesControlFields()
+    {
+        var output = "START-" + new string('中', 30_000) + "-END";
+        var result = CodexToolResult.Error(
+            output, display: output, systemHint: "retry", requiredToolName: "ivilson_read", toolCallRequired: true);
+
+        var payload = CodexFlow.Core.Runtime.ToolResultTextFormatter.BuildWrappedPayload(result, "t");
+
+        Assert.True(System.Text.Json.JsonSerializer.Serialize(payload).Length <= ToolResultSizeGuard.MaxEnvelopeChars);
+        Assert.Equal(true, payload["__ICODEX_TOOL_RESULT"]);
+        Assert.Equal("Failed", payload["status"]);
+        Assert.Equal("retry", payload["system_hint"]);
+        Assert.Equal("ivilson_read", payload["required_tool_name"]);
+        Assert.Equal(true, payload["tool_call_required"]);
+        Assert.True(Assert.IsType<bool>(payload["truncated"]));
+        Assert.Null(payload["display"]);
+        var bounded = Assert.IsType<string>(payload["output"]);
+        Assert.StartsWith("START-", bounded);
+        Assert.EndsWith("-END", bounded);
+    }
+
+    [Fact]
     public void ChineseText_IsMeasuredByWhatItCostsOnTheWire_NotByItsLength()
     {
         // A CJK character written as \uXXXX is six characters on the wire; the limit counts that, not the one char in memory.

@@ -6,12 +6,9 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using CodexFlow.Contracts.BusinessSkills;
 using CodexFlow.Core.BusinessSkills;
 using CodexFlow.Domain.BusinessSkills;
-using CodexFlow.Orchestration.Jobs;
-using Microsoft.EntityFrameworkCore;
 
 namespace CodexFlow.Orchestration.BusinessSkills;
 
@@ -35,21 +32,21 @@ public interface IBusinessSkillBuilderService
 /// </summary>
 public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
-    {
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-        AllowOutOfOrderMetadataProperties = true
-    };
+    private static BusinessSkillJsonContext Json => BusinessSkillJsonContext.Builder;
 
-    private readonly IJobDbContext _db;
+    private readonly IBusinessSkillExecutionStore _reader;
+    private readonly IBusinessSkillBuilderStore _store;
     private readonly IBusinessSkillGenerator _generator;
 
     public BusinessSkillBuilderService(
-        IJobDbContext db,
+        IBusinessSkillExecutionStore reader,
+        IBusinessSkillBuilderStore store,
         IBusinessSkillGenerator? generator = null)
     {
-        ArgumentNullException.ThrowIfNull(db);
-        _db = db;
+        ArgumentNullException.ThrowIfNull(reader);
+        ArgumentNullException.ThrowIfNull(store);
+        _reader = reader;
+        _store = store;
         _generator = generator ?? new StructuredBusinessSkillGenerator();
     }
 
@@ -60,7 +57,7 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
             return BusinessServiceResult<SkillDraftDto>.Fail(422, BusinessSkillErrorCodes.ValidationFailed, "pluginId and name are required.");
         }
 
-        var plugin = await _db.BusinessPlugins.AsNoTracking().FirstOrDefaultAsync(p => p.Id == request.PluginId, ct).ConfigureAwait(false);
+        var plugin = await _reader.FindPluginAsync(request.PluginId, ct).ConfigureAwait(false);
         if (plugin is null)
         {
             return BusinessServiceResult<SkillDraftDto>.Fail(404, BusinessSkillErrorCodes.ConnectionUnavailable, $"Plugin '{request.PluginId}' not found.");
@@ -74,8 +71,7 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
             return BusinessServiceResult<SkillDraftDto>.Fail(422, BusinessSkillErrorCodes.CatalogIncomplete, "Plugin has no discovered catalog snapshot yet.");
         }
 
-        var snapshot = await _db.CatalogSnapshots.AsNoTracking()
-            .FirstOrDefaultAsync(s => s.Id == snapshotId && s.PluginId == plugin.Id, ct)
+        var snapshot = await _reader.FindSnapshotAsync(snapshotId, plugin.Id, ct)
             .ConfigureAwait(false);
         if (snapshot is null)
         {
@@ -104,7 +100,7 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
             Revision = 1,
             Name = request.Name.Trim(),
             BusinessGoal = request.BusinessGoal?.Trim() ?? string.Empty,
-            SelectedCapabilityIdsJson = JsonSerializer.Serialize(selectedIds, JsonOptions),
+            SelectedCapabilityIdsJson = JsonSerializer.Serialize(selectedIds, Json.StringArray),
             ClarificationQuestionsJson = "[]",
             ValidationErrorsJson = "[]",
             NeedsRevalidation = false,
@@ -112,14 +108,13 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
             UpdatedAtUtc = now
         };
 
-        _db.SkillDrafts.Add(entity);
-        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+        await _store.CreateDraftAsync(entity, ct).ConfigureAwait(false);
         return BusinessServiceResult<SkillDraftDto>.Ok(MapDraftDto(entity), 201);
     }
 
     public async Task<BusinessServiceResult<SkillDraftDto>> GetDraftAsync(string draftId, CancellationToken ct = default)
     {
-        var entity = await _db.SkillDrafts.AsNoTracking().FirstOrDefaultAsync(d => d.Id == draftId, ct).ConfigureAwait(false);
+        var entity = await _reader.FindDraftAsync(draftId, ct).ConfigureAwait(false);
         return entity is null
             ? BusinessServiceResult<SkillDraftDto>.Fail(404, BusinessSkillErrorCodes.ValidationFailed, $"Skill draft '{draftId}' not found.")
             : BusinessServiceResult<SkillDraftDto>.Ok(MapDraftDto(entity));
@@ -135,7 +130,7 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
             return BusinessServiceResult<SkillDraftDto>.Fail(422, BusinessSkillErrorCodes.ValidationFailed, "expectedRevision > 0 is required.");
         }
 
-        var entity = await _db.SkillDrafts.FirstOrDefaultAsync(d => d.Id == draftId, ct).ConfigureAwait(false);
+        var entity = await _reader.FindDraftAsync(draftId, ct).ConfigureAwait(false);
         if (entity is null)
         {
             return BusinessServiceResult<SkillDraftDto>.Fail(404, BusinessSkillErrorCodes.ValidationFailed, $"Skill draft '{draftId}' not found.");
@@ -146,6 +141,8 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
             return BusinessServiceResult<SkillDraftDto>.Fail(409, BusinessSkillErrorCodes.CatalogChanged,
                 $"Draft revision conflict: expected {request.ExpectedRevision}, current revision is {entity.Revision}.");
         }
+
+        var expected = SkillDraftRevision.Capture(entity);
 
         if (!string.IsNullOrWhiteSpace(request.Name))
         {
@@ -165,7 +162,7 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
                 ValidationEvidence = new SkillValidationEvidenceDto()
             };
             var hash = SkillDefinitionV1ValidatorAndCanonicalizer.ComputeContentHash(cleared);
-            entity.CandidateDefinitionJson = JsonSerializer.Serialize(cleared with { ContentHash = hash }, JsonOptions);
+            entity.CandidateDefinitionJson = JsonSerializer.Serialize(cleared with { ContentHash = hash }, Json.SkillDefinitionV1);
             entity.ValidationErrorsJson = "[]";
             entity.NeedsRevalidation = true;
         }
@@ -173,11 +170,7 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
         entity.Revision += 1;
         entity.UpdatedAtUtc = DateTime.UtcNow;
 
-        try
-        {
-            await _db.SaveChangesAsync(ct).ConfigureAwait(false);
-        }
-        catch (DbUpdateConcurrencyException)
+        if (!await _store.TryUpdateDraftAsync(expected, entity, ct).ConfigureAwait(false))
         {
             return BusinessServiceResult<SkillDraftDto>.Fail(409, BusinessSkillErrorCodes.CatalogChanged,
                 "Concurrent draft modification detected; reload latest draft state.");
@@ -196,7 +189,7 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
             return BusinessServiceResult<SkillDraftDto>.Fail(422, BusinessSkillErrorCodes.ValidationFailed, "expectedRevision and catalogSnapshotId are required.");
         }
 
-        var entity = await _db.SkillDrafts.FirstOrDefaultAsync(d => d.Id == draftId, ct).ConfigureAwait(false);
+        var entity = await _reader.FindDraftAsync(draftId, ct).ConfigureAwait(false);
         if (entity is null)
         {
             return BusinessServiceResult<SkillDraftDto>.Fail(404, BusinessSkillErrorCodes.ValidationFailed, $"Skill draft '{draftId}' not found.");
@@ -208,8 +201,9 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
                 $"Draft revision conflict: expected {request.ExpectedRevision}, current revision is {entity.Revision}.");
         }
 
-        var snap = await _db.CatalogSnapshots.AsNoTracking()
-            .FirstOrDefaultAsync(s => s.Id == request.CatalogSnapshotId && s.PluginId == entity.PluginId, ct)
+        var expected = SkillDraftRevision.Capture(entity);
+
+        var snap = await _reader.FindSnapshotAsync(request.CatalogSnapshotId, entity.PluginId, ct)
             .ConfigureAwait(false);
         if (snap is null)
         {
@@ -224,12 +218,12 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
         }
 
         entity.CatalogSnapshotId = snap.Id;
-        entity.SelectedCapabilityIdsJson = JsonSerializer.Serialize(distinctIds, JsonOptions);
+        entity.SelectedCapabilityIdsJson = JsonSerializer.Serialize(distinctIds, Json.StringArray);
         entity.NeedsRevalidation = true;
         entity.ValidationErrorsJson = "[]";
         if (!string.IsNullOrWhiteSpace(entity.CandidateDefinitionJson))
         {
-            var existingCandidate = JsonSerializer.Deserialize<SkillDefinitionV1>(entity.CandidateDefinitionJson, JsonOptions);
+            var existingCandidate = JsonSerializer.Deserialize(entity.CandidateDefinitionJson, Json.SkillDefinitionV1);
             if (existingCandidate is not null)
             {
                 var updatedCand = existingCandidate with
@@ -240,18 +234,14 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
                 };
                 entity.CandidateDefinitionJson = JsonSerializer.Serialize(
                     updatedCand with { ContentHash = SkillDefinitionV1ValidatorAndCanonicalizer.ComputeContentHash(updatedCand) },
-                    JsonOptions);
+                    Json.SkillDefinitionV1);
             }
         }
 
         entity.Revision += 1;
         entity.UpdatedAtUtc = DateTime.UtcNow;
 
-        try
-        {
-            await _db.SaveChangesAsync(ct).ConfigureAwait(false);
-        }
-        catch (DbUpdateConcurrencyException)
+        if (!await _store.TryUpdateDraftAsync(expected, entity, ct).ConfigureAwait(false))
         {
             return BusinessServiceResult<SkillDraftDto>.Fail(409, BusinessSkillErrorCodes.CatalogChanged,
                 "Concurrent draft update detected.");
@@ -279,44 +269,21 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
         }
 
         var normalizedClientReqId = request.ClientRequestId.Trim();
-        var existingOp = await _db.PluginOperations.AsNoTracking()
-            .FirstOrDefaultAsync(o => o.Kind == "generate" && o.TargetId == draftId && o.ClientRequestId == normalizedClientReqId, ct)
+        var existingOp = await _store.FindGenerationAsync(draftId, normalizedClientReqId, ct)
             .ConfigureAwait(false);
         if (existingOp is not null)
         {
-            var latestDraft = await _db.SkillDrafts.AsNoTracking().FirstOrDefaultAsync(d => d.Id == draftId, ct).ConfigureAwait(false);
-            if (latestDraft is null)
-            {
-                return BusinessServiceResult<GenerateSkillCandidateResultDto>.Fail(404, BusinessSkillErrorCodes.ValidationFailed, $"Draft '{draftId}' not found.");
-            }
-
-            if (string.Equals(existingOp.Status, nameof(PluginOperationStatus.Failed), StringComparison.Ordinal) &&
-                !string.IsNullOrWhiteSpace(existingOp.ErrorJson))
-            {
-                var errDto = JsonSerializer.Deserialize<BusinessSkillErrorDto>(existingOp.ErrorJson, JsonOptions);
-                return new BusinessServiceResult<GenerateSkillCandidateResultDto>(false, 422, null, errDto);
-            }
-
-            var reusedOp = new PluginOperationAcceptedDto(
-                existingOp.OperationId,
-                existingOp.Kind,
-                Enum.TryParse<PluginOperationStatus>(existingOp.Status, out var st) ? st : PluginOperationStatus.Succeeded,
-                existingOp.Sequence,
-                existingOp.Version,
-                ReusedFromClientRequestId: true);
-            return BusinessServiceResult<GenerateSkillCandidateResultDto>.Ok(
-                new GenerateSkillCandidateResultDto(reusedOp, MapDraftDto(latestDraft), ["capability_names_and_titles", "capability_input_output_schemas"]),
-                202);
+            return await ExistingGenerationResultAsync(existingOp, draftId, ct).ConfigureAwait(false);
         }
 
-        var draft = await _db.SkillDrafts.FirstOrDefaultAsync(d => d.Id == draftId, ct).ConfigureAwait(false);
+        var draft = await _reader.FindDraftAsync(draftId, ct).ConfigureAwait(false);
         if (draft is null)
         {
             return BusinessServiceResult<GenerateSkillCandidateResultDto>.Fail(404, BusinessSkillErrorCodes.ValidationFailed, $"Draft '{draftId}' not found.");
         }
 
-        var plugin = await _db.BusinessPlugins.AsNoTracking().FirstOrDefaultAsync(p => p.Id == draft.PluginId, ct).ConfigureAwait(false);
-        var conn = plugin is null ? null : await _db.PluginConnections.AsNoTracking().FirstOrDefaultAsync(c => c.Id == plugin.ConnectionId, ct).ConfigureAwait(false);
+        var plugin = await _reader.FindPluginAsync(draft.PluginId, ct).ConfigureAwait(false);
+        var conn = plugin is null ? null : await _reader.FindConnectionAsync(plugin.ConnectionId, null, ct).ConfigureAwait(false);
         if (plugin is null || conn is null)
         {
             return BusinessServiceResult<GenerateSkillCandidateResultDto>.Fail(404, BusinessSkillErrorCodes.ConnectionUnavailable, $"Plugin '{draft.PluginId}' or connection not found.");
@@ -339,8 +306,12 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
             CreatedAtUtc = DateTime.UtcNow,
             UpdatedAtUtc = DateTime.UtcNow
         };
-        _db.PluginOperations.Add(opEntity);
-        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+        var expected = SkillDraftRevision.Capture(draft);
+        var persistedOperation = await _store.ReserveGenerationAsync(opEntity, ct).ConfigureAwait(false);
+        if (persistedOperation.OperationId != operationId)
+        {
+            return await ExistingGenerationResultAsync(persistedOperation, draftId, ct).ConfigureAwait(false);
+        }
 
         SkillGenerationOutcome genOutcome;
         try
@@ -381,22 +352,25 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
                 operationId);
             opEntity.Status = PluginOperationStatus.Failed.ToString();
             opEntity.Sequence = 2;
-            opEntity.ErrorJson = JsonSerializer.Serialize(errDto, JsonOptions);
+            opEntity.ErrorJson = JsonSerializer.Serialize(errDto, Json.BusinessSkillErrorDto);
             opEntity.ResultMessage = errDto.Message;
             opEntity.UpdatedAtUtc = DateTime.UtcNow;
 
-            draft.ClarificationQuestionsJson = JsonSerializer.Serialize(genOutcome.ClarificationQuestions, JsonOptions);
-            draft.ValidationErrorsJson = JsonSerializer.Serialize(genOutcome.Errors, JsonOptions);
+            draft.ClarificationQuestionsJson = JsonSerializer.Serialize(genOutcome.ClarificationQuestions, Json.StringList);
+            draft.ValidationErrorsJson = JsonSerializer.Serialize(genOutcome.Errors, Json.FieldErrors);
             draft.UpdatedAtUtc = DateTime.UtcNow;
-            await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+            if (!await _store.CompleteGenerationAsync(expected, draft, opEntity, ct).ConfigureAwait(false))
+            {
+                return await FailStaleGenerationAsync(opEntity, ct).ConfigureAwait(false);
+            }
 
             var statusCode = errDto.Code == BusinessSkillErrorCodes.ConnectionUnavailable ? 503 : 422;
             return new BusinessServiceResult<GenerateSkillCandidateResultDto>(false, statusCode, null, errDto);
         }
 
-        draft.CandidateDefinitionJson = JsonSerializer.Serialize(genOutcome.CandidateDefinition, JsonOptions);
-        draft.ClarificationQuestionsJson = JsonSerializer.Serialize(genOutcome.ClarificationQuestions, JsonOptions);
-        draft.ValidationErrorsJson = JsonSerializer.Serialize(genOutcome.Errors, JsonOptions);
+        draft.CandidateDefinitionJson = JsonSerializer.Serialize(genOutcome.CandidateDefinition, Json.SkillDefinitionV1);
+        draft.ClarificationQuestionsJson = JsonSerializer.Serialize(genOutcome.ClarificationQuestions, Json.StringList);
+        draft.ValidationErrorsJson = JsonSerializer.Serialize(genOutcome.Errors, Json.FieldErrors);
         draft.NeedsRevalidation = genOutcome.Errors.Count > 0;
         draft.Revision += 1;
         draft.UpdatedAtUtc = DateTime.UtcNow;
@@ -405,7 +379,10 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
         opEntity.Sequence = 2;
         opEntity.ResultMessage = $"Generated candidate definition with {genOutcome.Errors.Count} validation errors.";
         opEntity.UpdatedAtUtc = DateTime.UtcNow;
-        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+        if (!await _store.CompleteGenerationAsync(expected, draft, opEntity, ct).ConfigureAwait(false))
+        {
+            return await FailStaleGenerationAsync(opEntity, ct).ConfigureAwait(false);
+        }
 
         var acceptedDto = new PluginOperationAcceptedDto(operationId, "generate", PluginOperationStatus.Succeeded, 2, 1, false);
         return BusinessServiceResult<GenerateSkillCandidateResultDto>.Ok(
@@ -413,28 +390,72 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
             202);
     }
 
+    private async Task<BusinessServiceResult<GenerateSkillCandidateResultDto>> ExistingGenerationResultAsync(
+        PluginOperationEntity existingOp, string draftId, CancellationToken ct)
+    {
+        var latestDraft = await _reader.FindDraftAsync(draftId, ct).ConfigureAwait(false);
+        if (latestDraft is null)
+        {
+            return BusinessServiceResult<GenerateSkillCandidateResultDto>.Fail(404, BusinessSkillErrorCodes.ValidationFailed, $"Draft '{draftId}' not found.");
+        }
+
+        if (string.Equals(existingOp.Status, nameof(PluginOperationStatus.Failed), StringComparison.Ordinal) &&
+            !string.IsNullOrWhiteSpace(existingOp.ErrorJson))
+        {
+            var errDto = JsonSerializer.Deserialize(existingOp.ErrorJson, Json.BusinessSkillErrorDto);
+            return new BusinessServiceResult<GenerateSkillCandidateResultDto>(false, 422, null, errDto);
+        }
+
+        var reusedOp = new PluginOperationAcceptedDto(
+            existingOp.OperationId,
+            existingOp.Kind,
+            Enum.TryParse<PluginOperationStatus>(existingOp.Status, out var st) ? st : PluginOperationStatus.Succeeded,
+            existingOp.Sequence,
+            existingOp.Version,
+            ReusedFromClientRequestId: true);
+        return BusinessServiceResult<GenerateSkillCandidateResultDto>.Ok(
+            new GenerateSkillCandidateResultDto(reusedOp, MapDraftDto(latestDraft), ["capability_names_and_titles", "capability_input_output_schemas"]),
+            202);
+    }
+
+    private async Task<BusinessServiceResult<GenerateSkillCandidateResultDto>> FailStaleGenerationAsync(
+        PluginOperationEntity operation, CancellationToken ct)
+    {
+        const string message = "Draft changed while generation was running; reload the latest draft before retrying.";
+        var error = new BusinessSkillErrorDto(BusinessSkillErrorCodes.CatalogChanged, message, [], false, operation.OperationId);
+        operation.Status = nameof(PluginOperationStatus.Failed);
+        operation.Sequence = 2;
+        operation.ResultMessage = message;
+        operation.ErrorJson = JsonSerializer.Serialize(error, Json.BusinessSkillErrorDto);
+        operation.UpdatedAtUtc = DateTime.UtcNow;
+        await _store.FailGenerationAsync(operation, ct).ConfigureAwait(false);
+        return new BusinessServiceResult<GenerateSkillCandidateResultDto>(false, 409, null, error);
+    }
+
     public async Task<BusinessServiceResult<SkillDraftDto>> ValidateDraftAsync(string draftId, CancellationToken ct = default)
     {
-        var draft = await _db.SkillDrafts.FirstOrDefaultAsync(d => d.Id == draftId, ct).ConfigureAwait(false);
+        var draft = await _reader.FindDraftAsync(draftId, ct).ConfigureAwait(false);
         if (draft is null)
         {
             return BusinessServiceResult<SkillDraftDto>.Fail(404, BusinessSkillErrorCodes.ValidationFailed, $"Skill draft '{draftId}' not found.");
         }
+
+        var expected = SkillDraftRevision.Capture(draft);
 
         if (string.IsNullOrWhiteSpace(draft.CandidateDefinitionJson))
         {
             return BusinessServiceResult<SkillDraftDto>.Fail(422, BusinessSkillErrorCodes.ValidationFailed, "Draft has no candidateDefinition to validate.");
         }
 
-        var candidate = JsonSerializer.Deserialize<SkillDefinitionV1>(draft.CandidateDefinitionJson, JsonOptions);
+        var candidate = JsonSerializer.Deserialize(draft.CandidateDefinitionJson, Json.SkillDefinitionV1);
         if (candidate is null)
         {
             return BusinessServiceResult<SkillDraftDto>.Fail(422, BusinessSkillErrorCodes.ValidationFailed, "CandidateDefinition JSON is malformed.");
         }
 
-        var plugin = await _db.BusinessPlugins.AsNoTracking().FirstOrDefaultAsync(p => p.Id == draft.PluginId, ct).ConfigureAwait(false);
-        var conn = plugin is null ? null : await _db.PluginConnections.AsNoTracking().FirstOrDefaultAsync(c => c.Id == plugin.ConnectionId, ct).ConfigureAwait(false);
-        var snap = await _db.CatalogSnapshots.AsNoTracking().FirstOrDefaultAsync(s => s.Id == draft.CatalogSnapshotId && s.PluginId == draft.PluginId, ct).ConfigureAwait(false);
+        var plugin = await _reader.FindPluginAsync(draft.PluginId, ct).ConfigureAwait(false);
+        var conn = plugin is null ? null : await _reader.FindConnectionAsync(plugin.ConnectionId, null, ct).ConfigureAwait(false);
+        var snap = await _reader.FindSnapshotAsync(draft.CatalogSnapshotId, draft.PluginId, ct).ConfigureAwait(false);
         if (plugin is null || conn is null || snap is null)
         {
             return BusinessServiceResult<SkillDraftDto>.Fail(404, BusinessSkillErrorCodes.CatalogIncomplete, "Bound plugin, connection, or snapshot not found.");
@@ -479,11 +500,14 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
             ValidationEvidence = updatedEvidence
         };
 
-        draft.CandidateDefinitionJson = JsonSerializer.Serialize(updatedDef, JsonOptions);
-        draft.ValidationErrorsJson = JsonSerializer.Serialize(validation.Errors, JsonOptions);
+        draft.CandidateDefinitionJson = JsonSerializer.Serialize(updatedDef, Json.SkillDefinitionV1);
+        draft.ValidationErrorsJson = JsonSerializer.Serialize(validation.Errors, Json.FieldErrors);
         draft.NeedsRevalidation = !validation.IsValid;
         draft.UpdatedAtUtc = DateTime.UtcNow;
-        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+        if (!await _store.TryUpdateDraftAsync(expected, draft, ct).ConfigureAwait(false))
+        {
+            return BusinessServiceResult<SkillDraftDto>.Fail(409, BusinessSkillErrorCodes.CatalogChanged, "Draft changed while it was being validated.");
+        }
 
         return BusinessServiceResult<SkillDraftDto>.Ok(MapDraftDto(draft));
     }
@@ -498,9 +522,7 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
             return BusinessServiceResult<PublishedSkillDto>.Fail(422, BusinessSkillErrorCodes.ValidationFailed, "expectedRevision > 0 is required.");
         }
 
-        await using var tx = await _db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
-
-        var draft = await _db.SkillDrafts.FirstOrDefaultAsync(d => d.Id == draftId, ct).ConfigureAwait(false);
+        var draft = await _reader.FindDraftAsync(draftId, ct).ConfigureAwait(false);
         if (draft is null)
         {
             return BusinessServiceResult<PublishedSkillDto>.Fail(404, BusinessSkillErrorCodes.ValidationFailed, $"Draft '{draftId}' not found.");
@@ -518,9 +540,9 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
                 "Draft requires revalidation after catalog/connection/definition change before publishing.");
         }
 
-        var plugin = await _db.BusinessPlugins.AsNoTracking().FirstOrDefaultAsync(p => p.Id == draft.PluginId, ct).ConfigureAwait(false);
-        var conn = plugin is null ? null : await _db.PluginConnections.AsNoTracking().FirstOrDefaultAsync(c => c.Id == plugin.ConnectionId, ct).ConfigureAwait(false);
-        var snap = await _db.CatalogSnapshots.AsNoTracking().FirstOrDefaultAsync(s => s.Id == draft.CatalogSnapshotId && s.PluginId == draft.PluginId, ct).ConfigureAwait(false);
+        var plugin = await _reader.FindPluginAsync(draft.PluginId, ct).ConfigureAwait(false);
+        var conn = plugin is null ? null : await _reader.FindConnectionAsync(plugin.ConnectionId, null, ct).ConfigureAwait(false);
+        var snap = await _reader.FindSnapshotAsync(draft.CatalogSnapshotId, draft.PluginId, ct).ConfigureAwait(false);
         if (plugin is null || conn is null || snap is null || !plugin.Enabled)
         {
             return BusinessServiceResult<PublishedSkillDto>.Fail(422, BusinessSkillErrorCodes.ConnectionUnavailable,
@@ -529,7 +551,7 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
 
         var candidate = string.IsNullOrWhiteSpace(draft.CandidateDefinitionJson)
             ? null
-            : JsonSerializer.Deserialize<SkillDefinitionV1>(draft.CandidateDefinitionJson, JsonOptions);
+            : JsonSerializer.Deserialize(draft.CandidateDefinitionJson, Json.SkillDefinitionV1);
         if (candidate is null)
         {
             return BusinessServiceResult<PublishedSkillDto>.Fail(422, BusinessSkillErrorCodes.ValidationFailed, "Draft has no candidateDefinition.");
@@ -559,19 +581,17 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
                 "A passing read-only test run on the current validated draft revision is required before publishing.");
         }
 
-        var testRun = await _db.SkillRuns.AsNoTracking()
-            .FirstOrDefaultAsync(r => r.RunId == ev.ReadOnlyTestRunId && r.Status == nameof(SkillRunStatus.Succeeded), ct)
-            .ConfigureAwait(false);
-        if (testRun is null)
+        var testRun = await _reader.FindRunAsync(ev.ReadOnlyTestRunId, ct).ConfigureAwait(false);
+        if (testRun?.Status != nameof(SkillRunStatus.Succeeded))
         {
             return BusinessServiceResult<PublishedSkillDto>.Fail(422, BusinessSkillErrorCodes.ValidationFailed,
                 $"Referenced test run '{ev.ReadOnlyTestRunId}' did not complete with Succeeded status.");
         }
 
-        var existingSkill = await _db.PublishedSkills.FirstOrDefaultAsync(s => s.Id == candidate.SkillId, ct).ConfigureAwait(false);
+        var existingSkill = await _reader.FindPublishedSkillAsync(candidate.SkillId, ct).ConfigureAwait(false);
         var existingVersions = existingSkill is null
             ? []
-            : await _db.PublishedSkillVersions.Where(v => v.SkillId == existingSkill.Id).ToListAsync(ct).ConfigureAwait(false);
+            : await _reader.ListPublishedVersionsAsync([existingSkill.Id], ct).ConfigureAwait(false);
 
         var nextVersion = existingVersions.Count == 0 ? 1 : existingVersions.Max(static v => v.Version) + 1;
         var now = DateTime.UtcNow;
@@ -598,7 +618,6 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
                 CreatedAtUtc = now,
                 UpdatedAtUtc = now
             };
-            _db.PublishedSkills.Add(existingSkill);
         }
         else
         {
@@ -615,15 +634,18 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
             Version = nextVersion,
             ContentHash = finalHash,
             CatalogSnapshotId = snap.Id,
-            DefinitionJson = JsonSerializer.Serialize(finalDef, JsonOptions),
+            DefinitionJson = JsonSerializer.Serialize(finalDef, Json.SkillDefinitionV1),
             NeedsRevalidation = false,
             WriteStepVerified = ev.WriteStepVerified,
             PublishedAtUtc = now
         };
-        _db.PublishedSkillVersions.Add(versionEntity);
-
-        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
-        await tx.CommitAsync(ct).ConfigureAwait(false);
+        var publication = new BusinessSkillPublication(SkillDraftRevision.Capture(draft),
+            BusinessSkillPluginBinding.Capture(plugin, conn), snap.SchemaHash, ev.ReadOnlyTestRunId, existingSkill, versionEntity);
+        if (!await _store.PublishAsync(publication, ct).ConfigureAwait(false))
+        {
+            return BusinessServiceResult<PublishedSkillDto>.Fail(409, BusinessSkillErrorCodes.CatalogChanged,
+                "Draft, plugin, or published version changed before the new version could be committed.");
+        }
 
         var allVersions = existingVersions.Append(versionEntity).OrderBy(static v => v.Version).ToArray();
         return BusinessServiceResult<PublishedSkillDto>.Ok(MapPublishedSkillDto(existingSkill, allVersions), 201);
@@ -631,8 +653,8 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
 
     public async Task<IReadOnlyList<PublishedSkillDto>> ListPublishedSkillsAsync(CancellationToken ct = default)
     {
-        var skills = await _db.PublishedSkills.AsNoTracking().OrderBy(s => s.CreatedAtUtc).ToListAsync(ct).ConfigureAwait(false);
-        var versions = await _db.PublishedSkillVersions.AsNoTracking().ToListAsync(ct).ConfigureAwait(false);
+        var skills = await _store.ListPublishedSkillsAsync(ct).ConfigureAwait(false);
+        var versions = await _reader.ListPublishedVersionsAsync(skills.Select(static row => row.Id).ToArray(), ct).ConfigureAwait(false);
         var bySkill = versions.GroupBy(static v => v.SkillId, StringComparer.Ordinal).ToDictionary(static g => g.Key, static g => g.OrderBy(v => v.Version).ToArray(), StringComparer.Ordinal);
 
         return skills.Select(s => MapPublishedSkillDto(s, bySkill.TryGetValue(s.Id, out var list) ? list : [])).ToArray();
@@ -640,17 +662,13 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
 
     public async Task<BusinessServiceResult<PublishedSkillDto>> GetPublishedSkillAsync(string skillId, CancellationToken ct = default)
     {
-        var skill = await _db.PublishedSkills.AsNoTracking().FirstOrDefaultAsync(s => s.Id == skillId, ct).ConfigureAwait(false);
+        var skill = await _reader.FindPublishedSkillAsync(skillId, ct).ConfigureAwait(false);
         if (skill is null)
         {
             return BusinessServiceResult<PublishedSkillDto>.Fail(404, BusinessSkillErrorCodes.ValidationFailed, $"Published skill '{skillId}' not found.");
         }
 
-        var versions = await _db.PublishedSkillVersions.AsNoTracking()
-            .Where(v => v.SkillId == skillId)
-            .OrderBy(v => v.Version)
-            .ToArrayAsync(ct)
-            .ConfigureAwait(false);
+        var versions = (await _reader.ListPublishedVersionsAsync([skillId], ct).ConfigureAwait(false)).OrderBy(static v => v.Version).ToArray();
 
         return BusinessServiceResult<PublishedSkillDto>.Ok(MapPublishedSkillDto(skill, versions));
     }
@@ -660,22 +678,21 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
         int? version = null,
         CancellationToken ct = default)
     {
-        var skill = await _db.PublishedSkills.AsNoTracking().FirstOrDefaultAsync(s => s.Id == skillId, ct).ConfigureAwait(false);
+        var skill = await _reader.FindPublishedSkillAsync(skillId, ct).ConfigureAwait(false);
         if (skill is null)
         {
             return BusinessServiceResult<SkillMarkdownPreviewDto>.Fail(404, BusinessSkillErrorCodes.ValidationFailed, $"Published skill '{skillId}' not found.");
         }
 
         var targetVer = version ?? skill.ActiveVersion;
-        var verEntity = await _db.PublishedSkillVersions.AsNoTracking()
-            .FirstOrDefaultAsync(v => v.SkillId == skillId && v.Version == targetVer, ct)
+        var verEntity = await _reader.FindPublishedVersionAsync(skillId, targetVer, ct)
             .ConfigureAwait(false);
         if (verEntity is null)
         {
             return BusinessServiceResult<SkillMarkdownPreviewDto>.Fail(404, BusinessSkillErrorCodes.ValidationFailed, $"Version {targetVer} not found for skill '{skillId}'.");
         }
 
-        var def = JsonSerializer.Deserialize<SkillDefinitionV1>(verEntity.DefinitionJson, JsonOptions);
+        var def = JsonSerializer.Deserialize(verEntity.DefinitionJson, Json.SkillDefinitionV1);
         if (def is null)
         {
             return BusinessServiceResult<SkillMarkdownPreviewDto>.Fail(422, BusinessSkillErrorCodes.ValidationFailed, "Stored definition JSON is corrupt.");
@@ -695,14 +712,13 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
             return BusinessServiceResult<PublishedSkillDto>.Fail(422, BusinessSkillErrorCodes.ValidationFailed, "version >= 1 is required.");
         }
 
-        var skill = await _db.PublishedSkills.FirstOrDefaultAsync(s => s.Id == skillId, ct).ConfigureAwait(false);
+        var skill = await _reader.FindPublishedSkillAsync(skillId, ct).ConfigureAwait(false);
         if (skill is null)
         {
             return BusinessServiceResult<PublishedSkillDto>.Fail(404, BusinessSkillErrorCodes.ValidationFailed, $"Published skill '{skillId}' not found.");
         }
 
-        var verEntity = await _db.PublishedSkillVersions.AsNoTracking()
-            .FirstOrDefaultAsync(v => v.SkillId == skillId && v.Version == request.Version, ct)
+        var verEntity = await _reader.FindPublishedVersionAsync(skillId, request.Version, ct)
             .ConfigureAwait(false);
         if (verEntity is null)
         {
@@ -715,15 +731,15 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
                 $"Version {request.Version} requires revalidation after plugin/catalog changes and cannot be activated directly.");
         }
 
-        var plugin = await _db.BusinessPlugins.AsNoTracking().FirstOrDefaultAsync(p => p.Id == skill.PluginId, ct).ConfigureAwait(false);
-        var conn = plugin is null ? null : await _db.PluginConnections.AsNoTracking().FirstOrDefaultAsync(c => c.Id == plugin.ConnectionId, ct).ConfigureAwait(false);
+        var plugin = await _reader.FindPluginAsync(skill.PluginId, ct).ConfigureAwait(false);
+        var conn = plugin is null ? null : await _reader.FindConnectionAsync(plugin.ConnectionId, null, ct).ConfigureAwait(false);
         if (plugin is null || conn is null || !plugin.Enabled)
         {
             return BusinessServiceResult<PublishedSkillDto>.Fail(422, BusinessSkillErrorCodes.ConnectionUnavailable,
                 $"Plugin '{skill.PluginId}' is disabled or unavailable.");
         }
 
-        var def = JsonSerializer.Deserialize<SkillDefinitionV1>(verEntity.DefinitionJson, JsonOptions);
+        var def = JsonSerializer.Deserialize(verEntity.DefinitionJson, Json.SkillDefinitionV1);
         if (def is null)
         {
             return BusinessServiceResult<PublishedSkillDto>.Fail(422, BusinessSkillErrorCodes.ValidationFailed, "Stored version definition is invalid.");
@@ -738,15 +754,17 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
                 "Target version failed live permission/catalog compatibility check.", fieldErrors: validation.Errors);
         }
 
-        skill.ActiveVersion = request.Version;
-        skill.UpdatedAtUtc = DateTime.UtcNow;
-        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+        var now = DateTime.UtcNow;
+        if (!await _store.ActivateVersionAsync(skillId, request.Version, BusinessSkillPluginBinding.Capture(plugin, conn), now, ct).ConfigureAwait(false))
+        {
+            return BusinessServiceResult<PublishedSkillDto>.Fail(409, BusinessSkillErrorCodes.CatalogChanged,
+                "Plugin or selected version changed before it could be activated.");
+        }
 
-        var allVersions = await _db.PublishedSkillVersions.AsNoTracking()
-            .Where(v => v.SkillId == skillId)
-            .OrderBy(v => v.Version)
-            .ToArrayAsync(ct)
-            .ConfigureAwait(false);
+        skill.ActiveVersion = request.Version;
+        skill.UpdatedAtUtc = now;
+
+        var allVersions = (await _reader.ListPublishedVersionsAsync([skillId], ct).ConfigureAwait(false)).OrderBy(static v => v.Version).ToArray();
         return BusinessServiceResult<PublishedSkillDto>.Ok(MapPublishedSkillDto(skill, allVersions));
     }
 
@@ -767,11 +785,11 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
         SelectedCapabilityIds = DeserializeStringArray(e.SelectedCapabilityIdsJson),
         CandidateDefinition = string.IsNullOrWhiteSpace(e.CandidateDefinitionJson)
             ? null
-            : JsonSerializer.Deserialize<SkillDefinitionV1>(e.CandidateDefinitionJson, JsonOptions),
+            : JsonSerializer.Deserialize(e.CandidateDefinitionJson, Json.SkillDefinitionV1),
         ClarificationQuestions = DeserializeStringArray(e.ClarificationQuestionsJson),
         ValidationErrors = string.IsNullOrWhiteSpace(e.ValidationErrorsJson)
             ? []
-            : (JsonSerializer.Deserialize<BusinessSkillFieldError[]>(e.ValidationErrorsJson, JsonOptions) ?? []),
+            : (JsonSerializer.Deserialize(e.ValidationErrorsJson, Json.FieldErrorArray) ?? []),
         NeedsRevalidation = e.NeedsRevalidation,
         UpdatedAtUtc = new DateTimeOffset(e.UpdatedAtUtc, TimeSpan.Zero)
     };
@@ -795,12 +813,8 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
 
     private async Task<string?> ValidateSelectedIdsExistInSnapshotAsync(string snapshotId, string[] selectedIds, CancellationToken ct)
     {
-        var found = await _db.CatalogCapabilities.AsNoTracking()
-            .Where(c => c.SnapshotId == snapshotId && selectedIds.Contains(c.Id))
-            .Select(c => c.Id)
-            .ToArrayAsync(ct)
-            .ConfigureAwait(false);
-        var foundSet = new HashSet<string>(found, StringComparer.Ordinal);
+        var found = await _reader.ListCapabilityRisksAsync(snapshotId, selectedIds, ct).ConfigureAwait(false);
+        var foundSet = found.Select(static row => row.Id).ToHashSet(StringComparer.Ordinal);
         var missing = selectedIds.FirstOrDefault(id => !foundSet.Contains(id));
         return missing is null ? null : $"Capability '{missing}' does not exist in snapshot '{snapshotId}'.";
     }
@@ -812,9 +826,7 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
             return [];
         }
 
-        var rows = await _db.CatalogCapabilities.AsNoTracking()
-            .Where(c => c.SnapshotId == snapshotId && ids.Contains(c.Id))
-            .ToListAsync(ct)
+        var rows = await _store.ListSelectedCapabilitiesAsync(snapshotId, ids.ToArray(), ct)
             .ConfigureAwait(false);
 
         return rows.Select(MapCapabilityDetail).ToArray();
@@ -822,9 +834,7 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
 
     private async Task<Dictionary<string, CapabilityDetailDto>> LoadCapabilityMapAsync(string snapshotId, CancellationToken ct)
     {
-        var rows = await _db.CatalogCapabilities.AsNoTracking()
-            .Where(c => c.SnapshotId == snapshotId)
-            .ToListAsync(ct)
+        var rows = await _reader.ListCapabilitiesAsync(snapshotId, ct)
             .ConfigureAwait(false);
 
         return rows.Select(MapCapabilityDetail).ToDictionary(static d => d.Summary.Id, StringComparer.Ordinal);
@@ -845,13 +855,13 @@ public sealed class BusinessSkillBuilderService : IBusinessSkillBuilderService
             Risk = Enum.TryParse<CapabilityRiskLevel>(c.Risk, out var r) ? r : CapabilityRiskLevel.Unknown,
             SuggestedSourceRiskHint = !string.IsNullOrEmpty(c.SuggestedSourceRiskHint) && Enum.TryParse<CapabilityRiskLevel>(c.SuggestedSourceRiskHint, out var sr) ? sr : null,
             Executability = Enum.TryParse<CapabilityExecutabilityStatus>(c.Executability, out var ex) ? ex : CapabilityExecutabilityStatus.Unsupported,
-            Diagnostics = JsonSerializer.Deserialize<string[]>(c.DiagnosticsJson, JsonOptions) ?? []
+            Diagnostics = JsonSerializer.Deserialize(c.DiagnosticsJson, Json.StringArray) ?? []
         },
         InputSchemaJson = c.InputSchemaJson,
         OutputSchemaJson = c.OutputSchemaJson,
-        Invocation = JsonSerializer.Deserialize<CapabilityInvocationSpecDto>(c.InvocationJson, JsonOptions) ?? new CapabilityInvocationSpecDto()
+        Invocation = JsonSerializer.Deserialize(c.InvocationJson, Json.CapabilityInvocationSpecDto) ?? new CapabilityInvocationSpecDto()
     };
 
     private static string[] DeserializeStringArray(string? json)
-        => string.IsNullOrWhiteSpace(json) ? [] : (JsonSerializer.Deserialize<string[]>(json, JsonOptions) ?? []);
+        => string.IsNullOrWhiteSpace(json) ? [] : (JsonSerializer.Deserialize(json, Json.StringArray) ?? []);
 }

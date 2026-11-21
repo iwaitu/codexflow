@@ -40,6 +40,9 @@ public static class GatewaySseEventType
     public const string BusinessSkillRunUpdated = "business_skill_run_updated";
     public const string BusinessSkillApprovalRequested = "business_skill_approval_requested";
     public const string BusinessSkillApprovalResolved = "business_skill_approval_resolved";
+    public const string BrowserStateUpdated = "browser_state_updated";
+    public const string BrowserApprovalRequested = "browser_approval_requested";
+    public const string BrowserApprovalResolved = "browser_approval_resolved";
     public const string Error = "error";
     public const string Heartbeat = "heartbeat";
     public const string Done = "done";

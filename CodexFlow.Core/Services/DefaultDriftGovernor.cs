@@ -174,7 +174,7 @@ public sealed class DefaultDriftGovernor : IDriftGovernor
         MemoryFreshnessState? freshnessState = null;
         try
         {
-            freshnessState = JsonSerializer.Deserialize<MemoryFreshnessState>(freshnessFact.Value);
+            freshnessState = JsonSerializer.Deserialize(freshnessFact.Value, MemoryFactJsonContext.Default.MemoryFreshnessState);
         }
         catch (System.Text.Json.JsonException)
         {
@@ -287,7 +287,7 @@ public sealed class DefaultDriftGovernor : IDriftGovernor
             IsStale: false,
             Reason: "analyze_project completed",
             CheckedAtUtc: DateTime.UtcNow);
-        var json = JsonSerializer.Serialize(freshState);
+        var json = JsonSerializer.Serialize(freshState, MemoryFactJsonContext.Default.MemoryFreshnessState);
         await _memoryService.LearnFactAsync(
             session.Id,
             ProjectMemoryFactKeys.MemoryFreshness,

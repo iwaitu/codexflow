@@ -216,7 +216,7 @@ public class AnalyzeProjectTool(
                 try
                 {
                     var fileIndex = await scanner.GenerateFileIndexAsync(mainRoot).ConfigureAwait(false);
-                    var fileIndexJson = Newtonsoft.Json.JsonConvert.SerializeObject(fileIndex);
+                    var fileIndexJson = ProjectIndexJson.Serialize(fileIndex);
                     // ProjectFileIndex is non-vectorizable — direct write is fine.
                     await sessionManager.LearnFactAsync(
                         sessionId,

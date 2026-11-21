@@ -3,6 +3,7 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 using System.Text.Json;
+using CodexFlow.Orchestration.Persistence;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Models;
 using Microsoft.Extensions.Logging;
@@ -21,11 +22,6 @@ public class RedisTaskListService : ITaskListService
     private const string KeyPrefix = "Codex:TaskList:";
     private static readonly TimeSpan SnapshotTtl = TimeSpan.FromHours(24);
 
-    private static readonly JsonSerializerOptions JsonOpts = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        WriteIndented = false
-    };
 
     /// <summary>Uses any <see cref="IKeyValueTextStore"/> (for example the SQLite one of the personal edition).</summary>
     public RedisTaskListService(IKeyValueTextStore store, ILogger<RedisTaskListService> logger)
@@ -211,7 +207,7 @@ public class RedisTaskListService : ITaskListService
         TaskListSnapshot? snapshot;
         try
         {
-            snapshot = JsonSerializer.Deserialize<TaskListSnapshot>(existingJson, JsonOpts);
+            snapshot = JsonSerializer.Deserialize(existingJson, OrchestrationSnapshotJsonContext.CamelCase.RedisTaskList);
         }
         catch (JsonException ex)
         {
@@ -283,7 +279,7 @@ public class RedisTaskListService : ITaskListService
 
     private async Task<string> PersistSnapshotAsync(string? sessionId, TaskListSnapshot snapshot)
     {
-        var json = JsonSerializer.Serialize(snapshot, JsonOpts);
+        var json = JsonSerializer.Serialize(snapshot, OrchestrationSnapshotJsonContext.CamelCase.RedisTaskList);
 
         try
         {
@@ -341,7 +337,7 @@ public class RedisTaskListService : ITaskListService
     }
 
     // 内部快照结构（与 Contracts.TaskListDto 字段一致，camelCase 序列化）
-    private sealed class TaskListSnapshot
+    internal sealed class TaskListSnapshot
     {
         public string SessionId { get; set; } = "";
         public string Title { get; set; } = "";
@@ -349,7 +345,7 @@ public class RedisTaskListService : ITaskListService
         public DateTime UpdatedAt { get; set; }
     }
 
-    private sealed class TaskListSnapshotItem
+    internal sealed class TaskListSnapshotItem
     {
         public string Id { get; set; } = "";
         public int Index { get; set; }

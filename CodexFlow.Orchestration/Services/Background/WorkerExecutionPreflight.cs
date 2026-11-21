@@ -6,7 +6,6 @@ using CodexFlow.Orchestration.Jobs;
 using CodexFlow.Core.Services;
 using CodexFlow.Core.Workers;
 using CodexFlow.Domain.Jobs;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;

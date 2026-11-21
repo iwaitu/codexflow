@@ -16,6 +16,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using System.IO;
 using System.Net.Http;
 using System.Text;
@@ -167,7 +168,13 @@ public class CodexOrchestrator
     {
     }
 
-    private async Task ReportProgressAsync(string message, CodexSession session, CodexEventType type = CodexEventType.General, string? taskId = null, object? payload = null)
+    private async Task ReportProgressAsync(
+        string message,
+        CodexSession session,
+        CodexEventType type = CodexEventType.General,
+        string? taskId = null,
+        object? payload = null,
+        Func<JToken>? journalPayload = null)
     {
         StructuredLog.Information(_logger, "Progress: {Message}", message);
         var e = new CodexEvent
@@ -190,7 +197,9 @@ public class CodexOrchestrator
         // [Level 8 Enhancement] Journaling every progress event for systemic thinking
         try
         {
-            var data = payload != null ? JsonConvert.SerializeObject(payload) : "";
+            var data = payload is null
+                ? ""
+                : (journalPayload?.Invoke() ?? JournalPayloadToken(payload)).ToString(Formatting.None);
             await _sessionManager.Memory.LogEventAsync(session.Id, type.ToString(), $"{message} | Data: {data}").ConfigureAwait(false);
             await _sessionManager
                 .RecordTurnsAsync(session.Id, SessionMessageDurabilityPolicy.FromEvent(type, message))
@@ -200,6 +209,85 @@ public class CodexOrchestrator
         catch (InvalidOperationException) { /* 忽略日誌記錄異常 */ }
         catch (TimeoutException) { /* 忽略日誌記錄異常 */ }
     }
+
+    private static JToken JournalPayloadToken(object payload) => payload switch
+    {
+        CodexTask task => JournalTaskToken(task),
+        SemanticDiffResult diff => new JObject
+        {
+            ["HasChanges"] = diff.HasChanges,
+            ["ChangedSymbols"] = new JArray(diff.ChangedSymbols),
+            ["ImpactedFiles"] = new JArray(diff.ImpactedFiles),
+            ["Recommendations"] = diff.Recommendations
+        },
+        SecurityAuditResult audit => new JObject
+        {
+            ["IsPassed"] = audit.IsPassed,
+            ["Summary"] = audit.Summary,
+            ["Risks"] = StringArrayOrNull(audit.Risks),
+            ["ReportPath"] = audit.ReportPath,
+            ["LegacyRisks"] = StringArrayOrNull(audit.LegacyRisks),
+            ["DeferredRisks"] = StringArrayOrNull(audit.DeferredRisks)
+        },
+        string snapshot => new JValue(snapshot),
+        _ => throw new InvalidOperationException("The progress event has no journal JSON projection.")
+    };
+
+    private static JObject JournalTaskToken(CodexTask task) => new()
+    {
+        ["Id"] = task.Id,
+        ["Title"] = task.Title,
+        ["Description"] = task.Description,
+        ["TaskType"] = task.TaskType,
+        ["Status"] = (int)task.Status,
+        ["StageId"] = task.StageId,
+        ["Dependencies"] = new JArray(task.Dependencies),
+        ["Inputs"] = new JArray(task.Inputs),
+        ["Outputs"] = new JArray(task.Outputs),
+        ["ChecklistItems"] = new JArray(task.ChecklistItems.Select(item => item is null
+            ? (JToken)JValue.CreateNull()
+            : new JObject
+            {
+                ["Id"] = item.Id,
+                ["Text"] = item.Text,
+                ["Status"] = (int)item.Status,
+                ["Evidence"] = new JArray(item.Evidence),
+                ["RelatedAssertions"] = new JArray(item.RelatedAssertions)
+            })),
+        ["RequiredArtifacts"] = new JArray(task.RequiredArtifacts.Select(ArtifactAssertionToken)),
+        ["ForbiddenStates"] = new JArray(task.ForbiddenStates.Select(ArtifactAssertionToken)),
+        ["ForbiddenPaths"] = StringArrayOrNull(task.ForbiddenPaths),
+        ["RiskLevel"] = task.RiskLevel,
+        ["ComplexityLevel"] = task.ComplexityLevel,
+        ["UnsafeIfDependencyFallbackPassed"] = task.UnsafeIfDependencyFallbackPassed,
+        ["StartedAt"] = task.StartedAt,
+        ["FinishedAt"] = task.FinishedAt,
+        ["RetryCount"] = task.RetryCount,
+        ["ResultNotes"] = task.ResultNotes,
+        ["ExecutionEvidence"] = task.ExecutionEvidence is { } evidence ? new JObject
+        {
+            ["ChangedFiles"] = StringArrayOrNull(evidence.ChangedFiles),
+            ["CreatedFiles"] = StringArrayOrNull(evidence.CreatedFiles),
+            ["DeletedFiles"] = StringArrayOrNull(evidence.DeletedFiles),
+            ["HasSuccessfulBuildEvidence"] = evidence.HasSuccessfulBuildEvidence,
+            ["HasSuccessfulTestEvidence"] = evidence.HasSuccessfulTestEvidence,
+            ["AssertionResults"] = StringArrayOrNull(evidence.AssertionResults),
+            ["TotalToolCalls"] = evidence.TotalToolCalls,
+            ["WriteToolCalls"] = evidence.WriteToolCalls
+        } : null
+    };
+
+    private static JToken ArtifactAssertionToken(ArtifactAssertion? assertion) => assertion is null
+        ? JValue.CreateNull()
+        : new JObject
+        {
+            ["Type"] = assertion.Type,
+            ["Path"] = assertion.Path,
+            ["Text"] = assertion.Text
+        };
+
+    private static JToken StringArrayOrNull(IEnumerable<string>? values)
+        => values is null ? JValue.CreateNull() : new JArray(values);
 
     /// <summary>
     /// [Level 7] 原子任务执行器：仅处理代码实现类任务，包含影子隔离和质量闭环。
@@ -317,7 +405,7 @@ public class CodexOrchestrator
                 }
             }
 
-            var json = Newtonsoft.Json.JsonConvert.SerializeObject(index);
+            var json = ProjectIndexJson.Serialize(index);
             var indexMeta = new MemoryEntryMetadata(
                 Scope: MemoryFactScope.Session,
                 Source: "orchestrator_index_refresh",
@@ -673,28 +761,10 @@ public class CodexOrchestrator
                     }
                 }
 
-                // 生成结构化 diff
-                object diffData;
-                if (committeeTasks is { Count: > 0 })
-                {
-                    diffData = PlanProjectionService.GenerateShadowDiff(baselinePlan, committeeTasks);
-                }
-                else
-                {
-                    // 投影失败时仍记录基础对比信息
-                    diffData = new
-                    {
-                        baseline_plan_source = "DefaultCodexPlanner",
-                        committee_plan_source = "CommitteePlanning",
-                        baseline_task_count = baselinePlan.Count,
-                        committee_projection_failed = true,
-                        committee_status = committeeResult.Status.ToString(),
-                        committee_total_rounds = committeeResult.TotalRounds,
-                        committee_unresolved_items = committeeResult.UnresolvedItems,
-                        summary = $"Shadow 模式：基线 {baselinePlan.Count} 任务，委员会蓝图投影失败",
-                        generated_at = DateTime.UtcNow
-                    };
-                }
+                // 投影失败时仍记录基础对比信息
+                var diffData = committeeTasks is { Count: > 0 }
+                    ? PlanProjectionService.GenerateShadowDiff(baselinePlan, committeeTasks)
+                    : PlanProjectionService.GenerateFailedShadowDiff(baselinePlan.Count, committeeResult);
 
                 // 写入 diff 和 metrics 工件
                 if (!string.IsNullOrEmpty(committeeResult.MeetingDirectory) && Directory.Exists(committeeResult.MeetingDirectory))
@@ -802,12 +872,19 @@ public class CodexOrchestrator
 
             await ReportProgressAsync("已生成实施计划 (implementation_plan.md)，正在推送到 UI...", session, CodexEventType.General).ConfigureAwait(false);
 
-            await ReportProgressAsync("Previewing Plan...", session, CodexEventType.CodePreview, null, new
+            var planPreview = new
             {
                 filePath = "implementation_plan.md",
                 code = session.ProjectSummary,
                 language = "markdown"
-            }).ConfigureAwait(false);
+            };
+            await ReportProgressAsync("Previewing Plan...", session, CodexEventType.CodePreview, payload: planPreview,
+                journalPayload: () => new JObject
+                {
+                    ["filePath"] = planPreview.filePath,
+                    ["code"] = planPreview.code,
+                    ["language"] = planPreview.language
+                }).ConfigureAwait(false);
 
             // Auto-scan (Stage 1.5) - REQUIRED for tests like Stage1_5PerceptionTests
             var scanReport = await _scanner.ScanAndSummarizeAsync(session.WorkspacePath).ConfigureAwait(false);
@@ -1613,13 +1690,19 @@ public class CodexOrchestrator
                                 task.Id, valResult.Summary);
                         }
 
+                        var validationPayload = new { warnings = valResult.WarningDetails, isFallback = valResult.IsFallback };
                         await ReportProgressAsync(
                             $"⚠️ 任务 [{task.Title}] 验证通过，但质量门禁检测到 {valResult.WarningDetails?.Count ?? 0} 条 warning。" +
                             (valResult.IsFallback ? " [验证器降级通过]" : ""),
                             session,
                             CodexEventType.General,
                             task.Id,
-                            new { warnings = valResult.WarningDetails, isFallback = valResult.IsFallback }).ConfigureAwait(false);
+                            validationPayload,
+                            () => new JObject
+                            {
+                                ["warnings"] = StringArrayOrNull(validationPayload.warnings),
+                                ["isFallback"] = validationPayload.isFallback
+                            }).ConfigureAwait(false);
                     }
                     else if (task.Status != CodexTaskStatus.CompletedWithWarnings)
                     {
@@ -2009,14 +2092,27 @@ public class CodexOrchestrator
                 }
 
                 var mergePayload = mergedFileChanges.Count > 0
-                    ? (object)new
+                    ? new
                     {
                         mergedFiles = mergedFileChanges.Select(f => new { path = Path.GetRelativePath(session.WorkspacePath, Path.Combine(mainRoot, f.FilePath)).Replace('\\', '/'), status = f.Status, additions = f.Additions, deletions = f.Deletions }),
                         taskTitle = task.Title,
                         taskId = task.Id
                     }
                     : null;
-                await ReportProgressAsync($"{statusLabel} 任务 [{task.Title}] 已完成并合入主分支。", session, CodexEventType.TaskCompleted, task.Id, mergePayload).ConfigureAwait(false);
+                await ReportProgressAsync($"{statusLabel} 任务 [{task.Title}] 已完成并合入主分支。", session,
+                    CodexEventType.TaskCompleted, task.Id, mergePayload,
+                    mergePayload is null ? null : () => new JObject
+                    {
+                        ["mergedFiles"] = new JArray(mergePayload.mergedFiles.Select(file => new JObject
+                        {
+                            ["path"] = file.path,
+                            ["status"] = file.status,
+                            ["additions"] = file.additions,
+                            ["deletions"] = file.deletions
+                        })),
+                        ["taskTitle"] = mergePayload.taskTitle,
+                        ["taskId"] = mergePayload.taskId
+                    }).ConfigureAwait(false);
                 // [Fix] Persist session BEFORE publishing snapshot, so next task loads correct state
                 await _sessionManager.UpdateSessionAsync(session).ConfigureAwait(false);
                 await PublishTaskListAsync(session, task.Id, task.Status).ConfigureAwait(false);
@@ -2207,7 +2303,8 @@ public class CodexOrchestrator
             $"📝 检测到架构/工程变更，待同步文档：{string.Join(", ", pendingDocs)}",
             session,
             CodexEventType.General,
-            payload: new { pendingDocs }).ConfigureAwait(false);
+            payload: new { pendingDocs },
+            journalPayload: () => new JObject { ["pendingDocs"] = StringArrayOrNull(pendingDocs) }).ConfigureAwait(false);
     }
 
     private static List<string> DetectDocumentationSyncTargets(
@@ -2542,18 +2639,9 @@ public class CodexOrchestrator
     }
 
     private static (int ExitCode, string Stdout, string Stderr) ExtractRunCommandResult(CodexToolResult toolResult)
-    {
-        if (toolResult.Metadata == null)
-        {
-            return (-1, string.Empty, string.Empty);
-        }
-
-        var metadataType = toolResult.Metadata.GetType();
-        var exitCode = metadataType.GetProperty("ExitCode")?.GetValue(toolResult.Metadata) as int? ?? -1;
-        var stdout = metadataType.GetProperty("Stdout")?.GetValue(toolResult.Metadata)?.ToString() ?? string.Empty;
-        var stderr = metadataType.GetProperty("Stderr")?.GetValue(toolResult.Metadata)?.ToString() ?? string.Empty;
-        return (exitCode, stdout, stderr);
-    }
+        => toolResult.Metadata is RunCommandCompletionMetadata metadata
+            ? (metadata.ExitCode ?? -1, metadata.Stdout, metadata.Stderr)
+            : (-1, string.Empty, string.Empty);
 
     private static string SummarizeCommandOutput(string stdout, string stderr, string fallbackOutput)
     {
@@ -2782,12 +2870,21 @@ public class CodexOrchestrator
         task.FinishedAt = DateTime.UtcNow;
 
         await _sessionManager.UpdateSessionAsync(session).ConfigureAwait(false);
+        var patchPayload = new { patchResult.Summary, patchResult.RequiresUserConfirmation, patchResult.Warnings, artifactPath = artifact.RelativePath, workspacePath = artifact.WorkspacePath };
         await ReportProgressAsync(
             $"🧩 [PlanPatch] 检测到计划偏差，已暂停任务并生成局部修补请求：{patchResult.Summary}",
             session,
             CodexEventType.TaskFailed,
             task.Id,
-            new { patchResult.Summary, patchResult.RequiresUserConfirmation, patchResult.Warnings, artifactPath = artifact.RelativePath, workspacePath = artifact.WorkspacePath }).ConfigureAwait(false);
+            patchPayload,
+            () => new JObject
+            {
+                ["Summary"] = patchPayload.Summary,
+                ["RequiresUserConfirmation"] = patchPayload.RequiresUserConfirmation,
+                ["Warnings"] = StringArrayOrNull(patchPayload.Warnings),
+                ["artifactPath"] = patchPayload.artifactPath,
+                ["workspacePath"] = patchPayload.workspacePath
+            }).ConfigureAwait(false);
         await PublishTaskListAsync(session, task.Id, CodexTaskStatus.Failed, patchResult.Summary).ConfigureAwait(false);
 
         return new OrchestratorResult(
@@ -2818,33 +2915,33 @@ public class CodexOrchestrator
         var relativePath = $"{artifactDirName}/{fileName}";
         var diffPatch = await CapturePlanPatchDiffAsync(workPath, baseRef).ConfigureAwait(false);
 
-        var payload = new
+        var payload = new JObject
         {
-            session_id = session.Id,
-            task_id = task.Id,
-            created_at_utc = DateTime.UtcNow,
-            is_shadow_path = isShadowPath,
-            preserved_workspace_path = isShadowPath ? workPath : null,
-            diff_base_ref = baseRef,
-            diff_patch = diffPatch,
-            decision = new
+            ["session_id"] = session.Id,
+            ["task_id"] = task.Id,
+            ["created_at_utc"] = DateTime.UtcNow,
+            ["is_shadow_path"] = isShadowPath,
+            ["preserved_workspace_path"] = isShadowPath ? workPath : null,
+            ["diff_base_ref"] = baseRef,
+            ["diff_patch"] = diffPatch,
+            ["decision"] = new JObject
             {
-                severity = decision.Severity.ToString(),
-                decision.RequiresPlanPatch,
-                decision.RequiresPlanReset,
-                decision.Summary,
-                decision.Findings
+                ["severity"] = decision.Severity.ToString(),
+                ["RequiresPlanPatch"] = decision.RequiresPlanPatch,
+                ["RequiresPlanReset"] = decision.RequiresPlanReset,
+                ["Summary"] = decision.Summary,
+                ["Findings"] = StringArrayOrNull(decision.Findings)
             },
-            changed_files = changedFiles.Select(change => new
+            ["changed_files"] = new JArray(changedFiles.Select(change => new JObject
             {
-                change.FilePath,
-                change.Status,
-                change.Additions,
-                change.Deletions
-            }).ToList()
+                ["FilePath"] = change.FilePath,
+                ["Status"] = change.Status,
+                ["Additions"] = change.Additions,
+                ["Deletions"] = change.Deletions
+            }))
         };
 
-        await WriteWorkspaceTextAsync(root, relativePath, JsonConvert.SerializeObject(payload, Formatting.Indented), ct).ConfigureAwait(false);
+        await WriteWorkspaceTextAsync(root, relativePath, payload.ToString(Formatting.Indented), ct).ConfigureAwait(false);
         return new PlanPatchArtifactInfo(relativePath, isShadowPath ? workPath : null);
     }
 

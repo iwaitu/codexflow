@@ -29,7 +29,8 @@ internal static class QreV2AdapterUtilities
         // equivalent empty object schema, but not boolean schema nodes.
         var node = JsonNode.Parse(schema.GetRawText());
         AdaptSchemaNode(node);
-        return JsonSerializer.SerializeToElement(node);
+        using var document = JsonDocument.Parse(node?.ToJsonString() ?? "null");
+        return document.RootElement.Clone();
     }
 
     private static JsonNode? AdaptSchemaNode(JsonNode? node)

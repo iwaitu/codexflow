@@ -18,28 +18,34 @@ internal static class TestCommandEvidence
 
     // python -m pytest / python3 -m unittest / py -3 -m pytest / pytest
     private static readonly Regex PythonTestCommand = new(
-        @"\$\s*(?:(?:python[\d.]*|py)\s+(?:-[^\s]+\s+)*?-m\s+(?:pytest|unittest)\b|pytest\b)",
+        @"^\$\s*(?:(?:python[\d.]*|py)\s+(?:-[^\s]+\s+)*?-m\s+(?:pytest|unittest)|pytest)(?:[ \t]|$)",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     // npm test / npm run test / pnpm test / yarn test / node --test / npx jest|vitest|mocha
     private static readonly Regex NodeTestCommand = new(
-        @"\$\s*(?:(?:npm|pnpm|yarn)\s+(?:run\s+)?test\b|node\s+--test\b|npx\s+(?:-[^\s]+\s+)*?(?:jest|vitest|mocha)\b)",
+        @"^\$\s*(?:(?:npm|pnpm|yarn)\s+(?:run\s+)?test|node\s+--test|npx\s+(?:-[^\s]+\s+)*?(?:jest|vitest|mocha))(?:[ \t]|$)",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
-    /// <summary>The kind and the canonical command of the test run this output belongs to; null when it is not one of these test commands.</summary>
-    public static (string Kind, string Command)? Classify(string? commandOutput)
+    /// <summary>The kind and canonical command for a single echoed command line.</summary>
+    public static (string Kind, string Command)? Classify(string? commandLine)
     {
-        if (string.IsNullOrWhiteSpace(commandOutput))
+        if (string.IsNullOrWhiteSpace(commandLine))
         {
             return null;
         }
 
-        if (PythonTestCommand.IsMatch(commandOutput))
+        var newline = commandLine.IndexOf('\n', StringComparison.Ordinal);
+        if (newline >= 0)
+        {
+            commandLine = commandLine[..newline].TrimEnd('\r');
+        }
+
+        if (PythonTestCommand.IsMatch(commandLine))
         {
             return (PythonTest, "python -m pytest");
         }
 
-        return NodeTestCommand.IsMatch(commandOutput) ? (NodeTest, "npm test") : null;
+        return NodeTestCommand.IsMatch(commandLine) ? (NodeTest, "npm test") : null;
     }
 
     /// <summary>True for the verification kinds that show the project builds or its tests pass (a restore or a listing shows neither).</summary>

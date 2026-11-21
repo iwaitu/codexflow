@@ -7,6 +7,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using CodexFlow.Orchestration.Persistence;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NuGet.Versioning;
@@ -309,7 +310,7 @@ public sealed class HostManagedNuGetAdvisoryProvider : INuGetAdvisorySnapshotPro
     }
 
     // ── disk cache (host-controlled directory; integrity re-verified on load) ────────────────────────
-    private sealed class CacheDocument
+    internal sealed class CacheDocument
     {
         public int Schema { get; set; } = 1;
         public DateTimeOffset RetrievedAtUtc { get; set; }
@@ -326,7 +327,7 @@ public sealed class HostManagedNuGetAdvisoryProvider : INuGetAdvisorySnapshotPro
         try
         {
             if (CachePath is not { } path || !File.Exists(path)) return null;
-            var doc = JsonSerializer.Deserialize<CacheDocument>(File.ReadAllBytes(path));
+            var doc = JsonSerializer.Deserialize(File.ReadAllBytes(path), OrchestrationSnapshotJsonContext.Default.NuGetAdvisoryCache);
             if (doc is null || doc.Schema != 1) return null;
             IReadOnlyDictionary<string, IReadOnlyList<NuGetAdvisory>> packages =
                 doc.Packages.ToDictionary(k => k.Key, k => (IReadOnlyList<NuGetAdvisory>)k.Value.ToArray(), StringComparer.Ordinal);
@@ -355,7 +356,7 @@ public sealed class HostManagedNuGetAdvisoryProvider : INuGetAdvisorySnapshotPro
                 Packages = snapshot.Packages.ToDictionary(k => k.Key, k => k.Value.ToList(), StringComparer.Ordinal)
             };
             var temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
-            File.WriteAllBytes(temp, JsonSerializer.SerializeToUtf8Bytes(doc));
+            File.WriteAllBytes(temp, JsonSerializer.SerializeToUtf8Bytes(doc, OrchestrationSnapshotJsonContext.Default.NuGetAdvisoryCache));
             File.Move(temp, path, overwrite: true);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)

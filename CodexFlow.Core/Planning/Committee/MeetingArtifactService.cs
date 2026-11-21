@@ -5,6 +5,7 @@
 using CodexFlow.Core.Models;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
 namespace CodexFlow.Core.Planning.Committee;
 
@@ -101,7 +102,7 @@ public class MeetingArtifactService
 
         var fileName = $"round-{round:D2}-analyst-feedback.md";
         var path = Path.Combine(state.MeetingDirectory, fileName);
-        File.WriteAllText(path, JsonConvert.SerializeObject(feedback, Formatting.Indented));
+        File.WriteAllText(path, CommitteeJson.ReviewerFeedbackToken(feedback).ToString(Formatting.Indented));
     }
 
     /// <summary>
@@ -113,7 +114,7 @@ public class MeetingArtifactService
 
         var fileName = $"round-{round:D2}-architect-feedback.md";
         var path = Path.Combine(state.MeetingDirectory, fileName);
-        File.WriteAllText(path, JsonConvert.SerializeObject(feedback, Formatting.Indented));
+        File.WriteAllText(path, CommitteeJson.ReviewerFeedbackToken(feedback).ToString(Formatting.Indented));
     }
 
     /// <summary>
@@ -125,7 +126,7 @@ public class MeetingArtifactService
 
         var fileName = $"round-{round:D2}-project-manager-feedback.md";
         var path = Path.Combine(state.MeetingDirectory, fileName);
-        File.WriteAllText(path, JsonConvert.SerializeObject(decision, Formatting.Indented));
+        File.WriteAllText(path, CommitteeJson.ModeratorDecisionToken(decision).ToString(Formatting.Indented));
     }
 
     /// <summary>
@@ -147,7 +148,18 @@ public class MeetingArtifactService
         ArgumentNullException.ThrowIfNull(state);
 
         var path = Path.Combine(state.MeetingDirectory, CommitteeConstants.RuntimeDir, CommitteeConstants.ReviewHistoryFileName);
-        File.WriteAllText(path, JsonConvert.SerializeObject(state.Rounds, Formatting.Indented));
+        var history = state.Rounds is null
+            ? (JToken)JValue.CreateNull()
+            : new JArray(state.Rounds.Select(round => round is null
+                ? (JToken)JValue.CreateNull()
+                : new JObject
+                {
+                    ["RoundNumber"] = round.RoundNumber,
+                    ["AnalystFeedback"] = CommitteeJson.ReviewerFeedbackToken(round.AnalystFeedback),
+                    ["ArchitectFeedback"] = CommitteeJson.ReviewerFeedbackToken(round.ArchitectFeedback),
+                    ["ModeratorDecision"] = CommitteeJson.ModeratorDecisionToken(round.ModeratorDecision)
+                }));
+        File.WriteAllText(path, history.ToString(Formatting.Indented));
     }
 
     /// <summary>
@@ -168,69 +180,90 @@ public class MeetingArtifactService
     {
         ArgumentNullException.ThrowIfNull(state);
 
-        var meetingData = new
+        var meetingData = new JObject
         {
-            meeting_id = state.MeetingId,
-            goal = state.Goal,
-            target_dir = state.TargetDir,
-            source_file = state.SourceFile,
-            started_at = state.StartedAt,
-            ended_at = state.EndedAt,
-            status = state.Status.ToString().ToLowerInvariant(),
-            current_round = state.CurrentRound,
-            max_rounds = state.MaxRounds,
-            total_rounds = state.Rounds.Count,
-            rounds = state.Rounds.Select(r => new
+            ["meeting_id"] = state.MeetingId,
+            ["goal"] = state.Goal,
+            ["target_dir"] = state.TargetDir,
+            ["source_file"] = state.SourceFile,
+            ["started_at"] = state.StartedAt,
+            ["ended_at"] = state.EndedAt,
+            ["status"] = state.Status.ToString().ToLowerInvariant(),
+            ["current_round"] = state.CurrentRound,
+            ["max_rounds"] = state.MaxRounds,
+            ["total_rounds"] = state.Rounds.Count,
+            ["rounds"] = new JArray(state.Rounds.Select(round => new JObject
             {
-                round = r.RoundNumber,
-                analyst = r.AnalystFeedback != null ? new { r.AnalystFeedback.Status, r.AnalystFeedback.Summary, blocking_count = r.AnalystFeedback.BlockingItems.Count } : null,
-                architect = r.ArchitectFeedback != null ? new { r.ArchitectFeedback.Status, r.ArchitectFeedback.Summary, blocking_count = r.ArchitectFeedback.BlockingItems.Count } : null,
-                moderator = r.ModeratorDecision != null ? new { r.ModeratorDecision.Decision, r.ModeratorDecision.Reason, unresolved_count = r.ModeratorDecision.UnresolvedItems.Count } : null
-            }).ToList(),
-            events = BuildEventList(state),
-            artifacts = BuildArtifactIndex(state)
+                ["round"] = round.RoundNumber,
+                ["analyst"] = ReviewerSummaryToken(round.AnalystFeedback),
+                ["architect"] = ReviewerSummaryToken(round.ArchitectFeedback),
+                ["moderator"] = round.ModeratorDecision is { } decision ? new JObject
+                {
+                    ["Decision"] = decision.Decision,
+                    ["Reason"] = decision.Reason,
+                    ["unresolved_count"] = decision.UnresolvedItems.Count
+                } : null
+            })),
+            ["events"] = BuildEventList(state),
+            ["artifacts"] = BuildArtifactIndex(state)
         };
 
         var path = Path.Combine(state.MeetingDirectory, CommitteeConstants.MeetingJsonFileName);
-        File.WriteAllText(path, JsonConvert.SerializeObject(meetingData, Formatting.Indented));
+        File.WriteAllText(path, meetingData.ToString(Formatting.Indented));
     }
+
+    private static JObject? ReviewerSummaryToken(ReviewerFeedback? feedback) => feedback is null
+        ? null
+        : new JObject
+        {
+            ["Status"] = feedback.Status,
+            ["Summary"] = feedback.Summary,
+            ["blocking_count"] = feedback.BlockingItems.Count
+        };
 
     /// <summary>
     /// 构建结构化事件列表。
     /// </summary>
-    private static List<object> BuildEventList(CommitteeMeetingState state)
+    private static JArray BuildEventList(CommitteeMeetingState state)
     {
-        var events = new List<object>
+        var events = new JArray
         {
-            new { type = "meeting_started", timestamp = state.StartedAt, detail = state.Goal }
+            EventToken("meeting_started", state.StartedAt, state.Goal)
         };
 
         foreach (var round in state.Rounds)
         {
-            events.Add(new { type = "round_started", timestamp = (object?)null, detail = $"Round {round.RoundNumber}" });
+            events.Add(EventToken("round_started", null, $"Round {round.RoundNumber}"));
 
             if (round.AnalystFeedback != null)
-                events.Add(new { type = "analyst_review", timestamp = (object?)null, detail = round.AnalystFeedback.Status });
+                events.Add(EventToken("analyst_review", null, round.AnalystFeedback.Status));
             if (round.ArchitectFeedback != null)
-                events.Add(new { type = "architect_review", timestamp = (object?)null, detail = round.ArchitectFeedback.Status });
+                events.Add(EventToken("architect_review", null, round.ArchitectFeedback.Status));
             if (round.ModeratorDecision != null)
-                events.Add(new { type = "moderator_decision", timestamp = (object?)null, detail = round.ModeratorDecision.Decision });
+                events.Add(EventToken("moderator_decision", null, round.ModeratorDecision.Decision));
         }
 
         if (state.EndedAt.HasValue)
         {
-            events.Add(new { type = "meeting_ended", timestamp = (object?)state.EndedAt.Value, detail = state.Status.ToString().ToLowerInvariant() });
+            events.Add(EventToken("meeting_ended", state.EndedAt.Value, state.Status.ToString().ToLowerInvariant()));
         }
 
         return events;
     }
 
+    private static JObject EventToken(string type, DateTime? timestamp, string? detail) => new()
+    {
+        ["type"] = type,
+        ["timestamp"] = timestamp,
+        ["detail"] = detail
+    };
+
     /// <summary>
     /// 构建会议工件索引。
     /// </summary>
-    private static List<object> BuildArtifactIndex(CommitteeMeetingState state)
+    private static JArray BuildArtifactIndex(CommitteeMeetingState state)
     {
-        var artifacts = new List<object>();
+        var artifacts = new JArray();
 
         if (!string.IsNullOrEmpty(state.MeetingDirectory) && Directory.Exists(state.MeetingDirectory))
         {
@@ -238,10 +271,10 @@ public class MeetingArtifactService
             foreach (var file in Directory.GetFiles(state.MeetingDirectory, "*", SearchOption.AllDirectories))
             {
                 var relativePath = Path.GetRelativePath(state.MeetingDirectory, file);
-                artifacts.Add(new
+                artifacts.Add(new JObject
                 {
-                    path = relativePath,
-                    type = ClassifyArtifact(relativePath)
+                    ["path"] = relativePath,
+                    ["type"] = ClassifyArtifact(relativePath)
                 });
             }
         }
@@ -268,12 +301,12 @@ public class MeetingArtifactService
     /// <summary>
     /// 写入 shadow-plan-diff.json。
     /// </summary>
-    public void WriteShadowPlanDiff(CommitteeMeetingState state, object diffData)
+    public void WriteShadowPlanDiff(CommitteeMeetingState state, JObject? diffData)
     {
         ArgumentNullException.ThrowIfNull(state);
 
         var path = Path.Combine(state.MeetingDirectory, CommitteeConstants.ShadowPlanDiffFileName);
-        File.WriteAllText(path, JsonConvert.SerializeObject(diffData, Formatting.Indented));
+        File.WriteAllText(path, diffData?.ToString(Formatting.Indented) ?? "null");
     }
 
     /// <summary>
@@ -289,33 +322,30 @@ public class MeetingArtifactService
         ArgumentNullException.ThrowIfNull(baselinePlan);
         ArgumentNullException.ThrowIfNull(committeeResult);
 
-        var metrics = new
+        var metrics = new JObject
         {
-            generated_at = DateTime.UtcNow,
-            meeting_id = !string.IsNullOrWhiteSpace(committeeResult.MeetingId)
+            ["generated_at"] = DateTime.UtcNow,
+            ["meeting_id"] = !string.IsNullOrWhiteSpace(committeeResult.MeetingId)
                 ? committeeResult.MeetingId
                 : state.MeetingId,
-            committee_status = committeeResult.Status.ToString(),
-            committee_total_rounds = committeeResult.TotalRounds,
-            committee_unresolved_count = committeeResult.UnresolvedItems.Count,
-            baseline = new
-            {
-                task_count = baselinePlan.Count,
-                high_risk_count = baselinePlan.Count(t => string.Equals(t.RiskLevel, "High", StringComparison.OrdinalIgnoreCase)),
-                avg_complexity = baselinePlan.Count > 0 ? baselinePlan.Average(t => t.ComplexityLevel) : 0
-            },
-            committee = committeePlan != null ? new
-            {
-                task_count = committeePlan.Count,
-                high_risk_count = committeePlan.Count(t => string.Equals(t.RiskLevel, "High", StringComparison.OrdinalIgnoreCase)),
-                avg_complexity = committeePlan.Count > 0 ? committeePlan.Average(t => t.ComplexityLevel) : 0
-            } : null,
-            projection_succeeded = committeePlan is { Count: > 0 }
+            ["committee_status"] = committeeResult.Status.ToString(),
+            ["committee_total_rounds"] = committeeResult.TotalRounds,
+            ["committee_unresolved_count"] = committeeResult.UnresolvedItems.Count,
+            ["baseline"] = PlanMetricsToken(baselinePlan),
+            ["committee"] = committeePlan is null ? null : PlanMetricsToken(committeePlan),
+            ["projection_succeeded"] = committeePlan is { Count: > 0 }
         };
 
         var path = Path.Combine(state.MeetingDirectory, CommitteeConstants.ShadowMetricsFileName);
-        File.WriteAllText(path, JsonConvert.SerializeObject(metrics, Formatting.Indented));
+        File.WriteAllText(path, metrics.ToString(Formatting.Indented));
 
         _logger.LogInformation("Shadow 指标已写入: {Path}", path);
     }
+
+    private static JObject PlanMetricsToken(List<CodexTask> plan) => new()
+    {
+        ["task_count"] = plan.Count,
+        ["high_risk_count"] = plan.Count(task => string.Equals(task.RiskLevel, "High", StringComparison.OrdinalIgnoreCase)),
+        ["avg_complexity"] = plan.Count > 0 ? plan.Average(task => task.ComplexityLevel) : 0
+    };
 }

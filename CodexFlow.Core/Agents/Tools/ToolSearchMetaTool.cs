@@ -5,7 +5,6 @@
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Models;
 using Microsoft.Extensions.Logging;
-using System.Text.Encodings.Web;
 using System.Text.Json;
 
 namespace CodexFlow.Core.Agents.Tools;
@@ -126,26 +125,24 @@ public class ToolSearchMetaTool : ICodexTool
         }
 
         // 激活所有匹配的工具，并返回足够的选择上下文，避免模型只凭名称猜测工具风险。
-        var activated = new List<object>();
+        var activated = new List<ToolSearchActivation>();
         foreach (var tool in matches)
         {
             var wasAlreadyAvailable = activeToolNames.Contains(tool.Name);
             var wasActivated = _registry.ActivateTool(tool.Name);
             var searchMetadata = BuildSearchMetadata(tool);
 
-            activated.Add(new
-            {
-                name = tool.Name,
-                description = tool.Description,
-                category = tool.Category.ToString(),
-                activated = wasActivated,
-                available_now = wasAlreadyAvailable || wasActivated,
-                activation_reason = BuildActivationReason(tool.Name, query, wasAlreadyAvailable, wasActivated),
-                tags = searchMetadata.Tags,
-                surface = searchMetadata.Surface,
-                risk = searchMetadata.Risk,
-                examples = searchMetadata.Examples
-            });
+            activated.Add(new ToolSearchActivation(
+                tool.Name,
+                tool.Description,
+                tool.Category.ToString(),
+                wasActivated,
+                wasAlreadyAvailable || wasActivated,
+                BuildActivationReason(tool.Name, query, wasAlreadyAvailable, wasActivated),
+                searchMetadata.Tags,
+                searchMetadata.Surface,
+                searchMetadata.Risk,
+                searchMetadata.Examples));
 
             if (wasActivated)
             {
@@ -153,18 +150,8 @@ public class ToolSearchMetaTool : ICodexTool
             }
         }
 
-        var result = new
-        {
-            found = activated.Count,
-            query,
-            tools = activated
-        };
-
-        var json = JsonSerializer.Serialize(result, new JsonSerializerOptions
-        {
-            WriteIndented = false,
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-        });
+        var result = new ToolSearchResponse(activated.Count, query, activated);
+        var json = JsonSerializer.Serialize(result, BuiltInToolJsonContext.Default.ToolSearchResponse);
 
         return Task.FromResult(new CodexToolResult
         {
@@ -173,13 +160,6 @@ public class ToolSearchMetaTool : ICodexTool
             Metadata = result
         });
     }
-
-    private static readonly JsonSerializerOptions ScopedJson = new()
-    {
-        WriteIndented = false,
-        // Chinese is written as it is: the \u form makes every character six on the wire, and a model with a token budget reads the result.
-        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-    };
 
     private const int MaxDescriptionChars = 160;
 
@@ -191,7 +171,7 @@ public class ToolSearchMetaTool : ICodexTool
         }
 
         var surface = new HashSet<string>(scope.Surface(), StringComparer.OrdinalIgnoreCase);
-        var rows = new List<Dictionary<string, object?>>();
+        var rows = new List<ScopedToolSearchMatch>();
         var anyExposed = matches.Any(tool => surface.Contains(tool.Name));
         foreach (var tool in matches)
         {
@@ -201,37 +181,19 @@ public class ToolSearchMetaTool : ICodexTool
                 break;
             }
 
-            var row = new Dictionary<string, object?>
-            {
-                ["name"] = tool.Name,
-                ["description"] = FirstLine(tool.Description),
-                ["available_now"] = exposed
-            };
-            if (!exposed)
-            {
-                row["note"] = "不在你当前的工具面里，本回合无法调用。";
-            }
-
-            rows.Add(row);
+            rows.Add(new ScopedToolSearchMatch(tool.Name, FirstLine(tool.Description), exposed,
+                exposed ? null : "不在你当前的工具面里，本回合无法调用。"));
         }
 
-        var payload = new Dictionary<string, object?>
-        {
-            ["found"] = matches.Count,
-            ["shown"] = rows.Count,
-            ["query"] = query,
-            ["tools"] = rows
-        };
-        if (!anyExposed)
-        {
-            payload["hint"] = "找到的工具都不在你当前的工具面里，本回合无法调用，不要为同一目的重复搜索（换关键词也一样）。" +
-                              "改用现有工具完成；需要改代码或运行命令时，用 create_session_plan 做计划或 spawn_worker 交给 worker；做不到就如实告诉用户。";
-        }
+        var hint = anyExposed ? null :
+            "找到的工具都不在你当前的工具面里，本回合无法调用，不要为同一目的重复搜索（换关键词也一样）。" +
+            "改用现有工具完成；需要改代码或运行命令时，用 create_session_plan 做计划或 spawn_worker 交给 worker；做不到就如实告诉用户。";
+        var payload = new ScopedToolSearchResponse(matches.Count, rows.Count, query, rows, hint);
 
         return new CodexToolResult
         {
             Status = ToolResultStatus.Success,
-            Output = JsonSerializer.Serialize(payload, ScopedJson),
+            Output = JsonSerializer.Serialize(payload, BuiltInToolJsonContext.Relaxed.ScopedToolSearchResponse),
             Metadata = new { found = matches.Count, shown = rows.Count, query }
         };
     }
@@ -352,6 +314,48 @@ public class ToolSearchMetaTool : ICodexTool
                 [
                     "Search the web for current technical context.",
                     "Find candidate pages before fetch_webpage."
+                ]),
+            "browser_navigate" => new(
+                ["browser", "web", "url", "navigate", "spa", "localhost"],
+                ["main"],
+                "medium",
+                [
+                    "Open or navigate a JS-rendered webpage or localhost frontend in the managed browser."
+                ]),
+            "browser_snapshot" => new(
+                ["browser", "web", "dom", "snapshot", "screenshot", "console", "debug"],
+                ["main"],
+                "low",
+                [
+                    "Inspect interactive element refs, text, console logs, network errors, and optional viewport screenshot."
+                ]),
+            "browser_act" => new(
+                ["browser", "web", "click", "type", "interact", "form"],
+                ["main"],
+                "high",
+                [
+                    "Click, type, select, scroll, or wait on elements identified by browser_snapshot refs."
+                ]),
+            "browser_tabs" => new(
+                ["browser", "web", "tabs", "close"],
+                ["main"],
+                "low",
+                [
+                    "List, open, switch, or close browser tabs and shut down the session browser."
+                ]),
+            "browser_request_takeover" => new(
+                ["browser", "web", "takeover", "login", "captcha", "human"],
+                ["main"],
+                "high",
+                [
+                    "Bring the managed desktop browser window on-screen for human login/CAPTCHA takeover and wait until control is returned."
+                ]),
+            "browser_evaluate" => new(
+                ["browser", "web", "javascript", "eval", "debug", "state"],
+                ["main"],
+                "high",
+                [
+                    "Evaluate a JavaScript expression in the active page main context (requires explicit single-use allow_once approval)."
                 ]),
             "apply_patch" => new(
                 ["patch", "edit", "diff", "code-change"],

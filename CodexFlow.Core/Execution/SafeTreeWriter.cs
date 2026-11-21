@@ -271,7 +271,7 @@ internal static class PosixSafeFs
         var rootPath = FdPath(rootFd);
         if (rootPath is null)
         {
-            PosixNative.Close(rootFd);
+            _ = PosixNative.Close(rootFd);
             return SafeWriteResult.Fail(ExecutionReasonCodes.UnsupportedIsolation, "/proc/self/fd is not readable, so directory identity cannot be verified; export is refused.", string.Empty);
         }
 
@@ -315,12 +315,12 @@ internal static class PosixSafeFs
             // Backup/temp files never stay in the worktree (except one that holds host data a rollback could not restore: Keep()).
             foreach (var (dirFd, name) in batch.Temps)
             {
-                PosixNative.UnlinkAt(dirFd, name, 0);
+                _ = PosixNative.UnlinkAt(dirFd, name, 0);
             }
 
             foreach (var fd in batch.DirFds.Values)
             {
-                PosixNative.Close(fd);
+                _ = PosixNative.Close(fd);
             }
         }
 
@@ -671,13 +671,112 @@ internal static class WindowsSafeFs
     private const int ErrorFileNotFound = 2;
     private const int ErrorPathNotFound = 3;
 
-    private sealed class Locked(SafeWriteOp op, FileStream stream, byte[]? backup)
+    private sealed class Locked(SafeWriteOp op) : IDisposable
     {
+        private SafeFileHandle? _handle;
+        private FileStream? _stream;
+
         public SafeWriteOp Op { get; } = op;
-        public FileStream Stream { get; } = stream;
-        public byte[]? Backup { get; } = backup;
+        public FileStream Stream => _stream!;
+        public byte[]? Backup { get; private set; }
         public bool Written { get; set; }
         public bool DeleteFlagged { get; set; }
+
+        public static Locked Open(SafeWriteOp op, string full)
+        {
+            var target = new Locked(op);
+            try
+            {
+                target.OpenAndVerify(full);
+                return target;
+            }
+            catch
+            {
+                target.AbortOpen();
+                throw;
+            }
+        }
+
+        private void OpenAndVerify(string full)
+        {
+            var create = Op.Kind == GuestChangeKind.Add;
+            var access = WindowsNative.GenericWrite | WindowsNative.Delete | WindowsNative.GenericRead;
+            _handle = WindowsNative.CreateFile(
+                Long(full), access, 0, IntPtr.Zero,
+                create ? WindowsNative.CreateNew : WindowsNative.OpenExisting,
+                WindowsNative.FlagOpenReparsePoint | WindowsNative.AttributeNormal, IntPtr.Zero);
+            if (_handle.IsInvalid)
+            {
+                var error = Marshal.GetLastWin32Error();
+                throw error switch
+                {
+                    ErrorFileExists => new SafeWriteAbortException(ExecutionReasonCodes.ExportRejectedConcurrentModification, "file was created on host after the snapshot", Op.Path),
+                    ErrorSharingViolation => new SafeWriteAbortException(ExecutionReasonCodes.ExportRejectedConcurrentModification, "file is in use by another process", Op.Path),
+                    ErrorFileNotFound or ErrorPathNotFound => new SafeWriteAbortException(ExecutionReasonCodes.ExportRejectedConcurrentModification, "host file vanished since the snapshot", Op.Path),
+                    _ => new SafeWriteAbortException(ExecutionReasonCodes.ExportFailed, $"cannot lock target (win32 {error})", Op.Path)
+                };
+            }
+
+            if (!WindowsNative.GetFileInformationByHandle(_handle, out var info) ||
+                (info.FileAttributes & (WindowsNative.AttributeReparsePoint | WindowsNative.AttributeDirectory)) != 0)
+            {
+                throw new SafeWriteAbortException(ExecutionReasonCodes.ExportRejectedLink, "target is a link or a directory", Op.Path);
+            }
+
+            var finalPath = FinalPath(_handle);
+            if (!string.Equals(finalPath, full, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new SafeWriteAbortException(ExecutionReasonCodes.ExportRejectedUnsafePath, $"file resolves to '{finalPath}' instead of the expected '{full}' (alias)", Op.Path);
+            }
+
+            _stream = new FileStream(_handle, FileAccess.ReadWrite, 4096, isAsync: false);
+            if (!create)
+            {
+                using var ms = new MemoryStream();
+                _stream.CopyTo(ms);
+                Backup = ms.ToArray();
+                if (SafeTreeWriter.Sha(Backup) != Op.ExpectedSha256)
+                {
+                    throw new SafeWriteAbortException(ExecutionReasonCodes.ExportRejectedConcurrentModification, "host file changed since the snapshot", Op.Path);
+                }
+
+                _stream.Position = 0;
+            }
+
+            SafeTreeWriter.Hook("verified:" + Op.Path);
+        }
+
+        private void AbortOpen()
+        {
+            try
+            {
+                if (Op.Kind == GuestChangeKind.Add && _handle is { IsInvalid: false })
+                {
+                    // Undo the creation, including a path that resolved through an alias.
+                    SetDeleteDisposition(_handle, true);
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ObjectDisposedException)
+            {
+            }
+            finally
+            {
+                Dispose();
+            }
+        }
+
+        public void Dispose()
+        {
+            try
+            {
+                _stream?.Dispose();
+            }
+            finally
+            {
+                // SafeFileHandle tolerates repeated disposal when the stream owned the handle.
+                _handle?.Dispose();
+            }
+        }
     }
 
     private static string Long(string path) => path.Length > 240 && !path.StartsWith(@"\\?\", StringComparison.Ordinal) ? @"\\?\" + path : path;
@@ -711,7 +810,7 @@ internal static class WindowsSafeFs
                     continue;
                 }
 
-                locked.Add(LockTarget(op, Path.Combine(dir, parts[^1])));
+                locked.Add(Locked.Open(op, Path.Combine(dir, parts[^1])));
             }
 
             SafeTreeWriter.Hook("verified:*");
@@ -758,7 +857,7 @@ internal static class WindowsSafeFs
         {
             foreach (var item in locked)
             {
-                item.Stream.Dispose();
+                item.Dispose();
             }
 
             foreach (var pin in pins.Values)
@@ -895,94 +994,6 @@ internal static class WindowsSafeFs
         catch
         {
             handle.Dispose();
-            throw;
-        }
-    }
-
-    private static Locked LockTarget(SafeWriteOp op, string full)
-    {
-        var create = op.Kind == GuestChangeKind.Add;
-        var access = WindowsNative.GenericWrite | WindowsNative.Delete | WindowsNative.GenericRead;
-
-        var handle = WindowsNative.CreateFile(
-            Long(full), access, 0, IntPtr.Zero,
-            create ? WindowsNative.CreateNew : WindowsNative.OpenExisting,
-            WindowsNative.FlagOpenReparsePoint | WindowsNative.AttributeNormal, IntPtr.Zero);
-        if (handle.IsInvalid)
-        {
-            var error = Marshal.GetLastWin32Error();
-            handle.Dispose();
-            throw error switch
-            {
-                ErrorFileExists => new SafeWriteAbortException(ExecutionReasonCodes.ExportRejectedConcurrentModification, "file was created on host after the snapshot", op.Path),
-                ErrorSharingViolation => new SafeWriteAbortException(ExecutionReasonCodes.ExportRejectedConcurrentModification, "file is in use by another process", op.Path),
-                ErrorFileNotFound or ErrorPathNotFound => new SafeWriteAbortException(ExecutionReasonCodes.ExportRejectedConcurrentModification, "host file vanished since the snapshot", op.Path),
-                _ => new SafeWriteAbortException(ExecutionReasonCodes.ExportFailed, $"cannot lock target (win32 {error})", op.Path)
-            };
-        }
-
-        FileStream? stream = null;
-        try
-        {
-            if (!WindowsNative.GetFileInformationByHandle(handle, out var info) ||
-                (info.FileAttributes & (WindowsNative.AttributeReparsePoint | WindowsNative.AttributeDirectory)) != 0)
-            {
-                throw new SafeWriteAbortException(ExecutionReasonCodes.ExportRejectedLink, "target is a link or a directory", op.Path);
-            }
-
-            var finalPath = FinalPath(handle);
-            if (!string.Equals(finalPath, full, StringComparison.OrdinalIgnoreCase))
-            {
-                if (create)
-                {
-                    // we just created an aliased name: undo that file before refusing
-                    SetDeleteDisposition(handle, true);
-                }
-
-                throw new SafeWriteAbortException(ExecutionReasonCodes.ExportRejectedUnsafePath, $"file resolves to '{finalPath}' instead of the expected '{full}' (alias)", op.Path);
-            }
-
-            stream = new FileStream(handle, FileAccess.ReadWrite, 4096, isAsync: false);
-            byte[]? backup = null;
-            if (!create)
-            {
-                using var ms = new MemoryStream();
-                stream.CopyTo(ms);
-                backup = ms.ToArray();
-                if (SafeTreeWriter.Sha(backup) != op.ExpectedSha256)
-                {
-                    throw new SafeWriteAbortException(ExecutionReasonCodes.ExportRejectedConcurrentModification, "host file changed since the snapshot", op.Path);
-                }
-
-                stream.Position = 0;
-            }
-
-            SafeTreeWriter.Hook("verified:" + op.Path);
-            return new Locked(op, stream, backup);
-        }
-        catch
-        {
-            if (create)
-            {
-                // a file this call just created must not survive a failed lock/verify step
-                try
-                {
-                    SetDeleteDisposition(handle, true);
-                }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ObjectDisposedException)
-                {
-                }
-            }
-
-            if (stream is not null)
-            {
-                stream.Dispose();
-            }
-            else
-            {
-                handle.Dispose();
-            }
-
             throw;
         }
     }

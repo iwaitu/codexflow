@@ -2,8 +2,10 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+using System.Text.Json;
 using CodexFlow.Core.Runtime;
 using CodexFlow.Core.Telemetry;
+using Newtonsoft.Json.Linq;
 using Xunit;
 
 namespace CodexFlow.Core.Tests.Runtime;
@@ -83,6 +85,81 @@ public sealed class TestCommandEvidenceTests
         var passing = turn.SnapshotForStopHook();
         Assert.Contains(passing.Verifications, static verification => verification.Kind == TestCommandEvidence.NodeTest);
         Assert.Empty(passing.FailedVerifications);
+    }
+
+    [Fact]
+    public void StructuredOutcomesKeepOnlyTheLatestKnownVerdictForTheCommand()
+    {
+        var turn = Turn();
+        const string receipt = "✅ command_task_id: job\n$ dotnet build\nBuild succeeded.";
+        using var failed = JsonDocument.Parse("""{"exit_code":"1","status":"Completed"}""");
+        var passed = new JObject { ["ExitCode"] = 0, ["Status"] = "Completed" };
+        var unknown = new JObject { ["Stdout"] = "Build succeeded." };
+
+        turn.Record(Exec(receipt) with { Metadata = passed });
+        Assert.Equal("dotnet_build", Assert.Single(turn.SnapshotForStopHook().Verifications).Kind);
+
+        turn.Record(Exec(receipt) with { Metadata = unknown });
+        Assert.Empty(turn.SnapshotForStopHook().Verifications);
+        Assert.Empty(turn.SnapshotForStopHook().FailedVerifications);
+
+        turn.Record(Exec(receipt) with { Metadata = passed });
+        turn.Record(Exec(receipt) with { Metadata = failed.RootElement });
+        turn.Record(Exec(receipt) with { Metadata = unknown });
+        var ledger = turn.SnapshotForStopHook();
+        Assert.Empty(ledger.Verifications);
+        Assert.Equal("dotnet_build", Assert.Single(ledger.FailedVerifications).Kind);
+
+        turn.Record(Exec(receipt) with { Metadata = passed });
+        ledger = turn.SnapshotForStopHook();
+        Assert.Equal("dotnet_build", Assert.Single(ledger.Verifications).Kind);
+        Assert.Empty(ledger.FailedVerifications);
+    }
+
+    [Theory]
+    [InlineData("exec_cmd", "COMMAND_TASK_STARTED\ncommand_task_id: job\n$ dotnet build\nUse task_output")]
+    [InlineData("task_output", "command output: job\nstatus=Completed exit_code=0 latest_seq=1\ncwd: /work\n$ dotnet build")]
+    [InlineData("hs_read", "$ dotnet build\nBuild succeeded.")]
+    [InlineData("exec_cmd", "✅ command_task_id: job\n$ cat log.txt\n$ dotnet build\nBuild succeeded.")]
+    [InlineData("exec_cmd", "✅ command_task_id: job\n$ echo '$ npm test'\n$ npm test")]
+    [InlineData("exec_cmd", "✅ command_task_id: job\n$ dotnet build-server shutdown\nBuild server shut down.")]
+    [InlineData("exec_cmd", """{"output":"✅ command_task_id: job\n$ dotnet build\nBuild succeeded."}""")]
+    public void UnrelatedOutputsCannotRetireAnExistingFailure(string toolName, string text)
+    {
+        var turn = Turn();
+        turn.Record(Exec("⚠️ 命令执行完成 (exit code 1)\n$ dotnet build\nBuild failed."));
+        turn.Record(Exec(text) with { ToolName = toolName });
+
+        var ledger = turn.SnapshotForStopHook();
+        Assert.Empty(ledger.Verifications);
+        Assert.Equal("dotnet_build", Assert.Single(ledger.FailedVerifications).Kind);
+    }
+
+    [Fact]
+    public void StructuredRestoreDiagnosticsCarryOverToBuildMissingAssets()
+    {
+        var turn = Turn();
+        turn.Record(Exec("✅ command_task_id: job\n$ dotnet restore") with
+        {
+            Metadata = new JObject { ["ExitCode"] = 1, ["Stdout"] = "Error NU1301: feed unreachable" }
+        });
+        turn.Record(Exec("⚠️ 命令执行完成 (exit code 1)\n$ dotnet build\nerror NETSDK1004: Assets file missing"));
+
+        var ledger = turn.SnapshotForStopHook();
+        Assert.Equal(2, ledger.FailedVerifications.Count);
+        Assert.All(ledger.FailedVerifications, failure => Assert.True(failure.EnvironmentLimit));
+    }
+
+    [Fact]
+    public void ACommandEchoWithoutATerminalReceiptDoesNotRetireExistingEvidence()
+    {
+        var turn = Turn();
+        turn.Record(Exec("✅ command_task_id: job\n$ dotnet build\nBuild succeeded."));
+        turn.Record(Exec("$ dotnet build") with { Metadata = new JObject() });
+
+        var ledger = turn.SnapshotForStopHook();
+        Assert.Equal("dotnet_build", Assert.Single(ledger.Verifications).Kind);
+        Assert.Empty(ledger.FailedVerifications);
     }
 
     [Fact]

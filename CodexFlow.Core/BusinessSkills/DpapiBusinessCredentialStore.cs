@@ -53,7 +53,8 @@ public sealed class DpapiBusinessCredentialStore : IBusinessCredentialStore
         }
 
         EnsureProtectedDirectory();
-        var fileName = BuildSafeCipherFileName(credentialRef);
+        // A candidate revision must not overwrite the cipher referenced by the active database revision.
+        var fileName = BuildSafeCipherFileName(credentialRef, revision);
         var filePath = ResolveSafePath(fileName);
 
         var plainBytes = Encoding.UTF8.GetBytes(secretJson);
@@ -203,9 +204,9 @@ public sealed class DpapiBusinessCredentialStore : IBusinessCredentialStore
         return full;
     }
 
-    private static string BuildSafeCipherFileName(string credentialRef)
+    private static string BuildSafeCipherFileName(string credentialRef, string revision)
     {
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(credentialRef));
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes($"{credentialRef}\0{revision}"));
         return Convert.ToHexString(hash).ToLowerInvariant() + ".dpapi";
     }
 

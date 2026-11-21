@@ -1,0 +1,13 @@
+diff --git a/Src/Newtonsoft.Json/Linq/JValue.cs b/Src/Newtonsoft.Json/Linq/JValue.cs
+index 7568960..9086562 100644
+--- a/Src/Newtonsoft.Json/Linq/JValue.cs
++++ b/Src/Newtonsoft.Json/Linq/JValue.cs
+@@ -731,7 +731,7 @@ private static JTokenType GetStringValueType(JTokenType? current)
+         [RequiresDynamicCode(MiscellaneousUtils.AotWarning)]
+         public override void WriteTo(JsonWriter writer, params JsonConverter[] converters)
+         {
+-            if (converters != null && converters.Length > 0 && _value != null)
++            if (SerializationIsSupported && converters != null && converters.Length > 0 && _value != null)
+             {
+                 JsonConverter? matchingConverter = JsonSerializer.GetMatchingConverter(converters, _value.GetType());
+                 if (matchingConverter != null && matchingConverter.CanWrite)

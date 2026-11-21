@@ -5,9 +5,9 @@
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Execution;
 using CodexFlow.Core.Models;
+using CodexFlow.Core.Planning.Artifacts;
 using CodexFlow.Core.TDD;
 using Microsoft.Extensions.Logging;
-using Newtonsoft.Json;
 using System.Globalization;
 
 namespace CodexFlow.Core.Agents.Tools;
@@ -142,14 +142,8 @@ public class RunTestsTool : ICodexTool
             var result = adapter.ParseOutput(fullOutput, run.ExitCode ?? -1);
 
             return CodexToolResult.Succeeded(
-                JsonConvert.SerializeObject(new
-                {
-                    result.Success,
-                    result.PassedCount,
-                    result.FailedCount,
-                    result.FailureDetails,
-                    Summary = result.OutputSummary
-                }),
+                PlanToolJson.Write(new RunTestsPayload(
+                    result.Success, result.PassedCount, result.FailedCount, result.FailureDetails, result.OutputSummary)),
                 new Dictionary<string, object?> { ["testResult"] = result }
             );
         }

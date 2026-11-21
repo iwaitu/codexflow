@@ -65,6 +65,7 @@ internal static class ForgeQualityRetry
         {
             var projects = unmet.OfType<JObject>()
                 .Select(static u => u["project"]?.Value<string>())
+                .OfType<string>()
                 .Where(static p => !string.IsNullOrWhiteSpace(p))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .Take(50)

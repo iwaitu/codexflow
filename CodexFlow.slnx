@@ -1,9 +1,12 @@
 <Solution>
   <Project Path="CodexFlow.Contracts/CodexFlow.Contracts.csproj" />
   <Project Path="CodexFlow.Core/CodexFlow.Core.csproj" />
+  <Project Path="CodexFlow.CodeAnalysis.Worker/CodexFlow.CodeAnalysis.Worker.csproj" />
   <Project Path="CodexFlow.Orchestration/CodexFlow.Orchestration.csproj" />
   <Project Path="CodexFlow.Gateway.Http/CodexFlow.Gateway.Http.csproj" />
   <Project Path="CodexFlow.Storage.Sqlite/CodexFlow.Storage.Sqlite.csproj" />
+  <Project Path="CodexFlow.Storage.EntityFramework/CodexFlow.Storage.EntityFramework.csproj" />
+  <Project Path="CodexFlow.Storage.Sqlite.Design/CodexFlow.Storage.Sqlite.Design.csproj" />
   <Project Path="CodexFlow.Local/CodexFlow.Local.csproj" />
   <Project Path="CodexFlow.Core.Tests/CodexFlow.Core.Tests.csproj" />
 </Solution>

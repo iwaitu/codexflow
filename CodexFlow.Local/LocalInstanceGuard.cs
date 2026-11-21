@@ -118,11 +118,7 @@ public sealed class LocalInstanceGuard : IDisposable
             DataDirectory: DataDirectory,
             StartedAtUtc: DateTimeOffset.UtcNow);
 
-        var json = JsonSerializer.Serialize(info, new JsonSerializerOptions
-        {
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-            WriteIndented = true
-        });
+        var json = JsonSerializer.Serialize(info, LocalHostJsonContext.Indented.LocalInstanceDiscoveryInfo);
 
         var tempPath = Path.Combine(DataDirectory, $".{DiscoveryFileName}.{Guid.NewGuid():N}.tmp");
         try

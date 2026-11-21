@@ -34,7 +34,7 @@ public class CommitteeJsonParser
         // 1. 严格解析
         try
         {
-            var feedback = JsonConvert.DeserializeObject<ReviewerFeedback>(cleaned);
+            var feedback = CommitteeJson.ReadReviewerFeedback(cleaned);
             if (feedback != null && !string.IsNullOrEmpty(feedback.Status))
             {
                 return feedback;
@@ -51,7 +51,7 @@ public class CommitteeJsonParser
         {
             try
             {
-                var feedback = JsonConvert.DeserializeObject<ReviewerFeedback>(extracted);
+                var feedback = CommitteeJson.ReadReviewerFeedback(extracted);
                 if (feedback != null && !string.IsNullOrEmpty(feedback.Status))
                 {
                     return feedback;
@@ -76,7 +76,7 @@ public class CommitteeJsonParser
         // 1. 严格解析
         try
         {
-            var decision = JsonConvert.DeserializeObject<ModeratorDecision>(cleaned);
+            var decision = CommitteeJson.ReadModeratorDecision(cleaned);
             if (decision != null && !string.IsNullOrEmpty(decision.Decision))
             {
                 return decision;
@@ -93,7 +93,7 @@ public class CommitteeJsonParser
         {
             try
             {
-                var decision = JsonConvert.DeserializeObject<ModeratorDecision>(extracted);
+                var decision = CommitteeJson.ReadModeratorDecision(extracted);
                 if (decision != null && !string.IsNullOrEmpty(decision.Decision))
                 {
                     return decision;

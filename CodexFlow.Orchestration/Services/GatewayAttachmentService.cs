@@ -8,6 +8,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using CodexFlow.Core.Execution;
+using CodexFlow.Orchestration.Persistence;
 
 namespace CodexFlow.Orchestration.Services;
 
@@ -48,10 +49,6 @@ public static class GatewayAttachmentService
     public const string DefaultAttachmentMessage = "请查看并处理以下附带的文件。";
 
     private const int MaxBaseFileNameLength = 120;
-    private static readonly JsonSerializerOptions MetadataJsonOptions = new()
-    {
-        WriteIndented = false,
-    };
 
     public static async Task<UploadedAttachmentResult> SaveUploadedAttachmentAsync(
         string? workspaceRoot,
@@ -201,7 +198,7 @@ public static class GatewayAttachmentService
             return baseText;
         }
 
-        var json = JsonSerializer.Serialize(attachments, MetadataJsonOptions);
+        var json = JsonSerializer.Serialize(attachments, OrchestrationSnapshotJsonContext.Default.AttachmentList);
         var sb = new StringBuilder(baseText.Length + json.Length + 256);
         sb.Append(baseText);
         sb.AppendLine();
@@ -243,7 +240,7 @@ public static class GatewayAttachmentService
 
         try
         {
-            var items = JsonSerializer.Deserialize<List<ValidatedChatAttachment>>(match.Groups[1].Value);
+            var items = JsonSerializer.Deserialize(match.Groups[1].Value, OrchestrationSnapshotJsonContext.Default.Attachments);
             return items is { Count: > 0 } ? items : [];
         }
         catch (JsonException)

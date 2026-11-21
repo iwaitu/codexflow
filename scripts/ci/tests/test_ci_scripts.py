@@ -14,13 +14,14 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import check_packages  # noqa: E402
 import check_tests  # noqa: E402
 
-IDS = ['CodexFlow.Contracts', 'CodexFlow.Core', 'CodexFlow.Orchestration', 'CodexFlow.Gateway.Http', 'CodexFlow.Storage.Sqlite']
+IDS = ['CodexFlow.Contracts', 'CodexFlow.Core', 'CodexFlow.Orchestration', 'CodexFlow.Gateway.Http', 'CodexFlow.Storage.Sqlite', 'CodexFlow.Storage.EntityFramework']
 INTERNAL = {
     'CodexFlow.Contracts': [],
     'CodexFlow.Core': ['CodexFlow.Contracts'],
     'CodexFlow.Orchestration': ['CodexFlow.Contracts', 'CodexFlow.Core'],
     'CodexFlow.Gateway.Http': ['CodexFlow.Orchestration'],
     'CodexFlow.Storage.Sqlite': ['CodexFlow.Orchestration'],
+    'CodexFlow.Storage.EntityFramework': ['CodexFlow.Orchestration'],
 }
 COMMIT = '37365f507fe4dc9eeda131174c167314515e25c1'
 

@@ -369,14 +369,13 @@ public static class HostProcessRunner
             }
 
             var job = CreateJobObjectW(IntPtr.Zero, null);
-            if (job.IsInvalid)
-            {
-                job.Dispose();
-                return null;
-            }
-
             try
             {
+                if (job.IsInvalid)
+                {
+                    return null;
+                }
+
                 var info = new JobObjectExtendedLimitInfo
                 {
                     BasicLimitInformation = new JobObjectBasicLimitInfo
@@ -391,7 +390,6 @@ public static class HostProcessRunner
                     Marshal.StructureToPtr(info, ptr, false);
                     if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, ptr, (uint)length))
                     {
-                        job.Dispose();
                         return null;
                     }
                 }
@@ -402,16 +400,20 @@ public static class HostProcessRunner
 
                 if (!AssignProcessToJobObject(job, process.Handle))
                 {
-                    job.Dispose();
                     return null;
                 }
 
-                return new WindowsJobObjectGuard(job);
+                var guard = new WindowsJobObjectGuard(job);
+                job = null;
+                return guard;
             }
             catch (Exception)
             {
-                job.Dispose();
                 return null;
+            }
+            finally
+            {
+                job?.Dispose();
             }
         }
 

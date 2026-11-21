@@ -9,7 +9,7 @@ namespace CodexFlow.Core.Configuration;
 
 /// <summary>What a reader of the model settings sees. The key itself is never returned.</summary>
 public sealed record ModelSettingsView(
-    string? ApiUrl,
+    string? EndpointTemplate,
     string? ApiMode,
     string? Model,
     int? MaxTokensLength,
@@ -23,7 +23,7 @@ public sealed record ModelSettingsView(
 
 /// <summary>A change to the model settings. A <see langword="null"/> field is left as it is; the key can only be written.</summary>
 public sealed record ModelSettingsUpdate(
-    string? ApiUrl = null,
+    string? EndpointTemplate = null,
     string? ApiMode = null,
     string? Model = null,
     int? MaxTokensLength = null,
@@ -36,7 +36,7 @@ public sealed record ModelSettingsUpdate(
 
 /// <summary>Internal credentials snapshot used exclusively by server-side capability probes.</summary>
 public sealed record ModelProbeCredentials(
-    string? ApiUrl,
+    string? EndpointTemplate,
     string? ApiMode,
     string? Model,
     string? ApiKey);
@@ -80,7 +80,7 @@ public sealed class ModelSettingsService : IModelSettingsService
         {
             var section = LoadSection(root);
             return new ModelProbeCredentials(
-                ApiUrl: section["ApiUrl"]?.ToString(),
+                EndpointTemplate: section["ApiUrl"]?.ToString(),
                 ApiMode: section["ApiMode"]?.ToString(),
                 Model: section["Model"]?.ToString(),
                 ApiKey: section["ApiKey"]?.ToString());
@@ -105,7 +105,7 @@ public sealed class ModelSettingsService : IModelSettingsService
         {
             var section = LoadSection(root);
 
-            Set(section, "ApiUrl", update.ApiUrl);
+            Set(section, "ApiUrl", update.EndpointTemplate);
             Set(section, "ApiMode", update.ApiMode);
             Set(section, "Model", update.Model);
             Set(section, "MaxTokensLength", update.MaxTokensLength);
@@ -123,10 +123,10 @@ public sealed class ModelSettingsService : IModelSettingsService
 
     private static void Validate(ModelSettingsUpdate update)
     {
-        if (update.ApiUrl is not null)
+        if (update.EndpointTemplate is not null)
         {
             // The URL may carry a "{1}" placeholder for the endpoint name.
-            var probe = update.ApiUrl.Replace("{1}", "x", StringComparison.Ordinal);
+            var probe = update.EndpointTemplate.Replace("{1}", "x", StringComparison.Ordinal);
             if (!Uri.TryCreate(probe, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https"))
             {
                 throw new ArgumentException("ApiUrl must be an absolute http or https address.", nameof(update));
@@ -171,7 +171,7 @@ public sealed class ModelSettingsService : IModelSettingsService
     {
         if (value is not null)
         {
-            section[name] = JToken.FromObject(value);
+            section[name] = new JValue(value);
         }
     }
 
@@ -179,7 +179,7 @@ public sealed class ModelSettingsService : IModelSettingsService
     {
         var key = section["ApiKey"]?.ToString();
         return new ModelSettingsView(
-            ApiUrl: section["ApiUrl"]?.ToString(),
+            EndpointTemplate: section["ApiUrl"]?.ToString(),
             ApiMode: section["ApiMode"]?.ToString(),
             Model: section["Model"]?.ToString(),
             MaxTokensLength: section["MaxTokensLength"]?.Type == JTokenType.Null ? null : (int?)section["MaxTokensLength"],

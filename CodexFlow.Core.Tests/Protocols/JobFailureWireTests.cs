@@ -41,11 +41,40 @@ public class JobFailureWireTests
         Assert.Contains("\"RetryAsIs\"", json);
     }
 
+    [Fact]
+    public void LegacyJson_KeepsTypesOrderAndOmissions()
+    {
+        var failure = JobFailureWire.FromJson(
+            """{'code':'legacy', /* saved notification */ 'KIND':'scopeBoundary','remedy':'3','RefusedPaths':['docs/item.md',null],'Retryable':true,}""");
+
+        Assert.NotNull(failure);
+        Assert.False(failure!.Retryable);
+        Assert.Equal(
+            """{"Code":"legacy","Kind":"ScopeBoundary","Remedy":"AskUser","RefusedPaths":["docs/item.md",null],"Retryable":false}""",
+            JobFailureWire.ToJson(failure));
+    }
+
+    [Fact]
+    public void UnknownNumericEnumValues_RoundTripAsNumbers()
+    {
+        var failure = JobFailureWire.FromJson("""{"Code":1.20e1,"Kind":-1,"Remedy":"918","Message":true}""");
+
+        Assert.NotNull(failure);
+        Assert.Equal(
+            """{"Code":"1.20e1","Kind":-1,"Remedy":918,"Message":"true","Retryable":false}""",
+            JobFailureWire.ToJson(failure!));
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("")]
     [InlineData("not json")]
     [InlineData("{\"code\":")]
+    [InlineData("""{"Kind":"unknown_name"}""")]
+    [InlineData("""{"Kind":null}""")]
+    [InlineData("""{"Retryable":null}""")]
+    [InlineData("""{"Evidence":[{}]}""")]
+    [InlineData("""{} {}""")]
     public void ABrokenOrMissingValue_IsNoFailure_AndNeverThrows(string? json)
         => Assert.Null(JobFailureWire.FromJson(json));
 }

@@ -67,7 +67,7 @@ public class SearchFileIndexTool(
                     indexFact != null &&
                     !string.IsNullOrEmpty(indexFact.Value))
                 {
-                    var index = JsonConvert.DeserializeObject<List<FileIndexEntry>>(indexFact.Value);
+                    var index = ProjectIndexJson.Deserialize(indexFact.Value);
                     if (index is { Count: > 0 })
                     {
                         var indexedMatches = index

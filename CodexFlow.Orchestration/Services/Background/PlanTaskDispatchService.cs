@@ -2,7 +2,6 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-using CodexFlow.Orchestration.Jobs;
 using CodexFlow.Application.Jobs;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Agents;
@@ -14,10 +13,10 @@ using CodexFlow.Core.Protocols;
 using CodexFlow.Core.Workers;
 using CodexFlow.Domain.Jobs;
 using CodexFlow.Models;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using CodexFlow.Orchestration.Persistence;
 
 namespace CodexFlow.Services.Background;
 
@@ -137,7 +136,7 @@ public sealed record PlanTaskDispatchResult(
 /// Default implementation for queueing plan tasks and backend auto-continuation.
 /// </summary>
 public sealed class PlanTaskDispatchService(
-    IJobDbContext dbContext,
+    IJobReadStore jobs,
     IBackgroundJobService jobService,
     CodexSessionManager sessionManager,
     IServiceScopeFactory scopeFactory,
@@ -234,7 +233,7 @@ public sealed class PlanTaskDispatchService(
 
         var workerType = ResolveWorkerTypeForTask(target);
         var jobType = WorkerJobTypes.ToJobType(workerType);
-        var existingJob = await FindExistingActiveWorkerJobAsync(request.SessionId, target.Id, jobType, ct)
+        var existingJob = await jobs.FindActiveTaskJobAsync(request.SessionId, target.Id, jobType, ct)
             .ConfigureAwait(false);
         if (existingJob != null)
         {
@@ -258,7 +257,7 @@ public sealed class PlanTaskDispatchService(
                 stateKind);
         }
 
-        var activeSessionJob = await FindExistingActiveWorkerJobForSessionAsync(request.SessionId, ct)
+        var activeSessionJob = await jobs.FindActiveSessionWorkerAsync(request.SessionId, ct)
             .ConfigureAwait(false);
         if (activeSessionJob != null)
         {
@@ -329,7 +328,7 @@ public sealed class PlanTaskDispatchService(
                 jobPayload["planArtifactId"] = boundPlan.Id;
                 jobPayload["planVersion"] = boundPlan.Version;
                 jobPayload["planHash"] = PlanArtifactSupport.ComputeMarkdownHash(boundPlan.Markdown);
-                jobPayload["requiredTaskIds"] = JArray.FromObject(boundPlan.Tasks.Select(t => t.Id).Order(StringComparer.Ordinal).ToArray());
+                jobPayload["requiredTaskIds"] = OrchestrationPayloadJson.Array(boundPlan.Tasks.Select(t => t.Id).Order(StringComparer.Ordinal).ToArray());
             }
         }
 
@@ -351,8 +350,8 @@ public sealed class PlanTaskDispatchService(
 
         if (request.PreviousChangedFiles is { Count: > 0 })
         {
-            jobPayload["previousChangedFiles"] = JArray.FromObject(request.PreviousChangedFiles);
-            jobPayload["lastChangedFiles"] = JArray.FromObject(request.PreviousChangedFiles);
+            jobPayload["previousChangedFiles"] = OrchestrationPayloadJson.Array(request.PreviousChangedFiles);
+            jobPayload["lastChangedFiles"] = OrchestrationPayloadJson.Array(request.PreviousChangedFiles);
         }
 
         if (string.Equals(source, "auto_continuation", StringComparison.OrdinalIgnoreCase))
@@ -841,12 +840,8 @@ public sealed class PlanTaskDispatchService(
 
         try
         {
-            return System.Text.Json.JsonSerializer.Deserialize<TaskListSnapshot>(
-                snapshotJson,
-                new System.Text.Json.JsonSerializerOptions
-                {
-                    PropertyNameCaseInsensitive = true
-                });
+            return System.Text.Json.JsonSerializer.Deserialize(
+                snapshotJson, CodexFlow.Orchestration.Persistence.OrchestrationSnapshotJsonContext.CaseInsensitive.PlanTaskList);
         }
         catch (System.Text.Json.JsonException ex)
         {
@@ -883,57 +878,12 @@ public sealed class PlanTaskDispatchService(
     private static WorkerType ResolveWorkerTypeForTask(CodexTask target)
         => CodexTaskClassifier.IsAnalysisTask(target) ? WorkerType.Explore : WorkerType.Forge;
 
-    private async Task<BackgroundJob?> FindExistingActiveWorkerJobAsync(
-        string sessionId,
-        string taskId,
-        string jobType,
-        CancellationToken ct)
-        => await dbContext.BackgroundJobs
-            .Include(job => job.Checkpoints)
-            .AsNoTracking()
-            .Where(job =>
-                job.SessionId == sessionId &&
-                job.TaskId == taskId &&
-                job.JobType == jobType &&
-                (job.Status == BackgroundJobStatus.Queued ||
-                 job.Status == BackgroundJobStatus.Running ||
-                 job.Status == BackgroundJobStatus.WaitingUser ||
-                 job.Status == BackgroundJobStatus.FailedRecoveryNeeded))
-            .OrderByDescending(job => job.UpdatedAtUtc)
-            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
-
-    private async Task<BackgroundJob?> FindExistingActiveWorkerJobForSessionAsync(
-        string sessionId,
-        CancellationToken ct)
-    {
-        var candidates = await dbContext.BackgroundJobs
-            .Include(job => job.Checkpoints)
-            .AsNoTracking()
-            .Where(job =>
-                job.SessionId == sessionId &&
-                (job.Status == BackgroundJobStatus.Queued ||
-                 job.Status == BackgroundJobStatus.Running ||
-                 job.Status == BackgroundJobStatus.WaitingUser ||
-                 job.Status == BackgroundJobStatus.FailedRecoveryNeeded))
-            .OrderByDescending(job => job.UpdatedAtUtc)
-            .ToListAsync(ct).ConfigureAwait(false);
-
-        return candidates.FirstOrDefault(job => WorkerJobTypes.IsWorkerJobType(job.JobType));
-    }
-
-    private static string ResolveBackgroundJobStateKind(BackgroundJob job)
-    {
-        var latestCheckpointStep = job.Checkpoints?
-            .OrderByDescending(checkpoint => checkpoint.SequenceNumber)
-            .Select(checkpoint => checkpoint.CurrentStep)
-            .FirstOrDefault();
-
-        return WorkerProjectionHelpers.ResolveStateKind(
+    private static string ResolveBackgroundJobStateKind(ActivePlanJob job)
+        => WorkerProjectionHelpers.ResolveStateKind(
             job.Status.ToString(),
             job.ResultPayloadJson,
             job.Attempt,
-            latestCheckpointStep);
-    }
+            job.LatestCheckpointStep);
 
     private async Task ApplyCompletedTaskStatusToSessionAsync(
         CodexSession session,
@@ -1114,7 +1064,7 @@ public sealed class PlanTaskDispatchService(
         string? ShadowWorktreePath,
         string? WorktreeKey);
 
-    private sealed class TaskListSnapshot
+    internal sealed class TaskListSnapshot
     {
         public string SessionId { get; init; } = string.Empty;
         public string Title { get; init; } = string.Empty;
@@ -1122,7 +1072,7 @@ public sealed class PlanTaskDispatchService(
         public DateTime UpdatedAt { get; init; }
     }
 
-    private sealed class TaskListItem
+    internal sealed class TaskListItem
     {
         public string Id { get; init; } = string.Empty;
         public int Index { get; init; }

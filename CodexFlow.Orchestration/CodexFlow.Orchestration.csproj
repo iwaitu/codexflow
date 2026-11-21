@@ -15,11 +15,14 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(PublishAot)' == 'true' Or '$(PublishTrimmed)' == 'true' Or '$(IsTrimmable)' == 'true' Or '$(IsAotCompatible)' == 'true' Or '$(EnableTrimAnalyzer)' == 'true' Or '$(EnableAotAnalyzer)' == 'true'">
+    <DefineConstants>$(DefineConstants);CODEXFLOW_CLOSED_PAYLOADS</DefineConstants>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.15" />
     <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.15" />
     <PackageReference Include="NuGet.Versioning" Version="7.9.0" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.15" />
     <PackageReference Include="Ulid" Version="1.4.1" />
     <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.14" />
   </ItemGroup>
@@ -41,6 +44,8 @@
     <InternalsVisibleTo Include="CodexFlow" />
     <InternalsVisibleTo Include="CodexFlow.Gateway.Http" />
     <InternalsVisibleTo Include="CodexFlow.Storage.Sqlite" />
+    <InternalsVisibleTo Include="CodexFlow.Storage.EntityFramework" />
+    <InternalsVisibleTo Include="CodexFlow.Storage.Sqlite.Design" />
     <InternalsVisibleTo Include="CodexFlow.Local" />
     <InternalsVisibleTo Include="CodexFlow.Tests" />
     <InternalsVisibleTo Include="CodexFlow.Core.Tests" />

@@ -3,6 +3,7 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using CodexFlow.Core.Gateway;
 
 namespace CodexFlow.Gateway.Contracts;
@@ -14,12 +15,7 @@ namespace CodexFlow.Gateway.Contracts;
 /// </summary>
 public static class SseEventContractSchema
 {
-    public const string SchemaVersion = "1.0.0";
-
-    private static readonly JsonSerializerOptions SerializerOptions = new()
-    {
-        WriteIndented = true
-    };
+    public const string SchemaVersion = "1.3.0";
 
     public static string BuildSchemaJson()
     {
@@ -276,7 +272,57 @@ public static class SseEventContractSchema
                     ("planModeVersion", Int()),
                     ("planSummary", Str()),
                     ("reason", NullableStr())),
-                required: ["sessionId", "planModeVersion", "planSummary"])
+                required: ["sessionId", "planModeVersion", "planSummary"]),
+            [GatewaySseEventType.BrowserStateUpdated] = EventDef(
+                "Throttled snapshot of the session's managed browser state (URL, title, tabs, screenshotSeq, recent actions/console).",
+                Props(
+                    ("sessionId", Str()),
+                    ("status", Str()),
+                    ("headless", Bool()),
+                    ("profileMode", Str()),
+                    ("url", NullableStr()),
+                    ("title", NullableStr()),
+                    ("screenshotSeq", Int()),
+                    ("consoleErrorCount", Int()),
+                    ("updatedAtUtc", NullableStr()),
+                    ("takeoverActive", Bool()),
+                    ("takeoverReason", NullableStr()),
+                    ("takeoverStartedAtUtc", NullableStr()),
+                    ("isRemote", OptionalBool())),
+                required: ["sessionId", "status", "headless", "profileMode", "screenshotSeq", "consoleErrorCount"]),
+            [GatewaySseEventType.BrowserApprovalRequested] = EventDef(
+                "Interactive control-plane approval request for a sensitive browser action or non-allowlisted dev loopback port.",
+                Props(
+                    ("approvalId", Str()),
+                    ("requestDigest", Str()),
+                    ("sessionId", Str()),
+                    ("tool", Str()),
+                    ("action", Str()),
+                    ("targetUrl", Str()),
+                    ("targetOrigin", Str()),
+                    ("targetDescription", Str()),
+                    ("riskReason", Str()),
+                    ("expressionOrPath", NullableStr()),
+                    ("expiresAtUtc", Str()),
+                    ("allowedDecisions", StrArray()),
+                    ("controlPlaneAvailable", Bool()),
+                    ("selfApprovalProtection", Bool())),
+                required:
+                [
+                    "approvalId", "requestDigest", "sessionId", "tool", "action",
+                    "targetUrl", "targetOrigin", "targetDescription", "riskReason",
+                    "expiresAtUtc", "allowedDecisions", "controlPlaneAvailable", "selfApprovalProtection"
+                ]),
+            [GatewaySseEventType.BrowserApprovalResolved] = EventDef(
+                "Resolution outcome for a pending browser approval request.",
+                Props(
+                    ("approvalId", Str()),
+                    ("sessionId", Str()),
+                    ("decision", Str()),
+                    ("decidedBy", NullableStr()),
+                    ("note", NullableStr()),
+                    ("resolvedAtUtc", Str())),
+                required: ["approvalId", "sessionId", "decision", "resolvedAtUtc"])
         };
 
         var root = new Dictionary<string, object>(StringComparer.Ordinal)
@@ -289,15 +335,15 @@ public static class SseEventContractSchema
             ["required"] = new[] { "event", "data" },
             ["properties"] = new Dictionary<string, object>
             {
-                ["id"] = new { type = "integer", minimum = 0 },
-                ["event"] = new { type = "string", @enum = eventDefs.Keys.ToArray() },
-                ["data"] = new { type = "object" }
+                ["id"] = Schema(("type", "integer"), ("minimum", 0)),
+                ["event"] = StrEnum(eventDefs.Keys.ToArray()),
+                ["data"] = Schema(("type", "object"))
             },
             ["oneOf"] = eventDefs.Keys.Select(name => new Dictionary<string, object>(StringComparer.Ordinal)
             {
                 ["properties"] = new Dictionary<string, object>(StringComparer.Ordinal)
                 {
-                    ["event"] = new { @const = name },
+                    ["event"] = Schema(("const", name)),
                     ["data"] = new Dictionary<string, object>(StringComparer.Ordinal)
                     {
                         ["$ref"] = $"#/$defs/{name}"
@@ -308,7 +354,7 @@ public static class SseEventContractSchema
             ["$defs"] = eventDefs
         };
 
-        return JsonSerializer.Serialize(root, SerializerOptions);
+        return JsonSerializer.Serialize(root, SseSchemaJsonContext.Default.SchemaDocument);
     }
 
     private static Dictionary<string, object> EventDef(
@@ -347,15 +393,27 @@ public static class SseEventContractSchema
         return dict;
     }
 
-    private static object Str() => new { type = "string" };
-    private static object OptionalStr() => new { type = new[] { "string", "null" } };
-    private static object NullableStr() => new { type = new[] { "string", "null" } };
-    private static object StrEnum(params string[] values) => new { type = "string", @enum = values };
-    private static object Const(string value) => new { type = "string", @const = value };
-    private static object Int() => new { type = "integer" };
-    private static object OptionalInt() => new { type = new[] { "integer", "null" } };
-    private static object Bool() => new { type = "boolean" };
-    private static object OptionalBool() => new { type = new[] { "boolean", "null" } };
-    private static object StrArray() => new { type = "array", items = new { type = "string" } };
-    private static object NullableObj() => new { type = new[] { "object", "null" }, additionalProperties = true };
+    private static object Str() => Schema(("type", "string"));
+    private static object OptionalStr() => Schema(("type", new[] { "string", "null" }));
+    private static object NullableStr() => Schema(("type", new[] { "string", "null" }));
+    private static object StrEnum(params string[] values) => Schema(("type", "string"), ("enum", values));
+    private static object Const(string value) => Schema(("type", "string"), ("const", value));
+    private static object Int() => Schema(("type", "integer"));
+    private static object OptionalInt() => Schema(("type", new[] { "integer", "null" }));
+    private static object Bool() => Schema(("type", "boolean"));
+    private static object OptionalBool() => Schema(("type", new[] { "boolean", "null" }));
+    private static object StrArray() => Schema(("type", "array"), ("items", Str()));
+    private static object NullableObj() => Schema(("type", new[] { "object", "null" }), ("additionalProperties", true));
+
+    private static Dictionary<string, object> Schema(params (string Name, object Schema)[] entries)
+        => Props(entries);
 }
+
+[JsonSourceGenerationOptions(WriteIndented = true)]
+[JsonSerializable(typeof(Dictionary<string, object>), TypeInfoPropertyName = "SchemaDocument")]
+[JsonSerializable(typeof(Dictionary<string, object>[]))]
+[JsonSerializable(typeof(string[]))]
+[JsonSerializable(typeof(string))]
+[JsonSerializable(typeof(bool))]
+[JsonSerializable(typeof(int))]
+internal sealed partial class SseSchemaJsonContext : JsonSerializerContext;

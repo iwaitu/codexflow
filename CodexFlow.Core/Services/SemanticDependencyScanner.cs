@@ -7,6 +7,8 @@ using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using CodexFlow.Core.Models;
 using CodexFlow.Core.Abstractions;
+using CodexFlow.Core.Agents;
+using CodexFlow.Core.CodeAnalysis;
 using CodexFlow.Core.Utils;
 using Microsoft.Extensions.Logging;
 using System.IO;
@@ -17,14 +19,21 @@ namespace CodexFlow.Core.Services;
 /// <summary>
 /// A polyglot dependency scanner that uses Roslyn for C# and Regex heuristics for other languages (TS, Py).
 /// </summary>
-public class SemanticDependencyScanner : ICodeAnalysisService, ICodexCritiqueService
+public class SemanticDependencyScanner : ICodeAnalysisService, ICodexCritiqueService, ICancellableSnippetAnalysis
 {
     private readonly ILogger<SemanticDependencyScanner> _logger;
+    private readonly ICancellableSnippetAnalysis _codeAnalyzer;
     private readonly string[] _ignoredDirectories = { "bin", "obj", ".git", ".vs", "node_modules", "dist", "build", "__pycache__", "shadows" };
 
     public SemanticDependencyScanner(ILogger<SemanticDependencyScanner> logger)
+        : this(logger, new RoslynCodeAnalysisService(logger))
+    {
+    }
+
+    internal SemanticDependencyScanner(ILogger<SemanticDependencyScanner> logger, ICancellableSnippetAnalysis codeAnalyzer)
     {
         _logger = logger;
+        _codeAnalyzer = codeAnalyzer;
     }
 
     public async Task<DependencyGraph> BuildGraphAsync(string rootPath, CancellationToken cancellationToken = default)
@@ -340,7 +349,11 @@ public class SemanticDependencyScanner : ICodeAnalysisService, ICodexCritiqueSer
 
     // Interface compliance stubs
     public Task<List<CodeDiagnostic>> AnalyzeProjectAsync(string projectPath) => Task.FromResult(new List<CodeDiagnostic>());
-    public Task<List<CodeDiagnostic>> AnalyzeCodeAsync(string code, string language = "C#") => Task.FromResult(new List<CodeDiagnostic>());
+    public Task<List<CodeDiagnostic>> AnalyzeCodeAsync(string code, string language = "C#")
+        => _codeAnalyzer.AnalyzeSnippetAsync(code, CancellationToken.None);
+
+    Task<List<CodeDiagnostic>> ICancellableSnippetAnalysis.AnalyzeSnippetAsync(string code, CancellationToken cancellationToken)
+        => _codeAnalyzer.AnalyzeSnippetAsync(code, cancellationToken);
 
     public Task<GuardrailResult> CheckGuardrailAsync(DependencyGraph graph, string targetFilePath, string taskRiskLevel)
     {

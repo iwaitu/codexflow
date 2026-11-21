@@ -3,11 +3,18 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 using System.Collections;
-using System.Reflection;
 using System.Text;
 using CodexFlow.Core.Models;
 
 namespace CodexFlow.Core.Runtime;
+
+/// <summary>Optional command failure details for <see cref="ToolResultTextFormatter.FormatException"/>.</summary>
+public interface IToolCommandFailureDetails
+{
+    int? ExitCode { get; }
+    string? StandardError { get; }
+    string? StandardOutput { get; }
+}
 
 public static class ToolResultTextFormatter
 {
@@ -72,6 +79,7 @@ public static class ToolResultTextFormatter
         return sb.ToString();
     }
 
+    /// <summary>Formats the exception message and any <see cref="IToolCommandFailureDetails"/> supplied by the exception.</summary>
     public static string FormatException(Exception ex, string? toolName = null)
     {
         ArgumentNullException.ThrowIfNull(ex);
@@ -196,19 +204,16 @@ public static class ToolResultTextFormatter
     private static string? BuildExceptionDetails(Exception ex)
     {
         var lines = new List<string>();
+        var commandFailure = ex as IToolCommandFailureDetails;
 
-        if (TryGetNumericProperty(ex, "ExitCode", out var exitCode))
+        if (commandFailure?.ExitCode is int exitCode)
         {
             lines.Add($"exit code: {exitCode}");
         }
 
         AppendIfPresent(lines, ex.Message);
-        AppendIfPresent(lines, TryGetStringProperty(ex, "StdErr"));
-        AppendIfPresent(lines, TryGetStringProperty(ex, "Stderr"));
-        AppendIfPresent(lines, TryGetStringProperty(ex, "StandardError"));
-        AppendIfPresent(lines, TryGetStringProperty(ex, "StdOut"));
-        AppendIfPresent(lines, TryGetStringProperty(ex, "Stdout"));
-        AppendIfPresent(lines, TryGetStringProperty(ex, "StandardOutput"));
+        AppendIfPresent(lines, commandFailure?.StandardError);
+        AppendIfPresent(lines, commandFailure?.StandardOutput);
 
         if (lines.Count == 0)
         {
@@ -315,47 +320,6 @@ public static class ToolResultTextFormatter
         }
 
         return NormalizeInline(value.ToString());
-    }
-
-    private static string? TryGetStringProperty(object instance, string propertyName)
-    {
-        var property = instance.GetType().GetProperty(
-            propertyName,
-            BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
-        if (property == null || property.PropertyType != typeof(string))
-        {
-            return null;
-        }
-
-        return property.GetValue(instance) as string;
-    }
-
-    private static bool TryGetNumericProperty(object instance, string propertyName, out int value)
-    {
-        value = 0;
-        var property = instance.GetType().GetProperty(
-            propertyName,
-            BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
-        if (property == null)
-        {
-            return false;
-        }
-
-        var raw = property.GetValue(instance);
-        switch (raw)
-        {
-            case int intValue:
-                value = intValue;
-                return true;
-            case long longValue when longValue is >= int.MinValue and <= int.MaxValue:
-                value = (int)longValue;
-                return true;
-            case short shortValue:
-                value = shortValue;
-                return true;
-            default:
-                return false;
-        }
     }
 
     private static void AppendIfPresent(List<string> lines, string? value)

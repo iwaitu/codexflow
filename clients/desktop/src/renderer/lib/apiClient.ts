@@ -28,6 +28,7 @@ export type PendingApprovalsResponse = {
   controlPlaneAvailable: boolean;
   selfApprovalProtection: boolean;
   businessApprovals?: BusinessApprovalRequestDto[];
+  browserApprovals?: components['schemas']['BrowserApprovalRequestDto'][];
 };
 export type BackgroundJob = components['schemas']['BackgroundJobDto'];
 export type WorkspaceFileEntry = components['schemas']['WorkspaceFileEntryDto'];
@@ -555,5 +556,50 @@ export const apiClient = {
 
   getSkillRun(auth: ApiAuthContext, runId: string): Promise<SkillRunDto> {
     return requestJson<SkillRunDto>(auth, 'GET', `/api/skill-runs/${encodeURIComponent(runId)}`);
+  },
+
+  getBrowserSettings(auth: ApiAuthContext): Promise<components['schemas']['BrowserSettingsDto']> {
+    return requestJson<components['schemas']['BrowserSettingsDto']>(auth, 'GET', '/api/settings/browser');
+  },
+
+  getBrowserState(
+    auth: ApiAuthContext,
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<components['schemas']['BrowserSessionStateDto']> {
+    return requestJson<components['schemas']['BrowserSessionStateDto']>(
+      auth,
+      'GET',
+      `/api/gateway/session/${encodeURIComponent(sessionId)}/browser`,
+      undefined,
+      signal,
+    );
+  },
+
+  async getBrowserScreenshotBlob(
+    auth: ApiAuthContext,
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<{ blob: Blob; seq: number } | null> {
+    const response = await fetch(
+      `${auth.baseUrl}/api/gateway/session/${encodeURIComponent(sessionId)}/browser/screenshot`,
+      {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${auth.accessToken}`,
+        },
+        signal,
+      },
+    );
+    if (response.status === 204) {
+      return null;
+    }
+    if (!response.ok) {
+      throw new ApiError(response.status, 'browser_screenshot_failed', `获取浏览器截图失败 (${response.status})`);
+    }
+    const seqRaw = response.headers.get('X-Screenshot-Seq');
+    const seq = seqRaw ? Number(seqRaw) : 0;
+    const blob = await response.blob();
+    return { blob, seq: Number.isFinite(seq) ? seq : 0 };
   },
 };

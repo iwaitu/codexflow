@@ -6,14 +6,14 @@ using System.Text.Json.Serialization;
 
 namespace CodexFlow.Contracts.BusinessSkills;
 
-[JsonConverter(typeof(JsonStringEnumConverter))]
+[JsonConverter(typeof(JsonStringEnumConverter<BusinessPluginSourceType>))]
 public enum BusinessPluginSourceType
 {
     OpenApi = 0,
     Mcp = 1
 }
 
-[JsonConverter(typeof(JsonStringEnumConverter))]
+[JsonConverter(typeof(JsonStringEnumConverter<BusinessAuthKind>))]
 public enum BusinessAuthKind
 {
     None = 0,
@@ -23,7 +23,7 @@ public enum BusinessAuthKind
     OAuth2AuthCodePkce = 4
 }
 
-[JsonConverter(typeof(JsonStringEnumConverter))]
+[JsonConverter(typeof(JsonStringEnumConverter<CapabilityRiskLevel>))]
 public enum CapabilityRiskLevel
 {
     Unknown = 0,
@@ -32,7 +32,7 @@ public enum CapabilityRiskLevel
     Destructive = 3
 }
 
-[JsonConverter(typeof(JsonStringEnumConverter))]
+[JsonConverter(typeof(JsonStringEnumConverter<CapabilityExecutabilityStatus>))]
 public enum CapabilityExecutabilityStatus
 {
     Executable = 0,
@@ -40,7 +40,7 @@ public enum CapabilityExecutabilityStatus
     Unsupported = 2
 }
 
-[JsonConverter(typeof(JsonStringEnumConverter))]
+[JsonConverter(typeof(JsonStringEnumConverter<SkillRunStatus>))]
 public enum SkillRunStatus
 {
     Queued = 0,
@@ -53,7 +53,7 @@ public enum SkillRunStatus
     OutcomeUnknown = 7
 }
 
-[JsonConverter(typeof(JsonStringEnumConverter))]
+[JsonConverter(typeof(JsonStringEnumConverter<SkillRunStepState>))]
 public enum SkillRunStepState
 {
     Prepared = 0,
@@ -64,7 +64,7 @@ public enum SkillRunStepState
     OutcomeUnknown = 5
 }
 
-[JsonConverter(typeof(JsonStringEnumConverter))]
+[JsonConverter(typeof(JsonStringEnumConverter<PluginOperationStatus>))]
 public enum PluginOperationStatus
 {
     Queued = 0,

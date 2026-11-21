@@ -7,6 +7,7 @@ using Microsoft.Extensions.AI.VllmChatClient.Kimi;
 using Microsoft.Extensions.Logging;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Models;
+using CodexFlow.Core.Planning.Artifacts;
 using CodexFlow.Core.Planning.SelfCorrection;
 using CodexFlow.Core.Runtime;
 using CodexFlow.Core.Telemetry;
@@ -930,24 +931,24 @@ public class DefaultCodexPlanner : ICodexPlanner
 
         try
         {
-            return JsonConvert.DeserializeObject<List<CodexTask>>(sanitizedJson) ?? new List<CodexTask>();
+            return PlanToolJson.Read<List<CodexTask>>(sanitizedJson) ?? [];
         }
         catch (JsonReaderException ex) when (TrySanitizeJsonStringEscapes(sanitizedJson, ex, out sanitizedJson))
         {
             repaired = true;
-            return JsonConvert.DeserializeObject<List<CodexTask>>(sanitizedJson) ?? new List<CodexTask>();
+            return PlanToolJson.Read<List<CodexTask>>(sanitizedJson) ?? [];
         }
         catch (JsonException) when (TryRepairMissingObjectOpenBraces(sanitizedJson, out sanitizedJson))
         {
             repaired = true;
             try
             {
-                return JsonConvert.DeserializeObject<List<CodexTask>>(sanitizedJson) ?? new List<CodexTask>();
+                return PlanToolJson.Read<List<CodexTask>>(sanitizedJson) ?? [];
             }
             catch (JsonReaderException ex) when (TrySanitizeJsonStringEscapes(sanitizedJson, ex, out var escapeSanitizedJson))
             {
                 sanitizedJson = escapeSanitizedJson;
-                return JsonConvert.DeserializeObject<List<CodexTask>>(sanitizedJson) ?? new List<CodexTask>();
+                return PlanToolJson.Read<List<CodexTask>>(sanitizedJson) ?? [];
             }
         }
     }

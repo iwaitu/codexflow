@@ -3,6 +3,7 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 using CodexFlow.Core.Abstractions;
+using CodexFlow.Core.CodeAnalysis;
 using CodexFlow.Core.Models;
 using Microsoft.Extensions.Logging;
 using System.Globalization;
@@ -33,7 +34,19 @@ public class RoslynCodeAnalysisTool : ICodexTool
             return CodexToolResult.Error("缺少必需的参数 'code'。");
         }
 
-        var diagnostics = await _analysisService.AnalyzeCodeAsync(code).ConfigureAwait(false);
+        List<CodeDiagnostic> diagnostics;
+        try
+        {
+            var analysis = _analysisService is ICancellableSnippetAnalysis cancellable
+                ? cancellable.AnalyzeSnippetAsync(code, ct)
+                : _analysisService.AnalyzeCodeAsync(code);
+            diagnostics = await analysis.ConfigureAwait(false);
+        }
+        catch (CodeAnalysisUnavailableException exception)
+        {
+            return CodexToolResult.Error(exception.Message);
+        }
+
         if (diagnostics.Count == 0) return CodexToolResult.Succeeded("✅ 代码分析通过，未发现错误或警告。");
 
         var sb = new StringBuilder();

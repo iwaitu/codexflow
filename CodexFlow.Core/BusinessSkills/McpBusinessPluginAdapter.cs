@@ -539,33 +539,25 @@ public sealed class McpBusinessPluginAdapter
             ConnectionTimeout = TimeSpan.FromSeconds(BusinessSkillDefaults.ConnectTimeoutSeconds)
         };
 
-        HttpClientTransport? transport = new HttpClientTransport(transportOptions, httpClient, loggerFactory, ownsHttpClient: false);
-        try
+        await using var transportOwner = new AsyncResourceOwner<HttpClientTransport>();
+        var transport = transportOwner.Acquire(() =>
+            new HttpClientTransport(transportOptions, httpClient, loggerFactory, ownsHttpClient: false));
+        // 显式关闭客户端 sampling/roots/elicitation 能力声明，禁止服务端反向回调模型或文件系统
+        var clientOptions = new McpClientOptions
         {
-            // 显式关闭客户端 sampling/roots/elicitation 能力声明，禁止服务端反向回调模型或文件系统
-            var clientOptions = new McpClientOptions
+            ProtocolVersion = BusinessSkillDefaults.LockedMcpProtocolVersion,
+            Capabilities = new ClientCapabilities(),
+            ClientInfo = new Implementation
             {
-                ProtocolVersion = BusinessSkillDefaults.LockedMcpProtocolVersion,
-                Capabilities = new ClientCapabilities(),
-                ClientInfo = new Implementation
-                {
-                    Name = "CodexFlow.BusinessSkills",
-                    Version = "0.1.3"
-                },
-                InitializationTimeout = TimeSpan.FromSeconds(BusinessSkillDefaults.ConnectTimeoutSeconds)
-            };
+                Name = "CodexFlow.BusinessSkills",
+                Version = "0.1.3"
+            },
+            InitializationTimeout = TimeSpan.FromSeconds(BusinessSkillDefaults.ConnectTimeoutSeconds)
+        };
 
-            var client = await McpClient.CreateAsync(transport, clientOptions, loggerFactory, ct).ConfigureAwait(false);
-            transport = null;
-            return client;
-        }
-        finally
-        {
-            if (transport is not null)
-            {
-                await transport.DisposeAsync().ConfigureAwait(false);
-            }
-        }
+        var client = await McpClient.CreateAsync(transport, clientOptions, loggerFactory, ct).ConfigureAwait(false);
+        transportOwner.RelinquishOwnership();
+        return client;
     }
 
     private static CapabilityDetailDto ConvertToolToCapability(string pluginId, string snapshotId, Tool tool)

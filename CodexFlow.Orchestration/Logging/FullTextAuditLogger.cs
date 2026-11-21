@@ -5,6 +5,7 @@
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using CodexFlow.Orchestration.Persistence;
 using System.Text.RegularExpressions;
 
 namespace CodexFlow.Logging;
@@ -35,6 +36,9 @@ internal static class FullTextAuditLogger
         @"\bBearer\s+[A-Za-z0-9\-._~+/]+=*\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    public static Dictionary<string, object?> Fields(params (string Name, object? Value)[] fields)
+        => fields.ToDictionary(field => field.Name, field => field.Value, StringComparer.Ordinal);
+
     public static void Log(
         ILogger logger,
         string eventType,
@@ -52,9 +56,7 @@ internal static class FullTextAuditLogger
                 ["sessionId"] = sessionId,
                 ["stage"] = stage,
                 ["round"] = round,
-                ["payload"] = payload == null
-                    ? JValue.CreateNull()
-                    : JToken.FromObject(payload, JsonSerializer.CreateDefault())
+                ["payload"] = OrchestrationPayloadJson.Token(payload)
             };
 
             RedactToken(record);

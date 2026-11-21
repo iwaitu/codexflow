@@ -3,13 +3,12 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 using System.Collections.Concurrent;
+using CodexFlow.Application.Jobs;
 using CodexFlow.Application.Notifications;
 using CodexFlow.Core.Gateway;
 using CodexFlow.Core.Workers;
-using CodexFlow.Domain.Chat;
 using CodexFlow.Domain.Jobs;
 using CodexFlow.Orchestration.Jobs;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json.Linq;
 
@@ -26,7 +25,9 @@ namespace CodexFlow.Services.Notifications;
 /// </para>
 /// </summary>
 public sealed class MainSessionJobOutcomeDispatcher(
-    IJobDbContext db,
+    IJobStore jobs,
+    ISessionDirectory sessions,
+    IJobOutcomeStore outcomes,
     ICodexGateway gateway,
     IWorkerNotificationProjector workerNotificationProjector,
     ILogger<MainSessionJobOutcomeDispatcher> logger) : INotificationDispatcher
@@ -59,7 +60,7 @@ public sealed class MainSessionJobOutcomeDispatcher(
 
     private async Task DispatchCoreAsync(string jobId, CancellationToken ct, string dispatchSource)
     {
-        var job = await db.BackgroundJobs.FirstOrDefaultAsync(j => j.JobId == jobId, ct).ConfigureAwait(false);
+        var job = await jobs.FindAsync(jobId, ct).ConfigureAwait(false);
         if (job is null || string.IsNullOrWhiteSpace(job.SessionId) || !WorkerJobTypes.IsWorkerJobType(job.JobType))
         {
             return;
@@ -77,14 +78,14 @@ public sealed class MainSessionJobOutcomeDispatcher(
             return;
         }
 
-        var userId = await db.Sessions.AsNoTracking().Where(s => s.Id == job.SessionId).Select(s => s.UserId).FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        var userId = (await sessions.FindAsync(job.SessionId, ct).ConfigureAwait(false))?.UserId;
         if (string.IsNullOrWhiteSpace(userId))
         {
             logger.LogWarning("Job {JobId}: its session {SessionId} has no owner; nothing to announce", jobId, job.SessionId);
             return;
         }
 
-        var conversationId = await FindConversationAsync(job.SessionId, userId, job.TaskId, ct).ConfigureAwait(false);
+        var conversationId = await outcomes.FindAnnouncementConversationAsync(job.SessionId, userId, job.TaskId, ct).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(conversationId))
         {
             logger.LogInformation("Job {JobId}: session {SessionId} has no conversation to announce it in", jobId, job.SessionId);
@@ -114,44 +115,11 @@ public sealed class MainSessionJobOutcomeDispatcher(
 
         var messageId = await gateway.EnqueueAsync(message, ct).ConfigureAwait(false);
 
-        job.NotificationStatus = NotificationStatus.SummaryDelivered;
-        job.NotificationChannels = "main_session";
-        job.SummaryMessageId = messageId;
-        job.SummaryConversationId = conversationId;
-        job.Notified = true;
-        job.NotifiedAtUtc = DateTime.UtcNow;
-        job.UpdatedAtUtc = DateTime.UtcNow;
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        await outcomes.RecordAnnouncementAsync(job, messageId, conversationId, DateTime.UtcNow, ct).ConfigureAwait(false);
 
         logger.LogInformation(
             "Announced job {JobId} to conversation {ConversationId} as {Source} (message {MessageId}, dispatch {DispatchSource})",
             jobId, conversationId, message.Source, messageId, dispatchSource);
-    }
-
-    /// <summary>The worker thread of the task when there is one, else the main conversation, else the latest chat (the platform's order).</summary>
-    private async Task<string?> FindConversationAsync(string sessionId, string userId, string? taskId, CancellationToken ct)
-    {
-        IQueryable<IvilsonConversation> own = db.Conversations.AsNoTracking().Where(c => c.SessionId == sessionId && c.UserId == userId && !c.IsArchived);
-
-        if (!string.IsNullOrWhiteSpace(taskId))
-        {
-            var worker = await own.Where(c => c.ThreadType == ConversationThreadType.Worker && c.TaskId == taskId)
-                .OrderByDescending(c => c.UpdateAt).Select(c => c.Id).FirstOrDefaultAsync(ct).ConfigureAwait(false);
-            if (!string.IsNullOrEmpty(worker))
-            {
-                return worker;
-            }
-        }
-
-        var master = await own.Where(c => c.ThreadType == ConversationThreadType.Master)
-            .OrderByDescending(c => c.UpdateAt).Select(c => c.Id).FirstOrDefaultAsync(ct).ConfigureAwait(false);
-        if (!string.IsNullOrEmpty(master))
-        {
-            return master;
-        }
-
-        return await own.Where(c => c.ThreadType == ConversationThreadType.Chat)
-            .OrderByDescending(c => c.UpdateAt).Select(c => c.Id).FirstOrDefaultAsync(ct).ConfigureAwait(false);
     }
 
     private string ResolveWorkerNotificationXml(BackgroundJob job)

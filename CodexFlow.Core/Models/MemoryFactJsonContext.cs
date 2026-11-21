@@ -1,0 +1,12 @@
+// Copyright (c) 2026 iwaitu
+// This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+// If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+using System.Text.Json.Serialization;
+
+namespace CodexFlow.Core.Models;
+
+[JsonSourceGenerationOptions(GenerationMode = JsonSourceGenerationMode.Metadata)]
+[JsonSerializable(typeof(MemoryEntryMetadata))]
+[JsonSerializable(typeof(MemoryFreshnessState))]
+internal sealed partial class MemoryFactJsonContext : JsonSerializerContext;

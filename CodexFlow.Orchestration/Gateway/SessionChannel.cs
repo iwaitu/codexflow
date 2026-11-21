@@ -4,11 +4,11 @@
 
 using System.Text;
 using System.Text.Json;
+using CodexFlow.Orchestration.Persistence;
 using System.Threading.Channels;
 using CodexFlow.Core.Gateway;
 using CodexFlow.Logging;
-using CodexFlow.Orchestration.Jobs;
-using Microsoft.EntityFrameworkCore;
+using CodexFlow.Orchestration.Chat;
 
 namespace CodexFlow.Gateway;
 
@@ -151,8 +151,8 @@ public sealed class SessionChannel : IAsyncDisposable
         try
         {
             await using var scope = _serviceProvider.CreateAsyncScope();
-            var db = scope.ServiceProvider.GetService<IJobDbContext>();
-            if (db is null)
+            var store = scope.ServiceProvider.GetService<ILateToolOutputStore>();
+            if (store is null)
             {
                 return;
             }
@@ -173,48 +173,9 @@ public sealed class SessionChannel : IAsyncDisposable
                 return;
             }
 
-            var targetConvId = !string.IsNullOrWhiteSpace(preferredConvId)
-                ? preferredConvId
-                : await db.Conversations
-                    .Where(c => c.SessionId == SessionId && !c.IsArchived)
-                    .OrderByDescending(c => c.UpdateAt)
-                    .Select(c => c.Id)
-                    .FirstOrDefaultAsync(ct)
-                    .ConfigureAwait(false);
-
-            if (string.IsNullOrWhiteSpace(targetConvId))
-            {
-                return;
-            }
-
-            var latestMsg = await db.ChatMessages
-                .Where(m => m.ConversationId == targetConvId && (m.MessageType == null || m.MessageType == ""))
-                .OrderByDescending(m => m.Created)
-                .FirstOrDefaultAsync(ct)
+            await store.AppendLateToolOutputAsync(SessionId, preferredConvId,
+                previous => MergeToolOutputIntoEnvelopeJson(previous, chunk, chunkContentTruncated), ct)
                 .ConfigureAwait(false);
-
-            if (latestMsg is null)
-            {
-                latestMsg = new CodexFlow.Domain.Chat.IvilsonChatMessage
-                {
-                    Id = Guid.NewGuid().ToString("N"),
-                    ConversationId = targetConvId,
-                    UserContent = string.Empty,
-                    AiContent = string.Empty,
-                    ToolCallResult = MergeToolOutputIntoEnvelopeJson(null, chunk, chunkContentTruncated),
-                    TokenUsed = 0,
-                    SystemPrompt = string.Empty,
-                    ReplyId = string.Empty,
-                    Created = DateTime.UtcNow
-                };
-                db.ChatMessages.Add(latestMsg);
-            }
-            else
-            {
-                latestMsg.ToolCallResult = MergeToolOutputIntoEnvelopeJson(latestMsg.ToolCallResult, chunk, chunkContentTruncated);
-            }
-
-            await db.SaveChangesAsync(ct).ConfigureAwait(false);
         }
         finally
         {
@@ -239,17 +200,16 @@ public sealed class SessionChannel : IAsyncDisposable
                 using var doc = JsonDocument.Parse(existingJson);
                 if (doc.RootElement.ValueKind == JsonValueKind.Object)
                 {
-                    var opts = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
                     if (doc.RootElement.TryGetProperty("results", out var resEl))
                     {
-                        var parsed = JsonSerializer.Deserialize<GatewayChannelToolResultSnapshot[]>(resEl.GetRawText(), opts);
+                        var parsed = resEl.Deserialize(OrchestrationSnapshotJsonContext.CaseInsensitive.ToolResults);
                         if (parsed is not null) results.AddRange(parsed);
                     }
 
                     resultsTruncated = doc.RootElement.TryGetProperty("resultsTruncated", out var rtEl) && rtEl.ValueKind == JsonValueKind.True;
                     if (doc.RootElement.TryGetProperty("outputs", out var outEl))
                     {
-                        var parsedOut = JsonSerializer.Deserialize<GatewayChannelToolOutputSnapshot[]>(outEl.GetRawText(), opts);
+                        var parsedOut = outEl.Deserialize(OrchestrationSnapshotJsonContext.CaseInsensitive.ToolOutputs);
                         if (parsedOut is not null) outputs.AddRange(parsedOut);
                     }
 
@@ -276,13 +236,9 @@ public sealed class SessionChannel : IAsyncDisposable
             outputsTruncated = true;
         }
 
-        return JsonSerializer.Serialize(new
-        {
-            results,
-            resultsTruncated,
-            outputs,
-            outputsTruncated
-        });
+        return JsonSerializer.Serialize(
+            new GatewayToolHistoryEnvelope(results, resultsTruncated, outputs, outputsTruncated),
+            OrchestrationSnapshotJsonContext.Default.GatewayToolHistoryEnvelope);
     }
 
     /// <summary>
@@ -427,14 +383,12 @@ public sealed class SessionChannel : IAsyncDisposable
                     SessionId,
                     0,
                     0,
-                    new
-                    {
-                        messageId = message.MessageId,
-                        source = message.Source.ToString(),
-                        conversationId = message.ConversationId,
-                        taskId = message.TaskId,
-                        subscriberCount = SubscriberCount
-                    });
+                    FullTextAuditLogger.Fields(
+                        ("messageId", message.MessageId),
+                        ("source", message.Source.ToString()),
+                        ("conversationId", message.ConversationId),
+                        ("taskId", message.TaskId),
+                        ("subscriberCount", SubscriberCount)));
 
                 // The exclusive user-chat slot is given back BEFORE the done / error event is broadcast: a client sends its next message the
                 // moment it sees "done", and that message must be accepted. Released after the broadcast (and the audit line that follows
@@ -494,7 +448,7 @@ public sealed class SessionChannel : IAsyncDisposable
                     var doneEvent = PublishAndCommit(new GatewaySseEvent
                     {
                         Type = GatewaySseEventType.Done,
-                        Payload = new { messageId = message.MessageId, source = message.Source.ToString() }
+                        Payload = new Dictionary<string, object?> { ["messageId"] = message.MessageId, ["source"] = message.Source.ToString() }
                     }, captureTelemetry: false, completeTurn: true);
                     FullTextAuditLogger.Log(
                         _logger,
@@ -502,12 +456,10 @@ public sealed class SessionChannel : IAsyncDisposable
                         SessionId,
                         0,
                         0,
-                        new
-                        {
-                            messageId = message.MessageId,
-                            source = message.Source.ToString(),
-                            doneEventSeq = doneEvent.Seq
-                        });
+                        FullTextAuditLogger.Fields(
+                            ("messageId", message.MessageId),
+                            ("source", message.Source.ToString()),
+                            ("doneEventSeq", doneEvent.Seq)));
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
@@ -521,7 +473,7 @@ public sealed class SessionChannel : IAsyncDisposable
                     var cancelledDone = PublishAndCommit(new GatewaySseEvent
                     {
                         Type = GatewaySseEventType.Done,
-                        Payload = new { messageId = message.MessageId, source = "cancelled" }
+                        Payload = new Dictionary<string, object?> { ["messageId"] = message.MessageId, ["source"] = "cancelled" }
                     }, captureTelemetry: false, completeTurn: true);
                     FullTextAuditLogger.Log(
                         _logger,
@@ -529,12 +481,10 @@ public sealed class SessionChannel : IAsyncDisposable
                         SessionId,
                         0,
                         0,
-                        new
-                        {
-                            messageId = message.MessageId,
-                            source = message.Source.ToString(),
-                            doneEventSeq = cancelledDone.Seq
-                        });
+                        FullTextAuditLogger.Fields(
+                            ("messageId", message.MessageId),
+                            ("source", message.Source.ToString()),
+                            ("doneEventSeq", cancelledDone.Seq)));
                 }
                 catch (Exception ex)
                 {
@@ -546,19 +496,17 @@ public sealed class SessionChannel : IAsyncDisposable
                         SessionId,
                         0,
                         0,
-                        new
-                        {
-                            messageId = message.MessageId,
-                            source = message.Source.ToString(),
-                            error = ex.Message
-                        });
+                        FullTextAuditLogger.Fields(
+                            ("messageId", message.MessageId),
+                            ("source", message.Source.ToString()),
+                            ("error", ex.Message)));
 
                     // 向订阅者推送错误事件
                     ReleaseSlotOnce();
                     PublishAndCommit(new GatewaySseEvent
                     {
                         Type = GatewaySseEventType.Error,
-                        Payload = new { messageId = message.MessageId, error = ex.Message }
+                        Payload = new Dictionary<string, object?> { ["messageId"] = message.MessageId, ["error"] = ex.Message }
                     }, captureTelemetry: false, completeTurn: true);
                 }
                 finally
@@ -794,22 +742,13 @@ public sealed class SessionChannel : IAsyncDisposable
     }
 
     private static string? ReadPayloadString(object payload, string propertyName)
-    {
-        var prop = payload.GetType().GetProperty(propertyName);
-        return prop?.GetValue(payload)?.ToString();
-    }
+        => GatewayPayloadFields.Text(payload, propertyName);
 
     private static bool ReadPayloadBool(object payload, string propertyName)
-    {
-        var prop = payload.GetType().GetProperty(propertyName);
-        return prop?.GetValue(payload) is bool b && b;
-    }
+        => GatewayPayloadFields.Bool(payload, propertyName);
 
     private static int? ReadPayloadInt(object payload, string propertyName)
-    {
-        var prop = payload.GetType().GetProperty(propertyName);
-        return prop?.GetValue(payload) is int value ? value : null;
-    }
+        => GatewayPayloadFields.Int(payload, propertyName);
 
     private bool TryReserveExclusiveUserChatSlot(GatewayMessage message)
     {
@@ -926,7 +865,7 @@ public sealed class SseSubscriber
             {
                 Seq = 0,
                 Type = GatewaySseEventType.ReplayGap,
-                Payload = new { reason = GatewayReplayGapReason.SequenceReset, epoch, previousLastEventId, oldestAvailableSeq }
+                Payload = new Dictionary<string, object?> { ["reason"] = GatewayReplayGapReason.SequenceReset, ["epoch"] = epoch, ["previousLastEventId"] = previousLastEventId, ["oldestAvailableSeq"] = oldestAvailableSeq }
             };
         }
     }
@@ -945,7 +884,13 @@ public sealed class SseSubscriber
     {
         Seq = 0,
         Type = GatewaySseEventType.ReplayGap,
-        Payload = new { fromSeq, toSeq = throughSeq, oldestAvailableSeq, reason }
+        Payload = new Dictionary<string, object?>
+        {
+            ["fromSeq"] = fromSeq,
+            ["toSeq"] = throughSeq,
+            ["oldestAvailableSeq"] = oldestAvailableSeq,
+            ["reason"] = reason
+        }
     };
 
     /// <summary>

@@ -2,11 +2,12 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+using CodexFlow.Application.Jobs;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Models;
 using CodexFlow.Domain.Jobs;
 using Microsoft.Extensions.DependencyInjection;
-using Newtonsoft.Json;
+using CodexFlow.Orchestration.Persistence;
 
 namespace CodexFlow.Services;
 
@@ -33,15 +34,13 @@ public sealed class OutboxPlannerSummaryEventSink(
         try
         {
             await using var scope = scopeFactory.CreateAsyncScope();
-            var dbContext = scope.ServiceProvider.GetRequiredService<CodexFlow.Orchestration.Jobs.IJobDbContext>();
-            var payloadJson = JsonConvert.SerializeObject(new
-            {
-                message = e.Message,
-                payload = e.Payload,
-                timestamp = e.Timestamp
-            });
+            var store = scope.ServiceProvider.GetRequiredService<IOutboxStore>();
+            var payloadJson = OrchestrationPayloadJson.Write(
+                ("message", e.Message),
+                ("payload", e.Payload),
+                ("timestamp", e.Timestamp));
 
-            await dbContext.OutboxEvents.AddAsync(new OutboxEvent
+            await store.AppendAsync(new OutboxEvent
             {
                 EventType = "PlanningSummary",
                 SessionId = e.SessionId,
@@ -50,7 +49,6 @@ public sealed class OutboxPlannerSummaryEventSink(
                 CorrelationId = e.SessionId
             }, ct).ConfigureAwait(false);
 
-            await dbContext.SaveChangesAsync(ct).ConfigureAwait(false);
             outboxSignal.Pulse();
         }
         catch (Exception ex)

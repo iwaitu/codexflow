@@ -2,18 +2,25 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+using System.Collections;
 using System.Text;
+using System.Text.Encodings.Web;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
-using Newtonsoft.Json;
-using System;
-using System.Collections;
 
 namespace CodexFlow.Core.Services;
 
 public static class ChatClientAudit
 {
     private const int MaxPreviewLength = 600;
+    private static readonly ChatClientAuditJsonContext AuditJson = new(new JsonSerializerOptions
+    {
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals
+    });
 
     public static void AppendStreamingUpdate(
         ChatResponseUpdate update,
@@ -25,13 +32,10 @@ public static class ChatClientAudit
         ArgumentNullException.ThrowIfNull(thinkingText);
 
         var isThinking = update is ReasoningChatResponseUpdate ru && ru.Thinking;
-        if (isThinking)
+        var reasonText = isThinking ? update.Text : null;
+        if (!string.IsNullOrEmpty(reasonText))
         {
-            var reasonText = ExtractReasoningText(update);
-            if (!string.IsNullOrEmpty(reasonText))
-            {
-                thinkingText.Append(reasonText);
-            }
+            thinkingText.Append(reasonText);
         }
 
         var hasTextFromContents = false;
@@ -49,7 +53,7 @@ public static class ChatClientAudit
 
         if (!hasTextFromContents && !string.IsNullOrEmpty(update.Text))
         {
-            if (isThinking && string.IsNullOrEmpty(ExtractReasoningText(update))) thinkingText.Append(update.Text);
+            if (isThinking && string.IsNullOrEmpty(reasonText)) thinkingText.Append(update.Text);
             else responseText.Append(update.Text);
         }
     }
@@ -70,12 +74,8 @@ public static class ChatClientAudit
                     case TextContent tc when !string.IsNullOrEmpty(tc.Text):
                         responseText.Append(tc.Text);
                         break;
-                    default:
-                        var reasoningText = ExtractReasoningText(part);
-                        if (!string.IsNullOrEmpty(reasoningText))
-                        {
-                            thinkingText.Append(reasoningText);
-                        }
+                    case TextReasoningContent reasoning when !string.IsNullOrEmpty(reasoning.Text):
+                        thinkingText.Append(reasoning.Text);
                         break;
                 }
             }
@@ -109,28 +109,24 @@ public static class ChatClientAudit
 #pragma warning disable CA1031
         try
         {
-            var record = new
-            {
-                timestamp = DateTime.UtcNow.ToString("O"),
-                eventType = error == null ? "ichatclient_interaction" : "ichatclient_interaction_error",
-                sessionId = "__ichatclient__",
-                stage = 0,
-                round = 0,
-                payload = new
-                {
+            var record = new AuditRecord(
+                DateTime.UtcNow.ToString("O"),
+                error == null ? "ichatclient_interaction" : "ichatclient_interaction_error",
+                "__ichatclient__",
+                Stage: 0,
+                Round: 0,
+                new AuditPayload(
                     source,
                     mode,
-                    request = SnapshotMessages(messages),
-                    options = SnapshotOptions(options),
-                    response = Truncate(response),
-                    thinking = Truncate(thinking),
-                    responseLength = response.Length,
-                    thinkingLength = thinking.Length,
-                    error = error?.Message
-                }
-            };
+                    SnapshotMessages(messages),
+                    SnapshotOptions(options),
+                    Truncate(response),
+                    Truncate(thinking),
+                    response.Length,
+                    thinking.Length,
+                    error?.Message));
 
-            logger.LogInformation("FULLTEXT|{AuditJson}", JsonConvert.SerializeObject(record));
+            logger.LogInformation("FULLTEXT|{AuditJson}", JsonSerializer.Serialize(record, AuditJson.AuditRecord));
         }
         catch (Exception ex)
         {
@@ -139,38 +135,18 @@ public static class ChatClientAudit
 #pragma warning restore CA1031
     }
 
-    private static object SnapshotOptions(ChatOptions? options) => new
-    {
-        temperature = options?.Temperature,
-        topP = options?.TopP,
-        toolCount = options?.Tools?.Count ?? 0,
-        toolNames = options?.Tools?.Select(static tool => tool.Name).ToArray() ?? [],
-        toolMode = ReadOptionProperty(options, "ToolMode"),
-        thinkingEnabled = ReadOptionProperty(options, "ThinkingEnabled"),
-        maxOutputTokens = options?.MaxOutputTokens
-    };
+    private static AuditOptions SnapshotOptions(ChatOptions? options) => new(
+        options?.Temperature,
+        options?.TopP,
+        options?.Tools?.Count ?? 0,
+        options?.Tools?.Select(static tool => tool.Name).ToArray() ?? [],
+        options?.ToolMode?.ToString(),
+        (options as VllmChatOptions)?.ThinkingEnabled,
+        options?.MaxOutputTokens);
 
-    private static object? ReadOptionProperty(ChatOptions? options, string propertyName)
+    private static List<AuditMessage> SnapshotMessages(IEnumerable<ChatMessage> messages)
     {
-        if (options == null)
-        {
-            return null;
-        }
-
-        var property = options.GetType().GetProperty(propertyName);
-        var value = property?.GetValue(options);
-        return value switch
-        {
-            null => null,
-            string text => text,
-            bool boolean => boolean,
-            _ => value.ToString()
-        };
-    }
-
-    private static List<object> SnapshotMessages(IEnumerable<ChatMessage> messages)
-    {
-        var snapshot = new List<object>();
+        var snapshot = new List<AuditMessage>();
         var index = 0;
         foreach (var message in messages)
         {
@@ -182,12 +158,7 @@ public static class ChatClientAudit
                     .Where(t => !string.IsNullOrEmpty(t)));
             }
 
-            snapshot.Add(new
-            {
-                index = index++,
-                role = message.Role.ToString(),
-                text = Truncate(text ?? string.Empty)
-            });
+            snapshot.Add(new AuditMessage(index++, message.Role.ToString(), Truncate(text ?? string.Empty)));
         }
 
         return snapshot;
@@ -229,49 +200,36 @@ public static class ChatClientAudit
             : $"[tool_result:{callId}] {resultText}";
     }
 
-    private static string ExtractReasoningText(ChatResponseUpdate update)
-    {
-        if (update is not ReasoningChatResponseUpdate reasoningUpdate || !reasoningUpdate.Thinking)
-        {
-            return string.Empty;
-        }
+    internal sealed record AuditRecord(
+        string Timestamp,
+        string EventType,
+        string SessionId,
+        int Stage,
+        int Round,
+        AuditPayload Payload);
 
-        var reasonProp = reasoningUpdate.GetType().GetProperty("Reason");
-        if (reasonProp?.GetValue(reasoningUpdate) is string reason && !string.IsNullOrEmpty(reason))
-        {
-            return reason;
-        }
+    internal sealed record AuditPayload(
+        string Source,
+        string Mode,
+        List<AuditMessage> Request,
+        AuditOptions Options,
+        string Response,
+        string Thinking,
+        int ResponseLength,
+        int ThinkingLength,
+        string? Error);
 
-        var textProp = reasoningUpdate.GetType().GetProperty("Text");
-        if (textProp?.GetValue(reasoningUpdate) is string text && !string.IsNullOrEmpty(text))
-        {
-            return text;
-        }
+    internal sealed record AuditOptions(
+        float? Temperature,
+        float? TopP,
+        int ToolCount,
+        string[] ToolNames,
+        string? ToolMode,
+        bool? ThinkingEnabled,
+        int? MaxOutputTokens);
 
-        return string.Empty;
-    }
-
-    private static string ExtractReasoningText(AIContent content)
-    {
-        var typeName = content.GetType().Name;
-        if (!typeName.Contains("Reason", StringComparison.OrdinalIgnoreCase) &&
-            !typeName.Contains("Think", StringComparison.OrdinalIgnoreCase))
-        {
-            return string.Empty;
-        }
-
-        var reasonProp = content.GetType().GetProperty("Reason");
-        if (reasonProp?.GetValue(content) is string reason && !string.IsNullOrEmpty(reason))
-        {
-            return reason;
-        }
-
-        var textProp = content.GetType().GetProperty("Text");
-        if (textProp?.GetValue(content) is string text && !string.IsNullOrEmpty(text))
-        {
-            return text;
-        }
-
-        return string.Empty;
-    }
+    internal sealed record AuditMessage(int Index, string Role, string Text);
 }
+
+[JsonSerializable(typeof(ChatClientAudit.AuditRecord))]
+internal sealed partial class ChatClientAuditJsonContext : JsonSerializerContext;

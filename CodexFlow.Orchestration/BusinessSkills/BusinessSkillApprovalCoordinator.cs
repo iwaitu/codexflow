@@ -8,8 +8,6 @@ using CodexFlow.Contracts.BusinessSkills;
 using CodexFlow.Core.BusinessSkills;
 using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Core.Gateway;
-using CodexFlow.Orchestration.Jobs;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -60,7 +58,7 @@ public interface IBusinessSkillApprovalCoordinator
 /// </summary>
 public sealed class BusinessSkillApprovalCoordinator : IBusinessSkillApprovalCoordinator
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static BusinessSkillJsonContext Json => BusinessSkillJsonContext.Default;
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ICodexGateway? _gateway;
@@ -140,11 +138,8 @@ public sealed class BusinessSkillApprovalCoordinator : IBusinessSkillApprovalCoo
         try
         {
             await using var scope = _scopeFactory.CreateAsyncScope();
-            var db = scope.ServiceProvider.GetRequiredService<IJobDbContext>();
-            var waitingRuns = await db.SkillRuns.AsNoTracking()
-                .Where(r => r.Status == nameof(SkillRunStatus.WaitingForApproval) && r.PendingApprovalJson != null)
-                .ToListAsync(ct)
-                .ConfigureAwait(false);
+            var store = scope.ServiceProvider.GetRequiredService<IBusinessSkillExecutionStore>();
+            var waitingRuns = await store.ListWaitingRunsAsync(ct).ConfigureAwait(false);
 
             foreach (var run in waitingRuns)
             {
@@ -155,7 +150,7 @@ public sealed class BusinessSkillApprovalCoordinator : IBusinessSkillApprovalCoo
 
                 try
                 {
-                    var req = JsonSerializer.Deserialize<BusinessApprovalRequestDto>(run.PendingApprovalJson, JsonOptions);
+                    var req = JsonSerializer.Deserialize(run.PendingApprovalJson, Json.BusinessApprovalRequestDto);
                     if (req is not null &&
                         string.Equals(req.SessionId, sessionId, StringComparison.Ordinal) &&
                         req.ExpiresAtUtc > now &&
@@ -198,11 +193,8 @@ public sealed class BusinessSkillApprovalCoordinator : IBusinessSkillApprovalCoo
         try
         {
             await using var scope = _scopeFactory.CreateAsyncScope();
-            var db = scope.ServiceProvider.GetRequiredService<IJobDbContext>();
-            var waitingRuns = await db.SkillRuns.AsNoTracking()
-                .Where(r => r.Status == nameof(SkillRunStatus.WaitingForApproval) && r.PendingApprovalJson != null)
-                .ToListAsync(ct)
-                .ConfigureAwait(false);
+            var store = scope.ServiceProvider.GetRequiredService<IBusinessSkillExecutionStore>();
+            var waitingRuns = await store.ListWaitingRunsAsync(ct).ConfigureAwait(false);
 
             foreach (var run in waitingRuns)
             {
@@ -213,7 +205,7 @@ public sealed class BusinessSkillApprovalCoordinator : IBusinessSkillApprovalCoo
 
                 try
                 {
-                    var req = JsonSerializer.Deserialize<BusinessApprovalRequestDto>(run.PendingApprovalJson, JsonOptions);
+                    var req = JsonSerializer.Deserialize(run.PendingApprovalJson, Json.BusinessApprovalRequestDto);
                     if (req is not null && string.Equals(req.ApprovalId, approvalId, StringComparison.Ordinal))
                     {
                         return req.SessionId;
@@ -422,19 +414,15 @@ public sealed class BusinessSkillApprovalCoordinator : IBusinessSkillApprovalCoo
         try
         {
             await using var scope = _scopeFactory.CreateAsyncScope();
-            var db = scope.ServiceProvider.GetRequiredService<IJobDbContext>();
+            var store = scope.ServiceProvider.GetRequiredService<IBusinessSkillExecutionStore>();
 
-            var plugin = await db.BusinessPlugins.AsNoTracking()
-                .FirstOrDefaultAsync(p => p.Id == entry.PluginId, ct)
-                .ConfigureAwait(false);
+            var plugin = await store.FindPluginAsync(entry.PluginId, ct).ConfigureAwait(false);
             if (plugin is null || !plugin.Enabled)
             {
                 return $"Plugin '{entry.PluginId}' is disabled or missing; pending write approval invalidated.";
             }
 
-            var conn = await db.PluginConnections.AsNoTracking()
-                .FirstOrDefaultAsync(c => c.Id == entry.DigestInput.ConnectionId && c.PluginId == entry.PluginId, ct)
-                .ConfigureAwait(false);
+            var conn = await store.FindConnectionAsync(entry.DigestInput.ConnectionId, entry.PluginId, ct).ConfigureAwait(false);
             if (conn is null ||
                 conn.Revision != entry.DigestInput.ConnectionRevision ||
                 !string.Equals(conn.CredentialRevision, entry.DigestInput.CredentialRevision, StringComparison.Ordinal))
@@ -456,17 +444,9 @@ public sealed class BusinessSkillApprovalCoordinator : IBusinessSkillApprovalCoo
         try
         {
             await using var scope = _scopeFactory.CreateAsyncScope();
-            var db = scope.ServiceProvider.GetRequiredService<IJobDbContext>();
-            var run = await db.SkillRuns.FirstOrDefaultAsync(r => r.RunId == request.RunId, ct).ConfigureAwait(false);
-            if (run is null)
-            {
-                return;
-            }
-
-            run.Status = status.ToString();
-            run.PendingApprovalJson = JsonSerializer.Serialize(request, JsonOptions);
-            run.UpdatedAtUtc = DateTime.UtcNow;
-            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+            var store = scope.ServiceProvider.GetRequiredService<IBusinessSkillExecutionStore>();
+            var json = JsonSerializer.Serialize(request, Json.BusinessApprovalRequestDto);
+            await store.SetPendingApprovalAsync(request.RunId, status, json, DateTime.UtcNow, ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -479,21 +459,8 @@ public sealed class BusinessSkillApprovalCoordinator : IBusinessSkillApprovalCoo
         try
         {
             await using var scope = _scopeFactory.CreateAsyncScope();
-            var db = scope.ServiceProvider.GetRequiredService<IJobDbContext>();
-            var run = await db.SkillRuns.FirstOrDefaultAsync(r => r.RunId == runId, CancellationToken.None).ConfigureAwait(false);
-            if (run is null)
-            {
-                return;
-            }
-
-            run.PendingApprovalJson = null;
-            if (string.Equals(run.Status, nameof(SkillRunStatus.WaitingForApproval), StringComparison.Ordinal))
-            {
-                run.Status = nameof(SkillRunStatus.Running);
-            }
-
-            run.UpdatedAtUtc = DateTime.UtcNow;
-            await db.SaveChangesAsync(CancellationToken.None).ConfigureAwait(false);
+            var store = scope.ServiceProvider.GetRequiredService<IBusinessSkillExecutionStore>();
+            await store.ClearPendingApprovalAsync(runId, DateTime.UtcNow, CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -515,16 +482,16 @@ public sealed class BusinessSkillApprovalCoordinator : IBusinessSkillApprovalCoo
                 new GatewaySseEvent
                 {
                     Type = GatewaySseEventType.BusinessSkillApprovalRequested,
-                    Payload = new
+                    Payload = new Dictionary<string, object?>
                     {
-                        approvalId = request.ApprovalId,
-                        requestDigest = request.RequestDigest,
-                        sessionId = request.SessionId,
-                        runId = request.RunId,
-                        stepId = request.StepId,
-                        kind = request.Kind,
-                        allowedDecisions = request.AllowedDecisions,
-                        expiresAtUtc = request.ExpiresAtUtc.ToString("O")
+                        ["approvalId"] = request.ApprovalId,
+                        ["requestDigest"] = request.RequestDigest,
+                        ["sessionId"] = request.SessionId,
+                        ["runId"] = request.RunId,
+                        ["stepId"] = request.StepId,
+                        ["kind"] = request.Kind,
+                        ["allowedDecisions"] = request.AllowedDecisions,
+                        ["expiresAtUtc"] = request.ExpiresAtUtc.ToString("O")
                     }
                 },
                 ct).ConfigureAwait(false);
@@ -554,15 +521,15 @@ public sealed class BusinessSkillApprovalCoordinator : IBusinessSkillApprovalCoo
                 new GatewaySseEvent
                 {
                     Type = GatewaySseEventType.BusinessSkillApprovalResolved,
-                    Payload = new
+                    Payload = new Dictionary<string, object?>
                     {
-                        approvalId = request.ApprovalId,
-                        requestDigest = request.RequestDigest,
-                        runId = request.RunId,
-                        decision,
-                        decidedBy,
-                        note,
-                        resolvedAt = DateTimeOffset.UtcNow.ToString("O")
+                        ["approvalId"] = request.ApprovalId,
+                        ["requestDigest"] = request.RequestDigest,
+                        ["runId"] = request.RunId,
+                        ["decision"] = decision,
+                        ["decidedBy"] = decidedBy,
+                        ["note"] = note,
+                        ["resolvedAt"] = DateTimeOffset.UtcNow.ToString("O")
                     }
                 },
                 ct).ConfigureAwait(false);

@@ -34,6 +34,8 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
     private readonly QreV2.IRuntimeAuditSink? _auditSink;
     private readonly string? _auditDirectory;
     private readonly CodexFlow.Core.Execution.Approval.IExecutionApprovalBroker? _approvalBroker;
+    private readonly CodexFlow.Core.Browser.IBrowserApprovalCoordinator? _browserApprovalCoordinator;
+    private readonly CodexFlow.Core.Browser.IBrowserSessionManager? _browserSessionManager;
 
     public QreV2BackedQueryRuntimeEngine(
         ILLMExecutor llmExecutor,
@@ -44,7 +46,9 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
         IOptions<QueryRuntimeBackendOptions>? backendOptions = null,
         ContextCompressionTriggerOptions? contextOptions = null,
         QreV2.IRuntimeAuditSink? auditSink = null,
-        CodexFlow.Core.Execution.Approval.IExecutionApprovalBroker? approvalBroker = null)
+        CodexFlow.Core.Execution.Approval.IExecutionApprovalBroker? approvalBroker = null,
+        CodexFlow.Core.Browser.IBrowserApprovalCoordinator? browserApprovalCoordinator = null,
+        CodexFlow.Core.Browser.IBrowserSessionManager? browserSessionManager = null)
     {
         _llmExecutor = llmExecutor ?? throw new ArgumentNullException(nameof(llmExecutor));
         _contextWindowManager = contextWindowManager;
@@ -57,6 +61,8 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
         _auditSink = auditSink;
         _auditDirectory = string.IsNullOrWhiteSpace(backendOptions?.Value.AuditDirectory) ? null : backendOptions!.Value.AuditDirectory;
         _approvalBroker = approvalBroker;
+        _browserApprovalCoordinator = browserApprovalCoordinator;
+        _browserSessionManager = browserSessionManager;
     }
 
     public async Task<QueryRuntimeResult> ExecuteAsync(
@@ -252,6 +258,8 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
             {
                 _approvalBroker?.CancelSessionApprovals(request.SessionId, "Turn cancelled.");
             }
+            _browserApprovalCoordinator?.CancelSessionApprovals(request.SessionId, "Turn cancelled.");
+            _browserSessionManager?.CancelTakeover(request.SessionId, "Turn cancelled.");
             return BuildFailureResult(
                 request,
                 queryId,
@@ -1021,30 +1029,30 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
                     }
                 }
 
-                var text = result.Result ?? string.Empty;
-                (string Kind, string Command)? run = VerificationCommand.Match(text) is { Success: true } command
-                    ? ("dotnet_" + command.Groups[1].Value.ToLowerInvariant(), "dotnet " + command.Groups[1].Value.ToLowerInvariant())
-                    : TestCommandEvidence.Classify(text);
-                if (run is { } verificationRun)
+                if (ToolCommandObservation.Read(result) is not { Verification: { } run } observation)
                 {
-                    var kind = verificationRun.Kind;
-                    if (DefaultToolObservationProcessor.ExitedCleanly(text, null))
+                    return;
+                }
+
+                if (observation.Outcome == ToolCommandOutcome.Passed)
+                {
+                    _failed.Remove(run.Kind);
+                    return;
+                }
+
+                // Observe already removed the superseded pass. Only a confirmed failure replaces the previous failure.
+                if (observation.Outcome == ToolCommandOutcome.Failed)
+                {
+                    var diagnostics = string.Concat(result.Result, "\n", observation.Output);
+                    _failed[run.Kind] = new RuntimeVerificationEvidence
                     {
-                        _failed.Remove(kind);
-                    }
-                    else
-                    {
-                        _state.EvidenceLedger.Verifications.RemoveAll(verification => verification.Kind == kind);
-                        _failed[kind] = new RuntimeVerificationEvidence
-                        {
-                            Kind = kind,
-                            Summary = $"`{verificationRun.Command}`",
-                            SourceToolName = result.ToolName,
-                            SourceCommand = verificationRun.Command,
-                            EnvironmentLimit = NuGetEnvironmentLimit.IsMatch(text) ||
-                                               (MissingAssetsFile.IsMatch(text) && _failed.TryGetValue("dotnet_restore", out var restore) && restore.EnvironmentLimit)
-                        };
-                    }
+                        Kind = run.Kind,
+                        Summary = $"`{run.Command}`",
+                        SourceToolName = result.ToolName,
+                        SourceCommand = run.Command,
+                        EnvironmentLimit = NuGetEnvironmentLimit.IsMatch(diagnostics) ||
+                                           (MissingAssetsFile.IsMatch(diagnostics) && _failed.TryGetValue("dotnet_restore", out var restore) && restore.EnvironmentLimit)
+                    };
                 }
             }
         }
@@ -1060,10 +1068,6 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
         private static readonly System.Text.RegularExpressions.Regex MissingAssetsFile = new(
             @"\bNETSDK1004\b",
             System.Text.RegularExpressions.RegexOptions.CultureInvariant);
-
-        private static readonly System.Text.RegularExpressions.Regex VerificationCommand = new(
-            @"\$\s*dotnet\s+(restore|build|test)\b",
-            System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
         public QueryEvidenceLedger SnapshotForStopHook()
         {

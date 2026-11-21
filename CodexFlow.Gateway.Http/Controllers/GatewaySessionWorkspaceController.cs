@@ -16,9 +16,8 @@ using CodexFlow.Core.Planning.Artifacts;
 using CodexFlow.Domain.Chat;
 using CodexFlow.Gateway;
 using CodexFlow.Orchestration.Services;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Mvc;
+
+using CodexFlow.Gateway.Http;
 
 namespace CodexFlow.Controllers;
 
@@ -188,9 +187,6 @@ public sealed record SessionSnapshotDto(
 /// P3-4/5/6/8/11 endpoints for session &amp; conversation management, turn cancellation,
 /// plan inspection, workspace file tree &amp; diff browsing, and authoritative state snapshots.
 /// </summary>
-[ApiController]
-[Route("api/gateway")]
-[Authorize(AuthenticationSchemes = JwtBearerDefaults.AuthenticationScheme, Policy = "ActiveUser")]
 public sealed class GatewaySessionWorkspaceController(
     ICodexGateway gateway,
     IChatService chatService,
@@ -201,7 +197,7 @@ public sealed class GatewaySessionWorkspaceController(
     IJobViewService? jobViewService = null,
     IGitService? gitService = null,
     IControlPlaneStateProvider? controlPlane = null,
-    DocumentReaderRouter? documentReaderRouter = null) : ControllerBase
+    DocumentReaderRouter? documentReaderRouter = null) : GatewayEndpointHandler
 {
     private const string DefaultWorkspaceName = "默认工作区";
     private const string DailyAssistantWorkspaceName = "日常助手";
@@ -210,13 +206,10 @@ public sealed class GatewaySessionWorkspaceController(
     private static bool IsReservedWorkspaceName(string? name)
         => string.Equals(name?.Trim(), DefaultWorkspaceName, StringComparison.Ordinal)
         || string.Equals(name?.Trim(), DailyAssistantWorkspaceName, StringComparison.Ordinal);
-
-    [HttpGet("sessions")]
-    [ProducesResponseType(typeof(PagedResponseDto<SessionSummaryDto>), StatusCodes.Status200OK)]
-    public async Task<ActionResult<PagedResponseDto<SessionSummaryDto>>> ListSessions(
-        [FromQuery] int page = 1,
-        [FromQuery] int pageSize = 20,
-        [FromQuery] bool includeArchived = false,
+    public async Task<IResult> ListSessions(
+        int page = 1,
+        int pageSize = 20,
+        bool includeArchived = false,
         CancellationToken ct = default)
     {
         _ = ct;
@@ -227,14 +220,9 @@ public sealed class GatewaySessionWorkspaceController(
         var items = paged.List.Select(ToSessionDto).ToArray();
         return Ok(new PagedResponseDto<SessionSummaryDto>(items, paged.Total, paged.Page, paged.PageSize));
     }
-
-    [HttpPatch("session/{sessionId}")]
-    [ProducesResponseType(typeof(SessionSummaryDto), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<SessionSummaryDto>> UpdateSession(
-        [FromRoute] string sessionId,
-        [FromBody] UpdateSessionRequest request,
+    public async Task<IResult> UpdateSession(
+        string sessionId,
+        UpdateSessionRequest request,
         CancellationToken ct = default)
     {
         _ = ct;
@@ -290,17 +278,10 @@ public sealed class GatewaySessionWorkspaceController(
 
         return Ok(ToSessionDto(updated));
     }
-
-    [HttpPost("session/{sessionId}/plan-mode")]
-    [ProducesResponseType(typeof(PlanModeResponse), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status403Forbidden)]
-    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status404NotFound)]
-    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status409Conflict)]
-    public async Task<IActionResult> UpdatePlanMode(
-        [FromRoute] string sessionId,
-        [FromBody] UpdatePlanModeRequest request,
-        [FromServices] CodexFlow.Orchestration.Chat.SessionPolicyResolver? policyResolver = null,
+    public async Task<IResult> UpdatePlanMode(
+        string sessionId,
+        UpdatePlanModeRequest request,
+        CodexFlow.Orchestration.Chat.SessionPolicyResolver? policyResolver = null,
         CancellationToken ct = default)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -361,13 +342,8 @@ public sealed class GatewaySessionWorkspaceController(
             _ => BadRequest(new GatewayErrorResponse("plan_mode_transition_failed", transition.Message))
         };
     }
-
-    [HttpDelete("session/{sessionId}")]
-    [ProducesResponseType(typeof(DeleteResourceResponse), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<DeleteResourceResponse>> DeleteSession(
-        [FromRoute] string sessionId,
+    public async Task<IResult> DeleteSession(
+        string sessionId,
         CancellationToken ct = default)
     {
         _ = ct;
@@ -389,15 +365,11 @@ public sealed class GatewaySessionWorkspaceController(
         await chatService.DeleteSession(sessionId, userId).ConfigureAwait(false);
         return Ok(new DeleteResourceResponse(true, sessionId));
     }
-
-    [HttpGet("session/{sessionId}/conversations")]
-    [ProducesResponseType(typeof(PagedResponseDto<ConversationSummaryDto>), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<PagedResponseDto<ConversationSummaryDto>>> ListSessionConversations(
-        [FromRoute] string sessionId,
-        [FromQuery] int page = 1,
-        [FromQuery] int pageSize = 20,
-        [FromQuery] bool includeArchived = false,
+    public async Task<IResult> ListSessionConversations(
+        string sessionId,
+        int page = 1,
+        int pageSize = 20,
+        bool includeArchived = false,
         CancellationToken ct = default)
     {
         _ = ct;
@@ -414,13 +386,9 @@ public sealed class GatewaySessionWorkspaceController(
         var items = paged.List.Select(ToConversationDto).ToArray();
         return Ok(new PagedResponseDto<ConversationSummaryDto>(items, paged.Total, paged.Page, paged.PageSize));
     }
-
-    [HttpPost("session/{sessionId}/conversations")]
-    [ProducesResponseType(typeof(ConversationSummaryDto), StatusCodes.Status201Created)]
-    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<ConversationSummaryDto>> CreateConversation(
-        [FromRoute] string sessionId,
-        [FromBody] CreateConversationRequest? request = null,
+    public async Task<IResult> CreateConversation(
+        string sessionId,
+        CreateConversationRequest? request = null,
         CancellationToken ct = default)
     {
         _ = ct;
@@ -460,14 +428,9 @@ public sealed class GatewaySessionWorkspaceController(
 
         return StatusCode(StatusCodes.Status201Created, dto);
     }
-
-    [HttpPatch("conversations/{conversationId}")]
-    [ProducesResponseType(typeof(ConversationSummaryDto), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<ConversationSummaryDto>> UpdateConversation(
-        [FromRoute] string conversationId,
-        [FromBody] UpdateConversationRequest request,
+    public async Task<IResult> UpdateConversation(
+        string conversationId,
+        UpdateConversationRequest request,
         CancellationToken ct = default)
     {
         _ = ct;
@@ -503,12 +466,8 @@ public sealed class GatewaySessionWorkspaceController(
 
         return Ok(ToConversationDto(updated));
     }
-
-    [HttpDelete("conversations/{conversationId}")]
-    [ProducesResponseType(typeof(DeleteResourceResponse), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<DeleteResourceResponse>> DeleteConversation(
-        [FromRoute] string conversationId,
+    public async Task<IResult> DeleteConversation(
+        string conversationId,
         CancellationToken ct = default)
     {
         _ = ct;
@@ -524,12 +483,8 @@ public sealed class GatewaySessionWorkspaceController(
         await chatService.DeleteConversation(conversationId, userId).ConfigureAwait(false);
         return Ok(new DeleteResourceResponse(true, conversationId));
     }
-
-    [HttpPost("session/{sessionId}/cancel")]
-    [ProducesResponseType(typeof(CancelTurnResponse), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<CancelTurnResponse>> CancelTurn(
-        [FromRoute] string sessionId,
+    public async Task<IResult> CancelTurn(
+        string sessionId,
         CancellationToken ct = default)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -544,12 +499,8 @@ public sealed class GatewaySessionWorkspaceController(
         var cancelled = await gateway.CancelTurnAsync(sessionId, ct).ConfigureAwait(false);
         return Ok(new CancelTurnResponse(sessionId, cancelled, cancelled ? "cancelled" : "idle"));
     }
-
-    [HttpGet("session/{sessionId}/plan")]
-    [ProducesResponseType(typeof(SessionPlanDto), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<SessionPlanDto>> GetPlan(
-        [FromRoute] string sessionId,
+    public async Task<IResult> GetPlan(
+        string sessionId,
         CancellationToken ct = default)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -569,14 +520,9 @@ public sealed class GatewaySessionWorkspaceController(
 
         return Ok(plan);
     }
-
-    [HttpGet("session/{sessionId}/files")]
-    [ProducesResponseType(typeof(WorkspaceDirectoryListingDto), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<WorkspaceDirectoryListingDto>> ListWorkspaceFiles(
-        [FromRoute] string sessionId,
-        [FromQuery] string? path = null,
+    public async Task<IResult> ListWorkspaceFiles(
+        string sessionId,
+        string? path = null,
         CancellationToken ct = default)
     {
         _ = ct;
@@ -600,14 +546,9 @@ public sealed class GatewaySessionWorkspaceController(
             .ToArray();
         return Ok(new WorkspaceDirectoryListingDto(sessionId, listing.Path, entries, listing.Truncated));
     }
-
-    [HttpGet("session/{sessionId}/files/content")]
-    [ProducesResponseType(typeof(WorkspaceFileContentDto), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<WorkspaceFileContentDto>> ReadWorkspaceFileContent(
-        [FromRoute] string sessionId,
-        [FromQuery] string? path = null,
+    public async Task<IResult> ReadWorkspaceFileContent(
+        string sessionId,
+        string? path = null,
         CancellationToken ct = default)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -636,12 +577,8 @@ public sealed class GatewaySessionWorkspaceController(
             content.IsBinary,
             content.Encoding));
     }
-
-    [HttpGet("session/{sessionId}/changes")]
-    [ProducesResponseType(typeof(WorkspaceChangesDto), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<WorkspaceChangesDto>> GetWorkspaceChanges(
-        [FromRoute] string sessionId,
+    public async Task<IResult> GetWorkspaceChanges(
+        string sessionId,
         CancellationToken ct = default)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -672,13 +609,9 @@ public sealed class GatewaySessionWorkspaceController(
             result.UnifiedDiff,
             result.Truncated));
     }
-
-    [HttpGet("session/{sessionId}/snapshot")]
-    [ProducesResponseType(typeof(SessionSnapshotDto), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(GatewayErrorResponse), StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<SessionSnapshotDto>> GetSnapshot(
-        [FromRoute] string sessionId,
-        [FromQuery] string? conversationId = null,
+    public async Task<IResult> GetSnapshot(
+        string sessionId,
+        string? conversationId = null,
         CancellationToken ct = default)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -883,12 +816,11 @@ public sealed class GatewaySessionWorkspaceController(
             using var doc = System.Text.Json.JsonDocument.Parse(rawToolCallResult);
             if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object)
             {
-                var options = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
                 var results = doc.RootElement.TryGetProperty("results", out var resEl)
-                    ? System.Text.Json.JsonSerializer.Deserialize<GatewayChannelToolResultSnapshot[]>(resEl.GetRawText(), options) ?? []
+                    ? System.Text.Json.JsonSerializer.Deserialize(resEl, StreamingGatewayJsonContext.Default.GatewayChannelToolResultSnapshotArray) ?? []
                     : [];
                 var outputs = doc.RootElement.TryGetProperty("outputs", out var outEl)
-                    ? System.Text.Json.JsonSerializer.Deserialize<GatewayChannelToolOutputSnapshot[]>(outEl.GetRawText(), options) ?? []
+                    ? System.Text.Json.JsonSerializer.Deserialize(outEl, StreamingGatewayJsonContext.Default.GatewayChannelToolOutputSnapshotArray) ?? []
                     : [];
                 var resTruncated = rawTextTruncated ||
                     (doc.RootElement.TryGetProperty("resultsTruncated", out var rtEl) && rtEl.ValueKind == System.Text.Json.JsonValueKind.True);
@@ -991,7 +923,7 @@ public sealed class GatewaySessionWorkspaceController(
             .FirstOrDefault();
     }
 
-    private ActionResult MapFileExplorerError(WorkspaceFileErrorCode code, string? message)
+    private IResult MapFileExplorerError(WorkspaceFileErrorCode code, string? message)
     {
         var err = new GatewayErrorResponse($"workspace_file:{code}", message ?? "Invalid file request.");
         return code switch

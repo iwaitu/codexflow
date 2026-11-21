@@ -113,7 +113,7 @@ jobs:
         if: steps.config.outputs.enabled == 'true'
         run: |
           version="$(python3 -I scripts/ci/check_packages.py --print-version --props Directory.Build.props)"
-          ids="CodexFlow.Contracts CodexFlow.Core CodexFlow.Orchestration CodexFlow.Gateway.Http CodexFlow.Storage.Sqlite"
+          ids="CodexFlow.Contracts CodexFlow.Core CodexFlow.Orchestration CodexFlow.Gateway.Http CodexFlow.Storage.Sqlite CodexFlow.Storage.EntityFramework"
           # nuget.org validates and indexes a push after it returns, which takes minutes; wait up to 30.
           for attempt in $(seq 1 60); do
             missing=""

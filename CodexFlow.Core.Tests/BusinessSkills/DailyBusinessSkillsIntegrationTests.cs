@@ -708,7 +708,11 @@ public sealed class DailyBusinessSkillsIntegrationTests : IDisposable
             Version = activeVersion,
             ContentHash = "hash-" + skillId,
             CatalogSnapshotId = snapshotId,
-            DefinitionJson = JsonSerializer.Serialize(def, BusinessSkillToolFormatting.WireJsonOptions),
+            DefinitionJson = JsonSerializer.Serialize(def, new JsonSerializerOptions(JsonSerializerDefaults.Web)
+            {
+                DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+                Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+            }),
             NeedsRevalidation = false,
             WriteStepVerified = !isWrite
         });

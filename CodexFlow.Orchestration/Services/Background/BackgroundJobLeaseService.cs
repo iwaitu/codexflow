@@ -2,13 +2,11 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-using CodexFlow.Orchestration.Jobs;
 using CodexFlow.Application.Jobs;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Workers;
 using CodexFlow.Domain.Jobs;
-using Microsoft.EntityFrameworkCore;
-using Newtonsoft.Json;
+using CodexFlow.Orchestration.Persistence;
 
 namespace CodexFlow.Services.Background
 {
@@ -19,40 +17,19 @@ namespace CodexFlow.Services.Background
     {
         private static readonly TimeSpan LeaseDuration = TimeSpan.FromMinutes(5);
 
-        private readonly IJobDbContext _context;
+        private readonly IJobLeaseRecoveryStore _recoveryStore;
         private readonly IJobLeaseStore _store;
         private readonly IOutboxSignal _outboxSignal;
         private readonly IBackgroundJobSignal _jobSignal;
 
-        /// <summary>
-        /// Initializes the service with the provider-neutral lease store. A host with a store of its own for its database
-        /// (PostgreSQL has one) registers it and gets the other constructor.
-        /// </summary>
-        /// <param name="context">Database context used for lease state transitions.</param>
-        /// <param name="outboxSignal">Signal used to wake outbox projection after expiration recovery updates.</param>
-        /// <param name="jobSignal">Signal used to wake the job supervisor when work is re-queued.</param>
+        /// <summary>Initializes the service with the host's claim and recovery stores.</summary>
         public BackgroundJobLeaseService(
-            IJobDbContext context,
-            IOutboxSignal outboxSignal,
-            IBackgroundJobSignal jobSignal)
-            : this(context, new EfJobLeaseStore(context), outboxSignal, jobSignal)
-        {
-        }
-
-        /// <summary>
-        /// Initializes the service.
-        /// </summary>
-        /// <param name="context">Database context used for lease state transitions.</param>
-        /// <param name="store">Store that performs the atomic claim, renew and release operations.</param>
-        /// <param name="outboxSignal">Signal used to wake outbox projection after expiration recovery updates.</param>
-        /// <param name="jobSignal">Signal used to wake the job supervisor when work is re-queued.</param>
-        public BackgroundJobLeaseService(
-            IJobDbContext context,
             IJobLeaseStore store,
+            IJobLeaseRecoveryStore recoveryStore,
             IOutboxSignal outboxSignal,
             IBackgroundJobSignal jobSignal)
         {
-            _context = context;
+            _recoveryStore = recoveryStore;
             _store = store;
             _outboxSignal = outboxSignal;
             _jobSignal = jobSignal;
@@ -75,7 +52,7 @@ namespace CodexFlow.Services.Background
                 return null;
             }
 
-            return await EnsureClaimIsRunnableAsync(jobId, claimToken, now, ct).ConfigureAwait(false)
+            return await _recoveryStore.VerifyOrDeferClaimAsync(jobId, claimToken, now, ct).ConfigureAwait(false)
                 ? (jobId, claimToken)
                 : null;
         }
@@ -107,71 +84,50 @@ namespace CodexFlow.Services.Background
         public async Task MarkExpiredJobsAsync()
         {
             var now = DateTime.UtcNow;
-            var expiredJobs = await _context.BackgroundJobs
-                .Where(job => job.Status == BackgroundJobStatus.Running
-                    && job.LeaseExpiresAtUtc != null
-                    && job.LeaseExpiresAtUtc < now)
-                .ToListAsync();
-
-            if (expiredJobs.Count == 0)
+            var expired = await _recoveryStore.ReadExpiredAsync(now, CancellationToken.None).ConfigureAwait(false);
+            var recoveries = expired.Select(CreateRecovery).ToArray();
+            if (recoveries.Length > 0 &&
+                await _recoveryStore.RecoverExpiredAsync(recoveries, now, CancellationToken.None).ConfigureAwait(false))
             {
-                return;
+                _outboxSignal.Pulse();
+                _jobSignal.Pulse();
+            }
+        }
+
+        private static ExpiredJobLeaseRecovery CreateRecovery(ExpiredJobLease lease)
+        {
+            if (!WorkerJobTypes.IsWorkerJobType(lease.JobType))
+            {
+                return new ExpiredJobLeaseRecovery(lease, null, null);
             }
 
-            foreach (var job in expiredJobs)
+            var workerType = ResolveWorkerType(lease.JobType);
+            var playbook = WorkerRecoveryPlaybookFactory.Create(
+                recoveryReason: "lease_expired",
+                workerType: workerType);
+            const string errorMessage = "Worker lease expired before completion.";
+            var entry = new OutboxEvent
             {
-                var previousLeaseExpiry = job.LeaseExpiresAtUtc;
-                job.ClaimToken = null;
-                job.LeaseExpiresAtUtc = null;
-                job.RunnerId = null;
-                job.UpdatedAtUtc = now;
+                EventType = "JobRecoveryNeeded",
+                JobId = lease.JobId,
+                SessionId = lease.SessionId,
+                TaskId = lease.TaskId,
+                Payload = OrchestrationPayloadJson.Write(
+                    ("success", false),
+                    ("recoveryNeeded", true),
+                    ("canResume", true),
+                    ("resumeStrategy", "continue_worker"),
+                    ("recoveryReason", "lease_expired"),
+                    ("resumeGuidance", WorkerRecoveryPlaybookFactory.BuildGuidanceSummary(playbook)),
+                    ("resumePlaybook", playbook),
+                    ("workerType", workerType),
+                    ("message", errorMessage),
+                    ("summary", errorMessage),
+                    ("leaseExpiredAtUtc", lease.ExpiresAtUtc),
+                    ("heartbeatAtUtc", lease.HeartbeatAtUtc))
+            };
 
-                if (WorkerJobTypes.IsWorkerJobType(job.JobType))
-                {
-                    var workerType = ResolveWorkerType(job.JobType);
-                    var playbook = WorkerRecoveryPlaybookFactory.Create(
-                        recoveryReason: "lease_expired",
-                        workerType: workerType);
-
-                    job.Status = BackgroundJobStatus.FailedRecoveryNeeded;
-                    job.ErrorMessage = "Worker lease expired before completion.";
-                    job.FinishedAtUtc ??= now;
-                    job.NotificationStatus = NotificationStatus.Pending;
-
-                    _context.OutboxEvents.Add(new OutboxEvent
-                    {
-                        EventType = "JobRecoveryNeeded",
-                        JobId = job.JobId,
-                        SessionId = job.SessionId,
-                        TaskId = job.TaskId,
-                        Payload = JsonConvert.SerializeObject(new
-                        {
-                            success = false,
-                            recoveryNeeded = true,
-                            canResume = true,
-                            resumeStrategy = "continue_worker",
-                            recoveryReason = "lease_expired",
-                            resumeGuidance = WorkerRecoveryPlaybookFactory.BuildGuidanceSummary(playbook),
-                            resumePlaybook = playbook,
-                            workerType,
-                            message = "Worker lease expired before completion.",
-                            summary = "Worker lease expired before completion.",
-                            leaseExpiredAtUtc = previousLeaseExpiry,
-                            heartbeatAtUtc = job.HeartbeatAtUtc
-                        })
-                    });
-                }
-                else
-                {
-                    job.Status = BackgroundJobStatus.Queued;
-                    job.ErrorMessage = null;
-                    job.FinishedAtUtc = null;
-                }
-            }
-
-            await _context.SaveChangesAsync();
-            _outboxSignal.Pulse();
-            _jobSignal.Pulse();
+            return new ExpiredJobLeaseRecovery(lease, errorMessage, entry);
         }
 
         private static string ResolveWorkerType(string jobType)
@@ -179,46 +135,6 @@ namespace CodexFlow.Services.Background
             return WorkerJobTypes.TryResolveWorkerType(jobType, out var workerType)
                 ? workerType.ToString().ToLowerInvariant()
                 : jobType.Trim().ToLowerInvariant();
-        }
-
-        private async Task<bool> EnsureClaimIsRunnableAsync(
-            string jobId,
-            string claimToken,
-            DateTime now,
-            CancellationToken ct)
-        {
-            var job = await _context.BackgroundJobs
-                .FirstOrDefaultAsync(
-                    x => x.JobId == jobId
-                        && x.ClaimToken == claimToken
-                        && x.Status == BackgroundJobStatus.Running,
-                    ct)
-                .ConfigureAwait(false);
-            if (job == null)
-            {
-                return false;
-            }
-
-            if (EfJobLeaseStore.IsRunnableAt(job, now))
-            {
-                return true;
-            }
-
-            var retryNotBeforeUtc = EfJobLeaseStore.GetRetryNotBeforeUtc(job.PayloadJson);
-            if (retryNotBeforeUtc.HasValue && retryNotBeforeUtc.Value.UtcDateTime > job.CreatedAtUtc)
-            {
-                job.CreatedAtUtc = retryNotBeforeUtc.Value.UtcDateTime;
-            }
-            job.Status = BackgroundJobStatus.Queued;
-            job.RunnerId = null;
-            job.ClaimToken = null;
-            job.LeaseExpiresAtUtc = null;
-            job.DequeuedAtUtc = null;
-            job.StartedAtUtc = null;
-            job.FinishedAtUtc = null;
-            job.UpdatedAtUtc = DateTime.UtcNow;
-            await _context.SaveChangesAsync(ct).ConfigureAwait(false);
-            return false;
         }
     }
 }

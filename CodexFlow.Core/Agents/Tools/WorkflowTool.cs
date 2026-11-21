@@ -12,7 +12,7 @@ public sealed class WorkflowTool(
     ISkillScriptRunner? scriptRunner,
     IWorkflowAuditStore auditStore) : ICodexTool
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly BuiltInToolJsonContext JsonContext = BuiltInToolJsonContext.Web;
 
     public string Name => "workflow";
 
@@ -98,21 +98,16 @@ public sealed class WorkflowTool(
                 failed ? output : null,
                 ct).ConfigureAwait(false);
 
-            var payload = new
-            {
-                workflow_id = started.Id,
-                completed = !failed,
-                run = completed ?? started,
-                output
-            };
+            var payload = new WorkflowRunToolResponse(started.Id, !failed, completed ?? started, output);
+            var json = JsonSerializer.Serialize(payload, JsonContext.WorkflowRunToolResponse);
 
             return failed
                 ? CodexToolResult.Error(
-                    JsonSerializer.Serialize(payload, JsonOptions),
+                    json,
                     payload,
                     summary: $"workflow failed: {started.Id}")
                 : CodexToolResult.Succeeded(
-                    JsonSerializer.Serialize(payload, JsonOptions),
+                    json,
                     payload,
                     summary: $"workflow completed: {started.Id}");
         }
@@ -126,15 +121,9 @@ public sealed class WorkflowTool(
         {
             var completed = await auditStore.CompleteAsync(started.Id, "failed", errorMessage: ex.Message, ct: ct)
                 .ConfigureAwait(false);
-            var payload = new
-            {
-                workflow_id = started.Id,
-                completed = false,
-                run = completed ?? started,
-                error = ex.Message
-            };
+            var payload = new WorkflowErrorToolResponse(started.Id, false, completed ?? started, ex.Message);
             return CodexToolResult.Error(
-                JsonSerializer.Serialize(payload, JsonOptions),
+                JsonSerializer.Serialize(payload, JsonContext.WorkflowErrorToolResponse),
                 payload,
                 summary: $"workflow failed: {started.Id}");
         }
@@ -156,7 +145,7 @@ public sealed class WorkflowTool(
         }
 
         return CodexToolResult.Succeeded(
-            JsonSerializer.Serialize(run, JsonOptions),
+            JsonSerializer.Serialize(run, JsonContext.WorkflowRunRecord),
             run,
             summary: $"workflow read: {run.Id}");
     }
@@ -166,10 +155,10 @@ public sealed class WorkflowTool(
         var sessionId = arguments.GetValueOrDefault("session_id")?.ToString();
         var name = arguments.GetValueOrDefault("name")?.ToString();
         var runs = await auditStore.ListAsync(sessionId, name, ct).ConfigureAwait(false);
-        var payload = new { count = runs.Count, runs };
+        var payload = new WorkflowListToolResponse(runs.Count, runs);
 
         return CodexToolResult.Succeeded(
-            JsonSerializer.Serialize(payload, JsonOptions),
+            JsonSerializer.Serialize(payload, JsonContext.WorkflowListToolResponse),
             payload,
             summary: $"workflows: {runs.Count}");
     }

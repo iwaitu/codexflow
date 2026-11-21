@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { AlertTriangle, Trash2, X } from 'lucide-react';
 import type {
+  BrowserSettingsDto,
   ExecutionBackendKind,
   ExecutionPermissionModeKind,
   PersistedPermissionRule,
@@ -17,7 +18,7 @@ import { MaxContextField } from './MaxContextField';
 
 export { isRelaxingPermission };
 
-export type SettingsTabKind = 'execution' | 'model' | 'rules' | 'environment' | 'preferences';
+export type SettingsTabKind = 'execution' | 'model' | 'browser' | 'rules' | 'environment' | 'preferences';
 
 interface SettingsModalProps {
   open: boolean;
@@ -26,6 +27,7 @@ interface SettingsModalProps {
   systemStatus: SystemStatusSummary | null;
   executionSettings: ExecutionSettings | null;
   modelSettings: ModelSettings | null;
+  browserSettings?: BrowserSettingsDto | null;
   controlPlaneAvailable: boolean;
   onClose: () => void;
   onUpdated: () => void;
@@ -38,6 +40,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   systemStatus,
   executionSettings,
   modelSettings,
+  browserSettings = null,
   controlPlaneAvailable,
   onClose,
   onUpdated,
@@ -78,6 +81,33 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   );
   const [apiKey, setApiKey] = useState('');
   const [supportsMultimodal, setSupportsMultimodal] = useState(Boolean(modelSettings?.supportsMultimodal));
+  const [browserEnabled, setBrowserEnabled] = useState(Boolean(browserSettings?.enabled ?? true));
+  const [browserExecutablePath, setBrowserExecutablePath] = useState(browserSettings?.executablePath ?? '');
+  const [browserRemoteCdpWsUrl, setBrowserRemoteCdpWsUrl] = useState(browserSettings?.remoteCdpWsUrl ?? '');
+  const [browserRemoteCdpTouched, setBrowserRemoteCdpTouched] = useState(false);
+  const [browserHeadless, setBrowserHeadless] = useState(Boolean(browserSettings?.headless ?? true));
+  const [browserProfileMode, setBrowserProfileMode] = useState(browserSettings?.profileMode ?? 'Ephemeral');
+  const [browserApprovalPolicy, setBrowserApprovalPolicy] = useState(
+    browserSettings?.interactionApprovalPolicy ?? 'HighRiskOnly',
+  );
+  const [browserAllowLocalhostDaily, setBrowserAllowLocalhostDaily] = useState(
+    Boolean(browserSettings?.allowLocalhostInDailyMode),
+  );
+  const [browserAllowDownloads, setBrowserAllowDownloads] = useState(
+    Boolean(browserSettings?.allowControlledDownloads),
+  );
+  const [browserAllowedDomainsText, setBrowserAllowedDomainsText] = useState(
+    (browserSettings?.allowedDomains ?? []).join('\n'),
+  );
+  const [browserBlockedDomainsText, setBrowserBlockedDomainsText] = useState(
+    (browserSettings?.blockedDomains ?? []).join('\n'),
+  );
+  const [browserIdleMinutes, setBrowserIdleMinutes] = useState(
+    String(browserSettings?.idleTimeoutMinutes ?? 15),
+  );
+  const [browserMaxSessions, setBrowserMaxSessions] = useState(
+    String(browserSettings?.maxConcurrentSessions ?? 3),
+  );
 
   const [rules, setRules] = useState<PersistedPermissionRule[]>([]);
   const [riskReasons, setRiskReasons] = useState<string[]>([]);
@@ -106,10 +136,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setTopP(modelSettings?.topP != null ? String(modelSettings.topP) : '');
     setApiKey('');
     setSupportsMultimodal(Boolean(modelSettings?.supportsMultimodal));
+    setBrowserEnabled(Boolean(browserSettings?.enabled ?? true));
+    setBrowserExecutablePath(browserSettings?.executablePath ?? '');
+    setBrowserRemoteCdpWsUrl(browserSettings?.remoteCdpWsUrl ?? '');
+    setBrowserRemoteCdpTouched(false);
+    setBrowserHeadless(Boolean(browserSettings?.headless ?? true));
+    setBrowserProfileMode(browserSettings?.profileMode ?? 'Ephemeral');
+    setBrowserApprovalPolicy(browserSettings?.interactionApprovalPolicy ?? 'HighRiskOnly');
+    setBrowserAllowLocalhostDaily(Boolean(browserSettings?.allowLocalhostInDailyMode));
+    setBrowserAllowDownloads(Boolean(browserSettings?.allowControlledDownloads));
+    setBrowserAllowedDomainsText((browserSettings?.allowedDomains ?? []).join('\n'));
+    setBrowserBlockedDomainsText((browserSettings?.blockedDomains ?? []).join('\n'));
+    setBrowserIdleMinutes(String(browserSettings?.idleTimeoutMinutes ?? 15));
+    setBrowserMaxSessions(String(browserSettings?.maxConcurrentSessions ?? 3));
     setConfirmRelaxOpen(false);
     setNotice(null);
     setError(null);
-  }, [open, initialTab, currentBackend, currentMode, modelSettings]);
+  }, [open, initialTab, currentBackend, currentMode, modelSettings, browserSettings]);
 
   const loadRules = async () => {
     if (!controlPlaneAvailable) return;
@@ -246,6 +289,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               [
                 ['execution', t('settings.tab.execution')],
                 ['model', t('settings.tab.model')],
+                ['browser', language === 'en-US' ? 'Browser' : '浏览器'],
                 ['rules', t('settings.tab.rules')],
                 ['environment', t('settings.tab.environment')],
                 ['preferences', t('settings.tab.preferences')],
@@ -646,6 +690,296 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
           {tab === 'environment' && (
             <EnvironmentCheckPanel active={open && tab === 'environment'} />
+          )}
+
+          {tab === 'browser' && (
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                if (!controlPlaneAvailable || !window.codexflow) return;
+                setSaving(true);
+                setError(null);
+                setNotice(null);
+                try {
+                  const parsedIdle = Number.parseInt(browserIdleMinutes, 10);
+                  const parsedMax = Number.parseInt(browserMaxSessions, 10);
+                  const parseDomains = (raw: string): string[] =>
+                    raw
+                      .split(/[\r\n,，;；]+/)
+                      .map((entry) => entry.trim())
+                      .filter(Boolean);
+                  const res = await window.codexflow.updateBrowserSettings({
+                    enabled: browserEnabled,
+                    executablePath: browserExecutablePath.trim(),
+                    remoteCdpWsUrl: browserRemoteCdpTouched ? browserRemoteCdpWsUrl.trim() : undefined,
+                    headless: browserHeadless,
+                    profileMode: browserProfileMode,
+                    interactionApprovalPolicy: browserApprovalPolicy,
+                    allowLocalhostInDailyMode: browserAllowLocalhostDaily,
+                    allowControlledDownloads: browserAllowDownloads,
+                    allowedDomains: parseDomains(browserAllowedDomainsText),
+                    blockedDomains: parseDomains(browserBlockedDomainsText),
+                    idleTimeoutMinutes: Number.isFinite(parsedIdle) ? Math.min(120, Math.max(1, parsedIdle)) : 15,
+                    maxConcurrentSessions: Number.isFinite(parsedMax) ? Math.min(8, Math.max(1, parsedMax)) : 3,
+                  });
+                  if (!res.ok) {
+                    setError(res.errorMessage || `保存浏览器设置失败 (${res.status})`);
+                    return;
+                  }
+                  setNotice('浏览器设置已保存（审批与下载策略立即生效；若当前已有运行中的浏览器会话，窗口模式与 Profile 模式将在关闭该浏览器会话后生效）。');
+                  onUpdated();
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : '保存浏览器设置失败');
+                } finally {
+                  setSaving(false);
+                }
+              }}
+              className="mt-4 space-y-4 text-xs"
+            >
+              <div className="rounded-xl border border-slate-800 bg-slate-950 p-3.5 space-y-2">
+                <div className="font-medium text-slate-200">本机浏览器自动探测</div>
+                {browserSettings?.detectedBrowser?.available ? (
+                  <div className="space-y-1 text-slate-300">
+                    <div className="flex items-center gap-2">
+                      <span className="h-2 w-2 rounded-full bg-emerald-400" />
+                      <span className="font-medium text-emerald-300">
+                        已就绪：{browserSettings.detectedBrowser.browserName}
+                        {browserSettings.detectedBrowser.version ? ` (${browserSettings.detectedBrowser.version})` : ''}
+                      </span>
+                    </div>
+                    <div className="truncate font-mono text-[11px] text-slate-400">
+                      {browserSettings.detectedBrowser.executablePath}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-amber-300">
+                    {browserSettings?.detectedBrowser?.diagnosticMessage ||
+                      '未在可信系统目录检测到 Chrome / Edge / Chromium，可安装任一浏览器或手动填写可执行路径。'}
+                  </div>
+                )}
+              </div>
+
+              <label className="flex cursor-pointer items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950 p-3.5">
+                <div>
+                  <div className="font-medium text-slate-200">启用内置 Web Browser Use</div>
+                  <div className="mt-0.5 text-[11px] text-slate-400">
+                    开启后，助手可在开发模式与日常模式下通过隔离浏览器渲染页面、采集控制台日志并执行受控交互。
+                  </div>
+                </div>
+                <input
+                  type="checkbox"
+                  data-testid="browser-enabled-toggle"
+                  checked={browserEnabled}
+                  onChange={(e) => setBrowserEnabled(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-700 accent-indigo-600"
+                />
+              </label>
+
+              <label className="block">
+                <span className="mb-1 block text-slate-300">自定义浏览器路径（留空则自动探测可信 Chrome / Edge）</span>
+                <input
+                  type="text"
+                  value={browserExecutablePath}
+                  onChange={(e) => setBrowserExecutablePath(e.target.value)}
+                  placeholder="例如 C:\Program Files\Google\Chrome\Application\chrome.exe"
+                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-slate-100 placeholder:text-slate-600"
+                />
+              </label>
+
+              <div className="rounded-xl border border-slate-800 bg-slate-950 p-3.5 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-medium text-slate-200">
+                    远端 CDP Grid 端点（可选，留空使用本机受管浏览器）
+                  </span>
+                  {browserSettings?.isRemoteCdpConfigured && !browserRemoteCdpTouched && (
+                    <span className="rounded-full bg-indigo-500/20 px-2 py-0.5 text-[10px] text-indigo-300">
+                      已配置（凭据已掩码保护）
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    data-testid="browser-remote-cdp-input"
+                    value={browserRemoteCdpWsUrl}
+                    onChange={(e) => {
+                      setBrowserRemoteCdpWsUrl(e.target.value);
+                      setBrowserRemoteCdpTouched(true);
+                    }}
+                    placeholder="wss://grid.example.com/devtools/browser/..."
+                    className="flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-slate-100 placeholder:text-slate-600"
+                  />
+                  {(browserRemoteCdpWsUrl || browserSettings?.isRemoteCdpConfigured) && (
+                    <button
+                      type="button"
+                      data-testid="browser-clear-remote-cdp-btn"
+                      onClick={() => {
+                        setBrowserRemoteCdpWsUrl('');
+                        setBrowserRemoteCdpTouched(true);
+                      }}
+                      className="rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-2 text-[11px] text-slate-300 hover:bg-slate-800"
+                    >
+                      清空切回本机
+                    </button>
+                  )}
+                </div>
+                <div className="text-[11px] text-slate-400">
+                  仅支持直连 <code className="rounded bg-slate-900 px-1">ws://</code> 或 <code className="rounded bg-slate-900 px-1">wss://</code>；远端模式下禁用本机人工接管、文件上传及工作区下载。
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label className="block">
+                  <div className="mb-1 flex items-center justify-between text-slate-300">
+                    <span>允许域名白名单（Allowed Domains）</span>
+                    <span className="text-[10px] text-slate-500">
+                      {browserAllowedDomainsText.split(/[\r\n,，;；]+/).filter((s) => s.trim()).length} 项
+                    </span>
+                  </div>
+                  <textarea
+                    rows={3}
+                    data-testid="browser-allowed-domains-input"
+                    value={browserAllowedDomainsText}
+                    onChange={(e) => setBrowserAllowedDomainsText(e.target.value)}
+                    placeholder={"留空不限公网；每行或逗号分隔\n例如 example.com\n*.corp.internal"}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-[11px] text-slate-100 placeholder:text-slate-600"
+                  />
+                </label>
+
+                <label className="block">
+                  <div className="mb-1 flex items-center justify-between text-slate-300">
+                    <span>禁止域名黑名单（Blocked Domains）</span>
+                    <span className="text-[10px] text-slate-500">
+                      {browserBlockedDomainsText.split(/[\r\n,，;；]+/).filter((s) => s.trim()).length} 项
+                    </span>
+                  </div>
+                  <textarea
+                    rows={3}
+                    data-testid="browser-blocked-domains-input"
+                    value={browserBlockedDomainsText}
+                    onChange={(e) => setBrowserBlockedDomainsText(e.target.value)}
+                    placeholder={"命中优先拦截；每行或逗号分隔\n例如 ads.example.com\n*.untrusted.test"}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-[11px] text-slate-100 placeholder:text-slate-600"
+                  />
+                </label>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label className="block">
+                  <span className="mb-1 block text-slate-300">运行窗口模式</span>
+                  <select
+                    data-testid="browser-headless-select"
+                    value={browserHeadless ? 'headless' : 'headed'}
+                    onChange={(e) => setBrowserHeadless(e.target.value === 'headless')}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+                  >
+                    <option value="headless">无头后台（默认，零打扰）</option>
+                    <option value="headed">桌面离屏有头（支持无损人工接管登录/验证码）</option>
+                  </select>
+                </label>
+
+                <label className="block">
+                  <span className="mb-1 block text-slate-300">登录态与 Profile 策略</span>
+                  <select
+                    data-testid="browser-profile-select"
+                    value={browserProfileMode}
+                    onChange={(e) => setBrowserProfileMode(e.target.value)}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+                  >
+                    <option value="Ephemeral">会话隔离临时 Profile（默认，关闭即销毁）</option>
+                    <option value="Persistent">专用目录持久化登录态（单活互斥，非本地写操作强审批）</option>
+                  </select>
+                </label>
+              </div>
+
+              {browserProfileMode === 'Persistent' && (
+                <div className="rounded-lg border border-amber-500/40 bg-amber-950/30 px-3 py-2 text-[11px] text-amber-200">
+                  持久化 Profile 存储于专用的 <code className="rounded bg-slate-900 px-1">~/.codexflow/browser-profiles/default</code>（不读取您日常浏览器数据）。同一时间仅允许 1 个活跃会话占用，且对所有非 localhost 网站的点击/输入/上传均强制要求单次人工审批。
+                </div>
+              )}
+
+              <label className="block">
+                <span className="mb-1 block text-slate-300">页面交互审批策略</span>
+                <select
+                  value={browserApprovalPolicy}
+                  onChange={(e) => setBrowserApprovalPolicy(e.target.value)}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+                >
+                  <option value="HighRiskOnly">HighRiskOnly（默认：仅高风险提交/非白名单本地端口审批）</option>
+                  <option value="AlwaysAsk">AlwaysAsk（每次点击与输入均询问审批）</option>
+                  <option value="AutoInSession">AutoInSession（常规交互自动放行，敏感提交仍强制审批）</option>
+                </select>
+              </label>
+
+              <label className="flex cursor-pointer items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950 p-3.5">
+                <div>
+                  <div className="font-medium text-slate-200">日常模式允许访问 localhost / 127.0.0.1</div>
+                  <div className="mt-0.5 text-[11px] text-slate-400">
+                    默认关闭（CodexFlow 受保护控制端口始终禁止访问）。开发模式已自动支持白名单前端开发端口。
+                  </div>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={browserAllowLocalhostDaily}
+                  onChange={(e) => setBrowserAllowLocalhostDaily(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-700 accent-indigo-600"
+                />
+              </label>
+
+              <label className="flex cursor-pointer items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950 p-3.5">
+                <div>
+                  <div className="font-medium text-slate-200">允许受控文件下载至工作区</div>
+                  <div className="mt-0.5 text-[11px] text-slate-400">
+                    默认拒绝所有浏览器下载；开启后仅重定向到当前会话工作区的 <code className="rounded bg-slate-900 px-1">outputs/browser-downloads/</code> 目录。
+                  </div>
+                </div>
+                <input
+                  type="checkbox"
+                  data-testid="browser-downloads-toggle"
+                  checked={browserAllowDownloads}
+                  onChange={(e) => setBrowserAllowDownloads(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-700 accent-indigo-600"
+                />
+              </label>
+
+              <div className="grid grid-cols-2 gap-3">
+                <label className="block">
+                  <span className="mb-1 block text-slate-300">空闲自动回收（分钟，1-120）</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={120}
+                    value={browserIdleMinutes}
+                    onChange={(e) => setBrowserIdleMinutes(e.target.value)}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-slate-300">最大并发会话数（1-8）</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={8}
+                    value={browserMaxSessions}
+                    onChange={(e) => setBrowserMaxSessions(e.target.value)}
+                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+                  />
+                </label>
+              </div>
+
+              {error && <div className="rounded-lg border border-rose-500/40 bg-rose-950/40 p-2.5 text-rose-200">{error}</div>}
+              {notice && <div className="rounded-lg border border-emerald-500/40 bg-emerald-950/40 p-2.5 text-emerald-200">{notice}</div>}
+
+              <div className="flex justify-end">
+                <button
+                  type="submit"
+                  disabled={!controlPlaneAvailable || saving}
+                  className="rounded-lg bg-indigo-600 px-4 py-2 font-medium text-white hover:bg-indigo-500 disabled:opacity-40"
+                >
+                  {saving ? '保存中…' : '保存浏览器设置'}
+                </button>
+              </div>
+            </form>
           )}
         </Dialog.Content>
       </Dialog.Portal>

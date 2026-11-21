@@ -3,6 +3,7 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 using Newtonsoft.Json.Linq;
+using CodexFlow.Orchestration.Persistence;
 
 namespace CodexFlow.Services.Background;
 
@@ -26,17 +27,17 @@ internal static class WorkerRecoveryPlaybookFactory
 
         if (plan.Steps.Count > 0)
         {
-            playbook["steps"] = JArray.FromObject(plan.Steps);
+            playbook["steps"] = OrchestrationPayloadJson.Array(plan.Steps);
         }
 
         if (plan.Checks.Count > 0)
         {
-            playbook["checks"] = JArray.FromObject(plan.Checks);
+            playbook["checks"] = OrchestrationPayloadJson.Array(plan.Checks);
         }
 
         if (runtimeFlags is { Count: > 0 })
         {
-            playbook["runtimeFlags"] = JArray.FromObject(runtimeFlags);
+            playbook["runtimeFlags"] = OrchestrationPayloadJson.Array(runtimeFlags);
         }
 
         if (serviceDiagnostics is { Count: > 0 })
@@ -49,7 +50,7 @@ internal static class WorkerRecoveryPlaybookFactory
 
             if (suspectKeys.Length > 0)
             {
-                playbook["diagnosticFocus"] = JArray.FromObject(suspectKeys);
+                playbook["diagnosticFocus"] = OrchestrationPayloadJson.Array(suspectKeys);
             }
         }
 

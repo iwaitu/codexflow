@@ -55,7 +55,7 @@ public sealed record BusinessSkillErrorDto(
     bool Retryable,
     string CorrelationId);
 
-[JsonConverter(typeof(JsonStringEnumConverter))]
+[JsonConverter(typeof(JsonStringEnumConverter<BusinessApiAuthPlane>))]
 public enum BusinessApiAuthPlane
 {
     ActiveUser = 0,
@@ -161,7 +161,7 @@ public sealed record CatalogSnapshotDto
     public IReadOnlyList<string> Diagnostics { get; init; } = [];
 }
 
-[JsonConverter(typeof(JsonStringEnumConverter))]
+[JsonConverter(typeof(JsonStringEnumConverter<CatalogDiffChangeKind>))]
 public enum CatalogDiffChangeKind
 {
     Added = 0,

@@ -31,7 +31,6 @@ using CodexFlow.Domain.Jobs;
 using CodexFlow.Logging;
 using CodexFlow.Models;
 using CodexFlow.Services.Background;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -39,6 +38,7 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System.Text;
 using System.Text.Json;
+using CodexFlow.Orchestration.Persistence;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
 
@@ -63,6 +63,11 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
     [
         "web_search",
         "fetch_webpage",
+        "browser_navigate",
+        "browser_snapshot",
+        "browser_act",
+        "browser_tabs",
+        "browser_request_takeover",
         "glob",
         "user_learn_preference"
     ];
@@ -73,6 +78,11 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
     [
         "web_search",
         "fetch_webpage",
+        "browser_navigate",
+        "browser_snapshot",
+        "browser_act",
+        "browser_tabs",
+        "browser_request_takeover",
         "glob",
         "ivilson_read",
         "ivilson_ls",
@@ -87,6 +97,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
 
     private static readonly string[] DailyDeferredAllowedToolNames =
     [
+        "browser_evaluate",
         "cron_create",
         "cron_delete",
         "cron_list",
@@ -98,6 +109,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
 
     private static readonly string[] GatewayDeferredToolNames =
     [
+        "browser_evaluate",
         "apply_patch",
         "ivilson_smart_patch",
         "write_file",
@@ -166,7 +178,8 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         ".zip"
     };
 
-    private readonly IJobDbContext _dbContext;
+    private readonly IJobStore _jobStore;
+    private readonly IJobReadStore _jobReadStore;
     private readonly IGatewayChatStore _chatService;
     private readonly ILLMExecutor _llmExecutor;
     private readonly IBackgroundJobService _jobService;
@@ -214,7 +227,8 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
     /// <param name="gatewayRuntimeOptions">Optional Gateway runtime loop settings.</param>
     /// <param name="planTaskDispatchService">Optional shared dispatcher for start_next_task and backend plan continuation.</param>
     public GatewayMessageProcessor(
-        IJobDbContext dbContext,
+        IJobStore jobStore,
+        IJobReadStore jobReadStore,
         IGatewayChatStore chatService,
         ILLMExecutor llmExecutor,
         IBackgroundJobService jobService,
@@ -240,7 +254,8 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         IOptionsMonitor<ExecutionOptions>? executionOptions = null,
         IOptionsMonitor<BusinessSkillsOptions>? businessSkillsOptions = null)
     {
-        _dbContext = dbContext;
+        _jobStore = jobStore;
+        _jobReadStore = jobReadStore;
         _chatService = chatService;
         _llmExecutor = llmExecutor;
         _jobService = jobService;
@@ -535,17 +550,17 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             await emit(new GatewaySseEvent
             {
                 Type = GatewaySseEventType.NextTaskStarted,
-                Payload = new
+                Payload = new Dictionary<string, object?>
                 {
-                    taskId = dispatch.TaskId,
-                    title = dispatch.Title,
-                    jobId = dispatch.JobId,
-                    jobType = dispatch.JobType,
-                    workerType = dispatch.WorkerType?.ToString().ToLowerInvariant(),
-                    status = dispatch.ExistingJobStatus.HasValue
+                    ["taskId"] = dispatch.TaskId,
+                    ["title"] = dispatch.Title,
+                    ["jobId"] = dispatch.JobId,
+                    ["jobType"] = dispatch.JobType,
+                    ["workerType"] = dispatch.WorkerType?.ToString().ToLowerInvariant(),
+                    ["status"] = dispatch.ExistingJobStatus.HasValue
                         ? MapBackgroundJobStatus(dispatch.ExistingJobStatus.Value)
                         : (dispatch.Dispatched ? "queued" : null),
-                    stateKind = dispatch.StateKind
+                    ["stateKind"] = dispatch.StateKind
                 }
             }).ConfigureAwait(false);
         }
@@ -743,13 +758,11 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             message.SessionId,
             0,
             0,
-            new
-            {
-                messageId = message.MessageId,
-                conversationId = message.ConversationId,
-                hasTaskId = !string.IsNullOrWhiteSpace(message.TaskId),
-                contentLength = message.Content?.Length ?? 0
-            });
+            FullTextAuditLogger.Fields(
+                ("messageId", message.MessageId),
+                ("conversationId", message.ConversationId),
+                ("hasTaskId", !string.IsNullOrWhiteSpace(message.TaskId)),
+                ("contentLength", message.Content?.Length ?? 0)));
 
         var session = await EnsureSessionContextAsync(message, ct);
         var turnPolicy = await ResolveAuthoritativeTurnPolicyAsync(message, session, ct);
@@ -767,7 +780,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             await emit(new GatewaySseEvent
             {
                 Type = GatewaySseEventType.SetConversationId,
-                Payload = new { conversationId }
+                Payload = new Dictionary<string, object?> { ["conversationId"] = conversationId }
             });
 
             FullTextAuditLogger.Log(
@@ -776,12 +789,10 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                 message.SessionId,
                 0,
                 0,
-                new
-                {
-                    messageId = message.MessageId,
-                    requestedConversationId,
-                    conversationId
-                });
+                FullTextAuditLogger.Fields(
+                    ("messageId", message.MessageId),
+                    ("requestedConversationId", requestedConversationId),
+                    ("conversationId", conversationId)));
         }
 
         // An explicitly requested local repository the policy refused ends this message here: structured error, history record,
@@ -866,7 +877,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             {
                 if (string.Equals(sseEvent.Type, GatewaySseEventType.Content, StringComparison.Ordinal))
                 {
-                    var delta = sseEvent.Payload.GetType().GetProperty("content")?.GetValue(sseEvent.Payload)?.ToString();
+                    var delta = GatewayPayloadFields.Text(sseEvent.Payload, "content");
                     if (!string.IsNullOrEmpty(delta) && streamedAnswer.Length < 128 * 1024)
                     {
                         streamedAnswer.Append(delta);
@@ -874,7 +885,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                 }
                 else if (string.Equals(sseEvent.Type, GatewaySseEventType.ThinkingContent, StringComparison.Ordinal))
                 {
-                    var delta = sseEvent.Payload.GetType().GetProperty("content")?.GetValue(sseEvent.Payload)?.ToString();
+                    var delta = GatewayPayloadFields.Text(sseEvent.Payload, "content");
                     if (!string.IsNullOrEmpty(delta) && streamedThinking.Length < 64 * 1024)
                     {
                         streamedThinking.Append(delta);
@@ -884,12 +895,12 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                 {
                     if (streamedToolOutputs.Count < 50)
                     {
-                        var tool = sseEvent.Payload.GetType().GetProperty("tool")?.GetValue(sseEvent.Payload)?.ToString() ?? "unknown";
-                        var taskId = sseEvent.Payload.GetType().GetProperty("commandTaskId")?.GetValue(sseEvent.Payload)?.ToString() ?? string.Empty;
-                        var rawOut = sseEvent.Payload.GetType().GetProperty("stdout")?.GetValue(sseEvent.Payload)?.ToString();
-                        var rawErr = sseEvent.Payload.GetType().GetProperty("stderr")?.GetValue(sseEvent.Payload)?.ToString();
-                        var throttled = sseEvent.Payload.GetType().GetProperty("throttled")?.GetValue(sseEvent.Payload) is bool b && b;
-                        var suppressed = sseEvent.Payload.GetType().GetProperty("suppressedLines")?.GetValue(sseEvent.Payload) as int?;
+                        var tool = GatewayPayloadFields.Text(sseEvent.Payload, "tool") ?? "unknown";
+                        var taskId = GatewayPayloadFields.Text(sseEvent.Payload, "commandTaskId") ?? string.Empty;
+                        var rawOut = GatewayPayloadFields.Text(sseEvent.Payload, "stdout");
+                        var rawErr = GatewayPayloadFields.Text(sseEvent.Payload, "stderr");
+                        var throttled = GatewayPayloadFields.Bool(sseEvent.Payload, "throttled");
+                        var suppressed = GatewayPayloadFields.Int(sseEvent.Payload, "suppressedLines");
                         var (bOut, outTrunc) = ToolEventSanitizer.TruncateText(rawOut, 4096);
                         var (bErr, errTrunc) = ToolEventSanitizer.TruncateText(rawErr, 4096);
                         if (outTrunc || errTrunc) streamedToolOutputsTruncated = true;
@@ -903,15 +914,15 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                 }
                 else if (string.Equals(sseEvent.Type, GatewaySseEventType.TaskStatus, StringComparison.Ordinal))
                 {
-                    var subType = sseEvent.Payload.GetType().GetProperty("type")?.GetValue(sseEvent.Payload)?.ToString();
+                    var subType = GatewayPayloadFields.Text(sseEvent.Payload, "type");
                     if (string.Equals(subType, "tool_result", StringComparison.Ordinal))
                     {
                         if (streamedToolResults.Count < 100)
                         {
-                            var toolName = sseEvent.Payload.GetType().GetProperty("name")?.GetValue(sseEvent.Payload)?.ToString() ?? "unknown";
-                            var callId = sseEvent.Payload.GetType().GetProperty("callId")?.GetValue(sseEvent.Payload)?.ToString();
-                            var success = sseEvent.Payload.GetType().GetProperty("success")?.GetValue(sseEvent.Payload) is bool b && b;
-                            var rawResult = sseEvent.Payload.GetType().GetProperty("result")?.GetValue(sseEvent.Payload)?.ToString();
+                            var toolName = GatewayPayloadFields.Text(sseEvent.Payload, "name") ?? "unknown";
+                            var callId = GatewayPayloadFields.Text(sseEvent.Payload, "callId");
+                            var success = GatewayPayloadFields.Bool(sseEvent.Payload, "success");
+                            var rawResult = GatewayPayloadFields.Text(sseEvent.Payload, "result");
                             var (bounded, truncated) = ToolEventSanitizer.TruncateText(rawResult, 4096);
                             if (truncated) streamedToolResultsTruncated = true;
                             streamedToolResults.Add(new GatewayChannelToolResultSnapshot(toolName, callId, success, bounded, truncated));
@@ -950,13 +961,9 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                 return null;
             }
 
-            return System.Text.Json.JsonSerializer.Serialize(new
-            {
-                results,
-                resultsTruncated,
-                outputs = rawOutputs,
-                outputsTruncated
-            });
+            return System.Text.Json.JsonSerializer.Serialize(
+                new GatewayToolHistoryEnvelope(results, resultsTruncated, rawOutputs, outputsTruncated),
+                OrchestrationSnapshotJsonContext.Default.GatewayToolHistoryEnvelope);
         }
 
         if (!string.IsNullOrWhiteSpace(directApprovalAnswer))
@@ -965,7 +972,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             usedRuntime = false;
             // The answer of this path is the host's own text: why an approval was refused, or what was started. It used to be persisted as the
             // assistant's reply and never sent, so a user whose approval was refused saw only that the turn had ended.
-            await emit(new GatewaySseEvent { Type = GatewaySseEventType.Content, Payload = new { type = "content", content = answer, text = answer } });
+            await emit(new GatewaySseEvent { Type = GatewaySseEventType.Content, Payload = new Dictionary<string, object?> { ["type"] = "content", ["content"] = answer, ["text"] = answer } });
         }
         else
         {
@@ -976,6 +983,14 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             try
             {
                 using var visualScope = AmbientTurnVisualAttachmentContext.BeginScope(visualStore);
+                using var browserScope = message.Source == GatewayMessageSource.UserChat
+                    ? CodexFlow.Core.Browser.AmbientBrowserCallerContext.BeginScope(
+                        new CodexFlow.Core.Browser.BrowserTrustedCallerContext(
+                            message.SessionId,
+                            turnPolicy.WorkMode,
+                            turnPolicy.PlanModeActive,
+                            session?.WorkspacePath))
+                    : null;
                 (answer, usedRuntime) = await StreamWithToolLoopAsync(chatMessages, chatOptions, message, session, TrackedEmitAsync, ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -1057,12 +1072,10 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             message.SessionId,
             0,
             0,
-            new
-            {
-                messageId = message.MessageId,
-                conversationId,
-                answerLength = answer.Length
-            });
+            FullTextAuditLogger.Fields(
+                ("messageId", message.MessageId),
+                ("conversationId", conversationId),
+                ("answerLength", answer.Length)));
     }
 
     /// <summary>
@@ -1171,13 +1184,11 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             message.SessionId,
             0,
             0,
-            new
-            {
-                userId = message.UserId,
-                workspacePath = normalizedWorkspacePath,
-                hasProjectUrl = session.ProjectUrl != null,
-                approveGitPush = message.Meta.ApproveGitPush
-            });
+            FullTextAuditLogger.Fields(
+                ("userId", message.UserId),
+                ("workspacePath", normalizedWorkspacePath),
+                ("hasProjectUrl", session.ProjectUrl != null),
+                ("approveGitPush", message.Meta.ApproveGitPush)));
 
         return session;
     }
@@ -1195,11 +1206,11 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         await emit(new GatewaySseEvent
         {
             Type = GatewaySseEventType.TaskStatus,
-            Payload = new
+            Payload = new Dictionary<string, object?>
             {
-                taskId = message.TaskId,
-                status = "completed",
-                message = message.Meta.TaskResultMessage
+                ["taskId"] = message.TaskId,
+                ["status"] = "completed",
+                ["message"] = message.Meta.TaskResultMessage
             }
         });
 
@@ -1294,13 +1305,13 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         await emit(new GatewaySseEvent
         {
             Type = GatewaySseEventType.TaskStatus,
-            Payload = new
+            Payload = new Dictionary<string, object?>
             {
-                taskId = message.TaskId,
-                status = "failed",
-                retryCount,
-                maxRetries,
-                message = message.Meta.TaskResultMessage
+                ["taskId"] = message.TaskId,
+                ["status"] = "failed",
+                ["retryCount"] = retryCount,
+                ["maxRetries"] = maxRetries,
+                ["message"] = message.Meta.TaskResultMessage
             }
         });
 
@@ -1374,23 +1385,23 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         await emit(new GatewaySseEvent
         {
             Type = GatewaySseEventType.PlanChangeRequest,
-            Payload = new
+            Payload = new Dictionary<string, object?>
             {
-                taskId = message.TaskId,
-                failureCount,
-                maxRetries,
-                canRetry,
-                lastError = message.Meta.TaskResultMessage,
-                failure = failure is null
+                ["taskId"] = message.TaskId,
+                ["failureCount"] = failureCount,
+                ["maxRetries"] = maxRetries,
+                ["canRetry"] = canRetry,
+                ["lastError"] = message.Meta.TaskResultMessage,
+                ["failure"] = failure is null
                     ? null
-                    : new
+                    : new Dictionary<string, object?>
                     {
-                        code = failure.Code,
-                        kind = failure.Kind.ToString(),
-                        remedy = failure.Remedy.ToString(),
-                        retryable = failure.Retryable,
-                        refusedPaths = failure.RefusedPaths,
-                        evidence = failure.Evidence
+                        ["code"] = failure.Code,
+                        ["kind"] = failure.Kind.ToString(),
+                        ["remedy"] = failure.Remedy.ToString(),
+                        ["retryable"] = failure.Retryable,
+                        ["refusedPaths"] = failure.RefusedPaths,
+                        ["evidence"] = failure.Evidence
                     }
             }
         });
@@ -1405,7 +1416,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         await emit(new GatewaySseEvent
         {
             Type = GatewaySseEventType.SystemMessage,
-            Payload = new { content = message.Content }
+            Payload = new Dictionary<string, object?> { ["content"] = message.Content }
         });
     }
 
@@ -1449,12 +1460,10 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             {
                 // P1-04: 标题生成跳过原因日志 - 已有标题
                 _logger.LogInformation("[Gateway] TryGenerateAndEmitConversationTitleAsync: 跳过 - 已有标题 ConversationId={ConversationId}, CurrentTitle={CurrentTitle}", conversationId, currentTitle);
-                FullTextAuditLogger.Log(_logger, "title_generation_skipped", sessionId, 0, 0, new
-                {
-                    conversationId,
-                    reason = "already_has_title",
-                    currentTitle
-                });
+                FullTextAuditLogger.Log(_logger, "title_generation_skipped", sessionId, 0, 0, FullTextAuditLogger.Fields(
+                    ("conversationId", conversationId),
+                    ("reason", "already_has_title"),
+                    ("currentTitle", currentTitle)));
                 return;
             }
 
@@ -1511,11 +1520,9 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
 
             // P1-04: 标题生成成功日志
             _logger.LogInformation("[Gateway] TryGenerateAndEmitConversationTitleAsync: 成功 ConversationId={ConversationId}, Title={Title}", conversationId, title);
-            FullTextAuditLogger.Log(_logger, "title_generation_success", sessionId, 0, 0, new
-            {
-                conversationId,
-                title
-            });
+            FullTextAuditLogger.Log(_logger, "title_generation_success", sessionId, 0, 0, FullTextAuditLogger.Fields(
+                ("conversationId", conversationId),
+                ("title", title)));
 
             var updatedConversation = await chatService.Get(conversationId);
             var msgCount = updatedConversation?.ChatMessages.Count ?? 0;
@@ -1523,12 +1530,12 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             await emit(new GatewaySseEvent
             {
                 Type = GatewaySseEventType.UpdateConversationTitle,
-                Payload = new
+                Payload = new Dictionary<string, object?>
                 {
-                    conversationId,
-                    title,
-                    sessionId,
-                    msgCount
+                    ["conversationId"] = conversationId,
+                    ["title"] = title,
+                    ["sessionId"] = sessionId,
+                    ["msgCount"] = msgCount
                 }
             });
         }
@@ -1536,11 +1543,9 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         {
             // P1-04: 标题生成失败日志
             _logger.LogWarning(ex, "[Gateway] TryGenerateAndEmitConversationTitleAsync: 失败 ConversationId={ConversationId}", conversationId);
-            FullTextAuditLogger.Log(_logger, "title_generation_failed", sessionId, 0, 0, new
-            {
-                conversationId,
-                error = ex.Message
-            });
+            FullTextAuditLogger.Log(_logger, "title_generation_failed", sessionId, 0, 0, FullTextAuditLogger.Fields(
+                ("conversationId", conversationId),
+                ("error", ex.Message)));
         }
     }
 
@@ -2438,17 +2443,17 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                         await emit(new GatewaySseEvent
                         {
                             Type = GatewaySseEventType.NextTaskStarted,
-                            Payload = new
+                            Payload = new Dictionary<string, object?>
                             {
-                                taskId = dispatch.TaskId,
-                                title = dispatch.Title,
-                                jobId = dispatch.JobId,
-                                jobType = dispatch.JobType,
-                                workerType = dispatch.WorkerType?.ToString().ToLowerInvariant(),
-                                status = dispatch.ExistingJobStatus.HasValue
+                                ["taskId"] = dispatch.TaskId,
+                                ["title"] = dispatch.Title,
+                                ["jobId"] = dispatch.JobId,
+                                ["jobType"] = dispatch.JobType,
+                                ["workerType"] = dispatch.WorkerType?.ToString().ToLowerInvariant(),
+                                ["status"] = dispatch.ExistingJobStatus.HasValue
                                     ? MapBackgroundJobStatus(dispatch.ExistingJobStatus.Value)
                                     : (dispatch.Dispatched ? "queued" : null),
-                                stateKind = dispatch.StateKind
+                                ["stateKind"] = dispatch.StateKind
                             }
                         });
                     }
@@ -2516,7 +2521,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
 
                 var workerType = ResolveWorkerTypeForTask(target);
                 var jobType = WorkerJobTypes.ToJobType(workerType);
-                var existingJob = await FindExistingActiveWorkerJobAsync(message.SessionId, target.Id, jobType, ct);
+                var existingJob = await _jobReadStore.FindActiveTaskJobAsync(message.SessionId, target.Id, jobType, ct);
                 if (existingJob != null)
                 {
                     var existingJobStateKind = ResolveBackgroundJobStateKind(existingJob);
@@ -2530,22 +2535,22 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                     await emit(new GatewaySseEvent
                     {
                         Type = GatewaySseEventType.NextTaskStarted,
-                        Payload = new
+                        Payload = new Dictionary<string, object?>
                         {
-                            taskId = target.Id,
-                            title = target.Title,
-                            jobId = existingJob.JobId,
-                            jobType,
-                            workerType = workerType.ToString().ToLowerInvariant(),
-                            status = MapBackgroundJobStatus(existingJob.Status),
-                            stateKind = existingJobStateKind
+                            ["taskId"] = target.Id,
+                            ["title"] = target.Title,
+                            ["jobId"] = existingJob.JobId,
+                            ["jobType"] = jobType,
+                            ["workerType"] = workerType.ToString().ToLowerInvariant(),
+                            ["status"] = MapBackgroundJobStatus(existingJob.Status),
+                            ["stateKind"] = existingJobStateKind
                         }
                     });
 
                     return $"⏳ 任务 [{target.Id}] {target.Title} 已存在后台作业 {existingJob.JobId}（状态：{existingJob.Status}），已跳过重复派发。";
                 }
 
-                var activeSessionJob = await FindExistingActiveWorkerJobForSessionAsync(message.SessionId, ct);
+                var activeSessionJob = await _jobReadStore.FindActiveSessionWorkerAsync(message.SessionId, ct);
                 if (activeSessionJob != null)
                 {
                     var activeTaskLabel = string.IsNullOrWhiteSpace(activeSessionJob.TaskId)
@@ -2620,15 +2625,15 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                 await emit(new GatewaySseEvent
                 {
                     Type = GatewaySseEventType.NextTaskStarted,
-                    Payload = new
+                    Payload = new Dictionary<string, object?>
                     {
-                        taskId = target.Id,
-                        title = target.Title,
-                        jobId,
-                        jobType,
-                        workerType = workerType.ToString().ToLowerInvariant(),
-                        status = "queued",
-                        stateKind = "queued"
+                        ["taskId"] = target.Id,
+                        ["title"] = target.Title,
+                        ["jobId"] = jobId,
+                        ["jobType"] = jobType,
+                        ["workerType"] = workerType.ToString().ToLowerInvariant(),
+                        ["status"] = "queued",
+                        ["stateKind"] = "queued"
                     }
                 });
 
@@ -2792,16 +2797,14 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             message.SessionId,
             currentStage,
             0,
-            new
-            {
-                messageId = message.MessageId,
-                workspacePath,
-                projectRoot,
-                repoUrl,
-                planCount,
-                activeTaskId,
-                tools = tools.Select(t => t.Name).OrderBy(n => n).ToArray()
-            });
+            FullTextAuditLogger.Fields(
+                ("messageId", message.MessageId),
+                ("workspacePath", workspacePath),
+                ("projectRoot", projectRoot),
+                ("repoUrl", repoUrl),
+                ("planCount", planCount),
+                ("activeTaskId", activeTaskId),
+                ("tools", tools.Select(t => t.Name).OrderBy(n => n).ToArray())));
 
         return tools;
     }
@@ -2959,17 +2962,17 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                         await emit(new GatewaySseEvent
                         {
                             Type = GatewaySseEventType.NextTaskStarted,
-                            Payload = new
+                            Payload = new Dictionary<string, object?>
                             {
-                                taskId = dispatch.TaskId,
-                                title = dispatch.Title,
-                                jobId = dispatch.JobId,
-                                jobType = dispatch.JobType,
-                                workerType = dispatch.WorkerType?.ToString().ToLowerInvariant(),
-                                status = dispatch.ExistingJobStatus.HasValue
+                                ["taskId"] = dispatch.TaskId,
+                                ["title"] = dispatch.Title,
+                                ["jobId"] = dispatch.JobId,
+                                ["jobType"] = dispatch.JobType,
+                                ["workerType"] = dispatch.WorkerType?.ToString().ToLowerInvariant(),
+                                ["status"] = dispatch.ExistingJobStatus.HasValue
                                     ? MapBackgroundJobStatus(dispatch.ExistingJobStatus.Value)
                                     : (dispatch.Dispatched ? "queued" : null),
-                                stateKind = dispatch.StateKind
+                                ["stateKind"] = dispatch.StateKind
                             }
                         }).ConfigureAwait(false);
                     }
@@ -3143,25 +3146,25 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                         ? async (result, ct) =>
                         {
                             var meta = result.Metadata;
-                            var planArtifactId = meta?.GetType().GetProperty("plan_artifact_id")?.GetValue(meta)?.ToString();
-                            var planVersion = meta?.GetType().GetProperty("plan_version")?.GetValue(meta)?.ToString();
-                            var markdownHash = meta?.GetType().GetProperty("markdown_hash")?.GetValue(meta)?.ToString();
-                            var goal = meta?.GetType().GetProperty("goal")?.GetValue(meta)?.ToString();
-                            var status = meta?.GetType().GetProperty("status")?.GetValue(meta)?.ToString() ?? "ReadyForApproval";
-                            var taskCount = meta?.GetType().GetProperty("task_count")?.GetValue(meta) as int? ?? 0;
+                            var planArtifactId = GatewayPayloadFields.Text(meta, "plan_artifact_id");
+                            var planVersion = GatewayPayloadFields.Text(meta, "plan_version");
+                            var markdownHash = GatewayPayloadFields.Text(meta, "markdown_hash");
+                            var goal = GatewayPayloadFields.Text(meta, "goal");
+                            var status = GatewayPayloadFields.Text(meta, "status") ?? "ReadyForApproval";
+                            var taskCount = GatewayPayloadFields.Int(meta, "task_count") ?? 0;
 
                             await emit(new GatewaySseEvent
                             {
                                 Type = GatewaySseEventType.PlanApprovalRequested,
-                                Payload = new
+                                Payload = new Dictionary<string, object?>
                                 {
-                                    type = "plan_approval_requested",
-                                    planArtifactId,
-                                    version = planVersion,
-                                    markdownHash,
-                                    goal,
-                                    status,
-                                    taskCount
+                                    ["type"] = "plan_approval_requested",
+                                    ["planArtifactId"] = planArtifactId,
+                                    ["version"] = planVersion,
+                                    ["markdownHash"] = markdownHash,
+                                    ["goal"] = goal,
+                                    ["status"] = status,
+                                    ["taskCount"] = taskCount
                                 }
                             }).ConfigureAwait(false);
                         }
@@ -3340,14 +3343,12 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             message.SessionId,
             session?.CurrentStage ?? 1,
             0,
-            new
-            {
-                messageId = message.MessageId,
-                workspacePath,
-                planModeActive = policy.PlanModeActive,
-                runShellExposed = tools.Any(static t => string.Equals(t.Name, "run_shell", StringComparison.OrdinalIgnoreCase)),
-                tools = tools.Select(static t => t.Name).OrderBy(static n => n).ToArray()
-            });
+            FullTextAuditLogger.Fields(
+                ("messageId", message.MessageId),
+                ("workspacePath", workspacePath),
+                ("planModeActive", policy.PlanModeActive),
+                ("runShellExposed", tools.Any(static t => string.Equals(t.Name, "run_shell", StringComparison.OrdinalIgnoreCase))),
+                ("tools", tools.Select(static t => t.Name).OrderBy(static n => n).ToArray())));
 
         return tools;
     }
@@ -3572,8 +3573,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                 session.ProjectUrl = repoUri;
             }
 
-            var cloneMetadata = result.Metadata != null ? Newtonsoft.Json.Linq.JObject.FromObject(result.Metadata) : null;
-            var clonedPath = cloneMetadata?["Path"]?.ToString();
+            var clonedPath = GatewayPayloadFields.Text(result.Metadata, "Path");
             if (!string.IsNullOrWhiteSpace(clonedPath) && Directory.Exists(clonedPath))
             {
                 session.Metadata[ToolPathResolver.PreferredProjectRootMetadataKey] = clonedPath;
@@ -3586,12 +3586,10 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                 sessionId,
                 session.CurrentStage,
                 0,
-                new
-                {
-                    repoUrl,
-                    preferredProjectRoot = clonedPath,
-                    hasProjectUrl = session.ProjectUrl != null
-                });
+                FullTextAuditLogger.Fields(
+                    ("repoUrl", repoUrl),
+                    ("preferredProjectRoot", clonedPath),
+                    ("hasProjectUrl", session.ProjectUrl != null)));
         }
         catch (Exception ex)
         {
@@ -3601,7 +3599,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
 
     private static string WrapCodexToolResult(CodexToolResult result)
     {
-        return JsonConvert.SerializeObject(ToolResultTextFormatter.BuildWrappedPayload(result));
+        return OrchestrationPayloadJson.Object(ToolResultTextFormatter.BuildWrappedPayload(result)).ToString(Formatting.None);
     }
 
     private static string NormalizeWorkspaceRoot(string? workspacePath)
@@ -3699,12 +3697,10 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             session.Id,
             session.CurrentStage,
             0,
-            new
-            {
-                repoUrl,
-                localRepoPath,
-                changed
-            });
+            FullTextAuditLogger.Fields(
+                ("repoUrl", repoUrl),
+                ("localRepoPath", localRepoPath),
+                ("changed", changed)));
     }
 
     private async Task<WorkspacePreviewResult> LoadWorkspacePreviewAsync(
@@ -4327,23 +4323,21 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                     gatewayMessage.SessionId,
                     session?.CurrentStage ?? 0,
                     0,
-                    new
-                    {
-                        messageId = gatewayMessage.MessageId,
-                        errorType = ex.GetType().Name,
-                        error = ex.Message,
-                        legacyFallbackUsed = false
-                    });
+                    FullTextAuditLogger.Fields(
+                        ("messageId", gatewayMessage.MessageId),
+                        ("errorType", ex.GetType().Name),
+                        ("error", ex.Message),
+                        ("legacyFallbackUsed", false)));
 
                 await emit(new GatewaySseEvent
                 {
                     Type = GatewaySseEventType.Error,
-                    Payload = new
+                    Payload = new Dictionary<string, object?>
                     {
-                        messageId = gatewayMessage.MessageId,
-                        error = "Gateway runtime 执行失败",
-                        detail = ex.Message,
-                        legacyFallbackUsed = false
+                        ["messageId"] = gatewayMessage.MessageId,
+                        ["error"] = "Gateway runtime 执行失败",
+                        ["detail"] = ex.Message,
+                        ["legacyFallbackUsed"] = false
                     }
                 });
 
@@ -4413,13 +4407,11 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                 gatewayMessage.SessionId,
                 llmSession.CurrentStage,
                 round + 1,
-                new
-                {
-                    messageId = gatewayMessage.MessageId,
-                    messageCount = chatMessages.Count,
-                    hasTools = effectiveChatOptions?.Tools?.Count > 0,
-                    conversationId = gatewayMessage.ConversationId
-                });
+                FullTextAuditLogger.Fields(
+                    ("messageId", gatewayMessage.MessageId),
+                    ("messageCount", chatMessages.Count),
+                    ("hasTools", effectiveChatOptions?.Tools?.Count > 0),
+                    ("conversationId", gatewayMessage.ConversationId)));
 
             try
             {
@@ -4438,12 +4430,12 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                     if (isThinking && !printingThinkTag)
                     {
                         printingThinkTag = true;
-                        await emit(new GatewaySseEvent { Type = GatewaySseEventType.ThinkingStart, Payload = new { type = "thinking_start" } });
+                        await emit(new GatewaySseEvent { Type = GatewaySseEventType.ThinkingStart, Payload = new Dictionary<string, object?> { ["type"] = "thinking_start" } });
                     }
                     else if (!isThinking && printingThinkTag)
                     {
                         printingThinkTag = false;
-                        await emit(new GatewaySseEvent { Type = GatewaySseEventType.ThinkingEnd, Payload = new { type = "thinking_end", thinking_content = thinkingText.ToString() } });
+                        await emit(new GatewaySseEvent { Type = GatewaySseEventType.ThinkingEnd, Payload = new Dictionary<string, object?> { ["type"] = "thinking_end", ["thinking_content"] = thinkingText.ToString() } });
                     }
 
                     var hasTextFromContents = false;
@@ -4458,26 +4450,24 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                                 gatewayMessage.SessionId,
                                 llmSession.CurrentStage,
                                 round + 1,
-                                new
-                                {
-                                    messageId = gatewayMessage.MessageId,
-                                    tool = fc.Name,
-                                    callId = fc.CallId,
-                                    arguments = fc.Arguments
-                                });
+                                FullTextAuditLogger.Fields(
+                                    ("messageId", gatewayMessage.MessageId),
+                                    ("tool", fc.Name),
+                                    ("callId", fc.CallId),
+                                    ("arguments", fc.Arguments)));
                             var (sanitizedArgs, argsTruncated) = ToolEventSanitizer.SanitizeArguments(
                                 fc.Arguments as IReadOnlyDictionary<string, object?> ??
                                 fc.Arguments?.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal));
                             await emit(new GatewaySseEvent
                             {
                                 Type = GatewaySseEventType.ToolCall,
-                                Payload = new
+                                Payload = new Dictionary<string, object?>
                                 {
-                                    type = "tool_call",
-                                    name = fc.Name,
-                                    callId = fc.CallId,
-                                    arguments = sanitizedArgs,
-                                    argumentsTruncated = argsTruncated
+                                    ["type"] = "tool_call",
+                                    ["name"] = fc.Name,
+                                    ["callId"] = fc.CallId,
+                                    ["arguments"] = sanitizedArgs,
+                                    ["argumentsTruncated"] = argsTruncated
                                 }
                             });
                             continue;
@@ -4498,7 +4488,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                         if (isThinking)
                         {
                             thinkingText.Append(text);
-                            await emit(new GatewaySseEvent { Type = GatewaySseEventType.ThinkingContent, Payload = new { type = "thinking_content", content = text, text } });
+                            await emit(new GatewaySseEvent { Type = GatewaySseEventType.ThinkingContent, Payload = new Dictionary<string, object?> { ["type"] = "thinking_content", ["content"] = text, ["text"] = text } });
                         }
                         else
                         {
@@ -4511,14 +4501,12 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                                     gatewayMessage.SessionId,
                                     llmSession.CurrentStage,
                                     round + 1,
-                                    new
-                                    {
-                                        messageId = gatewayMessage.MessageId,
-                                        preview = text[..Math.Min(120, text.Length)]
-                                    });
+                                    FullTextAuditLogger.Fields(
+                                        ("messageId", gatewayMessage.MessageId),
+                                        ("preview", text[..Math.Min(120, text.Length)])));
                             }
                             roundText.Append(text);
-                            await emit(new GatewaySseEvent { Type = GatewaySseEventType.Content, Payload = new { type = "content", content = text, text } });
+                            await emit(new GatewaySseEvent { Type = GatewaySseEventType.Content, Payload = new Dictionary<string, object?> { ["type"] = "content", ["content"] = text, ["text"] = text } });
                         }
                     }
 
@@ -4533,19 +4521,17 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                                 gatewayMessage.SessionId,
                                 llmSession.CurrentStage,
                                 round + 1,
-                                new
-                                {
-                                    messageId = gatewayMessage.MessageId,
-                                    preview = update.Text[..Math.Min(120, update.Text.Length)]
-                                });
+                                FullTextAuditLogger.Fields(
+                                    ("messageId", gatewayMessage.MessageId),
+                                    ("preview", update.Text[..Math.Min(120, update.Text.Length)])));
                         }
                         roundText.Append(update.Text);
-                        await emit(new GatewaySseEvent { Type = GatewaySseEventType.Content, Payload = new { type = "content", content = update.Text, text = update.Text } });
+                        await emit(new GatewaySseEvent { Type = GatewaySseEventType.Content, Payload = new Dictionary<string, object?> { ["type"] = "content", ["content"] = update.Text, ["text"] = update.Text } });
                     }
                 }
 
                 if (printingThinkTag)
-                    await emit(new GatewaySseEvent { Type = GatewaySseEventType.ThinkingEnd, Payload = new { type = "thinking_end", thinking_content = thinkingText.ToString() } });
+                    await emit(new GatewaySseEvent { Type = GatewaySseEventType.ThinkingEnd, Payload = new Dictionary<string, object?> { ["type"] = "thinking_end", ["thinking_content"] = thinkingText.ToString() } });
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -4566,12 +4552,10 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                     gatewayMessage.SessionId,
                     llmSession.CurrentStage,
                     round + 1,
-                    new
-                    {
-                        messageId = gatewayMessage.MessageId,
-                        error = ex.Message
-                    });
-                await emit(new GatewaySseEvent { Type = GatewaySseEventType.Error, Payload = new { error = "LLM 调用失败", detail = ex.Message } });
+                    FullTextAuditLogger.Fields(
+                        ("messageId", gatewayMessage.MessageId),
+                        ("error", ex.Message)));
+                await emit(new GatewaySseEvent { Type = GatewaySseEventType.Error, Payload = new Dictionary<string, object?> { ["error"] = "LLM 调用失败", ["detail"] = ex.Message } });
                 break;
             }
 
@@ -4581,15 +4565,13 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                 gatewayMessage.SessionId,
                 llmSession.CurrentStage,
                 round + 1,
-                new
-                {
-                    messageId = gatewayMessage.MessageId,
-                    sawAnyStreamUpdate,
-                    sawFirstVisibleToken,
-                    toolCallCount = toolCalls.Count,
-                    textLength = roundText.Length,
-                    thinkingLength = thinkingText.Length
-                });
+                FullTextAuditLogger.Fields(
+                    ("messageId", gatewayMessage.MessageId),
+                    ("sawAnyStreamUpdate", sawAnyStreamUpdate),
+                    ("sawFirstVisibleToken", sawFirstVisibleToken),
+                    ("toolCallCount", toolCalls.Count),
+                    ("textLength", roundText.Length),
+                    ("thinkingLength", thinkingText.Length)));
 
             fullAnswer.Append(roundText);
 
@@ -4636,7 +4618,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                     await emit(new GatewaySseEvent
                     {
                         Type = GatewaySseEventType.SystemMessage,
-                        Payload = new { type = "plan_loss_guard", content = planLossText }
+                        Payload = new Dictionary<string, object?> { ["type"] = "plan_loss_guard", ["content"] = planLossText }
                     });
                     RecordRoundTelemetry("plan_loss_guard");
                     break;
@@ -4669,7 +4651,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                     await emit(new GatewaySseEvent
                     {
                         Type = GatewaySseEventType.Content,
-                        Payload = new { type = "content", content = fallbackText, text = fallbackText }
+                        Payload = new Dictionary<string, object?> { ["type"] = "content", ["content"] = fallbackText, ["text"] = fallbackText }
                     });
                     RecordRoundTelemetry();
                     break;
@@ -4701,7 +4683,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                     await emit(new GatewaySseEvent
                     {
                         Type = GatewaySseEventType.Content,
-                        Payload = new { type = "content", content = fallbackText, text = fallbackText }
+                        Payload = new Dictionary<string, object?> { ["type"] = "content", ["content"] = fallbackText, ["text"] = fallbackText }
                     });
                 }
 
@@ -4751,7 +4733,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                         await emit(new GatewaySseEvent
                         {
                             Type = GatewaySseEventType.ToolStarted,
-                            Payload = new { type = "tool_started", name = fc.Name, callId = fc.CallId }
+                            Payload = new Dictionary<string, object?> { ["type"] = "tool_started", ["name"] = fc.Name, ["callId"] = fc.CallId }
                         });
                         var result = await fn.InvokeAsync(funcArgs, ct);
                         toolResult = result?.ToString() ?? "(no result)";
@@ -4780,7 +4762,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                     await emit(new GatewaySseEvent
                     {
                         Type = GatewaySseEventType.FileTreeUpdated,
-                        Payload = new { tool = fc.Name }
+                        Payload = new Dictionary<string, object?> { ["tool"] = fc.Name }
                     });
                 }
 
@@ -4791,13 +4773,11 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                     gatewayMessage.SessionId,
                     llmSession.CurrentStage,
                     round + 1,
-                    new
-                    {
-                        messageId = gatewayMessage.MessageId,
-                        tool = fc.Name,
-                        callId = fc.CallId,
-                        resultPreview = toolResult[..Math.Min(200, toolResult.Length)]
-                    });
+                    FullTextAuditLogger.Fields(
+                        ("messageId", gatewayMessage.MessageId),
+                        ("tool", fc.Name),
+                        ("callId", fc.CallId),
+                        ("resultPreview", toolResult[..Math.Min(200, toolResult.Length)])));
             }
 
             RecordRoundTelemetry();
@@ -4920,12 +4900,10 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                     null,
                     Domain.Chat.ConversationThreadType.Chat);
 
-                FullTextAuditLogger.Log(_logger, "conversation_resolution", message.SessionId, 0, 0, new
-                {
-                    branch = "new_thread",
-                    conversationId = newThreadId,
-                    mode
-                });
+                FullTextAuditLogger.Log(_logger, "conversation_resolution", message.SessionId, 0, 0, FullTextAuditLogger.Fields(
+                    ("branch", "new_thread"),
+                    ("conversationId", newThreadId),
+                    ("mode", mode)));
                 return newThreadId;
 
             case "continue-current":
@@ -4937,12 +4915,10 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                     if (!string.IsNullOrEmpty(currentConversationId))
                     {
                         _logger.LogInformation("[Gateway] FindOrCreateMainConversationAsync: 模式=continue-current, 命中现有Conversation={ConversationId}", currentConversationId);
-                        FullTextAuditLogger.Log(_logger, "conversation_resolution", message.SessionId, 0, 0, new
-                        {
-                            branch = "continue_current",
-                            conversationId = currentConversationId,
-                            mode
-                        });
+                        FullTextAuditLogger.Log(_logger, "conversation_resolution", message.SessionId, 0, 0, FullTextAuditLogger.Fields(
+                            ("branch", "continue_current"),
+                            ("conversationId", currentConversationId),
+                            ("mode", mode)));
                         return currentConversationId;
                     }
                 }
@@ -4964,12 +4940,10 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             {
                 // P1-02: 分支日志 - 命中现有 conversation
                 _logger.LogInformation("[Gateway] FindOrCreateMainConversationAsync: 分支=命中现有Conversation, ConversationId={ConversationId}", currentConversationId);
-                FullTextAuditLogger.Log(_logger, "conversation_resolution", message.SessionId, 0, 0, new
-                {
-                    branch = "hit_existing",
-                    conversationId = currentConversationId,
-                    requestedConversationId = message.ConversationId
-                });
+                FullTextAuditLogger.Log(_logger, "conversation_resolution", message.SessionId, 0, 0, FullTextAuditLogger.Fields(
+                    ("branch", "hit_existing"),
+                    ("conversationId", currentConversationId),
+                    ("requestedConversationId", message.ConversationId)));
                 return currentConversationId;
             }
         }
@@ -4981,11 +4955,9 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         {
             // P1-02: 分支日志 - 复用 Master
             _logger.LogInformation("[Gateway] FindOrCreateMainConversationAsync: 分支=复用Master, ConversationId={ConversationId}", masterConvId);
-            FullTextAuditLogger.Log(_logger, "conversation_resolution", message.SessionId, 0, 0, new
-            {
-                branch = "reuse_master",
-                conversationId = masterConvId
-            });
+            FullTextAuditLogger.Log(_logger, "conversation_resolution", message.SessionId, 0, 0, FullTextAuditLogger.Fields(
+                ("branch", "reuse_master"),
+                ("conversationId", masterConvId)));
             return masterConvId;
         }
 
@@ -4996,11 +4968,9 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         {
             // P1-02: 分支日志 - 复用 Chat
             _logger.LogInformation("[Gateway] FindOrCreateMainConversationAsync: 分支=复用Chat, ConversationId={ConversationId}", chatConvId);
-            FullTextAuditLogger.Log(_logger, "conversation_resolution", message.SessionId, 0, 0, new
-            {
-                branch = "reuse_chat",
-                conversationId = chatConvId
-            });
+            FullTextAuditLogger.Log(_logger, "conversation_resolution", message.SessionId, 0, 0, FullTextAuditLogger.Fields(
+                ("branch", "reuse_chat"),
+                ("conversationId", chatConvId)));
             return chatConvId;
         }
 
@@ -5015,11 +4985,9 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             null,
             Domain.Chat.ConversationThreadType.Master);
 
-        FullTextAuditLogger.Log(_logger, "conversation_resolution", message.SessionId, 0, 0, new
-        {
-            branch = "create_master",
-            conversationId = newConversationId
-        });
+        FullTextAuditLogger.Log(_logger, "conversation_resolution", message.SessionId, 0, 0, FullTextAuditLogger.Fields(
+            ("branch", "create_master"),
+            ("conversationId", newConversationId)));
 
         return newConversationId;
     }
@@ -5226,12 +5194,8 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
 
         try
         {
-            return System.Text.Json.JsonSerializer.Deserialize<GatewayTaskListSnapshot>(
-                snapshotJson,
-                new System.Text.Json.JsonSerializerOptions
-                {
-                    PropertyNameCaseInsensitive = true
-                });
+            return System.Text.Json.JsonSerializer.Deserialize(
+                snapshotJson, OrchestrationSnapshotJsonContext.CaseInsensitive.GatewayTaskList);
         }
         catch (System.Text.Json.JsonException ex)
         {
@@ -5279,45 +5243,6 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
     private static WorkerType ResolveWorkerTypeForTask(CodexTask target)
         => CodexTaskClassifier.IsAnalysisTask(target) ? WorkerType.Explore : WorkerType.Forge;
 
-    private async Task<BackgroundJob?> FindExistingActiveWorkerJobAsync(
-        string sessionId,
-        string taskId,
-        string jobType,
-        CancellationToken ct)
-    {
-        return await _dbContext.BackgroundJobs
-            .Include(job => job.Checkpoints)
-            .AsNoTracking()
-            .Where(job =>
-                job.SessionId == sessionId &&
-                job.TaskId == taskId &&
-                job.JobType == jobType &&
-                (job.Status == BackgroundJobStatus.Queued ||
-                 job.Status == BackgroundJobStatus.Running ||
-                 job.Status == BackgroundJobStatus.WaitingUser ||
-                 job.Status == BackgroundJobStatus.FailedRecoveryNeeded))
-            .OrderByDescending(job => job.UpdatedAtUtc)
-            .FirstOrDefaultAsync(ct);
-    }
-
-    private async Task<BackgroundJob?> FindExistingActiveWorkerJobForSessionAsync(
-        string sessionId,
-        CancellationToken ct)
-    {
-        var candidates = await _dbContext.BackgroundJobs
-            .AsNoTracking()
-            .Where(job =>
-                job.SessionId == sessionId &&
-                (job.Status == BackgroundJobStatus.Queued ||
-                 job.Status == BackgroundJobStatus.Running ||
-                 job.Status == BackgroundJobStatus.WaitingUser ||
-                 job.Status == BackgroundJobStatus.FailedRecoveryNeeded))
-            .OrderByDescending(job => job.UpdatedAtUtc)
-            .ToListAsync(ct);
-
-        return candidates.FirstOrDefault(job => WorkerJobTypes.IsWorkerJobType(job.JobType));
-    }
-
     private static string MapBackgroundJobStatus(BackgroundJobStatus status)
         => status switch
         {
@@ -5331,18 +5256,13 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             _ => status.ToString().ToLowerInvariant()
         };
 
-    private static string ResolveBackgroundJobStateKind(BackgroundJob job)
+    private static string ResolveBackgroundJobStateKind(ActivePlanJob job)
     {
-        var latestCheckpointStep = job.Checkpoints?
-            .OrderByDescending(checkpoint => checkpoint.SequenceNumber)
-            .Select(checkpoint => checkpoint.CurrentStep)
-            .FirstOrDefault();
-
         return WorkerProjectionHelpers.ResolveStateKind(
             job.Status.ToString(),
             job.ResultPayloadJson,
             job.Attempt,
-            latestCheckpointStep);
+            job.LatestCheckpointStep);
     }
 
     private async Task<string> ExecuteTaskInlineAsync(
@@ -5373,27 +5293,27 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         await emit(new GatewaySseEvent
         {
             Type = GatewaySseEventType.TaskStatus,
-            Payload = new
+            Payload = new Dictionary<string, object?>
             {
-                taskId = target.Id,
-                status = "running",
-                executionMode = "sync"
+                ["taskId"] = target.Id,
+                ["status"] = "running",
+                ["executionMode"] = "sync"
             }
         });
 
         await emit(new GatewaySseEvent
         {
             Type = GatewaySseEventType.NextTaskStarted,
-            Payload = new
+            Payload = new Dictionary<string, object?>
             {
-                taskId = target.Id,
-                title = target.Title,
-                jobId,
-                jobType,
-                workerType = workerType.ToString().ToLowerInvariant(),
-                status = "running",
-                stateKind = "running",
-                executionMode = "sync"
+                ["taskId"] = target.Id,
+                ["title"] = target.Title,
+                ["jobId"] = jobId,
+                ["jobType"] = jobType,
+                ["workerType"] = workerType.ToString().ToLowerInvariant(),
+                ["status"] = "running",
+                ["stateKind"] = "running",
+                ["executionMode"] = "sync"
             }
         });
 
@@ -5403,10 +5323,8 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             await backgroundJobRunner.ExecuteInlineAsync(jobId, ct).ConfigureAwait(false);
         }
 
-        var completedJob = await _dbContext.BackgroundJobs
-            .AsNoTracking()
-            .SingleAsync(job => job.JobId == jobId, ct)
-            .ConfigureAwait(false);
+        var completedJob = await _jobStore.FindAsync(jobId, ct).ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"Inline job {jobId} no longer exists.");
         var resultPayload = TryParseJobPayload(completedJob.ResultPayloadJson);
         var summary = ExtractWorkerSummary(resultPayload, completedJob.ErrorMessage, completedJob.WaitingReason);
         var finalTaskStatus = MapJobStatusToTaskStatus(completedJob.Status);
@@ -5439,14 +5357,14 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         await emit(new GatewaySseEvent
         {
             Type = GatewaySseEventType.TaskStatus,
-            Payload = new
+            Payload = new Dictionary<string, object?>
             {
-                taskId = target.Id,
-                status = completedJob.Status == BackgroundJobStatus.WaitingUser
+                ["taskId"] = target.Id,
+                ["status"] = completedJob.Status == BackgroundJobStatus.WaitingUser
                     ? "waiting_user"
                     : MapBackgroundJobStatus(completedJob.Status),
-                executionMode = "sync",
-                message = summary
+                ["executionMode"] = "sync",
+                ["message"] = summary
             }
         });
 
@@ -5537,7 +5455,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         };
     }
 
-    private sealed class GatewayTaskListSnapshot
+    internal sealed class GatewayTaskListSnapshot
     {
         public string SessionId { get; init; } = string.Empty;
         public string Title { get; init; } = string.Empty;
@@ -5545,7 +5463,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         public DateTime UpdatedAt { get; init; }
     }
 
-    private sealed class GatewayTaskListItem
+    internal sealed class GatewayTaskListItem
     {
         public string Id { get; init; } = string.Empty;
         public int Index { get; init; }
@@ -5804,17 +5722,15 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             gatewayMessage.SessionId,
             llmSession.CurrentStage,
             0,
-            new
-            {
-                workspacePath = llmSession.WorkspacePath,
-                projectRoot = ToolPathResolver.ResolveProjectRoot(
+            FullTextAuditLogger.Fields(
+                ("workspacePath", llmSession.WorkspacePath),
+                ("projectRoot", ToolPathResolver.ResolveProjectRoot(
                     llmSession.WorkspacePath,
                     null,
                     llmSession.ProjectUrl,
-                    llmSession.Metadata),
-                hasProjectUrl = llmSession.ProjectUrl != null,
-                metadataKeys = llmSession.Metadata.Keys.OrderBy(static key => key).ToArray()
-            });
+                    llmSession.Metadata)),
+                ("hasProjectUrl", llmSession.ProjectUrl != null),
+                ("metadataKeys", llmSession.Metadata.Keys.OrderBy(static key => key).ToArray())));
 
         var runtimeOptions = EnsureRuntimeChatOptions(chatOptions);
         if (!toolsEnabled && runtimeOptions != null)
@@ -5916,11 +5832,11 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             await emit(new GatewaySseEvent
             {
                 Type = GatewaySseEventType.Content,
-                Payload = new
+                Payload = new Dictionary<string, object?>
                 {
-                    type = "content",
-                    content = finalText,
-                    text = finalText
+                    ["type"] = "content",
+                    ["content"] = finalText,
+                    ["text"] = finalText
                 }
             });
         }
@@ -6406,7 +6322,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             return _businessSkillsOptions.CurrentValue.Enabled;
         }
 
-        return _configuration?.GetValue<bool>($"{BusinessSkillsOptions.SectionName}:Enabled") ?? false;
+        return BooleanConfiguration.Read(_configuration, $"{BusinessSkillsOptions.SectionName}:Enabled", defaultValue: false, nullable: false);
     }
 
     private bool CanExposeBusinessSkillList(SessionPolicySnapshot policy)
@@ -6464,7 +6380,13 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                 string.Equals(key, "exit_plan_mode", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(key, "tool_search", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(key, "web_search", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(key, "fetch_webpage", StringComparison.OrdinalIgnoreCase))
+                string.Equals(key, "fetch_webpage", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(key, "browser_navigate", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(key, "browser_snapshot", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(key, "browser_act", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(key, "browser_tabs", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(key, "browser_request_takeover", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(key, "browser_evaluate", StringComparison.OrdinalIgnoreCase))
             {
                 result[key] = tool;
             }
@@ -6533,7 +6455,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
 
             if (isEnter)
             {
-                var version = result.Metadata?.GetType().GetProperty("plan_mode_version")?.GetValue(result.Metadata) as int?;
+                var version = GatewayPayloadFields.Int(result.Metadata, "plan_mode_version");
                 if (TurnPolicies.TryGetValue(message, out var box))
                 {
                     box.Value = box.Value with
@@ -6556,22 +6478,22 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             }
             else if (emit is not null)
             {
-                var planModeVersion = result.Metadata?.GetType().GetProperty("plan_mode_version")?.GetValue(result.Metadata) as int?
+                var planModeVersion = GatewayPayloadFields.Int(result.Metadata, "plan_mode_version")
                     ?? session?.PlanModeVersion
                     ?? 1;
-                var planSummary = result.Metadata?.GetType().GetProperty("plan_summary")?.GetValue(result.Metadata)?.ToString() ?? string.Empty;
-                var reason = result.Metadata?.GetType().GetProperty("reason")?.GetValue(result.Metadata)?.ToString();
+                var planSummary = GatewayPayloadFields.Text(result.Metadata, "plan_summary") ?? string.Empty;
+                var reason = GatewayPayloadFields.Text(result.Metadata, "reason");
 
                 await emit(new GatewaySseEvent
                 {
                     Type = GatewaySseEventType.PlanModeExitRequested,
-                    Payload = new
+                    Payload = new Dictionary<string, object?>
                     {
-                        type = "plan_mode_exit_requested",
-                        sessionId = message.SessionId,
-                        planModeVersion,
-                        planSummary,
-                        reason
+                        ["type"] = "plan_mode_exit_requested",
+                        ["sessionId"] = message.SessionId,
+                        ["planModeVersion"] = planModeVersion,
+                        ["planSummary"] = planSummary,
+                        ["reason"] = reason
                     }
                 }).ConfigureAwait(false);
             }

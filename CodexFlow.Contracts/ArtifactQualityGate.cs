@@ -2,14 +2,20 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+using System.Security.Cryptography;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace CodexFlow.Contracts;
 
 /// <summary>Pure evidence validation. Transport authentication and trusted storage are required by the caller.</summary>
 public static class ArtifactQualityGate
 {
-    public static string ComputeManifestHash(ForgeArtifactManifest manifest) =>
-        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(manifest)));
+    public static string ComputeManifestHash(ForgeArtifactManifest manifest)
+    {
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(manifest, ArtifactManifestJsonContext.Default.ForgeArtifactManifest);
+        return Convert.ToHexString(SHA256.HashData(bytes));
+    }
 
     public static bool Passes(ForgeArtifactVerificationReceipt receipt, string sessionId, string jobId)
     {
@@ -63,3 +69,7 @@ public static class ArtifactQualityGate
             audit.CompletedAtUtc != default && receipt.CompletedAtUtc >= audit.CompletedAtUtc;
     }
 }
+
+// Persisted receipt hashes depend on the default JSON encoding and manifest property order.
+[JsonSerializable(typeof(ForgeArtifactManifest))]
+internal sealed partial class ArtifactManifestJsonContext : JsonSerializerContext;

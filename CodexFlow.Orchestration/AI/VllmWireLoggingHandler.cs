@@ -108,38 +108,36 @@ internal sealed class VllmWireLoggingHandler : DelegatingHandler
             var expectedMismatchReasons = isRequestPayload
                 ? BuildExpectedWireMismatchReasons(summary, expectedToolNames, toolSurfaceMatchesExpected)
                 : [];
-            var payload = new
-            {
-                method = request.Method.Method,
-                url = RedactUrl(request.RequestUri),
-                statusCode = response == null ? null : (int?)response.StatusCode,
-                reasonPhrase = response?.ReasonPhrase,
-                requiredToolName,
-                expectedToolChoice,
-                expectedToolCount = expectedToolNames.Count,
-                expectedToolNames,
-                promptSnapshotQueryId = wireOverride?.PromptSnapshotQueryId,
-                promptSnapshotSessionId = wireOverride?.PromptSnapshotSessionId,
-                promptSnapshotRound = wireOverride?.PromptSnapshotRound,
-                contentType = response?.Content?.Headers.ContentType?.ToString() ?? request.Content?.Headers.ContentType?.ToString(),
-                hasToolChoice = summary.HasToolChoice,
-                toolChoice = summary.ToolChoice,
-                toolChoiceMatchesRequired,
-                hasTools = summary.HasTools,
-                toolCount = summary.ToolCount,
-                toolNames = summary.ToolNames,
-                toolSurfaceMatchesRequired,
-                toolSurfaceMatchesExpected,
-                requiredToolWireMismatch = mismatchReasons.Length > 0,
-                requiredToolWireMismatchReasons = mismatchReasons,
-                expectedWireMismatch = expectedMismatchReasons.Length > 0,
-                expectedWireMismatchReasons = expectedMismatchReasons,
-                responseToolUseCount = summary.ResponseToolUseNames.Count,
-                responseToolUseNames = summary.ResponseToolUseNames,
-                responseStopReasons = summary.ResponseStopReasons,
-                body = Truncate(NormalizeJsonIfPossible(body)),
-                bodyLength = body.Length
-            };
+            var payload = FullTextAuditLogger.Fields(
+                ("method", request.Method.Method),
+                ("url", RedactUrl(request.RequestUri)),
+                ("statusCode", response == null ? null : (int?)response.StatusCode),
+                ("reasonPhrase", response?.ReasonPhrase),
+                ("requiredToolName", requiredToolName),
+                ("expectedToolChoice", expectedToolChoice),
+                ("expectedToolCount", expectedToolNames.Count),
+                ("expectedToolNames", expectedToolNames),
+                ("promptSnapshotQueryId", wireOverride?.PromptSnapshotQueryId),
+                ("promptSnapshotSessionId", wireOverride?.PromptSnapshotSessionId),
+                ("promptSnapshotRound", wireOverride?.PromptSnapshotRound),
+                ("contentType", response?.Content?.Headers.ContentType?.ToString() ?? request.Content?.Headers.ContentType?.ToString()),
+                ("hasToolChoice", summary.HasToolChoice),
+                ("toolChoice", summary.ToolChoice),
+                ("toolChoiceMatchesRequired", toolChoiceMatchesRequired),
+                ("hasTools", summary.HasTools),
+                ("toolCount", summary.ToolCount),
+                ("toolNames", summary.ToolNames),
+                ("toolSurfaceMatchesRequired", toolSurfaceMatchesRequired),
+                ("toolSurfaceMatchesExpected", toolSurfaceMatchesExpected),
+                ("requiredToolWireMismatch", mismatchReasons.Length > 0),
+                ("requiredToolWireMismatchReasons", mismatchReasons),
+                ("expectedWireMismatch", expectedMismatchReasons.Length > 0),
+                ("expectedWireMismatchReasons", expectedMismatchReasons),
+                ("responseToolUseCount", summary.ResponseToolUseNames.Count),
+                ("responseToolUseNames", summary.ResponseToolUseNames),
+                ("responseStopReasons", summary.ResponseStopReasons),
+                ("body", Truncate(NormalizeJsonIfPossible(body))),
+                ("bodyLength", body.Length));
 
             FullTextAuditLogger.Log(_logger, eventType, "__vllm_wire__", 0, 0, payload);
             if (mismatchReasons.Length > 0)

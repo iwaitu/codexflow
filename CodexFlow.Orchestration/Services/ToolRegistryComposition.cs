@@ -71,7 +71,9 @@ public static class ToolRegistryComposition
         configuration: sp.GetService<IConfiguration>(),
         modelSettingsService: sp.GetService<CodexFlow.Core.Configuration.IModelSettingsService>(),
         planModeHostBridge: sp.GetService<CodexFlow.Core.Agents.Tools.IPlanModeHostBridge>(),
-        workspaceSettingsService: sp.GetService<CodexFlow.Core.Configuration.IWorkspaceSettingsService>())
+        workspaceSettingsService: sp.GetService<CodexFlow.Core.Configuration.IWorkspaceSettingsService>(),
+        browserSessionManager: sp.GetService<CodexFlow.Core.Browser.IBrowserSessionManager>(),
+        browserOptions: sp.GetService<IOptionsMonitor<CodexFlow.Core.Browser.BrowserOptions>>())
     {
         RetryJobDetailedFunc = async (jobId, guidance) =>
         {

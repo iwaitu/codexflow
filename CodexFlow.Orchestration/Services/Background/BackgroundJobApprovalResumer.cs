@@ -7,11 +7,9 @@ using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Execution;
 using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Domain.Jobs;
-using CodexFlow.Orchestration.Jobs;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Newtonsoft.Json;
+using CodexFlow.Orchestration.Persistence;
 
 namespace CodexFlow.Services.Background;
 
@@ -64,18 +62,14 @@ public sealed class BackgroundJobApprovalResumer(
             };
         }
 
-        var dbContext = scope.ServiceProvider.GetRequiredService<IJobDbContext>();
-        var job = await dbContext.BackgroundJobs.FindAsync([jobId], ct).ConfigureAwait(false);
+        var store = scope.ServiceProvider.GetRequiredService<IJobStore>();
+        var job = await store.FindAsync(jobId, ct).ConfigureAwait(false);
         if (job is null || job.Status != BackgroundJobStatus.WaitingUser)
         {
             return SuspendedJobResolutionStatus.AlreadyLeftWaitingUser;
         }
 
-        var latestCheckpoint = await dbContext.JobCheckpoints
-            .Where(c => c.JobId == jobId)
-            .OrderByDescending(c => c.SequenceNumber)
-            .FirstOrDefaultAsync(ct)
-            .ConfigureAwait(false);
+        var latestCheckpoint = await store.FindLatestCheckpointAsync(jobId, ct).ConfigureAwait(false);
         if (latestCheckpoint is null || !string.Equals(latestCheckpoint.ResumeToken, resumeToken, StringComparison.Ordinal))
         {
             return SuspendedJobResolutionStatus.AlreadyLeftWaitingUser;
@@ -85,15 +79,13 @@ public sealed class BackgroundJobApprovalResumer(
             ? "Execution denied by user during approval."
             : $"Execution denied by user: {submission.Note}";
 
-        var payload = JsonConvert.SerializeObject(new
-        {
-            success = false,
-            reasonCode = ExecutionReasonCodes.PermissionDenied,
-            approvalId = item.ApprovalId,
-            requestDigest = item.RequestDigest,
-            message = reason,
-            error = reason
-        });
+        var payload = OrchestrationPayloadJson.Write(
+            ("success", false),
+            ("reasonCode", ExecutionReasonCodes.PermissionDenied),
+            ("approvalId", item.ApprovalId),
+            ("requestDigest", item.RequestDigest),
+            ("message", reason),
+            ("error", reason));
 
         job.Status = BackgroundJobStatus.Failed;
         job.WaitingReason = null;
@@ -102,7 +94,7 @@ public sealed class BackgroundJobApprovalResumer(
         job.FinishedAtUtc = DateTime.UtcNow;
         job.UpdatedAtUtc = DateTime.UtcNow;
 
-        dbContext.JobCheckpoints.Add(new JobCheckpoint
+        var checkpoint = new JobCheckpoint
         {
             JobId = job.JobId,
             SessionId = job.SessionId,
@@ -112,18 +104,23 @@ public sealed class BackgroundJobApprovalResumer(
             Attempt = job.Attempt,
             LastEventSeq = job.LastEventSeq,
             CheckpointData = payload
-        });
+        };
 
-        dbContext.OutboxEvents.Add(new OutboxEvent
+        var entry = new OutboxEvent
         {
             EventType = "JobFailed",
             JobId = job.JobId,
             SessionId = job.SessionId,
             TaskId = job.TaskId,
             Payload = payload
-        });
+        };
 
-        await dbContext.SaveChangesAsync(ct).ConfigureAwait(false);
+        if (await store.ApplyTransitionsAsync([new JobTransition(JobTransitionKind.DenyApproval, job,
+                BackgroundJobStatus.WaitingUser, job.ClaimToken, job.Attempt, entry, checkpoint, latestCheckpoint.CheckpointId)], ct)
+            .ConfigureAwait(false) == 0)
+        {
+            return SuspendedJobResolutionStatus.AlreadyLeftWaitingUser;
+        }
         outboxSignal.Pulse();
         logger.LogInformation("Terminated suspended background job {JobId} after user denied approval {ApprovalId}.", jobId, item.ApprovalId);
         return SuspendedJobResolutionStatus.Applied;

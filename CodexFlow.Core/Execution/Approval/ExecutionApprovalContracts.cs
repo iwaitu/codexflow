@@ -5,7 +5,6 @@
 using System.Collections.ObjectModel;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.Encodings.Web;
 using System.Text.Json;
 
 namespace CodexFlow.Core.Execution.Approval;
@@ -49,12 +48,6 @@ public sealed record ExecutionRequest
     private static readonly HashSet<string> FixedSemanticsNonCodeUtilities = new(StringComparer.OrdinalIgnoreCase)
     {
         "mkdir", "cp", "mv", "ls", "dir", "cat", "head", "tail", "wc", "echo", "pwd", "which"
-    };
-
-    private static readonly JsonSerializerOptions CanonicalJsonOptions = new()
-    {
-        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-        WriteIndented = false
     };
 
     private readonly ReadOnlyCollection<string> _interpreterChain = ReadOnlyCollection<string>.Empty;
@@ -162,34 +155,34 @@ public sealed record ExecutionRequest
             .Select(static kv => new[] { kv.Key, kv.Value })
             .ToArray();
 
-        var canonical = new
+        var canonical = new ExecutionApprovalDigest
         {
-            sessionId = includeSessionContext ? SessionId : null,
-            workspaceRoot = includeSessionContext ? WorkspaceRoot : null,
-            tool = ToolName,
-            executable = Executable,
-            trustedOrigin = TrustedOriginVerified,
-            interpreterChain = _interpreterChain,
-            argv = _argv,
-            cwd = Cwd,
-            stdinSha256 = StdinSha256,
-            codeSha256 = CodeSha256,
-            scriptSha256 = ScriptSha256,
-            inputsManifestSha256 = InputsManifestSha256,
-            envDelta = orderedEnv,
-            backend = Backend.ToString(),
-            network = Network,
-            filesystem = Filesystem,
-            origin = Origin.ToString(),
-            policyVersion = PolicyVersion,
-            wrapperSha256 = WrapperSha256,
-            exportScopeSha256 = ExportScopeSha256,
-            timeoutSeconds = TimeoutSeconds,
-            imageDigest = ImageDigest,
-            shellKind = ShellKind
+            SessionId = includeSessionContext ? SessionId : null,
+            WorkspaceRoot = includeSessionContext ? WorkspaceRoot : null,
+            Tool = ToolName,
+            Executable = Executable,
+            TrustedOrigin = TrustedOriginVerified,
+            InterpreterChain = _interpreterChain,
+            Argv = _argv,
+            Cwd = Cwd,
+            StdinSha256 = StdinSha256,
+            CodeSha256 = CodeSha256,
+            ScriptSha256 = ScriptSha256,
+            InputsManifestSha256 = InputsManifestSha256,
+            EnvDelta = orderedEnv,
+            Backend = Backend.ToString(),
+            Network = Network,
+            Filesystem = Filesystem,
+            Origin = Origin.ToString(),
+            PolicyVersion = PolicyVersion,
+            WrapperSha256 = WrapperSha256,
+            ExportScopeSha256 = ExportScopeSha256,
+            TimeoutSeconds = TimeoutSeconds,
+            ImageDigest = ImageDigest,
+            ShellKind = ShellKind
         };
 
-        var utf8 = JsonSerializer.SerializeToUtf8Bytes(canonical, CanonicalJsonOptions);
+        var utf8 = JsonSerializer.SerializeToUtf8Bytes(canonical, ExecutionApprovalJsonContext.Canonical.ExecutionApprovalDigest);
         return Convert.ToHexString(SHA256.HashData(utf8)).ToLowerInvariant();
     }
 

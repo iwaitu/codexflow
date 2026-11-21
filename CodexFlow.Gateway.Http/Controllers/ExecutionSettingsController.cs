@@ -2,6 +2,7 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+using CodexFlow.Gateway.Http;
 using System.Reflection;
 using CodexFlow.Core.Configuration;
 using CodexFlow.Core.Execution;
@@ -9,9 +10,6 @@ using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Core.Models;
 using CodexFlow.Core.Services;
 using CodexFlow.Orchestration.Hosting;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 
 namespace CodexFlow.Controllers;
@@ -87,8 +85,7 @@ public sealed record SettingsErrorDto(
 /// Execution backend, permission mode, model settings, persistent <c>allow_always</c> rules, and system status endpoints.
 /// Relaxing <see cref="ExecutionPermissionMode"/>, modifying model endpoint/keys, or managing persistent rules requires the control plane.
 /// </summary>
-[ApiController]
-[Authorize(AuthenticationSchemes = JwtBearerDefaults.AuthenticationScheme)]
+
 public sealed class ExecutionSettingsController(
     IOptionsMonitor<ExecutionOptions> executionOptions,
     ExecutionPermissionClamp permissionClamp,
@@ -99,11 +96,10 @@ public sealed class ExecutionSettingsController(
     IHostPreflightService? preflightService = null,
     IConfiguration? configuration = null,
     ContextCompressionTriggerOptions? contextCompressionTriggerOptions = null,
-    IMultimodalCapabilityProbe? multimodalProbe = null) : ControllerBase
+    IMultimodalCapabilityProbe? multimodalProbe = null) : GatewayEndpointHandler
 {
-    [HttpGet("api/settings/execution")]
-    [Authorize(Policy = "ActiveUser")]
-    public ActionResult<ExecutionSettingsDto> GetExecutionSettings()
+
+    public IResult GetExecutionSettings()
     {
         var (backend, mode) = permissionClamp.ResolveEffective(executionOptions);
         return Ok(new ExecutionSettingsDto(
@@ -114,9 +110,7 @@ public sealed class ExecutionSettingsController(
             controlPlane?.TokenDeliveryMode ?? "Unknown"));
     }
 
-    [HttpPut("api/settings/execution")]
-    [Authorize(Policy = "ActiveUser")]
-    public ActionResult<ExecutionSettingsDto> UpdateExecutionSettings([FromBody] UpdateExecutionSettingsRequest request)
+    public IResult UpdateExecutionSettings(UpdateExecutionSettingsRequest request)
     {
         if (request is null)
         {
@@ -176,9 +170,7 @@ public sealed class ExecutionSettingsController(
             controlPlane?.TokenDeliveryMode ?? "Unknown"));
     }
 
-    [HttpGet("api/settings/permissions")]
-    [Authorize(Policy = ControlPlaneAuthConstants.ControlPlanePolicy)]
-    public ActionResult<PermissionRuleListResponse> ListPermissions()
+    public IResult ListPermissions()
     {
         if (!ControlPlaneAuthConstants.IsControlPlanePrincipal(User, controlPlane))
         {
@@ -189,9 +181,7 @@ public sealed class ExecutionSettingsController(
         return Ok(new PermissionRuleListResponse(rules.Count, rules));
     }
 
-    [HttpDelete("api/settings/permissions/{ruleId}")]
-    [Authorize(Policy = ControlPlaneAuthConstants.ControlPlanePolicy)]
-    public ActionResult<DeletePermissionRuleResponse> DeletePermission([FromRoute] string ruleId)
+    public IResult DeletePermission(string ruleId)
     {
         if (!ControlPlaneAuthConstants.IsControlPlanePrincipal(User, controlPlane))
         {
@@ -207,11 +197,7 @@ public sealed class ExecutionSettingsController(
         return Ok(new DeletePermissionRuleResponse(true, ruleId));
     }
 
-    [HttpGet("api/settings/model")]
-    [Authorize(Policy = "ActiveUser")]
-    [ProducesResponseType(typeof(ModelSettingsDto), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(SettingsErrorDto), StatusCodes.Status503ServiceUnavailable)]
-    public ActionResult<ModelSettingsDto> GetModelSettings()
+    public IResult GetModelSettings()
     {
         if (modelSettingsService is null)
         {
@@ -221,14 +207,8 @@ public sealed class ExecutionSettingsController(
         return Ok(ToModelDto(modelSettingsService.Read()));
     }
 
-    [HttpPut("api/settings/model")]
-    [Authorize(Policy = ControlPlaneAuthConstants.ControlPlanePolicy)]
-    [ProducesResponseType(typeof(ModelSettingsDto), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(SettingsErrorDto), StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status403Forbidden)]
-    [ProducesResponseType(typeof(SettingsErrorDto), StatusCodes.Status503ServiceUnavailable)]
-    public async Task<ActionResult<ModelSettingsDto>> UpdateModelSettings(
-        [FromBody] UpdateModelSettingsRequest request,
+    public async Task<IResult> UpdateModelSettings(
+        UpdateModelSettingsRequest request,
         CancellationToken ct = default)
     {
         if (!ControlPlaneAuthConstants.IsControlPlanePrincipal(User, controlPlane))
@@ -250,7 +230,7 @@ public sealed class ExecutionSettingsController(
         {
             var existingCreds = modelSettingsService.ReadProbeCredentials();
             var updated = modelSettingsService.Update(new ModelSettingsUpdate(
-                ApiUrl: request.ApiUrl,
+                EndpointTemplate: request.ApiUrl,
                 ApiMode: request.ApiMode,
                 Model: request.Model,
                 MaxTokensLength: request.MaxTokensLength,
@@ -265,7 +245,7 @@ public sealed class ExecutionSettingsController(
                 contextCompressionTriggerOptions.ModelMaxContextTokens = updated.MaxTokensLength.Value;
             }
 
-            var effectiveApiUrl = request.ApiUrl ?? existingCreds.ApiUrl;
+            var effectiveApiUrl = request.ApiUrl ?? existingCreds.EndpointTemplate;
             var effectiveApiMode = request.ApiMode ?? existingCreds.ApiMode;
             var effectiveModel = request.Model ?? existingCreds.Model;
             var effectiveApiKey = request.ApiKey ?? existingCreds.ApiKey;
@@ -322,11 +302,8 @@ public sealed class ExecutionSettingsController(
         }
     }
 
-    [HttpGet("api/system/status")]
-    [Authorize(Policy = "ActiveUser")]
-    [ProducesResponseType(typeof(SystemStatusSummaryDto), StatusCodes.Status200OK)]
-    public async Task<ActionResult<SystemStatusSummaryDto>> GetSystemStatus(
-        [FromQuery] bool refresh = false,
+    public async Task<IResult> GetSystemStatus(
+        bool refresh = false,
         CancellationToken ct = default)
     {
         var (backend, mode) = permissionClamp.ResolveEffective(executionOptions);
@@ -354,7 +331,7 @@ public sealed class ExecutionSettingsController(
         }
 
         var modelSection = configuration?.GetSection("VllmAgent");
-        var modelConfigured = modelSettingsService?.Read() is { ApiUrl.Length: > 0, Model.Length: > 0, ApiKeySet: true }
+        var modelConfigured = modelSettingsService?.Read() is { EndpointTemplate.Length: > 0, Model.Length: > 0, ApiKeySet: true }
             || (modelSection is not null &&
                 !string.IsNullOrWhiteSpace(modelSection["ApiUrl"]) &&
                 !string.IsNullOrWhiteSpace(modelSection["ApiKey"]) &&
@@ -383,7 +360,7 @@ public sealed class ExecutionSettingsController(
 
     private static ModelSettingsDto ToModelDto(ModelSettingsView view)
         => new(
-            view.ApiUrl,
+            view.EndpointTemplate,
             view.ApiMode,
             view.Model,
             view.MaxTokensLength,

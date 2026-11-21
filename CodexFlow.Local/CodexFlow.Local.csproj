@@ -7,7 +7,19 @@
     <Nullable>enable</Nullable>
     <AssemblyName>CodexFlow.Local</AssemblyName>
     <RootNamespace>CodexFlow.Local</RootNamespace>
+    <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
   </PropertyGroup>
+
+  <PropertyGroup Condition="'$(PublishAot)' == 'true'">
+    <DefineConstants>$(DefineConstants);CODEXFLOW_NATIVE_HOST</DefineConstants>
+    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(PublishAot)' == 'true'">
+    <!-- Json.NET is used for its token DOM. Disable its optional reflection-based conversions and dynamic binding. -->
+    <RuntimeHostConfigurationOption Include="Newtonsoft.Json.Linq.JToken.SerializationIsSupported" Value="false" Trim="true" />
+    <RuntimeHostConfigurationOption Include="Newtonsoft.Json.Linq.JToken.DynamicIsSupported" Value="false" Trim="true" />
+  </ItemGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
@@ -20,5 +32,32 @@
     <ProjectReference Include="..\CodexFlow.Gateway.Http\CodexFlow.Gateway.Http.csproj" />
     <ProjectReference Include="..\CodexFlow.Storage.Sqlite\CodexFlow.Storage.Sqlite.csproj" />
   </ItemGroup>
+
+  <Target Name="IncludeCodeAnalysisReferenceAssemblies"
+          BeforeTargets="AssignTargetPaths"
+          DependsOnTargets="ResolveTargetingPackAssets"
+          Condition="'$(DesignTimeBuild)' != 'true'">
+    <ItemGroup>
+      <_CodeAnalysisPack Include="@(ResolvedTargetingPack)"
+                         Condition="'%(ResolvedTargetingPack.Identity)' == 'Microsoft.NETCore.App'" />
+    </ItemGroup>
+    <PropertyGroup>
+      <_CodeAnalysisPackDirectory>@(_CodeAnalysisPack->'%(PackageDirectory)')</_CodeAnalysisPackDirectory>
+    </PropertyGroup>
+    <ItemGroup>
+      <_CodeAnalysisReference Include="$(_CodeAnalysisPackDirectory)/ref/$(TargetFramework)/*.dll"
+                              Condition="'$(_CodeAnalysisPackDirectory)' != ''" />
+      <Content Include="@(_CodeAnalysisReference)"
+               Link="code-analysis/$(TargetFramework)/%(Filename)%(Extension)"
+               CopyToOutputDirectory="PreserveNewest"
+               CopyToPublishDirectory="PreserveNewest"
+               ExcludeFromSingleFile="true" />
+    </ItemGroup>
+    <Error Condition="'@(_CodeAnalysisReference)' == ''"
+           Text="The .NET reference assemblies required for C# diagnostics were not resolved." />
+  </Target>
+
+  <Import Project="NativeAotDependencies.targets" />
+  <Import Project="PublishCodeAnalysisWorker.targets" />
 
 </Project>

@@ -27,7 +27,8 @@ public static class PlanSafeToolPolicy
         "task_create", "task_update", "task_stop",
         "cron_create", "cron_delete", "cron_list", "monitor", "remote_trigger", "push_notification",
         "approve_plan", "reject_plan", "project_plan_to_tasks",
-        "download_artifact", "report_task_status"
+        "download_artifact", "report_task_status",
+        "browser_act", "browser_evaluate", "browser_request_takeover"
     };
 
     private static readonly HashSet<string> CommonAllowedTools = new(StringComparer.OrdinalIgnoreCase)
@@ -47,6 +48,9 @@ public static class PlanSafeToolPolicy
         "lsp_find_references",
         "web_search",
         "fetch_webpage",
+        "browser_navigate",
+        "browser_snapshot",
+        "browser_tabs",
         "ask_user_question",
         "tool_search",
         "user_learn_preference",
@@ -89,7 +93,7 @@ public static class PlanSafeToolPolicy
         }
 
         var capability = ToolCapabilityCatalog.Resolve(trimmed);
-        if (capability is ToolCapability.WorkspaceWrite or ToolCapability.ExecuteUntrustedCode)
+        if (capability is ToolCapability.WorkspaceWrite or ToolCapability.ExecuteUntrustedCode or ToolCapability.BrowserInteract)
         {
             return false;
         }
@@ -110,13 +114,13 @@ public static class PlanSafeToolPolicy
             return false;
         }
 
-        if (tool.Capability is ToolCapability.WorkspaceWrite or ToolCapability.ExecuteUntrustedCode)
+        if (tool.Capability is ToolCapability.WorkspaceWrite or ToolCapability.ExecuteUntrustedCode or ToolCapability.BrowserInteract)
         {
             return false;
         }
 
         var catalogCap = ToolCapabilityCatalog.Resolve(tool.Name);
-        if (catalogCap is ToolCapability.WorkspaceWrite or ToolCapability.ExecuteUntrustedCode)
+        if (catalogCap is ToolCapability.WorkspaceWrite or ToolCapability.ExecuteUntrustedCode or ToolCapability.BrowserInteract)
         {
             return false;
         }

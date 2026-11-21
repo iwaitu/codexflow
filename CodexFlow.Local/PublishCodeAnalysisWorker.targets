@@ -1,0 +1,15 @@
+<Project>
+  <Target Name="PublishCodeAnalysisWorker"
+          AfterTargets="Publish"
+          Condition="'$(PublishAot)' == 'true' and ('$(RuntimeIdentifier)' == 'win-x64' or '$(RuntimeIdentifier)' == 'osx-arm64' or '$(RuntimeIdentifier)' == 'linux-x64')">
+    <PropertyGroup>
+      <_WorkerProject>$(MSBuildThisFileDirectory)../CodexFlow.CodeAnalysis.Worker/CodexFlow.CodeAnalysis.Worker.csproj</_WorkerProject>
+      <_WorkerArtifacts>$([System.IO.Path]::GetFullPath('$(BaseIntermediateOutputPath)code-analysis-worker', '$(MSBuildProjectDirectory)'))</_WorkerArtifacts>
+      <_WorkerDestination>$([System.IO.Path]::GetFullPath('$(PublishDir)', '$(MSBuildProjectDirectory)'))</_WorkerDestination>
+      <_WorkerDestination>$([System.IO.Path]::Combine('$(_WorkerDestination)', 'code-analysis', 'worker'))</_WorkerDestination>
+      <_WorkerProperties>Configuration=$(Configuration);RuntimeIdentifier=$(RuntimeIdentifier);UseArtifactsOutput=true;ArtifactsPath=$(_WorkerArtifacts);PublishDir=$(_WorkerDestination);SelfContained=true;PublishAot=false;PublishTrimmed=false;PublishSingleFile=true;EnableCompressionInSingleFile=true;IncludeNativeLibrariesForSelfExtract=true;DebugType=none</_WorkerProperties>
+    </PropertyGroup>
+    <MSBuild Projects="$(_WorkerProject)" Targets="Restore" Properties="$(_WorkerProperties)" />
+    <MSBuild Projects="$(_WorkerProject)" Targets="Publish" Properties="$(_WorkerProperties)" />
+  </Target>
+</Project>

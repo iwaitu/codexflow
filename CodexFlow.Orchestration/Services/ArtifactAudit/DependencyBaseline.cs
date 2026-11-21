@@ -116,11 +116,12 @@ public static class DependencyBaselineLoader
             var advisory = Text(item, "advisoryId");
             var reason = Text(item, "reason");
             if (string.IsNullOrWhiteSpace(package) || package.Length > 200 || package.Any(char.IsWhiteSpace)) return Fail("every entry needs a package id");
-            if (!NuGetVersion.TryParse(packageVersion, out _) || packageVersion!.Any(c => c is '[' or ']' or '(' or ')' or ',' or '*'))
+            if (packageVersion is null || !NuGetVersion.TryParse(packageVersion, out var parsedVersion)
+                || packageVersion.Any(c => c is '[' or ']' or '(' or ')' or ',' or '*'))
                 return Fail($"entry '{Trim(package)}' needs one exact version (no ranges or wildcards)");
             if (string.IsNullOrWhiteSpace(advisory) || !AdvisoryId.IsMatch(advisory)) return Fail($"entry '{Trim(package)}' needs an advisoryId");
             if (string.IsNullOrWhiteSpace(reason) || reason.Length > 500) return Fail($"entry '{Trim(package)}' needs a reason (why the debt is tolerated and where it is tracked)");
-            if (!seen.Add(string.Join('|', package.ToLowerInvariant(), NuGetVersion.Parse(packageVersion).ToNormalizedString(), advisory.ToLowerInvariant())))
+            if (!seen.Add(string.Join('|', package.ToLowerInvariant(), parsedVersion!.ToNormalizedString(), advisory.ToLowerInvariant())))
                 return Fail($"duplicate entry for '{Trim(package)}'");
             entries.Add(new DependencyBaselineEntry(package, packageVersion, advisory, reason));
             if (entries.Count > MaxEntries) return Fail($"more than {MaxEntries} entries");

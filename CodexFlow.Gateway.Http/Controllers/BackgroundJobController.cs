@@ -2,32 +2,37 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+using CodexFlow.Gateway.Http;
 using CodexFlow.Application.Jobs;
 using CodexFlow.Core.Agents.Tools;
 using CodexFlow.Core.Workers;
 using CodexFlow.Domain.Jobs;
 using CodexFlow.Services.Background;
-using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 using Newtonsoft.Json.Linq;
 using System.Security.Claims;
 
 namespace CodexFlow.Controllers
 {
+    internal sealed record JobReasonResponse(string Reason);
+    internal sealed record JobCreatedResponse(string JobId, string Status);
+    internal sealed record JobCommandResponse(bool Success);
+    internal sealed record JobNoOpResponse(bool Success, bool NoOp);
+    internal sealed record JobRetryResponse(bool Success, string? FailureSummary);
+    internal sealed record JobCommandFailureResponse(bool Success, string? Reason);
+    internal sealed record JobRetryFailureResponse(bool Success, string Reason, string? ReasonCode);
+    internal sealed record JobContinueResponse(bool Success, string Mode, string? JobId, string? NewJobId);
+    internal sealed record CancelJobsResponse(bool Success, int CancelledCount);
+
     /// <summary>
     /// 后台任务控制 API — 提供状态查询、生命周期操作、历史追溯
     /// </summary>
-    [ApiController]
-    [Route("api/jobs")]
-    [Authorize(AuthenticationSchemes = JwtBearerDefaults.AuthenticationScheme, Policy = "ActiveUser")]
-    public class BackgroundJobController : ControllerBase
+
+    public class BackgroundJobController : GatewayEndpointHandler
     {
         private readonly IBackgroundJobService _jobService;
         private readonly IJobViewService _jobViewService;
         private readonly WorkerCoordinatorService _workerCoordinatorService;
-        private readonly CodexFlow.Orchestration.Jobs.IJobDbContext _dbContext;
+        private readonly IJobStore _store;
 
         /// <summary>
         /// 初始化后台作业控制器。
@@ -35,17 +40,17 @@ namespace CodexFlow.Controllers
         /// <param name="jobService">负责创建、取消、重试和恢复后台作业的应用服务。</param>
         /// <param name="jobViewService">负责读取作业当前视图与历史事件的查询服务。</param>
         /// <param name="workerCoordinatorService">负责向 worker coordinator 转发恢复和控制请求的服务。</param>
-        /// <param name="dbContext">用于校验会话归属关系的数据库上下文。</param>
+        /// <param name="store">用于校验会话归属关系的数据库上下文。</param>
         public BackgroundJobController(
             IBackgroundJobService jobService,
             IJobViewService jobViewService,
             WorkerCoordinatorService workerCoordinatorService,
-            CodexFlow.Orchestration.Jobs.IJobDbContext dbContext)
+            IJobStore store)
         {
             _jobService = jobService;
             _jobViewService = jobViewService;
             _workerCoordinatorService = workerCoordinatorService;
-            _dbContext = dbContext;
+            _store = store;
         }
 
         /// <summary>
@@ -62,15 +67,13 @@ namespace CodexFlow.Controllers
 
         private async Task<bool> OwnsSessionAsync(string? sessionId, string userId)
             => !string.IsNullOrWhiteSpace(sessionId) &&
-               await _dbContext.Sessions.AsNoTracking().AnyAsync(x => x.Id == sessionId && x.UserId == userId);
+               await _store.FindOwnedSessionAsync(sessionId, userId, HttpContext.RequestAborted) != null;
 
-        /// <summary>Loads a job only when its session belongs to the user; a missing job and someone else's job are indistinguishable.</summary>
-        private async Task<BackgroundJob?> LoadOwnedJobAsync(string jobId, string userId)
-        {
-            if (string.IsNullOrWhiteSpace(jobId)) return null;
-            var job = await _dbContext.BackgroundJobs.AsNoTracking().SingleOrDefaultAsync(x => x.JobId == jobId);
-            return job != null && await OwnsSessionAsync(job.SessionId, userId) ? job : null;
-        }
+        /// <summary>Loads a job only when its session belongs to the user; unauthorized and missing jobs are indistinguishable.</summary>
+        private Task<BackgroundJob?> LoadOwnedJobAsync(string jobId, string userId)
+            => string.IsNullOrWhiteSpace(jobId)
+                ? Task.FromResult<BackgroundJob?>(null)
+                : _store.FindOwnedJobAsync(jobId, userId, HttpContext.RequestAborted);
 
         private static bool IsValidClientPayload(string? payloadJson)
         {
@@ -86,8 +89,8 @@ namespace CodexFlow.Controllers
         /// </summary>
         /// <param name="request">作业类型、所属会话以及初始负载。</param>
         /// <returns>返回新建作业的标识与初始状态。</returns>
-        [HttpPost]
-        public async Task<IActionResult> CreateJob([FromBody] CreateBackgroundJobRequest request)
+
+        public async Task<IResult> CreateJob(CreateBackgroundJobRequest request)
         {
             var userId = CurrentUserId;
             if (string.IsNullOrWhiteSpace(userId)) return Unauthorized();
@@ -99,25 +102,25 @@ namespace CodexFlow.Controllers
 
             if (!await OwnsSessionAsync(request.SessionId, userId))
             {
-                return NotFound(new { reason = "Session not found or not owned by current user." });
+                return NotFound(new JobReasonResponse("Session not found or not owned by current user."));
             }
 
             // Resolve with the same lenient parser the runner uses elsewhere (trim/case/aliases such as "forge" or
             // "ExecuteCodeTask"), then also require an exact allow-list hit: unknown strings are not "safe by default".
             if (WorkerJobTypes.IsWorkerJobType(request.JobType))
             {
-                return StatusCode(StatusCodes.Status403Forbidden, new { reason = "worker_jobs_require_gateway_dispatch" });
+                return StatusCode(StatusCodes.Status403Forbidden, new JobReasonResponse("worker_jobs_require_gateway_dispatch"));
             }
 
             if (!ClientCreatableJobTypes.Contains(request.JobType))
             {
-                return StatusCode(StatusCodes.Status403Forbidden, new { reason = "job_type_not_client_creatable" });
+                return StatusCode(StatusCodes.Status403Forbidden, new JobReasonResponse("job_type_not_client_creatable"));
             }
 
             if (!IsValidClientPayload(request.PayloadJson) ||
                 (request.TaskId is { Length: > MaxClientTaskIdChars }))
             {
-                return BadRequest(new { reason = "invalid_payload" });
+                return BadRequest(new JobReasonResponse("invalid_payload"));
             }
 
             var jobId = await _jobService.CreateJobAsync(
@@ -126,11 +129,7 @@ namespace CodexFlow.Controllers
                 request.JobType,
                 request.PayloadJson ?? "{}");
 
-            return Accepted(new
-            {
-                jobId,
-                status = "Queued"
-            });
+            return Accepted(new JobCreatedResponse(jobId, "Queued"));
         }
 
         /// <summary>
@@ -138,8 +137,8 @@ namespace CodexFlow.Controllers
         /// </summary>
         /// <param name="jobId">作业标识。</param>
         /// <returns>返回作业的当前状态、摘要与恢复信息。</returns>
-        [HttpGet("{jobId}")]
-        public async Task<IActionResult> GetStatus(string jobId)
+
+        public async Task<IResult> GetStatus(string jobId)
         {
             var userId = CurrentUserId;
             if (string.IsNullOrWhiteSpace(userId)) return Unauthorized();
@@ -154,23 +153,23 @@ namespace CodexFlow.Controllers
         /// 兼容旧调用约定的作业状态查询别名。
         /// </summary>
         /// <param name="jobId">作业标识。</param>
-        [HttpGet("{jobId}/status")]
-        public Task<IActionResult> GetStatusAlias(string jobId) => GetStatus(jobId);
+
+        public Task<IResult> GetStatusAlias(string jobId) => GetStatus(jobId);
 
         /// <summary>
         /// 获取指定会话下的全部后台作业视图。
         /// </summary>
         /// <param name="sessionId">会话标识。</param>
         /// <returns>返回该会话下按更新时间排序的后台作业列表。</returns>
-        [HttpGet("session/{sessionId}")]
-        public async Task<IActionResult> GetSessionJobs(string sessionId)
+
+        public async Task<IResult> GetSessionJobs(string sessionId)
         {
             var userId = CurrentUserId;
             if (string.IsNullOrWhiteSpace(userId)) return Unauthorized();
             if (!await OwnsSessionAsync(sessionId, userId)) return NotFound();
 
             var jobs = await _jobViewService.GetSessionJobsAsync(sessionId);
-            return Ok(jobs);
+            return Ok(jobs.ToArray());
         }
 
         /// <summary>
@@ -179,15 +178,15 @@ namespace CodexFlow.Controllers
         /// <param name="jobId">作业标识。</param>
         /// <param name="afterSeq">可选的事件序号下界，仅返回此序号之后的历史事件。</param>
         /// <returns>返回按序号升序排列的作业事件流。</returns>
-        [HttpGet("{jobId}/history")]
-        public async Task<IActionResult> GetHistory(string jobId, [FromQuery] long? afterSeq = null)
+
+        public async Task<IResult> GetHistory(string jobId, long? afterSeq = null)
         {
             var userId = CurrentUserId;
             if (string.IsNullOrWhiteSpace(userId)) return Unauthorized();
             if (await LoadOwnedJobAsync(jobId, userId) is null) return NotFound();
 
             var history = await _jobViewService.GetHistoryAsync(jobId, afterSeq);
-            return Ok(history);
+            return Ok(history.ToArray());
         }
 
         /// <summary>
@@ -195,8 +194,8 @@ namespace CodexFlow.Controllers
         /// </summary>
         /// <param name="jobId">作业标识。</param>
         /// <returns>返回取消是否成功，以及当前状态是否允许取消。</returns>
-        [HttpPost("{jobId}/cancel")]
-        public async Task<IActionResult> CancelJob(string jobId)
+
+        public async Task<IResult> CancelJob(string jobId)
         {
             var userId = CurrentUserId;
             if (string.IsNullOrWhiteSpace(userId)) return Unauthorized();
@@ -205,10 +204,10 @@ namespace CodexFlow.Controllers
             var result = await _jobService.CancelJobAsync(jobId);
             return result switch
             {
-                BackgroundJobCommandResult.Success => Ok(new { success = true }),
-                BackgroundJobCommandResult.NoOp => Ok(new { success = true, noOp = true }),
+                BackgroundJobCommandResult.Success => Ok(new JobCommandResponse(true)),
+                BackgroundJobCommandResult.NoOp => Ok(new JobNoOpResponse(true, true)),
                 BackgroundJobCommandResult.NotFound => NotFound(),
-                _ => Conflict(new { success = false, reason = "Job cannot be cancelled in its current state." })
+                _ => Conflict(new JobCommandFailureResponse(false, "Job cannot be cancelled in its current state."))
             };
         }
 
@@ -216,16 +215,16 @@ namespace CodexFlow.Controllers
         /// 兼容旧调用约定的作业取消别名。
         /// </summary>
         /// <param name="jobId">作业标识。</param>
-        [HttpDelete("{jobId}")]
-        public Task<IActionResult> CancelJobAlias(string jobId) => CancelJob(jobId);
+
+        public Task<IResult> CancelJobAlias(string jobId) => CancelJob(jobId);
 
         /// <summary>
         /// 重试一个已经失败或可重试的作业。
         /// </summary>
         /// <param name="jobId">作业标识。</param>
         /// <returns>返回重试是否已排队，或当前状态是否允许重试。</returns>
-        [HttpPost("{jobId}/retry")]
-        public async Task<IActionResult> RetryJob(string jobId)
+
+        public async Task<IResult> RetryJob(string jobId)
         {
             var userId = CurrentUserId;
             if (string.IsNullOrWhiteSpace(userId)) return Unauthorized();
@@ -236,15 +235,13 @@ namespace CodexFlow.Controllers
             var outcome = await _jobService.RetryJobDetailedAsync(jobId);
             return outcome.Result switch
             {
-                BackgroundJobCommandResult.Success => Ok(new { success = true, failureSummary = outcome.FailureSummary }),
+                BackgroundJobCommandResult.Success => Ok(new JobRetryResponse(true, outcome.FailureSummary)),
                 BackgroundJobCommandResult.NotFound => NotFound(),
-                BackgroundJobCommandResult.NoOp => Ok(new { success = true, noOp = true }),
-                _ => Conflict(new
-                {
-                    success = false,
-                    reason = outcome.Reason ?? "Job cannot be retried in its current state.",
-                    reasonCode = outcome.ReasonCode
-                })
+                BackgroundJobCommandResult.NoOp => Ok(new JobNoOpResponse(true, true)),
+                _ => Conflict(new JobRetryFailureResponse(
+                    false,
+                    outcome.Reason ?? "Job cannot be retried in its current state.",
+                    outcome.ReasonCode))
             };
         }
 
@@ -254,8 +251,8 @@ namespace CodexFlow.Controllers
         /// <param name="jobId">作业标识。</param>
         /// <param name="request">恢复令牌与可选的恢复负载。</param>
         /// <returns>返回恢复是否已成功排队执行。</returns>
-        [HttpPost("{jobId}/resume")]
-        public async Task<IActionResult> ResumeJob(string jobId, [FromBody] ResumeJobRequest? request)
+
+        public async Task<IResult> ResumeJob(string jobId, ResumeJobRequest? request)
         {
             var userId = CurrentUserId;
             if (string.IsNullOrWhiteSpace(userId)) return Unauthorized();
@@ -270,16 +267,16 @@ namespace CodexFlow.Controllers
                  !ClientCreatableJobTypes.Contains(owned.JobType) ||
                  !IsValidClientPayload(payloadJson)))
             {
-                return BadRequest(new { reason = "payload_not_accepted_for_this_job" });
+                return BadRequest(new JobReasonResponse("payload_not_accepted_for_this_job"));
             }
 
             var result = await _jobService.ResumeJobAsync(jobId, request?.ResumeToken, payloadJson);
             return result switch
             {
-                BackgroundJobCommandResult.Success => Ok(new { success = true }),
+                BackgroundJobCommandResult.Success => Ok(new JobCommandResponse(true)),
                 BackgroundJobCommandResult.NotFound => NotFound(),
-                BackgroundJobCommandResult.NoOp => Ok(new { success = true, noOp = true }),
-                _ => Conflict(new { success = false, reason = "Job cannot be resumed in its current state." })
+                BackgroundJobCommandResult.NoOp => Ok(new JobNoOpResponse(true, true)),
+                _ => Conflict(new JobCommandFailureResponse(false, "Job cannot be resumed in its current state."))
             };
         }
 
@@ -289,8 +286,8 @@ namespace CodexFlow.Controllers
         /// </summary>
         /// <param name="jobId">目标 worker 作业标识。</param>
         /// <param name="request">可选的追问内容与恢复令牌。</param>
-        [HttpPost("{jobId}/continue")]
-        public async Task<IActionResult> ContinueWorker(string jobId, [FromBody] ContinueWorkerHttpRequest? request)
+
+        public async Task<IResult> ContinueWorker(string jobId, ContinueWorkerHttpRequest? request)
         {
             var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
             if (string.IsNullOrWhiteSpace(userId))
@@ -302,12 +299,16 @@ namespace CodexFlow.Controllers
             var job = await LoadOwnedJobAsync(jobId, userId);
             if (job == null)
             {
-                return NotFound(new { success = false, reason = "Job not found." });
+                return NotFound(new JobCommandFailureResponse(false, "Job not found."));
             }
 
-            var session = await _dbContext.Sessions
-                .AsNoTracking()
-                .SingleAsync(x => x.Id == job.SessionId);
+            var session = job.SessionId is { } sessionId
+                ? await _store.FindOwnedSessionAsync(sessionId, userId, HttpContext.RequestAborted)
+                : null;
+            if (session == null)
+            {
+                return NotFound(new JobCommandFailureResponse(false, "Job not found."));
+            }
 
             var prompt = string.IsNullOrWhiteSpace(request?.Prompt)
                 ? BuildDefaultContinuePrompt(job.ResultPayloadJson)
@@ -319,9 +320,9 @@ namespace CodexFlow.Controllers
                     JobId = jobId,
                     Prompt = prompt,
                     ResumeToken = request?.ResumeToken,
-                    SessionIdFallback = session?.Id ?? job.SessionId,
+                    SessionIdFallback = session.Id,
                     UserIdFallback = userId,
-                    WorkspacePathFallback = session?.WorkspacePath
+                    WorkspacePathFallback = session.WorkspacePath
                 },
                 HttpContext.RequestAborted);
 
@@ -329,55 +330,43 @@ namespace CodexFlow.Controllers
             {
                 return result.Message switch
                 {
-                    "worker 不存在。" => NotFound(new { success = false, reason = result.Message }),
-                    _ => Conflict(new { success = false, reason = result.Message ?? "Worker cannot be continued in its current state." })
+                    "worker 不存在。" => NotFound(new JobCommandFailureResponse(false, result.Message)),
+                    _ => Conflict(new JobCommandFailureResponse(false, result.Message ?? "Worker cannot be continued in its current state."))
                 };
             }
 
-            return Ok(new
-            {
-                success = true,
-                mode = result.Mode.ToString(),
-                jobId = result.JobId,
-                newJobId = result.NewJobId
-            });
+            return Ok(new JobContinueResponse(true, result.Mode.ToString(), result.JobId, result.NewJobId));
         }
 
         /// <summary>
         /// 取消指定会话下所有活跃的后台作业（需属于当前用户）
         /// </summary>
-        [HttpPost("session/{sessionId}/cancel-all")]
-        public async Task<IActionResult> CancelSessionJobs(string sessionId)
+
+        public async Task<IResult> CancelSessionJobs(string sessionId)
         {
             var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
             if (string.IsNullOrEmpty(userId)) return Unauthorized();
 
             // Verify the session belongs to the current user
-            var session = await _dbContext.Sessions
-                .Where(s => s.Id == sessionId && s.UserId == userId)
-                .FirstOrDefaultAsync();
-
-            if (session == null) return NotFound(new { reason = "Session not found or not owned by current user." });
+            if (!await OwnsSessionAsync(sessionId, userId))
+                return NotFound(new JobReasonResponse("Session not found or not owned by current user."));
 
             var cancelled = await _jobService.CancelSessionJobsAsync(sessionId);
-            return Ok(new { success = true, cancelledCount = cancelled });
+            return Ok(new CancelJobsResponse(true, cancelled));
         }
 
         /// <summary>
         /// 取消当前用户所有会话下的全部活跃后台作业
         /// </summary>
-        [HttpPost("my/cancel-all")]
-        public async Task<IActionResult> CancelAllMyJobs()
+
+        public async Task<IResult> CancelAllMyJobs()
         {
             var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
             if (string.IsNullOrEmpty(userId)) return Unauthorized();
 
-            var sessionIds = await _dbContext.Sessions
-                .Where(s => s.UserId == userId)
-                .Select(s => s.Id)
-                .ToListAsync();
+            var sessionIds = await _store.ListSessionIdsAsync(userId, HttpContext.RequestAborted);
 
-            if (sessionIds.Count == 0) return Ok(new { success = true, cancelledCount = 0 });
+            if (sessionIds.Count == 0) return Ok(new CancelJobsResponse(true, 0));
 
             var totalCancelled = 0;
             foreach (var sid in sessionIds)
@@ -385,7 +374,7 @@ namespace CodexFlow.Controllers
                 totalCancelled += await _jobService.CancelSessionJobsAsync(sid);
             }
 
-            return Ok(new { success = true, cancelledCount = totalCancelled });
+            return Ok(new CancelJobsResponse(true, totalCancelled));
         }
 
         private static string BuildDefaultContinuePrompt(string? resultPayloadJson)

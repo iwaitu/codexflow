@@ -1,12 +1,15 @@
 import React from 'react';
-import { Cpu, FileDiff, FolderTree, X } from 'lucide-react';
+import { Cpu, FileDiff, FolderTree, Globe, X } from 'lucide-react';
+import type { BrowserSessionStateDto } from '@shared/ipc';
 import type {
   ApiAuthContext,
   BackgroundJob,
+  SessionWorkMode,
   VerificationReceipt,
   WorkspaceChanges,
 } from '../lib/apiClient';
 import type { InspectorTab } from '../stores/useAppStore';
+import { BrowserPanel } from './BrowserPanel';
 import { JobsPanel } from './JobsPanel';
 import { WorkspaceChangesPanel } from './WorkspaceChangesPanel';
 import { WorkspaceFilesPanel } from './WorkspaceFilesPanel';
@@ -14,8 +17,10 @@ import { WorkspaceFilesPanel } from './WorkspaceFilesPanel';
 interface WorkspaceInspectorProps {
   open: boolean;
   activeTab: InspectorTab;
+  workMode?: SessionWorkMode;
   auth: ApiAuthContext | null;
   sessionId: string | null;
+  workspacePath?: string | null;
   workspaceRevision: number;
   changes: WorkspaceChanges | null | undefined;
   changesLoading: boolean;
@@ -24,6 +29,9 @@ interface WorkspaceInspectorProps {
   jobs: BackgroundJob[];
   verificationReceipts: Record<string, VerificationReceipt>;
   executionBackend: string | null;
+  browserState?: BrowserSessionStateDto | null;
+  controlPlaneAvailable?: boolean;
+  onBrowserStateUpdated?: (next: BrowserSessionStateDto) => void;
   onSelectTab: (tab: InspectorTab) => void;
   onClose: () => void;
   onRefreshChanges: () => void;
@@ -35,8 +43,10 @@ interface WorkspaceInspectorProps {
 export const WorkspaceInspector: React.FC<WorkspaceInspectorProps> = ({
   open,
   activeTab,
+  workMode = 'Development',
   auth,
   sessionId,
+  workspacePath,
   workspaceRevision,
   changes,
   changesLoading,
@@ -45,6 +55,9 @@ export const WorkspaceInspector: React.FC<WorkspaceInspectorProps> = ({
   jobs,
   verificationReceipts,
   executionBackend,
+  browserState = null,
+  controlPlaneAvailable = false,
+  onBrowserStateUpdated,
   onSelectTab,
   onClose,
   onRefreshChanges,
@@ -57,6 +70,8 @@ export const WorkspaceInspector: React.FC<WorkspaceInspectorProps> = ({
   }
 
   const changedCount = changes?.files?.length ?? 0;
+  const isBrowserRunning = browserState?.status === 'running';
+  const showEngineeringTabs = workMode !== 'Daily';
 
   return (
     <aside
@@ -77,29 +92,47 @@ export const WorkspaceInspector: React.FC<WorkspaceInspectorProps> = ({
             <FolderTree className="h-3.5 w-3.5" />
             <span>文件</span>
           </button>
+          {showEngineeringTabs && (
+            <>
+              <button
+                type="button"
+                onClick={() => onSelectTab('changes')}
+                className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium ${
+                  activeTab === 'changes'
+                    ? 'bg-slate-800 text-slate-100'
+                    : 'text-slate-400 hover:bg-slate-900 hover:text-slate-200'
+                }`}
+              >
+                <FileDiff className="h-3.5 w-3.5" />
+                <span>变更{changedCount > 0 ? ` (${changedCount})` : ''}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onSelectTab('jobs')}
+                className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium ${
+                  activeTab === 'jobs'
+                    ? 'bg-slate-800 text-slate-100'
+                    : 'text-slate-400 hover:bg-slate-900 hover:text-slate-200'
+                }`}
+              >
+                <Cpu className="h-3.5 w-3.5" />
+                <span>作业{jobs.length > 0 ? ` (${jobs.length})` : ''}</span>
+              </button>
+            </>
+          )}
           <button
             type="button"
-            onClick={() => onSelectTab('changes')}
+            data-testid="inspector-tab-browser"
+            onClick={() => onSelectTab('browser')}
             className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium ${
-              activeTab === 'changes'
+              activeTab === 'browser'
                 ? 'bg-slate-800 text-slate-100'
                 : 'text-slate-400 hover:bg-slate-900 hover:text-slate-200'
             }`}
           >
-            <FileDiff className="h-3.5 w-3.5" />
-            <span>变更{changedCount > 0 ? ` (${changedCount})` : ''}</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => onSelectTab('jobs')}
-            className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium ${
-              activeTab === 'jobs'
-                ? 'bg-slate-800 text-slate-100'
-                : 'text-slate-400 hover:bg-slate-900 hover:text-slate-200'
-            }`}
-          >
-            <Cpu className="h-3.5 w-3.5" />
-            <span>作业{jobs.length > 0 ? ` (${jobs.length})` : ''}</span>
+            <Globe className="h-3.5 w-3.5" />
+            <span>浏览器</span>
+            {isBrowserRunning && <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />}
           </button>
         </div>
 
@@ -119,11 +152,12 @@ export const WorkspaceInspector: React.FC<WorkspaceInspectorProps> = ({
           <WorkspaceFilesPanel
             auth={auth}
             sessionId={sessionId}
+            workspacePath={workspacePath}
             workspaceRevision={workspaceRevision}
             onAttachWorkspaceFile={onAttachWorkspaceFile}
           />
         )}
-        {activeTab === 'changes' && (
+        {activeTab === 'changes' && showEngineeringTabs && (
           <WorkspaceChangesPanel
             sessionId={sessionId}
             changes={changes}
@@ -133,7 +167,7 @@ export const WorkspaceInspector: React.FC<WorkspaceInspectorProps> = ({
             onRefresh={onRefreshChanges}
           />
         )}
-        {activeTab === 'jobs' && (
+        {activeTab === 'jobs' && showEngineeringTabs && (
           <JobsPanel
             auth={auth}
             sessionId={sessionId}
@@ -142,6 +176,15 @@ export const WorkspaceInspector: React.FC<WorkspaceInspectorProps> = ({
             executionBackend={executionBackend}
             onVerifyJob={onVerifyJob}
             onJobsMutated={onJobsMutated}
+          />
+        )}
+        {activeTab === 'browser' && (
+          <BrowserPanel
+            auth={auth}
+            sessionId={sessionId}
+            browserState={browserState}
+            controlPlaneAvailable={controlPlaneAvailable}
+            onStateUpdated={(next) => onBrowserStateUpdated?.(next)}
           />
         )}
       </div>

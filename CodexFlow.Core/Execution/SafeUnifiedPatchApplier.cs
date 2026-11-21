@@ -23,7 +23,10 @@ public static class SafeUnifiedPatchApplier
     private const long MaxFileBytes = 8L * 1024 * 1024;
     private const int MaxFiles = 500;
 
-    public static async Task<PatchApplyResult> ApplyAsync(string workspaceRoot, string patch, CancellationToken ct = default, string gitExecutable = "git")
+    public static Task<PatchApplyResult> ApplyAsync(string workspaceRoot, string patch, CancellationToken cancellationToken)
+        => ApplyAsync(workspaceRoot, patch, ct: cancellationToken);
+
+    public static async Task<PatchApplyResult> ApplyAsync(string workspaceRoot, string patch, string gitExecutable = "git", CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(workspaceRoot);
         ArgumentNullException.ThrowIfNull(patch);

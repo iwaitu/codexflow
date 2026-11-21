@@ -22,13 +22,13 @@ public sealed record SkillValidationResult(
 /// </summary>
 public static class SkillDefinitionV1ValidatorAndCanonicalizer
 {
-    private static readonly JsonSerializerOptions CanonicalJsonOptions = new()
+    private static readonly BusinessSkillDefinitionJsonContext CanonicalJson = new(new JsonSerializerOptions
     {
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
         WriteIndented = false
-    };
+    });
 
     private static readonly HashSet<string> AllowedTransformJoinMissingPolicies = new(StringComparer.Ordinal)
     {
@@ -75,7 +75,7 @@ public static class SkillDefinitionV1ValidatorAndCanonicalizer
             ValidationEvidence = new SkillValidationEvidenceDto()
         };
 
-        var json = JsonSerializer.Serialize(normalized, CanonicalJsonOptions);
+        var json = JsonSerializer.Serialize(normalized, CanonicalJson.SkillDefinitionV1);
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(json));
         return Convert.ToHexString(hash).ToLowerInvariant();
     }

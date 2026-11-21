@@ -3,9 +3,12 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 using CodexFlow.Core.Abstractions;
+using CodexFlow.Core.Agents.Tools;
 using CodexFlow.Core.Constants;
 using Microsoft.Extensions.AI;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using CodexFlow.Core.Models;
@@ -41,21 +44,24 @@ public static class CodexToolFunctionAdapterFactory
         ArgumentNullException.ThrowIfNull(tool);
 
         var name = tool.Name ?? "unknown";
+        var canonicalName = name.ToLowerInvariant();
         var description = tool.Description ?? "";
 
-        return name.ToLowerInvariant() switch
+        return canonicalName switch
         {
-            "ivilson_read"          => CreateForIvilsonRead(tool, description),
+            "ivilson_read"          => SourceGeneratedToolFunction.ReadFile(tool, description),
             "hs_read"               => CreateForHsRead(tool, description),
             "ivilson_ls"            => CreateForIvilsonLs(tool, description),
-            "list_workspace"        => CreateForListWorkspace(tool, description),
+            "list_workspace"        => SupportsManagedToolReflection
+                ? CreateForListWorkspace(tool, description)
+                : SourceGeneratedToolFunction.ListWorkspace(tool, description),
             "glob"                  => CreateForGlob(tool, description),
             "write_file"            => CreateForWriteFile(tool, description),
             "edit_file"             => CreateForEditFile(tool, description),
             "notebook_edit"         => CreateForNotebookEdit(tool, description),
             "delete_file"           => CreateForDeleteFile(tool, description),
             "create_directory"      => CreateForCreateDirectory(tool, description),
-            "search_in_files"       => CreateForSearchInFiles(tool, description),
+            "search_in_files"       => SourceGeneratedToolFunction.SearchFiles(tool, description),
             "exec_code"             => CreateForExecCode(tool, description),
             "run_command" or "exec_cmd" => CreateForRunCommand(tool, description),
             "run_shell"             => CreateForRunShell(tool, description),
@@ -65,7 +71,7 @@ public static class CodexToolFunctionAdapterFactory
             "search_file_index"     => CreateForSearchFileIndex(tool, description),
             "run_tests"             => CreateForRunTests(tool, description),
             "analyze_project"       => CreateForAnalyzeProject(tool, description),
-            "analyze_code"          => CreateForAnalyzeCode(tool, description),
+            "analyze_code"          => SourceGeneratedToolFunction.AnalyzeCode(tool, description),
             "lsp_get_diagnostics"   => CreateForLspGetDiagnostics(tool, description),
             "lsp_document_symbols"  => CreateForLspDocumentSymbols(tool, description),
             "lsp_workspace_symbols" => CreateForLspWorkspaceSymbols(tool, description),
@@ -98,6 +104,15 @@ public static class CodexToolFunctionAdapterFactory
             "user_learn_preference" => CreateForUserLearnPreference(tool, description),
             "fetch_webpage"         => CreateForFetchWebpage(tool, description),
             "web_search"            => CreateForWebSearch(tool, description),
+            BrowserToolNames.Navigate or BrowserToolNames.Snapshot or BrowserToolNames.Act or BrowserToolNames.Tabs
+                or BrowserToolNames.RequestTakeover or BrowserToolNames.Evaluate when !SupportsManagedToolReflection
+                => SourceGeneratedToolFunction.Browser(tool, canonicalName, description),
+            BrowserToolNames.Navigate => CreateForBrowserNavigate(tool, description),
+            BrowserToolNames.Snapshot => CreateForBrowserSnapshot(tool, description),
+            BrowserToolNames.Act => CreateForBrowserAct(tool, description),
+            BrowserToolNames.Tabs => CreateForBrowserTabs(tool, description),
+            BrowserToolNames.RequestTakeover => CreateForBrowserRequestTakeover(tool, description),
+            BrowserToolNames.Evaluate => CreateForBrowserEvaluate(tool, description),
             "skill"                 => CreateForSkill(tool, description),
             "list_mcp_resources"    => CreateForListMcpResources(tool, description),
             "read_mcp_resource"     => CreateForReadMcpResource(tool, description),
@@ -113,11 +128,13 @@ public static class CodexToolFunctionAdapterFactory
             "tool_search"           => CreateForToolSearch(tool, description),
             "list_business_skills"  => CreateForListBusinessSkills(tool, description),
             "run_business_skill"    => CreateForRunBusinessSkill(tool, description),
-            _                       => CreateFallback(tool, name, description),
+            _                       => SupportsManagedToolReflection
+                ? CreateFallback(tool, name, description)
+                : SourceGeneratedToolFunction.Fallback(tool, name, description),
         };
     }
 
-    private static Dictionary<string, object?> CreateArgs(
+    internal static Dictionary<string, object?> CreateArgs(
         string? session_id = null,
         string? workspace_path = null,
         string? project_root = null)
@@ -149,6 +166,9 @@ public static class CodexToolFunctionAdapterFactory
         }
     }
 
+    internal static bool SupportsManagedToolReflection =>
+        RuntimeFeature.IsDynamicCodeSupported && JsonSerializer.IsReflectionEnabledByDefault;
+
     /// <summary>
     /// Serializes a tool result keeping the CodexToolResult JSON shape and adds the explicit
     /// <c>__icodex_tool_result</c> marker so downstream consumers can recognise a typed tool envelope
@@ -159,8 +179,26 @@ public static class CodexToolFunctionAdapterFactory
     internal static JsonNode MarkResult(CodexToolResult result)
     {
         ArgumentNullException.ThrowIfNull(result);
-        // Web defaults (camelCase) match what AIFunctionFactory produced before, so existing consumers keep working.
-        var node = JsonSerializer.SerializeToNode(result, MarkedResultJsonOptions) as JsonObject ?? new JsonObject();
+        return TryMarkManagedResult(result) is { } managed
+            ? MarkEnvelope(managed)
+            : SourceGeneratedToolFunction.MarkSourceGeneratedResult(result);
+    }
+
+    [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Open tool metadata uses reflection only when the runtime supports dynamic code and STJ default reflection is enabled.")]
+    [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "The reflection branch requires runtime dynamic code support, which Native AOT disables.")]
+    private static JsonObject? TryMarkManagedResult(CodexToolResult result)
+    {
+        if (!SupportsManagedToolReflection)
+        {
+            return null;
+        }
+
+        // Web defaults preserve the legacy JSON for managed plug-ins.
+        return JsonSerializer.SerializeToNode(result, MarkedResultJsonOptions) as JsonObject ?? new JsonObject();
+    }
+
+    internal static JsonNode MarkEnvelope(JsonObject node)
+    {
         node["__icodex_tool_result"] = true;
         return ToolResultSizeGuard.Apply(node);
     }
@@ -168,24 +206,6 @@ public static class CodexToolFunctionAdapterFactory
     // ──────────────────────────────────────────────────────────
     // Per-tool typed factories
     // ──────────────────────────────────────────────────────────
-
-    private static AIFunction CreateForIvilsonRead(ICodexTool tool, string description) =>
-        AIFunctionFactory.Create(
-            async (string path, string? mode = null, int? start_line = null, int? end_line = null,
-                   int? window_start_line = null, int? window_line_count = null,
-                   string? session_id = null, string? workspace_path = null, string? project_root = null,
-                   CancellationToken ct = default) =>
-            {
-                var args = CreateArgs(session_id, workspace_path, project_root);
-                args["path"] = path;
-                if (mode is not null) args["mode"] = mode;
-                if (start_line.HasValue) args["start_line"] = start_line.Value;
-                if (end_line.HasValue) args["end_line"] = end_line.Value;
-                if (window_start_line.HasValue) args["window_start_line"] = window_start_line.Value;
-                if (window_line_count.HasValue) args["window_line_count"] = window_line_count.Value;
-                return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
-            },
-            new AIFunctionFactoryOptions { Name = "ivilson_read", Description = description });
 
     private static AIFunction CreateForHsRead(ICodexTool tool, string description) =>
         AIFunctionFactory.Create(
@@ -318,22 +338,6 @@ public static class CodexToolFunctionAdapterFactory
                 return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
             },
             new AIFunctionFactoryOptions { Name = "create_directory", Description = description });
-
-    private static AIFunction CreateForSearchInFiles(ICodexTool tool, string description) =>
-        AIFunctionFactory.Create(
-            async (string pattern, string? path = null, bool? ignore_case = null,
-                   int? max_results = null,
-                   string? session_id = null, string? workspace_path = null, string? project_root = null,
-                   CancellationToken ct = default) =>
-            {
-                var args = CreateArgs(session_id, workspace_path, project_root);
-                args["pattern"] = pattern;
-                args["path"] = path ?? ".";
-                args["ignore_case"] = ignore_case ?? true;
-                args["max_results"] = max_results ?? 50;
-                return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
-            },
-            new AIFunctionFactoryOptions { Name = "search_in_files", Description = description });
 
     private static AIFunction CreateForExecCode(ICodexTool tool, string description) =>
         AIFunctionFactory.Create(
@@ -525,18 +529,6 @@ public static class CodexToolFunctionAdapterFactory
                 return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
             },
             new AIFunctionFactoryOptions { Name = "lsp_find_references", Description = description });
-
-    private static AIFunction CreateForAnalyzeCode(ICodexTool tool, string description) =>
-        AIFunctionFactory.Create(
-            async (string code, CancellationToken ct = default) =>
-            {
-                var args = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
-                {
-                    ["code"] = code,
-                };
-                return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
-            },
-            new AIFunctionFactoryOptions { Name = "analyze_code", Description = description });
 
     private static AIFunction CreateForGenerateDevPlan(ICodexTool tool, string description) =>
         AIFunctionFactory.Create(
@@ -1115,6 +1107,90 @@ public static class CodexToolFunctionAdapterFactory
                 return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
             },
             new AIFunctionFactoryOptions { Name = "web_search", Description = description });
+
+    private static AIFunction CreateForBrowserNavigate(ICodexTool tool, string description) =>
+        AIFunctionFactory.Create(
+            async (string? url = null, string? action = null, CancellationToken ct = default) =>
+            {
+                var args = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+                if (url is not null) args["url"] = url;
+                if (action is not null) args["action"] = action;
+                return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
+            },
+            new AIFunctionFactoryOptions { Name = "browser_navigate", Description = description });
+
+    private static AIFunction CreateForBrowserSnapshot(ICodexTool tool, string description) =>
+        AIFunctionFactory.Create(
+            async (int? max_chars = null, bool? include_console = null, bool? include_network_errors = null, bool? include_screenshot = null, bool? annotate_screenshot = null, CancellationToken ct = default) =>
+            {
+                var args = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+                if (max_chars is not null) args["max_chars"] = max_chars;
+                if (include_console is not null) args["include_console"] = include_console;
+                if (include_network_errors is not null) args["include_network_errors"] = include_network_errors;
+                if (include_screenshot is not null) args["include_screenshot"] = include_screenshot;
+                if (annotate_screenshot is not null) args["annotate_screenshot"] = annotate_screenshot;
+                return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
+            },
+            new AIFunctionFactoryOptions { Name = "browser_snapshot", Description = description });
+
+    private static AIFunction CreateForBrowserAct(ICodexTool tool, string description) =>
+        AIFunctionFactory.Create(
+            async (string action, string? @ref = null, string? text = null, string? key = null, string? file_path = null, int? delta_y = null, int? timeout_ms = null, CancellationToken ct = default) =>
+            {
+                var args = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["action"] = action
+                };
+                if (@ref is not null) args["ref"] = @ref;
+                if (text is not null) args["text"] = text;
+                if (key is not null) args["key"] = key;
+                if (file_path is not null) args["file_path"] = file_path;
+                if (delta_y is not null) args["delta_y"] = delta_y;
+                if (timeout_ms is not null) args["timeout_ms"] = timeout_ms;
+                return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
+            },
+            new AIFunctionFactoryOptions { Name = "browser_act", Description = description });
+
+    private static AIFunction CreateForBrowserTabs(ICodexTool tool, string description) =>
+        AIFunctionFactory.Create(
+            async (string action, string? tab_id = null, string? url = null, CancellationToken ct = default) =>
+            {
+                var args = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["action"] = action
+                };
+                if (tab_id is not null) args["tab_id"] = tab_id;
+                if (url is not null) args["url"] = url;
+                return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
+            },
+            new AIFunctionFactoryOptions { Name = "browser_tabs", Description = description });
+
+    private static AIFunction CreateForBrowserRequestTakeover(ICodexTool tool, string description) =>
+        AIFunctionFactory.Create(
+            async (string reason, int? timeout_seconds = null, CancellationToken ct = default) =>
+            {
+                var args = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["reason"] = reason
+                };
+                if (timeout_seconds is not null) args["timeout_seconds"] = timeout_seconds;
+                return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
+            },
+            new AIFunctionFactoryOptions { Name = "browser_request_takeover", Description = description });
+
+    private static AIFunction CreateForBrowserEvaluate(ICodexTool tool, string description) =>
+        AIFunctionFactory.Create(
+            async (string expression, bool? await_promise = null, int? max_result_chars = null, CancellationToken ct = default) =>
+            {
+                var args = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["expression"] = expression
+                };
+                if (await_promise is not null) args["await_promise"] = await_promise;
+                if (max_result_chars is not null) args["max_result_chars"] = max_result_chars;
+                return MarkResult(await tool.ExecuteAsync(args, ct).ConfigureAwait(false));
+            },
+            new AIFunctionFactoryOptions { Name = "browser_evaluate", Description = description });
 
     private static AIFunction CreateForSkill(ICodexTool tool, string description) =>
         AIFunctionFactory.Create(

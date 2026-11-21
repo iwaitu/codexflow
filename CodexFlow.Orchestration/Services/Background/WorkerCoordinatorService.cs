@@ -2,7 +2,6 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-using CodexFlow.Orchestration.Jobs;
 using CodexFlow.Application.Jobs;
 using CodexFlow.Application.Jobs.Dtos;
 using CodexFlow.Core.Abstractions;
@@ -10,7 +9,6 @@ using CodexFlow.Core.Agents.Tools;
 using CodexFlow.Core.Protocols;
 using CodexFlow.Core.Workers;
 using CodexFlow.Domain.Jobs;
-using Microsoft.EntityFrameworkCore;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
@@ -24,7 +22,8 @@ namespace CodexFlow.Services.Background;
 /// </remarks>
 public sealed class WorkerCoordinatorService
 {
-    private readonly IJobDbContext _dbContext;
+    private readonly IJobStore _jobs;
+    private readonly IWorkerJobStore _workerJobs;
     private readonly IBackgroundJobService _backgroundJobService;
     private readonly IJobViewService _jobViewService;
     private readonly IGitService _gitService;
@@ -32,17 +31,20 @@ public sealed class WorkerCoordinatorService
     /// <summary>
     /// 初始化 worker 协调服务。
     /// </summary>
-    /// <param name="dbContext">后台作业数据库上下文。</param>
+    /// <param name="jobs">后台作业存储。</param>
+    /// <param name="workerJobs">Worker 检查点和工作树元数据存储。</param>
     /// <param name="backgroundJobService">后台作业生命周期管理服务。</param>
     /// <param name="jobViewService">后台作业只读视图服务。</param>
     /// <param name="gitService">用于 forge worker shadow worktree 管理的 Git 服务。</param>
     public WorkerCoordinatorService(
-        IJobDbContext dbContext,
+        IJobStore jobs,
+        IWorkerJobStore workerJobs,
         IBackgroundJobService backgroundJobService,
         IJobViewService jobViewService,
         IGitService gitService)
     {
-        _dbContext = dbContext;
+        _jobs = jobs;
+        _workerJobs = workerJobs;
         _backgroundJobService = backgroundJobService;
         _jobViewService = jobViewService;
         _gitService = gitService;
@@ -118,12 +120,9 @@ public sealed class WorkerCoordinatorService
     /// <returns>返回恢复原作业或创建 follow-up 作业的结果。</returns>
     public async Task<ContinueWorkerResult> ContinueWorkerAsync(ContinueWorkerRequest request, CancellationToken ct = default)
     {
-        var job = await _dbContext.BackgroundJobs
-            .Include(x => x.Checkpoints)
-            .SingleOrDefaultAsync(x => x.JobId == request.JobId, ct)
-            .ConfigureAwait(false);
+        var continuation = await _workerJobs.FindContinuationAsync(request.JobId, ct).ConfigureAwait(false);
 
-        if (job == null)
+        if (continuation is null)
         {
             return new ContinueWorkerResult
             {
@@ -134,6 +133,7 @@ public sealed class WorkerCoordinatorService
             };
         }
 
+        var job = continuation.Job;
         if (!WorkerJobTypes.TryResolveWorkerType(job.JobType, out var workerType))
         {
             return new ContinueWorkerResult
@@ -168,10 +168,7 @@ public sealed class WorkerCoordinatorService
             var resumeToken = request.ResumeToken;
             if (string.IsNullOrWhiteSpace(resumeToken))
             {
-                resumeToken = job.Checkpoints
-                    .OrderByDescending(checkpoint => checkpoint.SequenceNumber)
-                    .Select(checkpoint => checkpoint.ResumeToken)
-                    .FirstOrDefault(token => !string.IsNullOrWhiteSpace(token));
+                resumeToken = continuation.ResumeToken;
             }
 
             var resumeResult = await _backgroundJobService.ResumeJobAsync(
@@ -263,10 +260,7 @@ public sealed class WorkerCoordinatorService
     /// <returns>返回停止结果。</returns>
     public async Task<StopWorkerResult> StopWorkerAsync(string jobId, CancellationToken ct = default)
     {
-        var job = await _dbContext.BackgroundJobs
-            .AsNoTracking()
-            .SingleOrDefaultAsync(x => x.JobId == jobId, ct)
-            .ConfigureAwait(false);
+        var job = await _jobs.FindAsync(jobId, ct).ConfigureAwait(false);
 
         if (job == null)
         {
@@ -402,9 +396,7 @@ public sealed class WorkerCoordinatorService
     /// <returns>返回清理结果及 worktree 路径。</returns>
     public async Task<CleanupWorkerWorktreeResult> CleanupWorkerWorktreeAsync(string jobId, CancellationToken ct = default)
     {
-        var job = await _dbContext.BackgroundJobs
-            .SingleOrDefaultAsync(x => x.JobId == jobId, ct)
-            .ConfigureAwait(false);
+        var job = await _jobs.FindAsync(jobId, ct).ConfigureAwait(false);
 
         if (job == null)
         {
@@ -456,27 +448,7 @@ public sealed class WorkerCoordinatorService
         }
 
         var pathExists = !string.IsNullOrWhiteSpace(shadowWorktreePath) && Directory.Exists(shadowWorktreePath);
-        if (!pathExists)
-        {
-            payload.Remove("shadowWorktreePath");
-            payload["worktreeRetained"] = false;
-            payload["worktreeCleanedAtUtc"] = DateTime.UtcNow;
-            job.PayloadJson = payload.ToString(Formatting.None);
-            job.UpdatedAtUtc = DateTime.UtcNow;
-            await _dbContext.SaveChangesAsync(ct).ConfigureAwait(false);
-
-            return new CleanupWorkerWorktreeResult
-            {
-                Success = true,
-                JobId = jobId,
-                WorktreePath = shadowWorktreePath,
-                Cleaned = false,
-                Message = "shadow worktree 已不存在，无需重复清理。"
-            };
-        }
-
-        var removed = await _gitService.RemoveShadowWorktreeAsync(mainWorkspacePath, worktreeKey).ConfigureAwait(false);
-        if (!removed)
+        if (pathExists && !await _gitService.RemoveShadowWorktreeAsync(mainWorkspacePath, worktreeKey).ConfigureAwait(false))
         {
             return new CleanupWorkerWorktreeResult
             {
@@ -487,20 +459,26 @@ public sealed class WorkerCoordinatorService
             };
         }
 
-        payload["lastShadowWorktreePath"] = shadowWorktreePath;
+        if (pathExists)
+        {
+            payload["lastShadowWorktreePath"] = shadowWorktreePath;
+        }
         payload.Remove("shadowWorktreePath");
         payload["worktreeRetained"] = false;
-        payload["worktreeCleanedAtUtc"] = DateTime.UtcNow;
-        job.PayloadJson = payload.ToString(Formatting.None);
-        job.UpdatedAtUtc = DateTime.UtcNow;
-        await _dbContext.SaveChangesAsync(ct).ConfigureAwait(false);
+        var updatedAtUtc = DateTime.UtcNow;
+        payload["worktreeCleanedAtUtc"] = updatedAtUtc;
+        var saved = await _workerJobs.TryUpdateWorktreePayloadAsync(
+            job, payload.ToString(Formatting.None), updatedAtUtc, ct).ConfigureAwait(false);
 
         return new CleanupWorkerWorktreeResult
         {
-            Success = true,
+            Success = saved,
             JobId = jobId,
             WorktreePath = shadowWorktreePath,
-            Cleaned = true
+            Cleaned = pathExists,
+            Message = !saved
+                ? "作业已更新，请重新检查 shadow worktree 状态。"
+                : pathExists ? null : "shadow worktree 已不存在，无需重复清理。"
         };
     }
 

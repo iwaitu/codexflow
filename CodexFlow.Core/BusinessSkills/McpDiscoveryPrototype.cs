@@ -4,6 +4,7 @@
 
 using System.Text.Json;
 using CodexFlow.Contracts.BusinessSkills;
+using CodexFlow.Core.Agents;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol;
 using ModelContextProtocol.Protocol;
@@ -31,6 +32,11 @@ public sealed record McpToolInvocationResult(
 /// </summary>
 public static class McpDiscoveryPrototype
 {
+    private const string InvalidClrArguments =
+        "MCP arguments must be JSON-compatible. Serialize custom CLR values to JsonElement and pass them to CallToolWithJsonArgumentsAsync.";
+
+    private const string InvalidJsonArguments = "MCP arguments must contain valid, initialized JsonElement values.";
+
     public static Task<McpDiscoveryResult> DiscoverToolsAsync(
         string pluginId,
         string snapshotId,
@@ -47,6 +53,7 @@ public static class McpDiscoveryPrototype
         return McpBusinessPluginAdapter.DiscoverWithClientAsync(pluginId, snapshotId, endpoint, httpClient, loggerFactory, ct);
     }
 
+    /// <summary>Calls a tool with JSON-compatible CLR arguments supported by the generated serializer.</summary>
     public static async Task<McpToolInvocationResult> CallToolAsync(
         Uri endpoint,
         HttpClient httpClient,
@@ -55,11 +62,76 @@ public static class McpDiscoveryPrototype
         ILoggerFactory? loggerFactory = null,
         CancellationToken ct = default)
     {
+        ValidateInvocation(endpoint, httpClient, toolName);
+        var jsonArgs = PrepareArguments(arguments, static value => value is JsonElement element
+            ? element
+            : ExternalToolArgumentJson.TryWriteElement(value, out var json) ? json : default, InvalidClrArguments);
+        return await CallToolCoreAsync(endpoint, httpClient, toolName, jsonArgs, loggerFactory, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Calls a tool with JSON values prepared by the caller, including serialized DTOs.</summary>
+    public static async Task<McpToolInvocationResult> CallToolWithJsonArgumentsAsync(
+        Uri endpoint,
+        HttpClient httpClient,
+        string toolName,
+        IReadOnlyDictionary<string, JsonElement> arguments,
+        ILoggerFactory? loggerFactory = null,
+        CancellationToken ct = default)
+    {
+        ValidateInvocation(endpoint, httpClient, toolName);
+        var jsonArgs = PrepareArguments(arguments, static value => value, InvalidJsonArguments);
+        return await CallToolCoreAsync(endpoint, httpClient, toolName, jsonArgs, loggerFactory, ct).ConfigureAwait(false);
+    }
+
+    private static void ValidateInvocation(Uri endpoint, HttpClient httpClient, string toolName)
+    {
         ArgumentNullException.ThrowIfNull(endpoint);
         ArgumentNullException.ThrowIfNull(httpClient);
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
-        ArgumentNullException.ThrowIfNull(arguments);
+    }
 
+    private static Dictionary<string, JsonElement> PrepareArguments<T>(
+        IReadOnlyDictionary<string, T> arguments,
+        Func<T, JsonElement> prepareValue,
+        string invalidArgumentsMessage)
+    {
+        ArgumentNullException.ThrowIfNull(arguments);
+        var jsonArgs = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        foreach (var (name, value) in arguments)
+        {
+            if (name is null)
+            {
+                throw new ArgumentException("MCP argument names must be JSON object property names.", nameof(arguments));
+            }
+
+            try
+            {
+                var json = prepareValue(value);
+                if (json.ValueKind != JsonValueKind.Undefined)
+                {
+                    jsonArgs[name] = json.Clone();
+                    continue;
+                }
+            }
+            catch (Exception ex) when (ex is JsonException or InvalidOperationException or ArgumentException or NotSupportedException)
+            {
+                // Serialization errors can include details of argument values. Keep the public error independent of their contents.
+            }
+
+            throw new ArgumentException(invalidArgumentsMessage, nameof(arguments));
+        }
+
+        return jsonArgs;
+    }
+
+    private static async Task<McpToolInvocationResult> CallToolCoreAsync(
+        Uri endpoint,
+        HttpClient httpClient,
+        string toolName,
+        Dictionary<string, JsonElement> jsonArgs,
+        ILoggerFactory? loggerFactory,
+        CancellationToken ct)
+    {
         var client = await McpBusinessPluginAdapter.ConnectLockedClientAsync(endpoint, httpClient, loggerFactory, ct).ConfigureAwait(false);
         await using var clientScope = client;
         if (!string.Equals(client.NegotiatedProtocolVersion, BusinessSkillDefaults.LockedMcpProtocolVersion, StringComparison.Ordinal))
@@ -72,12 +144,6 @@ public static class McpDiscoveryPrototype
                 $"Negotiated MCP version '{client.NegotiatedProtocolVersion}' does not match '{BusinessSkillDefaults.LockedMcpProtocolVersion}'.",
                 null,
                 []);
-        }
-
-        var jsonArgs = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
-        foreach (var pair in arguments)
-        {
-            jsonArgs[pair.Key] = JsonSerializer.SerializeToElement(pair.Value);
         }
 
         var result = await client.CallToolAsync(

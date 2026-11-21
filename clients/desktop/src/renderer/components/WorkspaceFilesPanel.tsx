@@ -17,6 +17,7 @@ import { formatFileSize } from '../lib/attachments';
 interface WorkspaceFilesPanelProps {
   auth: ApiAuthContext | null;
   sessionId: string | null;
+  workspacePath?: string | null;
   workspaceRevision: number;
   onAttachWorkspaceFile?: (file: { name: string; path: string; sizeBytes: number }) => void;
 }
@@ -24,6 +25,7 @@ interface WorkspaceFilesPanelProps {
 export const WorkspaceFilesPanel: React.FC<WorkspaceFilesPanelProps> = ({
   auth,
   sessionId,
+  workspacePath,
   workspaceRevision,
   onAttachWorkspaceFile,
 }) => {
@@ -77,6 +79,34 @@ export const WorkspaceFilesPanel: React.FC<WorkspaceFilesPanelProps> = ({
     setFileError(null);
   };
 
+  const handleContextMenu = async (
+    event: React.MouseEvent,
+    target: { relativePath: string; isDirectory: boolean },
+  ) => {
+    const showMenu = window.codexflow?.showWorkspaceFileContextMenu;
+    if (!workspacePath || !showMenu) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    try {
+      const result = await showMenu({
+        workspacePath,
+        relativePath: target.relativePath,
+        isDirectory: target.isDirectory,
+      });
+      if (!result.ok && result.error) {
+        setFileError(result.error);
+      } else if (result.ok && !result.cancelled) {
+        setFileError(null);
+      }
+    } catch (error) {
+      setFileError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
   const breadcrumbs = currentPath.split('/').filter(Boolean);
   const entries = listingQuery.data?.entries ?? [];
 
@@ -105,6 +135,7 @@ export const WorkspaceFilesPanel: React.FC<WorkspaceFilesPanelProps> = ({
               setCurrentPath('');
               setSelectedFile(null);
             }}
+            onContextMenu={(event) => void handleContextMenu(event, { relativePath: '', isDirectory: true })}
             className={`rounded px-1.5 py-0.5 font-mono text-[11px] ${
               !currentPath ? 'bg-slate-800 text-slate-100' : 'text-slate-400 hover:bg-slate-800/70 hover:text-slate-200'
             }`}
@@ -123,6 +154,9 @@ export const WorkspaceFilesPanel: React.FC<WorkspaceFilesPanelProps> = ({
                     setCurrentPath(target);
                     setSelectedFile(null);
                   }}
+                  onContextMenu={(event) =>
+                    void handleContextMenu(event, { relativePath: target, isDirectory: true })
+                  }
                   className={`truncate rounded px-1.5 py-0.5 font-mono text-[11px] ${
                     isLast ? 'bg-slate-800 text-slate-100' : 'text-slate-400 hover:bg-slate-800/70 hover:text-slate-200'
                   }`}
@@ -158,7 +192,13 @@ export const WorkspaceFilesPanel: React.FC<WorkspaceFilesPanelProps> = ({
         </div>
       )}
 
-      <div className={`min-h-0 overflow-y-auto px-2 py-2 ${selectedFile ? 'max-h-[45%] border-b border-slate-800' : 'flex-1'}`}>
+      <div
+        data-testid="workspace-files-list"
+        onContextMenu={(event) =>
+          void handleContextMenu(event, { relativePath: currentPath, isDirectory: true })
+        }
+        className={`min-h-0 overflow-y-auto px-2 py-2 ${selectedFile ? 'max-h-[45%] border-b border-slate-800' : 'flex-1'}`}
+      >
         {listingQuery.isLoading ? (
           <div className="px-2 py-4 text-xs text-slate-500">正在加载工作区文件...</div>
         ) : entries.length === 0 ? (
@@ -174,6 +214,12 @@ export const WorkspaceFilesPanel: React.FC<WorkspaceFilesPanelProps> = ({
                   key={entryPath}
                   type="button"
                   onClick={() => void handleOpenEntry(entry)}
+                  onContextMenu={(event) =>
+                    void handleContextMenu(event, {
+                      relativePath: entryPath,
+                      isDirectory: Boolean(entry.isDirectory),
+                    })
+                  }
                   className={`flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-xs ${
                     isSelected
                       ? 'bg-indigo-500/20 text-indigo-100'

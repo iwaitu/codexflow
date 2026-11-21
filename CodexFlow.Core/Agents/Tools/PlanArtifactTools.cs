@@ -6,7 +6,6 @@ using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Models;
 using CodexFlow.Core.Planning.Artifacts;
 using Microsoft.Extensions.Logging;
-using Newtonsoft.Json;
 using System.Text.RegularExpressions;
 
 namespace CodexFlow.Core.Agents.Tools;
@@ -442,16 +441,14 @@ public sealed class RequestPlanApprovalTool(
             artifact = await approvalService.RequestApprovalAsync(artifact.Id, ct).ConfigureAwait(false);
             return CodexToolResult.Succeeded(
                 "PLAN_APPROVAL_REQUESTED",
-                metadata: new
-                {
-                    plan_artifact_id = artifact.Id,
-                    plan_version = artifact.Version,
-                    markdown_hash = PlanArtifactSupport.ComputeMarkdownHash(artifact.Markdown),
-                    goal = artifact.Goal,
-                    task_count = artifact.Tasks.Count,
-                    status = artifact.Status.ToString(),
-                    markdown = artifact.Markdown
-                });
+                metadata: new PlanApprovalRequestMetadata(
+                    artifact.Id,
+                    artifact.Version,
+                    PlanArtifactSupport.ComputeMarkdownHash(artifact.Markdown),
+                    artifact.Goal,
+                    artifact.Tasks.Count,
+                    artifact.Status.ToString(),
+                    artifact.Markdown));
         }
         catch (InvalidOperationException ex)
         {
@@ -484,7 +481,7 @@ public sealed class ApprovePlanTool(
             var userId = PlanArtifactToolSupport.ReadString(arguments, "user_id") ?? string.Empty;
             var feedback = PlanArtifactToolSupport.ReadString(arguments, "feedback");
             var acceptDebt = PlanArtifactToolSupport.ReadBool(arguments, ApprovalArguments.AcceptExistingDependencyDebt);
-            artifact = await approvalService.ApproveAsync(artifact.Id, userId, feedback, ct, acceptDebt).ConfigureAwait(false);
+            artifact = await approvalService.ApproveAsync(artifact.Id, userId, feedback, acceptDebt, ct).ConfigureAwait(false);
             var projection = await projectionService.ProjectAsync(artifact, session, ct).ConfigureAwait(false);
             if (projection.Success)
             {
@@ -607,7 +604,7 @@ public sealed class ProjectPlanToTasksTool(
             }
 
             return CodexToolResult.Succeeded(
-                JsonConvert.SerializeObject(result.Tasks, Formatting.Indented),
+                PlanToolJson.Write(result.Tasks, indented: true),
                 metadata: new { plan_artifact_id = result.Artifact.Id, status = result.Artifact.Status.ToString(), task_count = result.Tasks.Count },
                 systemHint: "计划已投影为待执行任务。下一步必须调用 start_next_task，不要在主会话中直接读取、搜索或修改代码。",
                 requiredToolName: "start_next_task",
@@ -640,7 +637,7 @@ public sealed class PlanDiffTool(IPlanDiffService diffService) : ICodexTool
 
             var from = PlanArtifactToolSupport.ReadString(arguments, "from_plan_artifact_id");
             var diff = await diffService.DiffAsync(from, to, ct).ConfigureAwait(false);
-            return CodexToolResult.Succeeded(JsonConvert.SerializeObject(diff, Formatting.Indented));
+            return CodexToolResult.Succeeded(PlanToolJson.Write(diff, indented: true));
         }
         catch (InvalidOperationException ex)
         {
@@ -648,3 +645,12 @@ public sealed class PlanDiffTool(IPlanDiffService diffService) : ICodexTool
         }
     }
 }
+
+internal sealed record PlanApprovalRequestMetadata(
+    string plan_artifact_id,
+    string plan_version,
+    string markdown_hash,
+    string goal,
+    int task_count,
+    string status,
+    string markdown);

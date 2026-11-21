@@ -28,11 +28,6 @@ public sealed class ConfiguredStopRuntimeHook : IRuntimeHook
         "stop"
     ];
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNameCaseInsensitive = true
-    };
-
     private readonly IOptions<RuntimeHookOptions> _options;
     private readonly ILogger<ConfiguredStopRuntimeHook> _logger;
 
@@ -280,7 +275,7 @@ public sealed class ConfiguredStopRuntimeHook : IRuntimeHook
             return BeforeStopHookResult.None;
         }
 
-        var response = JsonSerializer.Deserialize<ConfiguredStopHookResponse>(json, JsonOptions);
+        var response = JsonSerializer.Deserialize(json, ConfiguredStopHookJsonContext.Default.ConfiguredStopHookResponse);
         if (response == null)
         {
             return BeforeStopHookResult.None;
@@ -329,7 +324,7 @@ public sealed class ConfiguredStopRuntimeHook : IRuntimeHook
 
         process.Start();
 
-        var input = JsonSerializer.Serialize(BuildHookInput(context), JsonOptions);
+        var input = JsonSerializer.Serialize(BuildHookInput(context), ConfiguredStopHookJsonContext.Default.ConfiguredStopHookInput);
         try
         {
             await process.StandardInput.WriteAsync(input.AsMemory(), ct).ConfigureAwait(false);
@@ -371,26 +366,21 @@ public sealed class ConfiguredStopRuntimeHook : IRuntimeHook
             TimedOut: false);
     }
 
-    private static Dictionary<string, object?> BuildHookInput(BeforeStopContext context)
-    {
-        var projectRoot = ResolveProjectRoot(context.Request);
-        return new Dictionary<string, object?>
-        {
-            ["hook_event_name"] = "Stop",
-            ["session_id"] = context.Request.SessionId,
-            ["entry_point"] = context.Request.EntryPoint.ToString(),
-            ["workspace_path"] = context.Request.Session?.WorkspacePath ?? context.Request.PromptMetadata?.WorkspacePath,
-            ["project_root"] = projectRoot,
-            ["round"] = context.Round,
-            ["stop_hook_active"] = context.StopHookActive,
-            ["continuation_count"] = context.ContinuationCount,
-            ["total_tool_calls"] = context.TotalToolCalls,
-            ["executed_tools"] = context.ExecutedToolNames.OrderBy(static name => name, StringComparer.OrdinalIgnoreCase).ToArray(),
-            ["successful_tools"] = context.SuccessfulToolNames.OrderBy(static name => name, StringComparer.OrdinalIgnoreCase).ToArray(),
-            ["last_assistant_message"] = context.LastAssistantMessage,
-            ["thinking_text"] = context.ThinkingText
-        };
-    }
+    private static ConfiguredStopHookInput BuildHookInput(BeforeStopContext context)
+        => new(
+            "Stop",
+            context.Request.SessionId,
+            context.Request.EntryPoint.ToString(),
+            context.Request.Session?.WorkspacePath ?? context.Request.PromptMetadata?.WorkspacePath,
+            ResolveProjectRoot(context.Request),
+            context.Round,
+            context.StopHookActive,
+            context.ContinuationCount,
+            context.TotalToolCalls,
+            context.ExecutedToolNames.OrderBy(static name => name, StringComparer.OrdinalIgnoreCase).ToArray(),
+            context.SuccessfulToolNames.OrderBy(static name => name, StringComparer.OrdinalIgnoreCase).ToArray(),
+            context.LastAssistantMessage,
+            context.ThinkingText);
 
     private static async Task<string> CompleteReadAsync(Task<string> readTask)
     {
@@ -443,27 +433,47 @@ public sealed class ConfiguredStopRuntimeHook : IRuntimeHook
         return value[start..(end + 1)];
     }
 
-    private sealed record ConfiguredStopHookResponse
-    {
-        [JsonPropertyName("continue")]
-        public bool Continue { get; init; }
-
-        [JsonPropertyName("prevent_stop")]
-        public bool PreventStop { get; init; }
-
-        [JsonPropertyName("message")]
-        public string? Message { get; init; }
-
-        [JsonPropertyName("reason")]
-        public string? Reason { get; init; }
-
-        [JsonPropertyName("allow_tool_calls_on_next_round")]
-        public bool? AllowToolCallsOnNextRound { get; init; }
-    }
-
     private sealed record CommandExecutionResult(
         int ExitCode,
         string Stdout,
         string Stderr,
         bool TimedOut);
 }
+
+internal sealed record ConfiguredStopHookInput(
+    [property: JsonPropertyName("hook_event_name")] string HookEventName,
+    [property: JsonPropertyName("session_id")] string SessionId,
+    [property: JsonPropertyName("entry_point")] string EntryPoint,
+    [property: JsonPropertyName("workspace_path")] string? WorkspacePath,
+    [property: JsonPropertyName("project_root")] string ProjectRoot,
+    [property: JsonPropertyName("round")] int Round,
+    [property: JsonPropertyName("stop_hook_active")] bool StopHookActive,
+    [property: JsonPropertyName("continuation_count")] int ContinuationCount,
+    [property: JsonPropertyName("total_tool_calls")] int TotalToolCalls,
+    [property: JsonPropertyName("executed_tools")] string[] ExecutedTools,
+    [property: JsonPropertyName("successful_tools")] string[] SuccessfulTools,
+    [property: JsonPropertyName("last_assistant_message")] string LastAssistantMessage,
+    [property: JsonPropertyName("thinking_text")] string ThinkingText);
+
+internal sealed record ConfiguredStopHookResponse
+{
+    [JsonPropertyName("continue")]
+    public bool Continue { get; init; }
+
+    [JsonPropertyName("prevent_stop")]
+    public bool PreventStop { get; init; }
+
+    [JsonPropertyName("message")]
+    public string? Message { get; init; }
+
+    [JsonPropertyName("reason")]
+    public string? Reason { get; init; }
+
+    [JsonPropertyName("allow_tool_calls_on_next_round")]
+    public bool? AllowToolCallsOnNextRound { get; init; }
+}
+
+[JsonSourceGenerationOptions(GenerationMode = JsonSourceGenerationMode.Metadata, PropertyNameCaseInsensitive = true)]
+[JsonSerializable(typeof(ConfiguredStopHookInput))]
+[JsonSerializable(typeof(ConfiguredStopHookResponse))]
+internal sealed partial class ConfiguredStopHookJsonContext : JsonSerializerContext;

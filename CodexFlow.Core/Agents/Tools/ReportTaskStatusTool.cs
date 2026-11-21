@@ -2,6 +2,8 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+using System.Collections;
+using System.Text.Json;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Models;
 using CodexFlow.Core.Runtime;
@@ -48,8 +50,7 @@ public sealed class ReportTaskStatusTool : ICodexTool
 
         // Told plainly rather than rejected: a rejection teaches the worker to drop the list, and the list is the honest part of the report.
         // No way out by rewording is offered either: the runtime keeps this report until a write follows it.
-        var report = WorkerStatusReport.FromArguments(System.Text.Json.JsonSerializer.SerializeToElement(arguments));
-        if (status == WorkerStatusTool.Completed && report is { IsBlocked: true })
+        if (status == WorkerStatusTool.Completed && IsReportedBlocked(arguments))
         {
             return Task.FromResult(CodexToolResult.Succeeded(
                 "已记录：你报告 completed，但 unfinished 里列出了没写入的修改，宿主按任务受阻判定。已经写入的修改会保留。" +
@@ -60,5 +61,47 @@ public sealed class ReportTaskStatusTool : ICodexTool
         return Task.FromResult(CodexToolResult.Succeeded(
             status == WorkerStatusTool.Completed ? "已记录：任务完成。" : "已记录：任务受阻，宿主会据此判定任务未完成。",
             summary: "task status: " + status));
+    }
+
+    private static bool IsReportedBlocked(Dictionary<string, object?> arguments)
+    {
+        // Preserve exact property names for the parser, including when the caller uses a case-insensitive dictionary.
+        var fields = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        foreach (var (name, value) in arguments)
+        {
+            if (name is "status" or "unfinished" or "parameters")
+            {
+                fields[name] = ReadReportField(value);
+            }
+        }
+
+        var json = JsonSerializer.SerializeToElement(fields, BuiltInToolJsonContext.Default.DictionaryStringJsonElement);
+        return WorkerStatusReport.FromArguments(json) is { IsBlocked: true };
+    }
+
+    private static JsonElement ReadReportField(object? value)
+    {
+        if (ExternalToolArgumentJson.TryWriteElement(value, out var json))
+        {
+            return json;
+        }
+
+        // Array-shaped callers can supply an enumerable whose CLR container is outside the generated catalog.
+        if (value is IEnumerable items and not IDictionary)
+        {
+            var strings = new List<string>();
+            foreach (var item in items)
+            {
+                if (ExternalToolArgumentJson.TryWriteElement(item, out var element) && element.ValueKind == JsonValueKind.String)
+                {
+                    strings.Add(element.GetString()!);
+                }
+            }
+
+            return JsonSerializer.SerializeToElement(strings.ToArray(), BuiltInToolJsonContext.Default.StringArray);
+        }
+
+        // Keep a present nonstring property present, since it still prevents wrapper fallback.
+        return JsonSerializer.SerializeToElement((string?)null, BuiltInToolJsonContext.Default.String);
     }
 }

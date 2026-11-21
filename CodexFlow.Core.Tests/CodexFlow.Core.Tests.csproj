@@ -28,6 +28,7 @@
     <ProjectReference Include="..\CodexFlow.Core\CodexFlow.Core.csproj" />
     <ProjectReference Include="..\CodexFlow.Contracts\CodexFlow.Contracts.csproj" />
     <ProjectReference Include="..\CodexFlow.Local\CodexFlow.Local.csproj" />
+    <ProjectReference Include="..\CodexFlow.Storage.Sqlite.Design\CodexFlow.Storage.Sqlite.Design.csproj" />
   </ItemGroup>
 
 </Project>
