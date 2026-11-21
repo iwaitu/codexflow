@@ -180,7 +180,7 @@ jobs:
           fi
           npx electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish never
 
-      - name: Verify macOS bundle signature and bundled backend startup
+      - name: Verify macOS bundle signature, backend startup and Roslyn worker
         if: matrix.platform == 'mac'
         shell: bash
         working-directory: clients/desktop
@@ -233,6 +233,33 @@ jobs:
               }
             });
           ' "$backend_bin" "$smoke_dir"
+
+          analysis_dir="$(dirname "$backend_bin")/code-analysis"
+          worker_bin="$analysis_dir/worker/CodexFlow.CodeAnalysis.Worker"
+          test -x "$worker_bin"
+          node - "$worker_bin" "$analysis_dir/net10.0" <<'NODE'
+          const assert = require('node:assert/strict');
+          const { spawn } = require('node:child_process');
+          const { createInterface } = require('node:readline');
+          const [bin, referenceDirectory] = process.argv.slice(2);
+          const worker = spawn(bin, [], { stdio: ['pipe', 'pipe', 'inherit'] });
+          const timer = setTimeout(() => worker.kill('SIGKILL'), 20000);
+          let reply;
+          createInterface({ input: worker.stdout }).once('line', (line) => {
+            reply = JSON.parse(line);
+            worker.stdin.end();
+          });
+          worker.on('close', (code) => {
+            clearTimeout(timer);
+            assert.equal(code, 0, 'Bundled Roslyn worker failed or timed out');
+            assert.equal(reply?.id, 1);
+            assert.ok(reply.diagnostics?.some(diagnostic => diagnostic.id === 'CS0029'));
+            console.log('Bundled macOS Roslyn worker returned CS0029.');
+          });
+          worker.stdin.write(JSON.stringify({
+            version: 1, id: 1, referenceDirectory, code: 'class Probe { int Run() => "wrong"; }',
+          }) + '\n');
+          NODE
 
       - name: Collect distributable installers and checksums
         shell: bash

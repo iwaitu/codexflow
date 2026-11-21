@@ -1,9 +1,11 @@
 <Project>
   <Target Name="PrepareNativeAotDependencyInputs"
           AfterTargets="ComputeIlcCompileInputs"
-          Condition="'$(PublishAot)' == 'true' and '$(RuntimeIdentifier)' == 'win-x64'">
+          Condition="'$(PublishAot)' == 'true' and ('$(RuntimeIdentifier)' == 'win-x64' or '$(RuntimeIdentifier)' == 'osx-arm64')">
     <PropertyGroup>
       <_NativeAotDependencyDirectory>$([System.IO.Path]::GetFullPath('$(IntermediateOutputPath)native-aot-dependencies', '$(MSBuildProjectDirectory)'))</_NativeAotDependencyDirectory>
+      <_NativeAotDependencyShell>pwsh -NoLogo -NoProfile -NonInteractive</_NativeAotDependencyShell>
+      <_NativeAotDependencyShell Condition="'$(OS)' == 'Windows_NT'">powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned</_NativeAotDependencyShell>
     </PropertyGroup>
 
     <ItemGroup>
@@ -13,7 +15,7 @@
     <Error Condition="'@(_NativeAotOriginalExcel->Count())' != '1' or '@(_NativeAotOriginalJson->Count())' != '1'"
            Text="Native AOT requires exactly one resolved ExcelDataReader and one resolved Newtonsoft.Json assembly." />
 
-    <Exec Command="powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File &quot;$(MSBuildThisFileDirectory)NativeAotDependencies\Build.ps1&quot; -OutputDirectory &quot;$(_NativeAotDependencyDirectory)&quot; -ExcelAssembly &quot;@(_NativeAotOriginalExcel->'%(FullPath)')&quot; -NewtonsoftAssembly &quot;@(_NativeAotOriginalJson->'%(FullPath)')&quot;" />
+    <Exec Command="$(_NativeAotDependencyShell) -File &quot;$(MSBuildThisFileDirectory)NativeAotDependencies/Build.ps1&quot; -OutputDirectory &quot;$(_NativeAotDependencyDirectory)&quot; -ExcelAssembly &quot;@(_NativeAotOriginalExcel->'%(FullPath)')&quot; -NewtonsoftAssembly &quot;@(_NativeAotOriginalJson->'%(FullPath)')&quot;" />
 
     <ItemGroup>
       <_NativeAotPatchedDependency Include="$(_NativeAotDependencyDirectory)/ExcelDataReader.dll;$(_NativeAotDependencyDirectory)/Newtonsoft.Json.dll" />
@@ -29,7 +31,7 @@
 
   <Target Name="PublishNativeAotDependencyLicenses"
           AfterTargets="Publish"
-          Condition="'$(PublishAot)' == 'true' and '$(RuntimeIdentifier)' == 'win-x64'">
+          Condition="'$(PublishAot)' == 'true' and ('$(RuntimeIdentifier)' == 'win-x64' or '$(RuntimeIdentifier)' == 'osx-arm64')">
     <ItemGroup>
       <_NativeAotDependencyLicense Include="$(_NativeAotDependencyDirectory)/ExcelDataReader.LICENSE.txt;$(_NativeAotDependencyDirectory)/Newtonsoft.Json.LICENSE.txt" />
     </ItemGroup>
