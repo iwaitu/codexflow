@@ -55,6 +55,7 @@ describe('AboutModal', () => {
     expect(screen.getByTestId('about-version')).toHaveTextContent('0.1.11');
     expect(screen.getByTestId('about-host-version')).toHaveTextContent('0.1.11-host');
     expect(screen.getByTestId('about-author')).toHaveTextContent(APP_METADATA.author);
+    expect(screen.getByText('版权所有 @codexflow.ai')).toBeVisible();
     expect(screen.getByTestId('about-modal')).toHaveTextContent(APP_METADATA.license);
     expect(screen.getByTestId('about-project-url')).toHaveTextContent(APP_METADATA.projectUrl);
 
