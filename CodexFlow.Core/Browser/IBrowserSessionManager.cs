@@ -37,11 +37,17 @@ public sealed record BrowserActRequest(
     int? TimeoutMs = null,
     string? FilePath = null);
 
+public sealed record BrowserPanelResult(BrowserPanelResponse? Response, string? ErrorCode = null, string? Message = null);
+
 /// <summary>
 /// Manages isolated Chromium BrowserContexts per CodexFlow session over a single shared managed browser process.
 /// </summary>
 public interface IBrowserSessionManager : IAsyncDisposable
 {
+    Task<BrowserPanelResult> ControlPanelAsync(
+        BrowserTrustedCallerContext caller, BrowserPanelRequest request, CancellationToken ct = default)
+        => Task.FromResult(new BrowserPanelResult(null, "browser_panel_disabled", "侧栏浏览器操作不可用。"));
+
     Task<BrowserOperationResult> NavigateAsync(
         BrowserTrustedCallerContext caller,
         string action,

@@ -315,6 +315,11 @@ public class ToolSearchMetaTool : ICodexTool
                     "Search the web for current technical context.",
                     "Find candidate pages before fetch_webpage."
                 ]),
+            ReadBuiltInSkillTool.ToolName => new(
+                ["skill", "frontend-browser-debug", "frontend", "browser", "debug", "前端调试", "浏览器联调"],
+                ["main"],
+                "low",
+                ["Load the built-in frontend browser debugging workflow before reproducing or verifying a UI issue."]),
             "browser_navigate" => new(
                 ["browser", "web", "url", "navigate", "spa", "localhost"],
                 ["main"],

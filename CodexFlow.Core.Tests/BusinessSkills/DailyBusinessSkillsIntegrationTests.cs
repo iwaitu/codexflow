@@ -7,16 +7,19 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using CodexFlow.Contracts;
 using CodexFlow.Contracts.BusinessSkills;
 using CodexFlow.Controllers;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Agents;
+using CodexFlow.Core.Agents.Tools;
 using CodexFlow.Core.BusinessSkills;
 using CodexFlow.Core.Execution;
 using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Core.Gateway;
 using CodexFlow.Core.Models;
 using CodexFlow.Core.Runtime;
+using CodexFlow.Core.Skills;
 using CodexFlow.Core.Telemetry;
 using CodexFlow.Core.Tests.Gateway;
 using CodexFlow.Domain.BusinessSkills;
@@ -89,6 +92,68 @@ public sealed class DailyBusinessSkillsIntegrationTests : IDisposable
         var toolNames = ExtractToolNames(captured!);
         Assert.DoesNotContain("list_business_skills", toolNames, StringComparer.OrdinalIgnoreCase);
         Assert.DoesNotContain("run_business_skill", toolNames, StringComparer.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("daily")]
+    [InlineData("development")]
+    public async Task BuiltInBrowserSkill_IsDiscoverableAndLoadsOnDemand(string mode)
+    {
+        const string bodyMarker = "确认入口和预期";
+        const string callId = "read-frontend-skill";
+        var requests = new List<LLMExecutionRequest>();
+        var fakeExecutor = new FakeStreamingLlmExecutor((request, _) =>
+        {
+            requests.Add(request);
+            if (requests.Count == 2)
+            {
+                return [new ChatResponseUpdate(ChatRole.Assistant,
+                [
+                    new FunctionCallContent(callId, ReadBuiltInSkillTool.ToolName,
+                        new Dictionary<string, object?> { ["name"] = BuiltInSkills.FrontendBrowserDebug })
+                ])];
+            }
+
+            return [new ChatResponseUpdate(ChatRole.Assistant, "ok")];
+        });
+
+        await using var host = await StartHostAsync(fakeExecutor, businessSkillsEnabled: false);
+        var sessionId = await CreateSessionAsync(host, "BrowserSkill", workMode: mode);
+        using var client = host.CreateNormalClient();
+        var catalog = await client.GetFromJsonAsync<BuiltInSkillDto[]>("/api/skills/built-in");
+        Assert.Contains(catalog!, skill => skill.Id == BuiltInSkills.FrontendBrowserDebug);
+
+        await SendDailyMessageAsync(host, sessionId, "你好");
+        Assert.Single(requests);
+        await SendDailyMessageAsync(host, sessionId, "用内置浏览器调试前端页面");
+        Assert.Equal(3, requests.Count);
+
+        Assert.Equal(SerializeToolDeclarations(requests[0]), SerializeToolDeclarations(requests[1]));
+        Assert.All(requests, request =>
+        {
+            Assert.Single(ExtractToolNames(request), name => name == ReadBuiltInSkillTool.ToolName);
+            Assert.DoesNotContain(bodyMarker, ExtractSystemPrompt(request), StringComparison.Ordinal);
+            Assert.DoesNotContain(bodyMarker, SerializeToolDeclarations(request), StringComparison.Ordinal);
+        });
+        Assert.DoesNotContain(requests.Take(2).SelectMany(request => request.Messages), message =>
+            message.Role == ChatRole.Tool);
+
+        var toolOutput = Assert.Single(requests[2].Messages.SelectMany(message => message.Contents)
+            .OfType<FunctionResultContent>(), result => result.CallId == callId);
+        var body = UnwrapToolEnvelopeOutput(toolOutput.Result!.ToString()!);
+        Assert.Contains(bodyMarker, body, StringComparison.Ordinal);
+        Assert.Contains("browser_snapshot", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task BuiltInSkillReader_RejectsNamesThatReferToFiles()
+    {
+        var result = await new ReadBuiltInSkillTool().ExecuteAsync(new Dictionary<string, object?>
+        {
+            ["name"] = "../frontend-browser-debug/SKILL.md"
+        });
+
+        Assert.Equal(ToolResultStatus.Failed, result.Status);
     }
 
     [Fact]

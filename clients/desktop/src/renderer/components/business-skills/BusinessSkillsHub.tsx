@@ -14,6 +14,7 @@ import {
   isBusinessSkillsDisabledError,
 } from './businessSkillHelpers';
 import { PluginCatalogPanel } from './PluginCatalogPanel';
+import { BuiltInSkillCatalog } from './BuiltInSkillCatalog';
 import { PublishedSkillsPanel } from './PublishedSkillsPanel';
 import { SkillBuilderWizard } from './SkillBuilderWizard';
 
@@ -141,6 +142,8 @@ export const BusinessSkillsHub: React.FC<BusinessSkillsHubProps> = ({
             </button>
           </div>
         </div>
+
+        <BuiltInSkillCatalog auth={auth} instanceKey={instanceKey} />
 
         {!controlPlaneAvailable && (
           <div

@@ -59,7 +59,7 @@ public static class ToolCapabilityCatalog
             "create_session_plan", "generate_dev_plan", "plan_patch_resolve", "request_plan_approval", "approve_plan",
             "reject_plan", "project_plan_to_tasks", "cron_create", "cron_delete", "cron_list", "monitor",
             "remote_trigger", "push_notification", "workflow", "synthetic_output", "report_task_status",
-            "list_authorized_directory",
+            "list_authorized_directory", Agents.Tools.ReadBuiltInSkillTool.ToolName,
             // 受控企业业务 Skill 工具：不写本地工作区、不执行不可信代码；外部系统写入由 BusinessSkillApprovalCoordinator 强制单次人工审批。
             "list_business_skills", "run_business_skill");
 

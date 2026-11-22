@@ -14,6 +14,8 @@ namespace CodexFlow.Gateway.Http;
 [JsonSourceGenerationOptions(JsonSerializerDefaults.Web, GenerationMode = JsonSourceGenerationMode.Metadata)]
 [JsonSerializable(typeof(ActivateSkillVersionRequest))]
 [JsonSerializable(typeof(BrowserApiErrorDto))]
+[JsonSerializable(typeof(BrowserPanelRequest))]
+[JsonSerializable(typeof(BrowserPanelResponse))]
 [JsonSerializable(typeof(BrowserSessionCloseResponse))]
 [JsonSerializable(typeof(BrowserSessionStateDto))]
 [JsonSerializable(typeof(BrowserSettingsDto))]

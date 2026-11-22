@@ -14,7 +14,60 @@ describe('Web Browser Use desktop UI & store', () => {
 
   afterEach(() => {
     cleanup();
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  it('opens the first URL directly from the address bar before any browser state has arrived', async () => {
+    const controlBrowserPanel = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, data: { active: true, leaseId: 'lease-1' } })
+      .mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal('codexflow', { controlBrowserPanel });
+    render(
+      <BrowserPanel
+        auth={{ baseUrl: 'http://127.0.0.1:32586', accessToken: 'test-token' }}
+        sessionId="s-browser-1"
+        browserState={null}
+        controlPlaneAvailable
+        onStateUpdated={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByRole('textbox', { name: '浏览器地址栏' }), {
+      target: { value: 'example.com' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^打开$/ }));
+
+    await waitFor(() => {
+      expect(controlBrowserPanel).toHaveBeenCalledWith('s-browser-1', { action: 'start' });
+      expect(controlBrowserPanel).toHaveBeenCalledWith('s-browser-1', {
+        action: 'navigate', leaseId: 'lease-1', direction: 'goto', url: 'https://example.com',
+      });
+    });
+  });
+
+  it('explains a missing panel endpoint and keeps the address for another attempt', async () => {
+    const controlBrowserPanel = vi.fn().mockResolvedValue({
+      ok: false, status: 404, errorCode: 'http_404', errorMessage: 'Not Found',
+    });
+    vi.stubGlobal('codexflow', { controlBrowserPanel });
+    render(
+      <BrowserPanel
+        auth={{ baseUrl: 'http://127.0.0.1:32586', accessToken: 'test-token' }}
+        sessionId="s-browser-1"
+        browserState={null}
+        controlPlaneAvailable
+        onStateUpdated={vi.fn()}
+      />,
+    );
+
+    const address = screen.getByRole('textbox', { name: '浏览器地址栏' });
+    fireEvent.change(address, { target: { value: 'example.com' } });
+    fireEvent.click(screen.getByRole('button', { name: /^打开$/ }));
+
+    expect(await screen.findByText(/当前后端版本不支持侧栏浏览器/)).toBeVisible();
+    expect(address).toHaveValue('example.com');
+    expect(controlBrowserPanel).toHaveBeenCalledExactlyOnceWith('s-browser-1', { action: 'start' });
   });
 
   it('reduces browser SSE events in useAppStore and clears approvals on resolution', () => {

@@ -33,6 +33,7 @@ public sealed class BrowserOptions
     ];
 
     public bool Enabled { get; set; } = true;
+    public bool EnablePanelControl { get; set; } = true;
 
     public string? ExecutablePath { get; set; }
 
