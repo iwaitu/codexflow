@@ -308,11 +308,17 @@ export const apiClient = {
     );
   },
 
-  getContextWindow(auth: ApiAuthContext, sessionId: string, signal?: AbortSignal): Promise<SessionContextWindow> {
+  getContextWindow(
+    auth: ApiAuthContext,
+    sessionId: string,
+    signal?: AbortSignal,
+    conversationId?: string,
+  ): Promise<SessionContextWindow> {
+    const query = conversationId ? `?conversationId=${encodeURIComponent(conversationId)}` : '';
     return requestJson<SessionContextWindow>(
       auth,
       'GET',
-      `/api/gateway/session/${encodeURIComponent(sessionId)}/context-window`,
+      `/api/gateway/session/${encodeURIComponent(sessionId)}/context-window${query}`,
       undefined,
       signal,
     );

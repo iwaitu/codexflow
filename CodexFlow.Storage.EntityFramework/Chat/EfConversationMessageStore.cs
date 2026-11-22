@@ -14,15 +14,13 @@ public sealed class EfConversationMessageStore(IJobDbContext db) : IConversation
     public Task<List<IvilsonChatMessage>> ReadAfterAsync(string conversationId, DateTime? createdAfterUtc, int? hardLimit)
     {
         var query = db.ChatMessages.AsNoTracking().Where(message => message.ConversationId == conversationId);
-        // Uncompressed sessions always receive their full history.
-        if (!createdAfterUtc.HasValue)
-            return query.OrderBy(message => message.Created).ToListAsync();
-
-        query = query.Where(message => message.Created > createdAfterUtc.Value);
+        if (createdAfterUtc.HasValue)
+            query = query.Where(message => message.Created > createdAfterUtc.Value);
         if (hardLimit.HasValue)
-            query = query.OrderByDescending(message => message.Created).Take(hardLimit.Value);
+            query = query.OrderByDescending(message => message.Created).ThenByDescending(message => message.Id)
+                .Take(Math.Max(0, hardLimit.Value));
 
-        return query.OrderBy(message => message.Created).ToListAsync();
+        return query.OrderBy(message => message.Created).ThenBy(message => message.Id).ToListAsync();
     }
 
     public async Task AppendAsync(string userId, string? model, IvilsonChatMessage message)

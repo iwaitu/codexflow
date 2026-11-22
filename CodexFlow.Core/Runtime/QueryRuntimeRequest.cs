@@ -129,7 +129,10 @@ public sealed record PromptMetadata(
 /// </summary>
 public sealed record QueryRuntimeConversationCapture(
     IReadOnlyList<QueryRuntimeConversationMessage> InputTurns,
-    string AssistantRole = "assistant");
+    string AssistantRole = "assistant")
+{
+    public string? ConversationId { get; init; }
+}
 
 /// <summary>
 /// 会话窗口回写消息

@@ -17,6 +17,7 @@ using CodexFlow.Logging;
 using CodexFlow.Orchestration.Hosting;
 using CodexFlow.Orchestration.Services;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Options;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Http.Features;
@@ -38,10 +39,12 @@ public class CodexGatewayController : GatewayEndpointHandler
 {
     private readonly ICodexGateway _gateway;
     private readonly IChatService _chatService;
+    private readonly IConversationDirectory? _conversationDirectory;
     private readonly CodexSessionManager _sessionManager;
     private readonly ITaskListService? _taskListService;
     private readonly IWorkspaceVectorStoreService? _workspaceVectorStoreService;
     private readonly ContextCompressionTriggerOptions _contextCompressionTriggerOptions;
+    private readonly CodexFlow.Models.ContextCompressionOptions _contextCompressionOptions;
     private readonly ILogger<CodexGatewayController> _logger;
     private readonly IWorkspaceSettingsService? _workspaceSettingsService;
     private readonly IWorkspaceRootProvider? _workspaceRootProvider;
@@ -66,6 +69,8 @@ public class CodexGatewayController : GatewayEndpointHandler
     /// <param name="auditStore">Optional workflow audit store.</param>
     /// <param name="configuration">Optional configuration root for checking active model capabilities.</param>
     /// <param name="modelSettingsService">Optional model settings service for live multimodal capability lookup.</param>
+    /// <param name="contextCompressionOptions">Prompt history and summary limits.</param>
+    /// <param name="conversationDirectory">Conversation metadata lookup for scoped history reads.</param>
     public CodexGatewayController(
         ICodexGateway gateway,
         IChatService chatService,
@@ -79,14 +84,18 @@ public class CodexGatewayController : GatewayEndpointHandler
         IControlPlaneStateProvider? controlPlane = null,
         IWorkflowAuditStore? auditStore = null,
         IConfiguration? configuration = null,
-        IModelSettingsService? modelSettingsService = null)
+        IModelSettingsService? modelSettingsService = null,
+        IOptions<CodexFlow.Models.ContextCompressionOptions>? contextCompressionOptions = null,
+        IConversationDirectory? conversationDirectory = null)
     {
         _gateway = gateway;
         _chatService = chatService;
+        _conversationDirectory = conversationDirectory;
         _sessionManager = sessionManager;
         _taskListService = taskListService;
         _workspaceVectorStoreService = workspaceVectorStoreService;
         _contextCompressionTriggerOptions = contextCompressionTriggerOptions ?? new ContextCompressionTriggerOptions();
+        _contextCompressionOptions = contextCompressionOptions?.Value ?? new CodexFlow.Models.ContextCompressionOptions();
         _logger = logger;
         _workspaceSettingsService = workspaceSettingsService;
         _workspaceRootProvider = workspaceRootProvider;
@@ -425,8 +434,9 @@ public class CodexGatewayController : GatewayEndpointHandler
     /// </summary>
     /// <param name="sessionId">Session identifier.</param>
     /// <param name="ct">Cancellation token.</param>
+    /// <param name="conversationId">Optional conversation whose context usage should be returned.</param>
     /// <returns>Estimated context usage, model budget, compression threshold, and cumulative token totals.</returns>
-    public async Task<IResult> GetContextWindowSnapshot(string sessionId, CancellationToken ct = default)
+    public async Task<IResult> GetContextWindowSnapshot(string sessionId, CancellationToken ct = default, string? conversationId = null)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrEmpty(userId)) return Unauthorized();
@@ -440,7 +450,42 @@ public class CodexGatewayController : GatewayEndpointHandler
             dbSession.WorkspacePath ?? string.Empty,
             (Uri?)null);
 
-        return Ok(BuildContextWindowResponse(sessionId, session));
+        if (string.IsNullOrWhiteSpace(conversationId))
+        {
+            return Ok(BuildContextWindowResponse(sessionId, session));
+        }
+
+        var conversation = await (_conversationDirectory?.FindAsync(conversationId, ct) ?? _chatService.Get(conversationId));
+        if (conversation is null || conversation.UserId != userId || conversation.SessionId != sessionId)
+        {
+            return NotFound("Conversation not found");
+        }
+
+        var summary = session.HistorySummary;
+        var summaryChars = string.IsNullOrWhiteSpace(summary)
+            ? 0
+            : Math.Min(summary.Length, Math.Max(0, _contextCompressionOptions.GatewaySummaryMaxChars));
+        long estimatedChars = summaryChars > 0 ? summaryChars + 32L : 0L;
+        var recentTurns = 0;
+        var history = await _chatService.GetConversationMessagesAfterAsync(
+            conversationId, session.GetHistoryReplayCutoff(), hardLimit: _contextCompressionOptions.PromptHistoryHardLimit);
+        foreach (var message in history)
+        {
+            if (!string.IsNullOrEmpty(message.UserContent))
+            {
+                estimatedChars += message.UserContent.Length + "user".Length + 8L;
+                recentTurns++;
+            }
+            if (!string.IsNullOrEmpty(message.AiContent))
+            {
+                estimatedChars += message.AiContent.Length + "assistant".Length + 8L;
+                recentTurns++;
+            }
+        }
+
+        var estimatedTokens = CodexSessionManager.TryGetReportedConversationContextTokens(session, conversationId)
+            ?? (long)Math.Ceiling(estimatedChars / _contextCompressionTriggerOptions.ResolveEstimatedCharsPerToken());
+        return Ok(BuildContextWindowResponse(sessionId, session, (estimatedTokens, estimatedChars, recentTurns, summaryChars)));
     }
 
     /// <summary>
@@ -481,14 +526,14 @@ public class CodexGatewayController : GatewayEndpointHandler
         List<ChatTurn>? fallbackTurns = null;
         if (session.RecentTurns.Count == 0 && !string.IsNullOrWhiteSpace(request?.ConversationId))
         {
-            var conversation = await _chatService.Get(request.ConversationId);
+            var conversation = await (_conversationDirectory?.FindAsync(request.ConversationId, ct) ?? _chatService.Get(request.ConversationId));
             if (conversation is not null &&
                 string.Equals(conversation.UserId, userId, StringComparison.Ordinal) &&
                 string.Equals(conversation.SessionId, sessionId, StringComparison.Ordinal))
             {
                 var dbMessages = await _chatService.GetConversationMessagesAfterAsync(
                     conversation.Id,
-                    session.LastCompressedAt,
+                    session.GetHistoryReplayCutoff(),
                     hardLimit: 120);
                 if (dbMessages is { Count: > 0 })
                 {
@@ -542,12 +587,15 @@ public class CodexGatewayController : GatewayEndpointHandler
         });
     }
 
-    private SessionContextWindowResponse BuildContextWindowResponse(string sessionId, CodexSession session)
+    private SessionContextWindowResponse BuildContextWindowResponse(
+        string sessionId,
+        CodexSession session,
+        (long Tokens, long Chars, int Turns, long SummaryChars)? conversationUsage = null)
     {
-        var estimatedTokens = CodexSessionManager.ResolveActiveContextTokens(session);
-        var estimatedChars = ParseLongMetadata(session.Metadata, "ContextWindowEstimatedChars");
-        var recentTurns = (int)ParseLongMetadata(session.Metadata, "ContextWindowRecentTurns");
-        var summaryChars = ParseLongMetadata(session.Metadata, "ContextWindowSummaryChars");
+        var estimatedTokens = conversationUsage?.Tokens ?? CodexSessionManager.ResolveActiveContextTokens(session);
+        var estimatedChars = conversationUsage?.Chars ?? ParseLongMetadata(session.Metadata, "ContextWindowEstimatedChars");
+        var recentTurns = conversationUsage?.Turns ?? (int)ParseLongMetadata(session.Metadata, "ContextWindowRecentTurns");
+        var summaryChars = conversationUsage?.SummaryChars ?? ParseLongMetadata(session.Metadata, "ContextWindowSummaryChars");
         var totalPromptTokens = ParseLongMetadata(session.Metadata, "SessionTotalPromptTokens");
         var totalCompletionTokens = ParseLongMetadata(session.Metadata, "SessionTotalCompletionTokens");
         var totalCachedPromptTokens = ParseLongMetadata(session.Metadata, "SessionTotalCachedPromptTokens");

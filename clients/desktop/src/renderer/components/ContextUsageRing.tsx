@@ -46,7 +46,7 @@ export const ContextUsageRing: React.FC<ContextUsageRingProps> = ({ contextWindo
   const tooltip = [
     `上下文占用: ${contextWindow.estimatedTokens.toLocaleString()} / ${contextWindow.modelMaxTokens.toLocaleString()} tokens (${pctLabel})`,
     `自动压缩阈值: ${contextWindow.compressionTriggerTokens.toLocaleString()} tokens`,
-    `累计消耗: ${contextWindow.totalSessionTokens.toLocaleString()} tokens (Prompt ${contextWindow.totalPromptTokens.toLocaleString()}，缓存 ${contextWindow.totalCachedPromptTokens.toLocaleString()}，Completion ${contextWindow.totalCompletionTokens.toLocaleString()})`,
+    `工作区累计消耗: ${contextWindow.totalSessionTokens.toLocaleString()} tokens (Prompt ${contextWindow.totalPromptTokens.toLocaleString()}，缓存 ${contextWindow.totalCachedPromptTokens.toLocaleString()}，Completion ${contextWindow.totalCompletionTokens.toLocaleString()})`,
   ].join('\n');
 
   return (
@@ -92,7 +92,7 @@ export const ContextUsageRing: React.FC<ContextUsageRingProps> = ({ contextWindo
         ({contextWindow.estimatedTokens.toLocaleString()} / {contextWindow.modelMaxTokens.toLocaleString()})
       </span>
       {contextWindow.totalSessionTokens > 0 && (
-        <span className="text-slate-400">· 累计 {contextWindow.totalSessionTokens.toLocaleString()} tok</span>
+        <span className="text-slate-400">· 工作区累计 {contextWindow.totalSessionTokens.toLocaleString()} tok</span>
       )}
     </span>
   );

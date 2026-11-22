@@ -65,6 +65,7 @@ export interface ReconcileOptions {
 
 let activeSnapshotAbort: AbortController | null = null;
 let activeApprovalsAbort: AbortController | null = null;
+let activeContextWindowAbort: AbortController | null = null;
 
 function computeInstanceKey(connection: BackendConnectionPublicInfo): string | null {
   if (!connection.instanceId && !connection.targetBaseUrl && !connection.baseUrl) {
@@ -150,7 +151,7 @@ export interface AppState {
   setBrowserState: (state: BrowserSessionStateDto | null) => void;
   setComputerState: (state: ComputerSessionStateDto | null) => void;
   setVerificationReceipt: (jobId: string, receipt: VerificationReceipt) => void;
-  setContextWindow: (cw: SessionContextWindow | null) => void;
+  refreshContextWindow: () => Promise<void>;
   setJobs: (jobs: BackgroundJob[]) => void;
   setPlan: (plan: SessionPlan | null) => void;
   setSessionPolicyState: (policy: {
@@ -161,6 +162,14 @@ export interface AppState {
   }) => void;
   dismissPlanModeExitRequest: () => void;
   clearTurnVisuals: () => void;
+}
+
+function selectConversation(state: AppState, activeConversationId: string | null): Partial<AppState> {
+  if (state.activeConversationId === activeConversationId) {
+    return {};
+  }
+  activeContextWindowAbort?.abort();
+  return { activeConversationId, contextWindow: null };
 }
 
 function refreshTurnMetadataAfterFinish(
@@ -175,14 +184,7 @@ function refreshTurnMetadataAfterFinish(
     return;
   }
   const auth = { baseUrl: conn.baseUrl, accessToken: conn.accessToken };
-  void apiClient
-    .getContextWindow(auth, sid)
-    .then((cw) => {
-      if (get().activeSessionId === sid && get().sessionGeneration === targetGen) {
-        set({ contextWindow: cw });
-      }
-    })
-    .catch(() => undefined);
+  void get().refreshContextWindow();
 
   if (includeJobs) {
     void apiClient
@@ -312,7 +314,7 @@ function reduceSseEvent(
       const convId = evtData.conversationId as string | undefined;
       if (convId) {
         set((s) => ({
-          activeConversationId: convId,
+          ...selectConversation(s, convId),
           conversationMode: s.conversationMode === 'new-thread' ? 'continue-current' : s.conversationMode,
         }));
       }
@@ -1040,6 +1042,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (switchedInstance) {
       activeSnapshotAbort?.abort();
       activeApprovalsAbort?.abort();
+      activeContextWindowAbort?.abort();
       set((s) => ({
         connection,
         instanceKey: nextKey,
@@ -1085,11 +1088,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (backendEpochSwitched) {
       activeSnapshotAbort?.abort();
       activeApprovalsAbort?.abort();
+      activeContextWindowAbort?.abort();
       set((s) => ({
         connection,
         instanceKey: nextKey ?? prevKey,
         connectionGeneration: s.connectionGeneration + 1,
         bufferedSseEvents: [],
+        contextWindow: null,
       }));
       return;
     }
@@ -1102,6 +1107,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setActiveSession: (sessionId) => {
     activeSnapshotAbort?.abort();
     activeApprovalsAbort?.abort();
+    activeContextWindowAbort?.abort();
     set((s) => ({
       sessionGeneration: s.sessionGeneration + 1,
       reconcileGeneration: s.reconcileGeneration + 1,
@@ -1141,11 +1147,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     }));
   },
 
-  setActiveConversation: (activeConversationId) => set({ activeConversationId }),
+  setActiveConversation: (conversationId) => set((s) => selectConversation(s, conversationId)),
   startNewConversation: (conversationId) =>
     set((s) => ({
       reconcileGeneration: s.reconcileGeneration + 1,
-      activeConversationId: conversationId,
+      ...selectConversation(s, conversationId),
       conversationMode: 'continue-current',
       messages: [],
       messagesTruncated: false,
@@ -1224,7 +1230,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((s) => ({
       asOfEventId: recovered.asOfEventId,
       channelEpoch: recovered.channelEpoch,
-      activeConversationId: recovered.activeConversationId,
+      ...selectConversation(s, recovered.activeConversationId),
       isTurnRunning: recovered.isTurnRunning,
       streamingContent: recovered.streamingContent,
       streamingThinking: recovered.streamingThinking,
@@ -1321,20 +1327,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const finalState = get();
       options?.onCursorSynced?.(finalState.asOfEventId, finalState.channelEpoch);
 
-      try {
-        const cw = await apiClient.getContextWindow(auth, activeSessionId, controller.signal);
-        const latest = get();
-        if (
-          !controller.signal.aborted &&
-          latest.activeSessionId === activeSessionId &&
-          latest.sessionGeneration === sessionGeneration &&
-          latest.connectionGeneration === targetConnGen
-        ) {
-          set({ contextWindow: cw });
-        }
-      } catch {
-        // optional
-      }
+      void get().refreshContextWindow();
 
       try {
         const approvalsRes = await apiClient.getPendingApprovals(
@@ -1499,7 +1492,40 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((s) => ({
       verificationReceipts: { ...s.verificationReceipts, [jobId]: receipt },
     })),
-  setContextWindow: (contextWindow) => set({ contextWindow }),
+  refreshContextWindow: async () => {
+    const { connection, activeSessionId, activeConversationId, sessionGeneration, connectionGeneration } = get();
+    if (connection?.status !== 'ready' || !connection.baseUrl || !connection.accessToken || !activeSessionId || !activeConversationId) {
+      return;
+    }
+
+    activeContextWindowAbort?.abort();
+    const controller = new AbortController();
+    activeContextWindowAbort = controller;
+    try {
+      const contextWindow = await apiClient.getContextWindow(
+        { baseUrl: connection.baseUrl, accessToken: connection.accessToken },
+        activeSessionId,
+        controller.signal,
+        activeConversationId,
+      );
+      const latest = get();
+      if (
+        !controller.signal.aborted &&
+        latest.sessionGeneration === sessionGeneration &&
+        latest.connectionGeneration === connectionGeneration &&
+        latest.activeSessionId === activeSessionId &&
+        latest.activeConversationId === activeConversationId
+      ) {
+        set({ contextWindow });
+      }
+    } catch {
+      // Context usage is optional for the chat UI.
+    } finally {
+      if (activeContextWindowAbort === controller) {
+        activeContextWindowAbort = null;
+      }
+    }
+  },
   setJobs: (jobs) => set({ jobs }),
   setPlan: (currentPlan) => set({ currentPlan }),
   setSessionPolicyState: (policy) =>

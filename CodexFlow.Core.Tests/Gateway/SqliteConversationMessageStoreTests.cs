@@ -42,6 +42,7 @@ public sealed class SqliteConversationMessageStoreTests
                 NotificationMeta = """{"event_type":"job-finished"}"""
             },
             Message("second-later", ConversationId, Cursor.AddTicks(2)),
+            Message("second-tie", ConversationId, Cursor.AddTicks(2)),
             Message("third-later", ConversationId, Cursor.AddTicks(3)),
             Message("other-conversation", "other", Cursor.AddTicks(4)));
         await context.SaveChangesAsync();
@@ -62,14 +63,16 @@ public sealed class SqliteConversationMessageStoreTests
             return actual;
         }
 
-        await Compare(null, 1, "before", "equal", "one-tick-later", "second-later", "third-later");
-        var afterCursor = await Compare(Cursor, null, "one-tick-later", "second-later", "third-later");
+        await Compare(null, null, "before", "equal", "one-tick-later", "second-later", "second-tie", "third-later");
+        await Compare(null, 2, "second-tie", "third-later");
+        await Compare(null, 0);
+        var afterCursor = await Compare(Cursor, null, "one-tick-later", "second-later", "second-tie", "third-later");
         Assert.Equal(1L, afterCursor[0].Created.Ticks - Cursor.Ticks);
         Assert.Equal("notification", afterCursor[0].MessageType);
         Assert.Equal("""{"event_type":"job-finished"}""", afterCursor[0].NotificationMeta);
         Assert.Null(afterCursor[0].SystemPrompt);
         Assert.Null(afterCursor[0].ToolCallResult);
-        await Compare(Cursor, 2, "second-later", "third-later");
+        await Compare(Cursor, 2, "second-tie", "third-later");
         await Compare(Cursor, 0);
         await Compare(Cursor.AddTicks(3), 2);
         Assert.Empty(await pilot.GetConversationMessagesAfterAsync("absent", null));

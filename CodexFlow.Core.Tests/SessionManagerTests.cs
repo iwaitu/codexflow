@@ -8,6 +8,7 @@ using CodexFlow.Core.Agents;
 using CodexFlow.Core.Models;
 using CodexFlow.Core.Runtime;
 using CodexFlow.Core.Telemetry;
+using CodexFlow.Infrastructure.Persistence;
 using Microsoft.Extensions.Logging.Abstractions;
 using Newtonsoft.Json;
 using Xunit;
@@ -659,6 +660,41 @@ public class SessionManagerTests
         Assert.Equal("hard-limit summary", session.HistorySummary);
         Assert.Empty(session.RecentTurns);
         Assert.NotNull(session.LastCompressedAt);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("Existing summary")]
+    public async Task NoNewSummary_PreservesReplayCutoffAndMeasuredUsage(string existingSummary)
+    {
+        var store = new Mock<ISessionStore>();
+        var projection = new Mock<ISessionCompressionStore>();
+        var session = new CodexSession
+        {
+            Id = "no-new-summary",
+            HistorySummary = existingSummary,
+            LastCompressedAt = existingSummary.Length > 0 ? DateTime.UtcNow.AddDays(-1) : null
+        };
+        var previousCutoff = session.LastCompressedAt;
+        store.Setup(s => s.GetSessionAsync(session.Id, It.IsAny<CancellationToken>())).ReturnsAsync(session);
+        var manager = new CodexSessionManager(
+            store.Object,
+            new NullMemoryService(),
+            NullLogger<CodexSessionManager>.Instance,
+            projection.Object,
+            new ContextCompressionTriggerOptions { RecentTurnsSoftLimit = 2 });
+
+        await manager.RecordRuntimeUsageAsync(session.Id, 500, 0, 0, 500, "selected-chat", default);
+        await manager.RecordMessagesAsync(session.Id, ("user", "u1"), ("assistant", "a1"), ("user", "u2"));
+        await manager.ApplyContextGovernanceAsync(session.Id, warnLimitChars: 10, hardLimitChars: 20);
+        await manager.OnStageChangedAsync(session.Id, 2);
+
+        Assert.Equal(existingSummary, session.HistorySummary);
+        Assert.Equal(previousCutoff, session.LastCompressedAt);
+        Assert.Equal(previousCutoff, session.GetHistoryReplayCutoff());
+        Assert.Equal(["a1", "u2"], session.RecentTurns.Select(turn => turn.Content).ToArray());
+        Assert.Equal(500, CodexSessionManager.TryGetReportedConversationContextTokens(session, "selected-chat"));
+        projection.VerifyNoOtherCalls();
     }
 
     [Fact]

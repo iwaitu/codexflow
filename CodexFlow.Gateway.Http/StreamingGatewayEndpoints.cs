@@ -106,10 +106,11 @@ internal static class StreamingGatewayEndpoints
                 HttpContext http,
                 [FromServices] CodexGatewayController handler,
                 string sessionId,
+                [FromQuery] string? conversationId = null,
                 CancellationToken ct = default) =>
             {
                 handler.Bind(http);
-                return handler.GetContextWindowSnapshot(sessionId, ct);
+                return handler.GetContextWindowSnapshot(sessionId, ct, conversationId);
             })
             .Produces(StatusCodes.Status200OK);
 

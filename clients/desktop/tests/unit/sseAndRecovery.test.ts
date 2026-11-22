@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { SessionSnapshot } from '../../src/renderer/lib/apiClient';
+import type { SessionContextWindow, SessionSnapshot } from '../../src/renderer/lib/apiClient';
 import { apiClient } from '../../src/renderer/lib/apiClient';
 import { buildRecoveredSessionState, toChatMessages } from '../../src/renderer/lib/sessionRecovery';
 import { parseSseFrames, SessionSseClient, SseStreamParser } from '../../src/renderer/lib/sseClient';
@@ -135,6 +135,71 @@ function makeBaseSnapshot(overrides: Partial<SessionSnapshot> = {}): SessionSnap
 }
 
 describe('SSE parser and recovery scenarios', () => {
+  it('refreshes context for the selected conversation and discards a late response from the previous one', async () => {
+    const store = useAppStore.getState();
+    store.setConnection({
+      mode: 'standalone',
+      status: 'ready',
+      baseUrl: 'http://127.0.0.1:61000',
+      targetBaseUrl: 'http://127.0.0.1:61000',
+      accessToken: 'context-test',
+      instanceId: 'context-test',
+      controlPlaneAvailable: false,
+      selfApprovalProtection: true,
+      dataDirectory: null,
+      lastError: null,
+      restartCount: 0,
+    });
+    store.setActiveSession('sess-1');
+    const first: SessionContextWindow = {
+      sessionId: 'sess-1',
+      estimatedTokens: 250,
+      estimatedChars: 1000,
+      recentTurns: 2,
+      summaryChars: 0,
+      totalPromptTokens: 250,
+      totalCachedPromptTokens: 0,
+      totalCompletionTokens: 20,
+      totalSessionTokens: 270,
+      modelMaxTokens: 1000,
+      compressionTriggerTokens: 800,
+      usageRatio: 0.25,
+      triggerRatio: 250 / 800,
+    };
+    const second = { ...first, estimatedTokens: 0, estimatedChars: 0, recentTurns: 0, usageRatio: 0, triggerRatio: 0 };
+    let resolveLate!: (value: SessionContextWindow) => void;
+    const fetchContext = vi.spyOn(apiClient, 'getContextWindow')
+      .mockResolvedValueOnce(first)
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveLate = resolve; }))
+      .mockResolvedValueOnce(second);
+
+    try {
+      await store.refreshContextWindow();
+      expect(fetchContext).not.toHaveBeenCalled();
+
+      store.setActiveConversation('conv-1');
+      await store.refreshContextWindow();
+      expect(useAppStore.getState().contextWindow).toEqual(first);
+      const late = store.refreshContextWindow();
+
+      store.setActiveConversation('conv-2');
+      expect(useAppStore.getState().contextWindow).toBeNull();
+      await store.refreshContextWindow();
+      expect(fetchContext).toHaveBeenLastCalledWith(
+        { baseUrl: 'http://127.0.0.1:61000', accessToken: 'context-test' },
+        'sess-1',
+        expect.any(AbortSignal),
+        'conv-2',
+      );
+      resolveLate(first);
+      await late;
+      expect(useAppStore.getState().contextWindow).toEqual(second);
+    } finally {
+      fetchContext.mockRestore();
+      store.setActiveSession(null);
+    }
+  });
+
   it('omits tool-only records and stored tool details when opening a conversation or recovering a snapshot', () => {
     const message = makeBaseSnapshot().messages[0]!;
     const toolOnly = {

@@ -5067,9 +5067,9 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                 $"[压缩历史摘要]\n{TrimToMaxChars(sanitizedSummary, _compressionOptions.GatewaySummaryMaxChars)}\n\n以上为历史摘要，以下为压缩后的增量对话。"));
         }
 
-        // 只读取压缩水位之后的增量消息（未压缩时 LastCompressedAt 为 null，回退到全量历史）
+        // A legacy cutoff without a summary cannot represent earlier messages.
         var history = await _chatService.GetConversationMessagesAfterAsync(
-            conversationId, session.LastCompressedAt, hardLimit: _compressionOptions.PromptHistoryHardLimit);
+            conversationId, session.GetHistoryReplayCutoff(), hardLimit: _compressionOptions.PromptHistoryHardLimit);
         if (history == null) return;
 
         var replayMessages = new List<ChatMessage>();
@@ -6096,7 +6096,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
 
     private static QueryRuntimeConversationCapture? BuildRuntimeConversationCapture(GatewayMessage gatewayMessage)
     {
-        return gatewayMessage.Source switch
+        QueryRuntimeConversationCapture? capture = gatewayMessage.Source switch
         {
             GatewayMessageSource.UserChat => new QueryRuntimeConversationCapture(
                 [new QueryRuntimeConversationMessage("user", gatewayMessage.Content)]),
@@ -6106,6 +6106,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                 [new QueryRuntimeConversationMessage("system_boundary", BuildRuntimeTaskConversationCapture(gatewayMessage))]),
             _ => null
         };
+        return capture is null ? null : capture with { ConversationId = gatewayMessage.ConversationId };
     }
 
     private static string BuildRuntimeTaskConversationCapture(GatewayMessage gatewayMessage)

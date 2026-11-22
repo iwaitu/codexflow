@@ -621,7 +621,7 @@ describe('Security boundary & MVP interactive cards', () => {
     expect(bar).toHaveAttribute('aria-valuenow', '2.7');
     expect(screen.getByTestId('context-usage-ring')).toHaveTextContent('上下文 3%');
     expect(screen.getByTestId('context-usage-ring')).toHaveTextContent('7,048 / 262,144');
-    expect(screen.getByTestId('context-usage-ring')).toHaveTextContent('累计 26,433 tok');
+    expect(screen.getByTestId('context-usage-ring')).toHaveTextContent('工作区累计 26,433 tok');
 
     // Sub-1% shows one decimal place instead of misleading 0%
     rerender(
