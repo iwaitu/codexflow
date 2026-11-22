@@ -4,6 +4,7 @@
 
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Models;
+using CodexFlow.Core.Skills;
 using Microsoft.Extensions.Logging;
 using System.Text.Json;
 
@@ -316,10 +317,13 @@ public class ToolSearchMetaTool : ICodexTool
                     "Find candidate pages before fetch_webpage."
                 ]),
             ReadBuiltInSkillTool.ToolName => new(
-                ["skill", "frontend-browser-debug", "frontend", "browser", "debug", "前端调试", "浏览器联调"],
+                ["skill", BuiltInSkills.FrontendBrowserDebug, BuiltInSkills.DesktopControl, "frontend", "browser", "debug", "desktop", "computer use", "前端调试", "浏览器联调", "桌面控制"],
                 ["main"],
                 "low",
-                ["Load the built-in frontend browser debugging workflow before reproducing or verifying a UI issue."]),
+                [
+                    "Load the built-in browser debugging workflow before reproducing or verifying a web UI issue.",
+                    "Load desktop-control before interacting with a native desktop application."
+                ]),
             "browser_navigate" => new(
                 ["browser", "web", "url", "navigate", "spa", "localhost"],
                 ["main"],

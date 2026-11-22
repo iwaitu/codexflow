@@ -14,7 +14,7 @@ public sealed class ReadBuiltInSkillTool : ICodexTool
     public const string ToolName = "read_builtin_skill";
 
     public string Name => ToolName;
-    public string Description => "读取内置 Skill。使用内置浏览器调试或验收前端页面时，先读取 frontend-browser-debug。";
+    public string Description => $"读取内置 Skill。前端页面调试或验收先读取 {BuiltInSkills.FrontendBrowserDebug}。操作原生桌面应用或验收桌面客户端先读取 {BuiltInSkills.DesktopControl}。";
     public ToolCategory Category => ToolCategory.Read;
     public ToolCapability Capability => ToolCapability.ReadOnly;
     public IReadOnlyList<int> AllowedStages => Array.Empty<int>();

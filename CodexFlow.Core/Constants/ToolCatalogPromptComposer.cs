@@ -3,6 +3,8 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 using CodexFlow.Core.Abstractions;
+using CodexFlow.Core.Agents.Tools;
+using CodexFlow.Core.Skills;
 using CodexFlow.Core.Workers;
 using System.Text;
 
@@ -121,6 +123,17 @@ public static class ToolCatalogPromptComposer
         if (!string.IsNullOrWhiteSpace(usageSection) && !HasSection(basePrompt, usageSection))
         {
             sections.Add(usageSection);
+        }
+
+        const string desktopControlHint = $$"""
+## 桌面控制
+需要操作原生桌面应用时，先调用 `{{ReadBuiltInSkillTool.ToolName}}({"name":"{{BuiltInSkills.DesktopControl}}"})`，按返回的流程定位窗口、操作和验收。
+""";
+        if (toolNames.Contains(ComputerToolNames.Act) &&
+            toolNames.Contains(ReadBuiltInSkillTool.ToolName) &&
+            !HasSection(basePrompt, desktopControlHint))
+        {
+            sections.Add(desktopControlHint);
         }
 
         var workerSection = BuildWorkerSurfaceSection(workerContext);

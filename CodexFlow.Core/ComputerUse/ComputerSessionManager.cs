@@ -224,7 +224,7 @@ public sealed class ComputerSessionManager : IComputerSessionManager
                 dragEndImgPoint: null);
 
             captureCts.Token.ThrowIfCancellationRequested();
-            session.UpdateCapture(capture.Screenshot, capture.Viewport);
+            session.UpdateCapture(capture);
             session.RecordAction(
                 tool: "computer_screenshot",
                 action: "screenshot",
@@ -317,7 +317,7 @@ public sealed class ComputerSessionManager : IComputerSessionManager
                 await Task.Delay(waitMs, actionToken).ConfigureAwait(false);
                 var frame = CaptureAndProcessFrame(session, false, null, _options.CurrentValue.EnableGridOverlay, null, null);
                 actionToken.ThrowIfCancellationRequested();
-                session.UpdateCapture(frame.Screenshot, frame.Viewport);
+                session.UpdateCapture(frame);
                 await PublishStateAsync(session, force: true, actionToken).ConfigureAwait(false);
                 return new ComputerOperationResult(
                     Succeeded: true,
@@ -370,7 +370,12 @@ public sealed class ComputerSessionManager : IComputerSessionManager
 
         ScreenPoint? targetScreen = null;
         ScreenPoint? dragEndScreen = null;
-        ComputerCaptureViewport? viewport = session.LastViewport;
+        var capture = session.Capture;
+        var viewport = capture?.Viewport;
+
+        bool IsModelScreenshotStale() => isCoordinateAction && request.RequireModelScreenshot &&
+            (capture is null || !ReferenceEquals(request.ModelScreenshot, capture.Screenshot) ||
+             !ReferenceEquals(capture, session.Capture) || capture.PinRevision != session.PinRevision);
 
         if (isCoordinateAction)
         {
@@ -379,12 +384,17 @@ public sealed class ComputerSessionManager : IComputerSessionManager
                 return Fail("missing_coordinates", $"动作 '{action}' 必须提供 x 和 y 坐标。");
             }
 
+            if (IsModelScreenshotStale())
+            {
+                return FreshScreenshotRequired();
+            }
+
             if (viewport is null)
             {
                 // Auto-bootstrap viewport on first coordinate action without requiring a separate screenshot call.
-                var bootstrap = CaptureAndProcessFrame(session, false, null, _options.CurrentValue.EnableGridOverlay, null, null);
-                session.UpdateCapture(bootstrap.Screenshot, bootstrap.Viewport);
-                viewport = bootstrap.Viewport;
+                capture = CaptureAndProcessFrame(session, false, null, _options.CurrentValue.EnableGridOverlay, null, null);
+                session.UpdateCapture(capture);
+                viewport = capture.Viewport;
             }
 
             var overrideCoord = ParseCoordinateSpaceOverride(request.CoordinateSpace);
@@ -428,6 +438,19 @@ public sealed class ComputerSessionManager : IComputerSessionManager
             ? _securityGuard.EvaluatePointTarget(point.X, point.Y)
             : null;
 
+        ComputerOperationResult? CheckPointerIntegrity(ComputerWindowInfoDto? window)
+        {
+            if ((isClickAction || action == "move") &&
+                window is not null && _driver.IsInputBlockedByIntegrity(window.ProcessId))
+            {
+                var operation = isClickAction ? "点击" : "移动鼠标";
+                return Fail("window_input_integrity_blocked",
+                    $"目标窗口「{window.Title}」的 Windows 权限高于 CodexFlow，无法{operation}。请用 computer_request_takeover 请求用户操作，交回后再截图确认。");
+            }
+
+            return null;
+        }
+
         var preSafety = CheckTarget();
         var preEndSafety = CheckDragEnd();
         if (preSafety.HitProtectedSelfUi || preEndSafety?.HitProtectedSelfUi == true)
@@ -458,6 +481,16 @@ public sealed class ComputerSessionManager : IComputerSessionManager
             return Fail("target_window_unavailable", "无法确认键盘输入的前台窗口，请重新观察桌面后重试。");
         }
 
+        if (IsModelScreenshotStale())
+        {
+            return FreshScreenshotRequired();
+        }
+
+        if (CheckPointerIntegrity(targetWindowSnapshot) is { } preApprovalIntegrityError)
+        {
+            return preApprovalIntegrityError;
+        }
+
         var useFullAuto = IsManagedFullAuto();
         var (needsApproval, allowSessionScope) = useFullAuto
             ? (false, false)
@@ -471,13 +504,13 @@ public sealed class ComputerSessionManager : IComputerSessionManager
             }
 
             string? previewBase64 = null;
-            if (targetScreen is { } previewPt && viewport is not null && session.LatestBgraFrame is { } latestBgra)
+            if (targetScreen is { } previewPt && viewport is not null && capture is { } previewCapture)
             {
                 var imgPt = CoordinateMapper.ToImageCoordinate(viewport, previewPt.X, previewPt.Y);
                 var (cropBgra, cw, ch) = ComputerVisualProcessor.CropPreviewRegion(
-                    latestBgra.Bgra,
-                    latestBgra.Width,
-                    latestBgra.Height,
+                    previewCapture.Bgra,
+                    previewCapture.Screenshot.Width,
+                    previewCapture.Screenshot.Height,
                     imgPt.X,
                     imgPt.Y);
                 previewBase64 = Convert.ToBase64String(ComputerVisualProcessor.EncodePng(cropBgra, cw, ch));
@@ -571,9 +604,10 @@ public sealed class ComputerSessionManager : IComputerSessionManager
                 return Fail("pending_approval_freeze", "仍有待处理的控制面审批，已暂停键鼠输入。");
             }
 
-            return null;
+            return IsModelScreenshotStale() ? FreshScreenshotRequired() : null;
         }
 
+        ComputerClickReceipt? clickReceipt = null;
         try
         {
             if (CheckInputState() is { } inputError)
@@ -591,6 +625,11 @@ public sealed class ComputerSessionManager : IComputerSessionManager
                 }
             }
 
+            if (needsApproval && CheckPointerIntegrity(liveSafety.Window) is { } liveIntegrityError)
+            {
+                return liveIntegrityError;
+            }
+
             var clickPoint = targetScreen;
             if ((isClickAction || action == "move") && targetScreen is { } moveTarget)
             {
@@ -600,6 +639,11 @@ public sealed class ComputerSessionManager : IComputerSessionManager
 
                 if (CheckInputState() is { } moveError)
                 {
+                    if (moveError.ErrorCode == "fresh_screenshot_required" && _driver.TryGetCursorPosition(out var movedX, out var movedY))
+                    {
+                        session.RecordAgentCursor(movedX, movedY);
+                    }
+
                     return moveError;
                 }
 
@@ -637,20 +681,24 @@ public sealed class ComputerSessionManager : IComputerSessionManager
                 }
             }
 
-            ct.ThrowIfCancellationRequested();
+            if (CheckInputState() is { } dispatchError)
+            {
+                return dispatchError;
+            }
+
             switch (action)
             {
                 case "click":
-                    _driver.PerformMouseClick(clickPoint!.Value.X, clickPoint.Value.Y, request.Button ?? "left", 1);
+                    clickReceipt = _driver.PerformMouseClickWithReceipt(clickPoint!.Value.X, clickPoint.Value.Y, request.Button ?? "left", 1);
                     break;
                 case "double_click":
-                    _driver.PerformMouseClick(clickPoint!.Value.X, clickPoint.Value.Y, request.Button ?? "left", 2);
+                    clickReceipt = _driver.PerformMouseClickWithReceipt(clickPoint!.Value.X, clickPoint.Value.Y, request.Button ?? "left", 2);
                     break;
                 case "right_click":
-                    _driver.PerformMouseClick(clickPoint!.Value.X, clickPoint.Value.Y, "right", 1);
+                    clickReceipt = _driver.PerformMouseClickWithReceipt(clickPoint!.Value.X, clickPoint.Value.Y, "right", 1);
                     break;
                 case "middle_click":
-                    _driver.PerformMouseClick(clickPoint!.Value.X, clickPoint.Value.Y, "middle", 1);
+                    clickReceipt = _driver.PerformMouseClickWithReceipt(clickPoint!.Value.X, clickPoint.Value.Y, "middle", 1);
                     break;
                 case "drag":
                     _driver.PerformMouseDrag(targetScreen!.Value.X, targetScreen.Value.Y, dragEndScreen!.Value.X, dragEndScreen.Value.Y, request.Button ?? "left", ct);
@@ -664,6 +712,12 @@ public sealed class ComputerSessionManager : IComputerSessionManager
                 case "key_combo":
                     _driver.PerformKeyCombo(parsedKeys!);
                     break;
+            }
+
+            if (clickReceipt is { } incomplete && incomplete.Accepted != incomplete.Requested)
+            {
+                return Fail("computer_action_failed",
+                    $"点击仅提交了 {incomplete.Accepted}/{incomplete.Requested} 个鼠标事件。请先截图确认当前状态。");
             }
 
             if (_driver.TryGetCursorPosition(out var afterX, out var afterY))
@@ -688,6 +742,14 @@ public sealed class ComputerSessionManager : IComputerSessionManager
         }
         sw.Stop();
 
+        var summary = BuildActionSummary(action, request, targetScreen, dragEndScreen);
+        var actionStatus = $"已执行 {summary}";
+        if (clickReceipt is { } receipt)
+        {
+            summary += $"（已提交 {receipt.Accepted}/{receipt.Requested} 个鼠标事件）";
+            actionStatus = $"{summary}。请确认目标窗口是否响应";
+        }
+
         // Post-action echo screenshot with red target reticle / drag trajectory.
         try
         {
@@ -711,8 +773,7 @@ public sealed class ComputerSessionManager : IComputerSessionManager
                 dragEndImgPoint: dragEndImg);
 
             ct.ThrowIfCancellationRequested();
-            session.UpdateCapture(postCapture.Screenshot, postCapture.Viewport);
-            var summary = BuildActionSummary(action, request, targetScreen, dragEndScreen);
+            session.UpdateCapture(postCapture);
             session.RecordAction(
                 tool: "computer_act",
                 action: action,
@@ -727,19 +788,18 @@ public sealed class ComputerSessionManager : IComputerSessionManager
             await PublishStateAsync(session, force: true, ct).ConfigureAwait(false);
             return new ComputerOperationResult(
                 Succeeded: true,
-                Output: $"已执行 {summary}。\n{FormatCaptureDescription(postCapture.Viewport, session)}",
+                Output: $"{actionStatus}。\n{FormatCaptureDescription(postCapture.Viewport, session)}",
                 Summary: summary,
                 Screenshot: postCapture.Screenshot,
                 Viewport: postCapture.Viewport);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            var summary = BuildActionSummary(action, request, targetScreen, dragEndScreen);
             session.RecordAction("computer_act", action, liveSafety.Window?.ProcessName, liveSafety.Window?.Title, targetScreen?.X, targetScreen?.Y, true, summary, sw.ElapsedMilliseconds);
             await PublishStateAsync(session, force: true, ct).ConfigureAwait(false);
             return new ComputerOperationResult(
                 Succeeded: true,
-                Output: $"已执行 {summary}（动作后回显截屏跳过：{ex.Message}）。",
+                Output: $"{actionStatus}。\n动作后回显截屏跳过（{ex.Message}）。",
                 Summary: summary);
         }
     }
@@ -792,7 +852,7 @@ public sealed class ComputerSessionManager : IComputerSessionManager
                 try
                 {
                     var capture = CaptureAndProcessFrame(session, false, null, _options.CurrentValue.EnableGridOverlay, null, null);
-                    session.UpdateCapture(capture.Screenshot, capture.Viewport);
+                    session.UpdateCapture(capture);
                     shot = capture.Screenshot;
                     vp = capture.Viewport;
                 }
@@ -1020,7 +1080,7 @@ public sealed class ComputerSessionManager : IComputerSessionManager
         return ValueTask.CompletedTask;
     }
 
-    private (ComputerScreenshotData Screenshot, ComputerCaptureViewport Viewport, long ElapsedMs) CaptureAndProcessFrame(
+    private CaptureSnapshot CaptureAndProcessFrame(
         SessionRuntimeState session,
         bool fullDesktop,
         int? displayIndex,
@@ -1029,6 +1089,7 @@ public sealed class ComputerSessionManager : IComputerSessionManager
         ImagePoint? dragEndImgPoint)
     {
         var sw = Stopwatch.StartNew();
+        var pinRevision = session.PinRevision;
         var displays = _driver.GetDisplays();
         var (capX, capY, capW, capH) = ResolveCaptureRegion(session, displays, fullDesktop, displayIndex);
 
@@ -1069,12 +1130,11 @@ public sealed class ComputerSessionManager : IComputerSessionManager
             ComputerVisualProcessor.DrawActionMarker(bgra, imgW, imgH, mp.X, mp.Y, dragEndImgPoint?.X, dragEndImgPoint?.Y);
         }
 
-        session.LatestBgraFrame = (bgra, imgW, imgH);
         var encoded = _driver.EncodeScreenshot(bgra, imgW, imgH, out var mimeType);
         var seq = session.NextScreenshotSeq();
         var screenshot = new ComputerScreenshotData(seq, mimeType, encoded, imgW, imgH, DateTimeOffset.UtcNow);
         sw.Stop();
-        return (screenshot, viewport, sw.ElapsedMilliseconds);
+        return new CaptureSnapshot(screenshot, viewport, bgra, pinRevision, sw.ElapsedMilliseconds);
     }
 
     private (int X, int Y, int Width, int Height) ResolveCaptureRegion(
@@ -1516,11 +1576,19 @@ public sealed class ComputerSessionManager : IComputerSessionManager
     private static ComputerOperationResult EmergencyStopped()
         => Fail("emergency_stopped", "本会话 Computer Use 已被用户紧急停止，需由用户发起新一轮对话后恢复。");
 
+    private static ComputerOperationResult FreshScreenshotRequired()
+        => Fail("fresh_screenshot_required", "当前坐标所依据的截图不可用或已过期。请调用 computer_screenshot 获取新图，再根据新图确认落点。");
+
+    private sealed record CaptureSnapshot(
+        ComputerScreenshotData Screenshot, ComputerCaptureViewport Viewport, byte[] Bgra, long PinRevision, long ElapsedMs);
+
     private sealed class SessionRuntimeState(string sessionId) : IDisposable
     {
         private readonly object _actionGate = new();
         private readonly Queue<ComputerActionRecordDto> _recentActions = new();
         private long _screenshotSeq;
+        private long _pinRevision;
+        private CaptureSnapshot? _capture;
         private long _actionSeq;
         private CancellationTokenSource? _activeScopeCts;
         private TaskCompletionSource<string?>? _takeoverTcs;
@@ -1533,9 +1601,9 @@ public sealed class ComputerSessionManager : IComputerSessionManager
         public string? PinnedWindowHandle { get; private set; }
         public string? PinnedProcessName { get; private set; }
         public string? PinnedWindowTitle { get; private set; }
-        public ComputerScreenshotData? LatestScreenshot { get; private set; }
-        public ComputerCaptureViewport? LastViewport { get; private set; }
-        public (byte[] Bgra, int Width, int Height)? LatestBgraFrame { get; set; }
+        public long PinRevision => Volatile.Read(ref _pinRevision);
+        public CaptureSnapshot? Capture => Volatile.Read(ref _capture);
+        public ComputerScreenshotData? LatestScreenshot => Capture?.Screenshot;
         public bool TakeoverPending { get; private set; }
         public string? TakeoverReason { get; private set; }
         public DateTimeOffset? TakeoverStartedAtUtc { get; private set; }
@@ -1553,6 +1621,7 @@ public sealed class ComputerSessionManager : IComputerSessionManager
             PinnedWindowHandle = window.WindowHandle;
             PinnedProcessName = window.ProcessName;
             PinnedWindowTitle = window.Title;
+            Interlocked.Increment(ref _pinRevision);
             Touch();
         }
 
@@ -1561,13 +1630,13 @@ public sealed class ComputerSessionManager : IComputerSessionManager
             PinnedWindowHandle = null;
             PinnedProcessName = null;
             PinnedWindowTitle = null;
+            Interlocked.Increment(ref _pinRevision);
             Touch();
         }
 
-        public void UpdateCapture(ComputerScreenshotData screenshot, ComputerCaptureViewport viewport)
+        public void UpdateCapture(CaptureSnapshot capture)
         {
-            LatestScreenshot = screenshot;
-            LastViewport = viewport;
+            Volatile.Write(ref _capture, capture);
             Touch();
         }
 
