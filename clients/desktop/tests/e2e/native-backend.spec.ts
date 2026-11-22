@@ -31,6 +31,7 @@ test('Electron starts the native Local backend and its child exits with the pare
   let panelText = '';
   let panelScroll = 0;
   let panelSize = { width: 0, height: 0, wide: false };
+  let panelBreakpoint = 385;
   let nativeSkillOutput = '';
   const model = createServer((request, response) => {
     if (request.url?.endsWith('/chat/completions')) {
@@ -70,13 +71,15 @@ test('Electron starts the native Local backend and its child exits with the pare
     if (request.url?.startsWith('/panel-fixture')) {
       const variant = new URL(request.url, 'http://127.0.0.1').searchParams.get('tab');
       const title = variant === 'two' ? 'Second panel page' : variant === 'next' ? 'Second page history' : 'Browser panel fixture';
+      const wideQuery = `(min-width: ${panelBreakpoint}px)`;
       response.setHeader('Content-Type', 'text/html; charset=utf-8');
       response.end(`<!doctype html><title>${title}</title>` +
         '<style>body{min-height:1800px}input{position:fixed;left:30px;top:20px;width:170px;height:40px}' +
-        '@media (min-width: 385px){input{left:200px}}</style><body>' +
+        `@media ${wideQuery}{input{left:200px}}</style><body>` +
         '<input ' +
         'oninput="fetch(\'/panel-value?text=\' + encodeURIComponent(this.value))">' +
-        '<script>const reportSize = () => fetch(`/panel-size?w=${innerWidth}&h=${innerHeight}&wide=${matchMedia("(min-width: 385px)").matches}`);' +
+        '<script>const reportSize = () => fetch(`/panel-size?w=${innerWidth}&h=${innerHeight}&wide=${matchMedia(' +
+        JSON.stringify(wideQuery) + ').matches}`);' +
         'new ResizeObserver(reportSize).observe(document.documentElement);addEventListener("resize",reportSize);' +
         'addEventListener("scroll", () => fetch("/panel-scroll?y=" + scrollY));</script></body>');
       return;
@@ -197,18 +200,26 @@ await import(${JSON.stringify(pathToFileURL(main).href)});
 
       await newTab.click();
       await expect(sidebar.getByRole('button', { name: /^关闭标签页/ })).toHaveCount(1);
+      const separator = sidebar.getByRole('separator', { name: '调整右侧栏宽度' });
+      await separator.press('End');
+      const before = (await sidebar.boundingBox())!.width;
+      const minimum = Number(await separator.getAttribute('aria-valuemin'));
+      const dragDistance = Math.min(70, Math.floor(before - minimum));
+      expect(dragDistance).toBeGreaterThan(16);
+      // Use a breakpoint inside the actual drag range on this runner.
+      panelBreakpoint = Math.floor((await area.boundingBox())!.width - dragDistance / 2);
       await navigate(url, 'Browser panel fixture');
       await expectFullViewport();
       await expect.poll(() => panelSize.wide).toBe(true);
 
-      const separator = sidebar.getByRole('separator', { name: '调整右侧栏宽度' });
-      const before = (await sidebar.boundingBox())!.width;
       const handle = (await separator.boundingBox())!;
-      await page.mouse.move(handle.x + handle.width / 2, handle.y + 200);
+      const dragX = handle.x + handle.width / 2;
+      const dragY = handle.y + handle.height / 2;
+      await page.mouse.move(dragX, dragY);
       await page.mouse.down();
-      await page.mouse.move(handle.x + handle.width / 2 + 70, handle.y + 200, { steps: 7 });
+      await page.mouse.move(dragX + dragDistance, dragY, { steps: 7 });
       await page.mouse.up();
-      await expect.poll(async () => (await sidebar.boundingBox())!.width).toBeLessThan(before - 40);
+      await expect.poll(async () => (await sidebar.boundingBox())!.width).toBeLessThanOrEqual(before - dragDistance + 1);
       await expectFullViewport();
       await expect.poll(() => panelSize.wide).toBe(false);
       const fullHeight = panelSize.height;
