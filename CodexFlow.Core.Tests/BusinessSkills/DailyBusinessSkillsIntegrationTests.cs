@@ -95,12 +95,14 @@ public sealed class DailyBusinessSkillsIntegrationTests : IDisposable
     }
 
     [Theory]
-    [InlineData("daily")]
-    [InlineData("development")]
-    public async Task BuiltInBrowserSkill_IsDiscoverableAndLoadsOnDemand(string mode)
+    [InlineData("daily", BuiltInSkills.FrontendBrowserDebug, "用内置浏览器调试前端页面", "确认入口和预期", "browser_snapshot")]
+    [InlineData("development", BuiltInSkills.FrontendBrowserDebug, "用内置浏览器调试前端页面", "确认入口和预期", "browser_snapshot")]
+    [InlineData("daily", BuiltInSkills.DesktopControl, "用桌面控制点击记事本的目标按钮", "以界面变化验收", "computer_request_takeover")]
+    [InlineData("development", BuiltInSkills.DesktopControl, "用桌面控制点击记事本的目标按钮", "以界面变化验收", "computer_request_takeover")]
+    public async Task BuiltInSkill_IsDiscoverableAndLoadsOnDemand(
+        string mode, string skillId, string userRequest, string bodyMarker, string workflowTool)
     {
-        const string bodyMarker = "确认入口和预期";
-        const string callId = "read-frontend-skill";
+        const string callId = "read-built-in-skill";
         var requests = new List<LLMExecutionRequest>();
         var fakeExecutor = new FakeStreamingLlmExecutor((request, _) =>
         {
@@ -110,7 +112,7 @@ public sealed class DailyBusinessSkillsIntegrationTests : IDisposable
                 return [new ChatResponseUpdate(ChatRole.Assistant,
                 [
                     new FunctionCallContent(callId, ReadBuiltInSkillTool.ToolName,
-                        new Dictionary<string, object?> { ["name"] = BuiltInSkills.FrontendBrowserDebug })
+                        new Dictionary<string, object?> { ["name"] = skillId })
                 ])];
             }
 
@@ -118,17 +120,22 @@ public sealed class DailyBusinessSkillsIntegrationTests : IDisposable
         });
 
         await using var host = await StartHostAsync(fakeExecutor, businessSkillsEnabled: false);
-        var sessionId = await CreateSessionAsync(host, "BrowserSkill", workMode: mode);
+        var sessionId = await CreateSessionAsync(host, "BuiltInSkill", workMode: mode);
         using var client = host.CreateNormalClient();
         var catalog = await client.GetFromJsonAsync<BuiltInSkillDto[]>("/api/skills/built-in");
-        Assert.Contains(catalog!, skill => skill.Id == BuiltInSkills.FrontendBrowserDebug);
+        Assert.Contains(catalog!, skill => skill.Id == skillId);
 
         await SendDailyMessageAsync(host, sessionId, "你好");
         Assert.Single(requests);
-        await SendDailyMessageAsync(host, sessionId, "用内置浏览器调试前端页面");
+        await SendDailyMessageAsync(host, sessionId, userRequest);
         Assert.Equal(3, requests.Count);
 
         Assert.Equal(SerializeToolDeclarations(requests[0]), SerializeToolDeclarations(requests[1]));
+        if (skillId == BuiltInSkills.DesktopControl)
+        {
+            Assert.Contains("read_builtin_skill({\"name\":\"desktop-control\"})", ExtractSystemPrompt(requests[1]), StringComparison.Ordinal);
+        }
+
         Assert.All(requests, request =>
         {
             Assert.Single(ExtractToolNames(request), name => name == ReadBuiltInSkillTool.ToolName);
@@ -142,7 +149,7 @@ public sealed class DailyBusinessSkillsIntegrationTests : IDisposable
             .OfType<FunctionResultContent>(), result => result.CallId == callId);
         var body = UnwrapToolEnvelopeOutput(toolOutput.Result!.ToString()!);
         Assert.Contains(bodyMarker, body, StringComparison.Ordinal);
-        Assert.Contains("browser_snapshot", body, StringComparison.Ordinal);
+        Assert.Contains(workflowTool, body, StringComparison.Ordinal);
     }
 
     [Fact]

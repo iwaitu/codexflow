@@ -53,8 +53,11 @@ public interface IComputerDriver
 
     byte[] EncodeScreenshot(ReadOnlySpan<byte> bgra, int width, int height, out string mimeType);
 
-    /// <summary>Sends button events after the caller has moved the pointer to the specified point.</summary>
-    void PerformMouseClick(int x, int y, string button, int clickCount);
+    /// <summary>Checks whether the platform can determine that input to this process would be blocked.</summary>
+    bool IsInputBlockedByIntegrity(int targetProcessId) => false;
+
+    /// <summary>Sends button events at the confirmed pointer position and returns the system-accepted count when available.</summary>
+    int? PerformMouseClick(int x, int y, string button, int clickCount);
 
     void PerformMouseMove(int x, int y);
 

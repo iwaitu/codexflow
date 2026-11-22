@@ -225,7 +225,7 @@ public sealed class ComputerScreenshotTool(
     public string Name => ComputerToolNames.Screenshot;
 
     public string Description =>
-        "捕获当前桌面或已锁定窗口的屏幕截图（自动叠加坐标标尺网格与鼠标十字准星，并对 CodexFlow 受保护控制窗口涂黑遮罩），注入多模态视觉上下文并同步至右侧「桌面」面板。\n" +
+        "捕获当前桌面或已锁定窗口的屏幕截图，按设置叠加坐标网格，并标注画面内的光标位置。截图注入多模态视觉上下文并同步至右侧「桌面」面板。CodexFlow 受保护窗口可出现在画面中，输入仍受保护。\n" +
         "必须使用支持视觉的多模态模型才可调用。\n" +
         "参数（JSON object）：\n" +
         "  - full_desktop (bool, 可选): 为 true 时捕获全虚拟桌面（含多显示器），默认 false（优先捕获锁定窗口或主显示器）\n" +
@@ -307,7 +307,7 @@ public sealed class ComputerActTool(
     public string Name => ComputerToolNames.Act;
 
     public string Description =>
-        "在宿主机桌面执行纯视觉坐标驱动的鼠标或键盘操作（每次动作后自动等待 350ms 并附带返回带红圈落点标注的最新屏幕截图）。严禁操作 CodexFlow 自身控制台窗口及敏感密码管理软件，高风险与跨应用操作将经控制面人工审批。只读 Plan Mode 下禁用。\n" +
+        "在宿主机桌面执行基于截图的鼠标或键盘操作。键鼠事件提交后，通常等待 350ms 并返回新截图。红圈标注请求落点，请根据新截图确认目标窗口是否响应。严禁操作 CodexFlow 自身控制台窗口及敏感密码管理软件，高风险与跨应用操作将经控制面人工审批。只读 Plan Mode 下禁用。\n" +
         "参数（JSON object）：\n" +
         "  - action (string, 必填): click | double_click | right_click | middle_click | move | drag | scroll | type_text | key_combo | wait\n" +
         "  - x (number, 鼠标类动作必填): 目标 X 坐标（遵循最近截图所示坐标体系：图像像素坐标或 [0,1000] 千分比坐标）\n" +

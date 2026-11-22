@@ -71,7 +71,7 @@ public sealed class UnsupportedPlatformComputerDriver : IComputerDriver
         return ComputerVisualProcessor.EncodePng(bgra, width, height);
     }
 
-    public void PerformMouseClick(int x, int y, string button, int clickCount)
+    public int? PerformMouseClick(int x, int y, string button, int clickCount)
         => throw new PlatformNotSupportedException("当前平台暂不支持原生 Computer Use 鼠标注入。");
 
     public void PerformMouseMove(int x, int y)

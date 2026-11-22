@@ -574,6 +574,7 @@ public sealed class ComputerSessionManager : IComputerSessionManager
             return null;
         }
 
+        int? submittedClickEvents = null;
         try
         {
             if (CheckInputState() is { } inputError)
@@ -589,6 +590,15 @@ public sealed class ComputerSessionManager : IComputerSessionManager
                 {
                     return Fail("physical_mouse_override_detected", "审批结束后检测到用户移动鼠标，已让出控制权。请重新观察桌面后继续。");
                 }
+            }
+
+            if ((isClickAction || action == "move") &&
+                liveSafety.Window is { } pointerWindow &&
+                _driver.IsInputBlockedByIntegrity(pointerWindow.ProcessId))
+            {
+                var operation = isClickAction ? "点击" : "移动鼠标";
+                return Fail("window_input_integrity_blocked",
+                    $"目标窗口「{pointerWindow.Title}」的 Windows 权限高于 CodexFlow，无法{operation}。请用 computer_request_takeover 请求用户操作，交回后再截图确认。");
             }
 
             var clickPoint = targetScreen;
@@ -641,16 +651,16 @@ public sealed class ComputerSessionManager : IComputerSessionManager
             switch (action)
             {
                 case "click":
-                    _driver.PerformMouseClick(clickPoint!.Value.X, clickPoint.Value.Y, request.Button ?? "left", 1);
+                    submittedClickEvents = _driver.PerformMouseClick(clickPoint!.Value.X, clickPoint.Value.Y, request.Button ?? "left", 1);
                     break;
                 case "double_click":
-                    _driver.PerformMouseClick(clickPoint!.Value.X, clickPoint.Value.Y, request.Button ?? "left", 2);
+                    submittedClickEvents = _driver.PerformMouseClick(clickPoint!.Value.X, clickPoint.Value.Y, request.Button ?? "left", 2);
                     break;
                 case "right_click":
-                    _driver.PerformMouseClick(clickPoint!.Value.X, clickPoint.Value.Y, "right", 1);
+                    submittedClickEvents = _driver.PerformMouseClick(clickPoint!.Value.X, clickPoint.Value.Y, "right", 1);
                     break;
                 case "middle_click":
-                    _driver.PerformMouseClick(clickPoint!.Value.X, clickPoint.Value.Y, "middle", 1);
+                    submittedClickEvents = _driver.PerformMouseClick(clickPoint!.Value.X, clickPoint.Value.Y, "middle", 1);
                     break;
                 case "drag":
                     _driver.PerformMouseDrag(targetScreen!.Value.X, targetScreen.Value.Y, dragEndScreen!.Value.X, dragEndScreen.Value.Y, request.Button ?? "left", ct);
@@ -688,6 +698,14 @@ public sealed class ComputerSessionManager : IComputerSessionManager
         }
         sw.Stop();
 
+        var summary = BuildActionSummary(action, request, targetScreen, dragEndScreen);
+        var actionStatus = $"已执行 {summary}";
+        if (submittedClickEvents is { } count)
+        {
+            summary += $"（已提交 {count}/{count} 个鼠标事件）";
+            actionStatus = $"{summary}。请确认目标窗口是否响应";
+        }
+
         // Post-action echo screenshot with red target reticle / drag trajectory.
         try
         {
@@ -712,7 +730,6 @@ public sealed class ComputerSessionManager : IComputerSessionManager
 
             ct.ThrowIfCancellationRequested();
             session.UpdateCapture(postCapture.Screenshot, postCapture.Viewport);
-            var summary = BuildActionSummary(action, request, targetScreen, dragEndScreen);
             session.RecordAction(
                 tool: "computer_act",
                 action: action,
@@ -727,19 +744,18 @@ public sealed class ComputerSessionManager : IComputerSessionManager
             await PublishStateAsync(session, force: true, ct).ConfigureAwait(false);
             return new ComputerOperationResult(
                 Succeeded: true,
-                Output: $"已执行 {summary}。\n{FormatCaptureDescription(postCapture.Viewport, session)}",
+                Output: $"{actionStatus}。\n{FormatCaptureDescription(postCapture.Viewport, session)}",
                 Summary: summary,
                 Screenshot: postCapture.Screenshot,
                 Viewport: postCapture.Viewport);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            var summary = BuildActionSummary(action, request, targetScreen, dragEndScreen);
             session.RecordAction("computer_act", action, liveSafety.Window?.ProcessName, liveSafety.Window?.Title, targetScreen?.X, targetScreen?.Y, true, summary, sw.ElapsedMilliseconds);
             await PublishStateAsync(session, force: true, ct).ConfigureAwait(false);
             return new ComputerOperationResult(
                 Succeeded: true,
-                Output: $"已执行 {summary}（动作后回显截屏跳过：{ex.Message}）。",
+                Output: $"{actionStatus}。\n动作后回显截屏跳过（{ex.Message}）。",
                 Summary: summary);
         }
     }

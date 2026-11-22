@@ -8,6 +8,7 @@ using CodexFlow.Contracts.ComputerUse;
 using CodexFlow.Core.Agents;
 using CodexFlow.Core.Agents.Tools;
 using CodexFlow.Core.ComputerUse;
+using CodexFlow.Core.ComputerUse.Windows;
 using CodexFlow.Core.Configuration;
 using CodexFlow.Core.Execution;
 using CodexFlow.Core.Execution.Approval;
@@ -81,6 +82,7 @@ public sealed class ComputerUseTests
         public int StartedInterruptMonitors { get; private set; }
         public Action? AfterMouseMove { get; set; }
         public Action? BeforeMouseClick { get; set; }
+        public int? BlockedInputProcessId { get; set; }
         public Action? DuringMouseDrag { get; set; }
 
         public ComputerDriverStatusDto GetStatus(string emergencyStopShortcut = "CommandOrControl+.")
@@ -171,10 +173,13 @@ public sealed class ComputerUseTests
             return ComputerVisualProcessor.EncodePng(bgra, width, height);
         }
 
-        public void PerformMouseClick(int x, int y, string button, int clickCount)
+        public bool IsInputBlockedByIntegrity(int targetProcessId) => targetProcessId == BlockedInputProcessId;
+
+        public int? PerformMouseClick(int x, int y, string button, int clickCount)
         {
             BeforeMouseClick?.Invoke();
             ExecutedActions.Add($"click:{button}:{clickCount}@{x},{y}");
+            return clickCount * 2;
         }
 
         public void PerformMouseMove(int x, int y)
@@ -579,6 +584,8 @@ public sealed class ComputerUseTests
             new ComputerActRequest("right_click", X: 250, Y: 250, CoordinateSpace: "pixels"));
 
         Assert.True(result.Succeeded, result.Output);
+        Assert.Contains("已提交 2/2 个鼠标事件", result.Summary);
+        Assert.Contains("确认目标窗口是否响应", result.Output);
         Assert.Equal(["move@250,250", "click:right:1@250,250"], driver.ExecutedActions);
         Assert.True(settleTime.TotalMilliseconds >= 45, $"Only waited {settleTime.TotalMilliseconds}ms.");
     }
@@ -620,6 +627,80 @@ public sealed class ComputerUseTests
 
         Assert.Equal(expectedError, result.ErrorCode);
         Assert.Equal("move@250,250", Assert.Single(driver.ExecutedActions));
+    }
+
+    [Theory]
+    [InlineData("move", false)]
+    [InlineData("move", true)]
+    [InlineData("click", true)]
+    public async Task Act_BlocksPointerInputBeforeMovingForElevatedWindow(string action, bool elevatedTarget)
+    {
+        var options = new StaticOptionsMonitor<ComputerOptions>(new() { MaxImageLongEdge = 1920 });
+        var driver = new FakeComputerDriver { BlockedInputProcessId = elevatedTarget ? 7777 : null };
+        driver.Windows.Add(new("0x310", 7777, "notepad", "Notes", 0, 0, 1200, 900, false, true, false));
+        var guard = new ComputerSecurityGuard(options, driver);
+        await using var manager = new ComputerSessionManager(options, driver, guard,
+            NullLogger<ComputerSessionManager>.Instance, controlPlane: new FixedControlPlane(),
+            executionOptions: new StaticOptionsMonitor<ExecutionOptions>(new() { PermissionMode = ExecutionPermissionMode.FullAuto }));
+
+        var caller = new ComputerTrustedCallerContext("sess-elevated-window-mouse", SessionWorkMode.Daily, PlanModeActive: false);
+        var result = await manager.ActAsync(caller,
+            new ComputerActRequest(action, X: 250, Y: 250, CoordinateSpace: "pixels"));
+
+        if (elevatedTarget)
+        {
+            Assert.False(result.Succeeded);
+            Assert.Equal("window_input_integrity_blocked", result.ErrorCode);
+            Assert.Contains("Notes", result.Output);
+            Assert.Contains("computer_request_takeover", result.Output);
+            Assert.Empty(driver.ExecutedActions);
+        }
+        else
+        {
+            Assert.True(result.Succeeded, result.Output);
+            Assert.Equal("move@250,250", Assert.Single(driver.ExecutedActions));
+        }
+    }
+
+    [Theory]
+    [InlineData(0u)]
+    [InlineData(1u)]
+    public async Task Act_ReportsIncompleteWindowsClickAsFailure(uint sent)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var options = new StaticOptionsMonitor<ComputerOptions>(new());
+        var validateInputCount = Win32ComputerNative.ValidateInputCount;
+        var driver = new FakeComputerDriver
+        {
+            BeforeMouseClick = () => validateInputCount(sent, 2, 0)
+        };
+        var guard = new ComputerSecurityGuard(options, driver);
+        await using var manager = new ComputerSessionManager(options, driver, guard,
+            NullLogger<ComputerSessionManager>.Instance, controlPlane: new FixedControlPlane(),
+            executionOptions: new StaticOptionsMonitor<ExecutionOptions>(new() { PermissionMode = ExecutionPermissionMode.FullAuto }));
+
+        var caller = new ComputerTrustedCallerContext("sess-click-partial-input", SessionWorkMode.Daily, PlanModeActive: false);
+        var result = await manager.ActAsync(caller,
+            new ComputerActRequest("click", X: 250, Y: 250, CoordinateSpace: "pixels"));
+
+        Assert.False(result.Succeeded);
+        Assert.Equal("computer_action_failed", result.ErrorCode);
+        Assert.Contains($"{sent}/2", result.Output);
+        Assert.Null(result.Screenshot);
+    }
+
+    [Fact]
+    public void WindowsInput_AcceptsCompleteBatchAndReadsProcessIntegrity()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Win32ComputerNative.ValidateInputCount(sent: 2, requested: 2, error: 0);
+            Assert.NotNull(Win32ComputerNative.ReadProcessIntegrityLevel(Environment.ProcessId));
+        }
     }
 
     [Fact]

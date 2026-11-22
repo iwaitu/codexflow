@@ -33,6 +33,9 @@ internal static unsafe class Win32ComputerNative
     private const int DwmwaCloaked = 14;
     private const uint ProcessQueryLimitedInformation = 0x1000;
     private const uint Th32CsSnapProcess = 0x00000002;
+    private const uint TokenQuery = 0x0008;
+    private const int TokenIntegrityLevel = 25;
+    private const int TokenUiAccess = 26;
 
     private const int DibRgbColors = 0;
     private const uint SrcCopy = 0x00CC0020;
@@ -906,7 +909,63 @@ internal static unsafe class Win32ComputerNative
         SendInputArray([input]);
     }
 
-    public static void ClickAtCursor(int expectedX, int expectedY, string button, int clickCount)
+    public static bool IsInputBlockedByIntegrity(int targetProcessId)
+        => targetProcessId > 0 && targetProcessId != Environment.ProcessId &&
+           ReadProcessIntegrityLevel(Environment.ProcessId, requireNoUiAccess: true) is { } callerLevel &&
+           ReadProcessIntegrityLevel(targetProcessId) > callerLevel;
+
+    internal static uint? ReadProcessIntegrityLevel(int processId, bool requireNoUiAccess = false)
+    {
+        var process = OpenProcess(ProcessQueryLimitedInformation, 0, (uint)processId);
+        if (process == 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            if (OpenProcessToken(process, TokenQuery, out var token) == 0)
+            {
+                return null;
+            }
+
+            try
+            {
+                if (requireNoUiAccess &&
+                    (GetTokenInformation(token, TokenUiAccess, out uint uiAccess, sizeof(uint), out _) == 0 || uiAccess != 0))
+                {
+                    return null;
+                }
+
+                _ = GetTokenInformation(token, TokenIntegrityLevel, null, 0, out var length);
+                if (length < sizeof(nint))
+                {
+                    return null;
+                }
+
+                byte* buffer = stackalloc byte[(int)length];
+                if (GetTokenInformation(token, TokenIntegrityLevel, buffer, length, out _) == 0)
+                {
+                    return null;
+                }
+
+                // TOKEN_MANDATORY_LABEL begins with the SID pointer.
+                var sid = *(nint*)buffer;
+                var subAuthorityCount = *GetSidSubAuthorityCount(sid);
+                return subAuthorityCount == 0 ? null : *GetSidSubAuthority(sid, (uint)(subAuthorityCount - 1));
+            }
+            finally
+            {
+                _ = CloseHandle(token);
+            }
+        }
+        finally
+        {
+            _ = CloseHandle(process);
+        }
+    }
+
+    public static int ClickAtCursor(int expectedX, int expectedY, string button, int clickCount)
     {
         if (!TryGetCursorPos(out var x, out var y) || x != expectedX || y != expectedY)
         {
@@ -943,7 +1002,7 @@ internal static unsafe class Win32ComputerNative
             };
         }
 
-        SendInputArray(inputs);
+        return SendInputArray(inputs);
     }
 
     public static void MouseDragAbsolute(int startX, int startY, int endX, int endY, string button, CancellationToken ct)
@@ -1351,15 +1410,21 @@ internal static unsafe class Win32ComputerNative
             _ => (MouseEventfLeftDown, MouseEventfLeftUp)
         };
 
-    private static void SendInputArray(INPUT[] inputs)
+    private static int SendInputArray(INPUT[] inputs)
     {
         fixed (INPUT* ptr = inputs)
         {
             var sent = SendInput((uint)inputs.Length, ptr, sizeof(INPUT));
-            if (sent == 0)
-            {
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "SendInput 发送键鼠事件失败（可能受 Windows UIPI 管理员窗口权限保护拦截）。");
-            }
+            ValidateInputCount(sent, (uint)inputs.Length, Marshal.GetLastPInvokeError());
+            return (int)sent;
+        }
+    }
+
+    internal static void ValidateInputCount(uint sent, uint requested, int error)
+    {
+        if (sent != requested)
+        {
+            throw new Win32Exception(error, $"Windows 仅接收了 {sent}/{requested} 个键鼠事件（SendInput），操作未完整提交。请先截图确认当前状态。");
         }
     }
 
@@ -1677,6 +1742,26 @@ internal static unsafe class Win32ComputerNative
     [DllImport("kernel32.dll")]
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     private static extern int CloseHandle(nint hObject);
+
+    [DllImport("advapi32.dll")]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static extern int OpenProcessToken(nint processHandle, uint desiredAccess, out nint tokenHandle);
+
+    [DllImport("advapi32.dll")]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static extern int GetTokenInformation(nint tokenHandle, int informationClass, void* information, uint length, out uint requiredLength);
+
+    [DllImport("advapi32.dll")]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static extern int GetTokenInformation(nint tokenHandle, int informationClass, out uint information, uint length, out uint requiredLength);
+
+    [DllImport("advapi32.dll")]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static extern byte* GetSidSubAuthorityCount(nint sid);
+
+    [DllImport("advapi32.dll")]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static extern uint* GetSidSubAuthority(nint sid, uint subAuthority);
 
     [DllImport("gdiplus.dll")]
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
