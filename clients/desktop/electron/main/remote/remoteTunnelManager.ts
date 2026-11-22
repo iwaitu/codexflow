@@ -1,14 +1,18 @@
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { hostname } from 'node:os';
 import {
   TUNNEL_MAX_PAYLOAD_BYTES,
   TunnelFrameFlags,
   TunnelFrameType,
   StreamRstErrorCode,
+  buildPairingQrUri,
+  bytesToBase64Url,
   deserializeJsonPayload,
   encodeJsonFrame,
   encodePingOrPong,
   encodeStreamRst,
   encodeWindowUpdate,
+  isLowerHex,
   tryDecodeFrame,
   tryDecodePingOrPong,
   tryDecodeStreamRst,
@@ -306,6 +310,7 @@ export class RemoteTunnelManager {
   private readonly pendingIdentities = new Map<string, PendingDesktopIdentity>();
   private readonly pendingBindTokens = new Map<string, PendingBindTokenCache>();
   private readonly pendingPairPrompts = new Map<string, PendingPairEntry>();
+  private readonly issuedQrSecrets = new Map<string, { secretBytes: Buffer; expiresAtMs: number }>();
   private readonly activeStreams = new Map<number, ActiveRelayStream>();
 
   private epochCerts: SessionEpochCertDto[] = [];
@@ -315,6 +320,7 @@ export class RemoteTunnelManager {
   private helloAckReceived = false;
   private lastPongAtUtc: string | null = null;
   private lastHostEventId = 0;
+  private lastHostSummaryEpoch: number | null = null;
   private hostEventPollInFlight = false;
 
   private helloAckTimer: NodeJS.Timeout | null = null;
@@ -413,6 +419,7 @@ export class RemoteTunnelManager {
   public stop(): void {
     this.abortAndFinishSession({ terminalCloseState: undefined, message: 'Stopped by application.' });
     this.clearPendingPairPrompts();
+    this.issuedQrSecrets.clear();
     this.dialController.stop('Stopped by application.');
     this.emitSnapshot();
   }
@@ -661,6 +668,8 @@ export class RemoteTunnelManager {
     });
 
     this.lastHostEventId = 0;
+    this.lastHostSummaryEpoch = null;
+    this.issuedQrSecrets.clear();
     await this.pushLocalRevocationsBestEffort();
 
     if (!this.deps.configStore.getManualPaused()) {
@@ -674,7 +683,9 @@ export class RemoteTunnelManager {
     };
   }
 
-  public async issuePairingQrTicket(): Promise<RemoteQrTicketResult> {
+  public async issuePairingQrTicket(options?: {
+    reviewSessionId?: string;
+  }): Promise<RemoteQrTicketResult> {
     const portalUrl = this.requirePortalUrl();
     const snap = this.deps.configStore.getPublicSnapshot();
     const deviceToken = this.deps.configStore.getDeviceToken();
@@ -690,7 +701,9 @@ export class RemoteTunnelManager {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${deviceToken}`,
         },
-        body: '{}',
+        body: JSON.stringify(
+          options?.reviewSessionId ? { reviewSessionId: options.reviewSessionId } : {},
+        ),
       },
     );
 
@@ -706,13 +719,37 @@ export class RemoteTunnelManager {
       expiresAt: string;
     };
 
-    const query = new URLSearchParams({
-      portal: portalUrl,
-      deviceId: snap.device.deviceId,
+    const nowMs = this.nowMs();
+    for (const [tid, entry] of this.issuedQrSecrets) {
+      if (entry.expiresAtMs <= nowMs) {
+        this.issuedQrSecrets.delete(tid);
+      }
+    }
+    while (this.issuedQrSecrets.size >= 32) {
+      const oldestKey = this.issuedQrSecrets.keys().next().value;
+      if (!oldestKey) {
+        break;
+      }
+      this.issuedQrSecrets.delete(oldestKey);
+    }
+
+    const secretBytes = randomBytes(32);
+    const pairingSecretB64U = bytesToBase64Url(secretBytes);
+    const parsedExpMs = Date.parse(parsed.expiresAt);
+    const expiresAtMs = Number.isFinite(parsedExpMs) ? parsedExpMs : nowMs + 120_000;
+    this.issuedQrSecrets.set(parsed.ticketId.toLowerCase(), {
+      secretBytes,
+      expiresAtMs,
+    });
+
+    const qrUri = buildPairingQrUri({
       ticketId: parsed.ticketId,
-      token: parsed.qrBootstrapToken,
-      bv: String(parsed.bindingVersion),
-      fp: snap.device.desktopSpkiSha256,
+      qrBootstrapToken: parsed.qrBootstrapToken,
+      deviceId: snap.device.deviceId,
+      bindingVersion: parsed.bindingVersion,
+      desktopSpkiSha256: snap.device.desktopSpkiSha256,
+      pairingSecretB64U,
+      reviewSessionId: options?.reviewSessionId ?? null,
     });
 
     return {
@@ -720,7 +757,7 @@ export class RemoteTunnelManager {
       qrBootstrapToken: parsed.qrBootstrapToken,
       bindingVersion: parsed.bindingVersion,
       expiresAt: parsed.expiresAt,
-      qrUri: `codexflow-pair://v1?${query.toString()}`,
+      qrUri,
     };
   }
 
@@ -820,8 +857,10 @@ export class RemoteTunnelManager {
     this.abortAndFinishSession({ terminalCloseState: undefined, message: 'Unbound by user.' });
     this.dialController.stop('Unbound by user.');
     this.clearPendingPairPrompts();
+    this.issuedQrSecrets.clear();
     this.epochCerts = [];
     this.lastHostEventId = 0;
+    this.lastHostSummaryEpoch = null;
 
     if (activePairingIds.length > 0) {
       await this.pushLocalRevocationsBestEffort(activePairingIds);
@@ -1214,6 +1253,38 @@ export class RemoteTunnelManager {
       return;
     }
 
+    const nowMs = this.nowMs();
+    const ticketKey = typeof payload.ticketId === 'string' ? payload.ticketId.trim().toLowerCase() : '';
+    const qrSecretEntry = ticketKey ? this.issuedQrSecrets.get(ticketKey) : undefined;
+    let hmacValid = false;
+    if (
+      qrSecretEntry &&
+      qrSecretEntry.expiresAtMs > nowMs &&
+      isLowerHex(payload.hmacHex, 64) &&
+      typeof payload.pairRecordV1Text === 'string' &&
+      payload.pairRecordV1Text.length > 0
+    ) {
+      const expectedHmac = createHmac('sha256', qrSecretEntry.secretBytes)
+        .update(payload.pairRecordV1Text, 'utf8')
+        .digest();
+      const providedHmac = Buffer.from(payload.hmacHex, 'hex');
+      hmacValid =
+        providedHmac.length === expectedHmac.length &&
+        timingSafeEqual(expectedHmac, providedHmac);
+    }
+
+    if (qrSecretEntry && (hmacValid || qrSecretEntry.expiresAtMs <= nowMs)) {
+      this.issuedQrSecrets.delete(ticketKey);
+    }
+
+    if (!hmacValid) {
+      this.sendPairAckFrame(transport, connEpoch, {
+        pairingId: payload.pairingId,
+        decision: 'deny',
+      });
+      return;
+    }
+
     const lines = typeof payload.pairRecordV1Text === 'string' ? payload.pairRecordV1Text.split('\n') : [];
     const pairingNonceHex32 = lines.length === 13 ? (lines[11] ?? '') : '';
 
@@ -1232,7 +1303,7 @@ export class RemoteTunnelManager {
       bioPopSigB64U: payload.bioPopSigB64U ?? null,
       pairingNonceHex32,
       expiresAtUnix: payload.expiresAtUnix,
-      nowUnix: Math.floor(this.nowMs() / 1000),
+      nowUnix: Math.floor(nowMs / 1000),
     });
 
     if (!integrity.ok) {
@@ -1290,10 +1361,24 @@ export class RemoteTunnelManager {
       return;
     }
 
-    const scope = (notice.scope ?? '').toLowerCase();
+    const rawScope = (notice.scope ?? '').trim().toLowerCase();
     const targetIds = Array.isArray(notice.targetIds) ? notice.targetIds : [];
 
-    if (scope === 'account') {
+    const canonicalScope: 'pairing' | 'mobile' | 'desktop' | 'account' | 'unknown' =
+      rawScope === 'pairing' || rawScope === 'pairing_revoked'
+        ? 'pairing'
+        : rawScope === 'mobile' || rawScope === 'token_reuse_detected'
+          ? 'mobile'
+          : rawScope === 'desktop' || rawScope === 'desktop_revoked' || rawScope === 'review_session_reset'
+            ? 'desktop'
+            : rawScope === 'account' ||
+                rawScope === 'account_revoked' ||
+                rawScope === 'account_deleted' ||
+                rawScope === 'remote_disabled'
+              ? 'account'
+              : 'unknown';
+
+    if (canonicalScope === 'account') {
       this.deps.configStore.advanceWatermarks(notice.targetRevSeq, undefined);
     } else if (typeof notice.targetRevSeq === 'number' && notice.targetRevSeq > 0) {
       this.deps.configStore.advanceWatermarks(undefined, notice.targetRevSeq);
@@ -1301,7 +1386,7 @@ export class RemoteTunnelManager {
 
     const revokedPairingIds: string[] = [];
 
-    if (scope === 'pairing') {
+    if (canonicalScope === 'pairing') {
       const snap = this.deps.configStore.getPublicSnapshot();
       for (const pid of targetIds) {
         this.deps.configStore.markPairingRevoked(pid);
@@ -1311,14 +1396,16 @@ export class RemoteTunnelManager {
           this.abortStreamsForMobile(match.mobileId);
         }
       }
-    } else if (scope === 'mobile') {
+    } else if (canonicalScope === 'mobile') {
       for (const mid of targetIds) {
         const affected = this.deps.configStore.markMobileRevoked(mid);
         revokedPairingIds.push(...affected);
         this.abortStreamsForMobile(mid);
       }
-    } else if (scope === 'desktop' || scope === 'account') {
-      this.abortAllActiveStreams(StreamRstErrorCode.Revoked, `revoked_${scope}`);
+    } else if (canonicalScope === 'desktop' || canonicalScope === 'account') {
+      this.abortAllActiveStreams(StreamRstErrorCode.Revoked, `revoked_${canonicalScope}`);
+    } else {
+      this.abortAllActiveStreams(StreamRstErrorCode.Revoked, 'revoked_unknown_scope');
     }
 
     await this.pushLocalRevocationsBestEffort(revokedPairingIds);
@@ -1334,21 +1421,39 @@ export class RemoteTunnelManager {
       ),
     );
 
-    if (scope === 'desktop' || scope === 'account') {
+    if (canonicalScope === 'desktop' || canonicalScope === 'account') {
       this.clearPendingPairPrompts();
+      this.issuedQrSecrets.clear();
       this.epochCerts = [];
       this.lastHostEventId = 0;
+      this.lastHostSummaryEpoch = null;
       this.deps.configStore.clearBindingKeepProxyAndUrl();
       await this.deps.switchAccountDataDirectory(null);
+      finishSession({
+        terminalCloseState: 'rebind_required',
+        message: `Remote binding revoked (${canonicalScope}).`,
+      });
       try {
-        transport.close(4003, `revoked_${scope}`);
+        transport.close(4003, `revoked_${canonicalScope}`);
       } catch {
         // ignore close error
       }
+      return;
+    }
+
+    if (canonicalScope === 'unknown') {
+      this.clearPendingPairPrompts();
+      this.issuedQrSecrets.clear();
+      this.epochCerts = [];
       finishSession({
         terminalCloseState: 'rebind_required',
-        message: `Remote binding revoked (${scope}).`,
+        message: `Remote session halted due to unknown revocation scope (${rawScope || 'empty'}).`,
       });
+      try {
+        transport.close(4003, 'revoked_unknown_scope');
+      } catch {
+        // ignore close error
+      }
       return;
     }
 
@@ -1701,60 +1806,82 @@ export class RemoteTunnelManager {
     const bindingVersion = snap.device.bindingVersion;
 
     try {
-      const res = await this.fetchImpl(
-        `${target.baseUrl}/api/internal/remote/host-events?afterEventId=${this.lastHostEventId}&limit=100`,
-        {
-          method: 'GET',
-          headers: {
-            Authorization: `Bearer ${target.controlToken}`,
-            'X-CF-Remote-Bridge-Token': target.remoteBridgeToken,
-          },
-        },
-      );
-      if (!res.ok) {
-        return;
-      }
-
-      const payload = (await res.json()) as {
-        summaryEpoch?: number;
-        events?: InternalHostEventRecord[];
-      };
-      const events = Array.isArray(payload.events) ? payload.events : [];
-      if (events.length === 0 || this.activeSession !== sessionAtStart) {
-        return;
-      }
-
-      for (const ev of events) {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
         if (this.activeSession !== sessionAtStart) {
-          break;
+          return;
         }
-        const hostEvent: HostEventPayload = {
-          eventId: ev.eventId,
-          summaryEpoch: String(ev.summaryEpoch),
-          bindingVersion,
-          eventKind: ev.status,
-          targetKind: ev.sourceKind,
-          opaqueRefId: ev.opaqueRefId,
-          occurredAtUtc: ev.createdAtUtc,
-          expiresAtUtc: ev.expiresAtUtc,
-          isTerminal: ev.isTerminal,
-        };
-        const sent = this.safeSendBinary(
-          sessionAtStart,
-          encodeJsonFrame(
-            TunnelFrameType.HostEvent,
-            TunnelFrameFlags.Priority,
-            epochAtStart,
-            0,
-            hostEvent,
-          ),
+        const res = await this.fetchImpl(
+          `${target.baseUrl}/api/internal/remote/host-events?afterEventId=${this.lastHostEventId}&limit=100`,
+          {
+            method: 'GET',
+            headers: {
+              Authorization: `Bearer ${target.controlToken}`,
+              'X-CF-Remote-Bridge-Token': target.remoteBridgeToken,
+            },
+          },
         );
-        if (!sent) {
-          break;
+        if (!res.ok) {
+          return;
         }
-        if (ev.eventId > this.lastHostEventId) {
-          this.lastHostEventId = ev.eventId;
+
+        const payload = (await res.json()) as {
+          summaryEpoch?: number;
+          events?: InternalHostEventRecord[];
+        };
+
+        if (typeof payload.summaryEpoch === 'number') {
+          if (
+            this.lastHostSummaryEpoch !== null &&
+            payload.summaryEpoch !== this.lastHostSummaryEpoch
+          ) {
+            this.lastHostSummaryEpoch = payload.summaryEpoch;
+            this.lastHostEventId = 0;
+            if (attempt === 0) {
+              continue;
+            }
+          } else {
+            this.lastHostSummaryEpoch = payload.summaryEpoch;
+          }
         }
+
+        const events = Array.isArray(payload.events) ? payload.events : [];
+        if (events.length === 0 || this.activeSession !== sessionAtStart) {
+          return;
+        }
+
+        for (const ev of events) {
+          if (this.activeSession !== sessionAtStart) {
+            break;
+          }
+          const hostEvent: HostEventPayload = {
+            eventId: ev.eventId,
+            summaryEpoch: String(ev.summaryEpoch),
+            bindingVersion,
+            eventKind: ev.status,
+            targetKind: ev.sourceKind,
+            opaqueRefId: ev.opaqueRefId,
+            occurredAtUtc: ev.createdAtUtc,
+            expiresAtUtc: ev.expiresAtUtc,
+            isTerminal: ev.isTerminal,
+          };
+          const sent = this.safeSendBinary(
+            sessionAtStart,
+            encodeJsonFrame(
+              TunnelFrameType.HostEvent,
+              TunnelFrameFlags.Priority,
+              epochAtStart,
+              0,
+              hostEvent,
+            ),
+          );
+          if (!sent) {
+            break;
+          }
+          if (ev.eventId > this.lastHostEventId) {
+            this.lastHostEventId = ev.eventId;
+          }
+        }
+        break;
       }
     } catch {
       // Transient backend poll error; retried on next tick.

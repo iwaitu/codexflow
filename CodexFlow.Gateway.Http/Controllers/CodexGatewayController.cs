@@ -1134,7 +1134,7 @@ public class CodexGatewayController : GatewayEndpointHandler
                     new GatewayErrorResponse("remote_chat_op_store_unavailable", "远程消息幂等账本未就绪。"));
             }
 
-            var requestDigest = ComputeRemoteChatDigest(userId, request);
+            var requestDigest = ComputeRemoteChatDigest(request, verifiedRemoteAttachments);
             var now = DateTimeOffset.UtcNow;
             var reserveResult = await _remoteChatOpStore.TryReserveAsync(
                 new RemoteChatOpRecord(
@@ -1340,13 +1340,7 @@ public class CodexGatewayController : GatewayEndpointHandler
         }
 
         var isRemote = RemoteRequestContextMiddleware.IsRemoteRequest(HttpContext);
-        if (isRemote)
-        {
-            // Model A: never honor unauthenticated / remote Last-Event-ID replay filters.
-            lastEventId = 0;
-            epoch = null;
-        }
-        else if (lastEventId == 0 && Request.Headers.TryGetValue("Last-Event-ID", out var headerValue)
+        if (!isRemote && lastEventId == 0 && Request.Headers.TryGetValue("Last-Event-ID", out var headerValue)
             && long.TryParse(headerValue, out var parsedId))
         {
             lastEventId = parsedId;
@@ -1435,6 +1429,7 @@ public class CodexGatewayController : GatewayEndpointHandler
     public async Task<IResult> QueryRemoteUploadStatus(
         string sessionId,
         string uploadId,
+        string? fileSha256 = null,
         CancellationToken ct = default)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -1459,6 +1454,12 @@ public class CodexGatewayController : GatewayEndpointHandler
             return NotFound(new RemoteAttachmentUploadStatusResponse("not_found", uploadId, null, null));
         }
 
+        if (!string.IsNullOrWhiteSpace(fileSha256) &&
+            !string.Equals(result.FileSha256, fileSha256.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            return Conflict(new GatewayErrorResponse("upload_id_conflict", "Upload ID already exists with a different fileSha256."));
+        }
+
         UploadedAttachmentDto? dto = result.Attachment is null
             ? null
             : new UploadedAttachmentDto(
@@ -1472,6 +1473,7 @@ public class CodexGatewayController : GatewayEndpointHandler
     public async Task<IResult> QueryRemoteChatOpStatus(
         string sessionId,
         string clientOpId,
+        string? requestDigest = null,
         CancellationToken ct = default)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -1494,6 +1496,12 @@ public class CodexGatewayController : GatewayEndpointHandler
         if (op is null)
             return NotFound(new RemoteChatOpStatusResponse("not_found", clientOpId, null, null, null));
 
+        if (!string.IsNullOrWhiteSpace(requestDigest) &&
+            !string.Equals(op.RequestDigest, requestDigest.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            return Conflict(new GatewayErrorResponse("chat_op_conflict", "Client op ID already exists with a different requestDigest."));
+        }
+
         var accepted = TryDeserializeAcceptedResponse(op.ResponseDtoJson);
         return Ok(new RemoteChatOpStatusResponse(op.Status, op.ClientOpId, op.ConversationId, op.MessageId, accepted));
     }
@@ -1509,6 +1517,10 @@ public class CodexGatewayController : GatewayEndpointHandler
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrEmpty(userId)) return Unauthorized();
 
+        var isRemote = RemoteRequestContextMiddleware.IsRemoteRequest(HttpContext);
+        var remoteMeta = isRemote ? RemoteRequestContextMiddleware.GetMetadata(HttpContext) : null;
+        var bindingVersion = isRemote ? remoteMeta?.Stamp.BindingVersion : null;
+
         if (_remotePendingProjection is null)
         {
             return Ok(new RemotePendingSummarySnapshotResponse(
@@ -1519,10 +1531,14 @@ public class CodexGatewayController : GatewayEndpointHandler
                 null,
                 true,
                 false,
-                []));
+                [],
+                BindingVersion: bindingVersion));
         }
 
-        var isRemote = RemoteRequestContextMiddleware.IsRemoteRequest(HttpContext);
+        var callerScopeKey = isRemote && remoteMeta is not null
+            ? $"{userId}:{remoteMeta.Stamp.PairingId:D}"
+            : userId;
+
         var result = await _remotePendingProjection.QuerySummaryAsync(
             mode ?? "snapshot",
             snapshotId,
@@ -1552,45 +1568,60 @@ public class CodexGatewayController : GatewayEndpointHandler
                     .ConfigureAwait(false);
                 return decision.Allowed;
             },
-            ct).ConfigureAwait(false);
+            ct,
+            callerScopeKey).ConfigureAwait(false);
 
-        return Ok(result);
+        return Ok(bindingVersion is null ? result : result with { BindingVersion = bindingVersion });
     }
 
-    private static string ComputeRemoteChatDigest(string userId, GatewayChatRequest request)
+    public static string BuildCanonicalStructuredActionV1(GatewayStructuredActionRequest? sa)
     {
-        var sb = new StringBuilder();
-        sb.Append("CF-CHAT-OP-V1\n")
-          .Append(userId).Append('\n')
-          .Append(request.SessionId).Append('\n')
-          .Append(request.ConversationId ?? string.Empty).Append('\n')
-          .Append(request.TaskId ?? string.Empty).Append('\n')
-          .Append(request.ReplyId ?? string.Empty).Append('\n')
-          .Append(request.ConversationMode ?? string.Empty).Append('\n')
-          .Append(request.Message ?? string.Empty).Append('\n');
-        if (request.Attachments is { Count: > 0 })
+        if (sa is null)
         {
-            foreach (var att in request.Attachments)
-            {
-                sb.Append(att.Name).Append('|')
-                  .Append(att.RelativePath).Append('|')
-                  .Append(att.SizeBytes.ToString(CultureInfo.InvariantCulture)).Append('|')
-                  .Append(att.ContentType ?? string.Empty).Append('\n');
-            }
+            return string.Empty;
         }
 
-        if (request.StructuredAction is { } sa)
+        var action = (sa.Action ?? string.Empty).Trim().ToLowerInvariant();
+        var startExecution = sa.StartExecution switch
         {
-            sb.Append(sa.Action).Append('|')
-              .Append(sa.PlanArtifactId ?? string.Empty).Append('|')
-              .Append(sa.PlanVersion ?? string.Empty).Append('|')
-              .Append(sa.PlanHash ?? string.Empty).Append('|')
-              .Append(sa.IdempotencyKey ?? string.Empty).Append('|')
-              .Append(sa.StartExecution?.ToString(CultureInfo.InvariantCulture) ?? string.Empty).Append('|')
-              .Append(sa.AcceptExistingDependencyDebt?.ToString(CultureInfo.InvariantCulture) ?? string.Empty).Append('\n');
-        }
+            true => "true",
+            false => "false",
+            null => string.Empty
+        };
+        return string.Join(
+            '|',
+            action,
+            sa.PlanArtifactId ?? string.Empty,
+            sa.PlanVersion ?? string.Empty,
+            sa.PlanHash ?? string.Empty,
+            sa.IdempotencyKey ?? string.Empty,
+            startExecution);
+    }
 
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString()))).ToLowerInvariant();
+    public static string ComputeRemoteChatDigest(
+        GatewayChatRequest request,
+        IReadOnlyList<VerifiedRemoteAttachment>? verifiedRemoteAttachments = null)
+    {
+        var mode = string.IsNullOrWhiteSpace(request.ConversationMode)
+            ? "execution"
+            : request.ConversationMode.Trim().ToLowerInvariant();
+        var uploadIdsCsv = string.Join(
+            ",",
+            (verifiedRemoteAttachments ?? [])
+                .Select(static a => a.UploadId)
+                .OrderBy(static id => id, StringComparer.Ordinal));
+        var canonicalAction = BuildCanonicalStructuredActionV1(request.StructuredAction);
+        var payload = string.Join(
+            "\n",
+            "CF-CHAT-OP-V1",
+            request.SessionId,
+            request.ConversationId ?? string.Empty,
+            mode,
+            uploadIdsCsv,
+            canonicalAction,
+            request.Message ?? string.Empty);
+
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload))).ToLowerInvariant();
     }
 
     private static GatewayChatAcceptedResponse? TryDeserializeAcceptedResponse(string? json)

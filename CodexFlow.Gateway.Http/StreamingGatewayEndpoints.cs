@@ -172,12 +172,14 @@ internal static class StreamingGatewayEndpoints
                 [FromServices] CodexGatewayController handler,
                 [FromRoute] string sessionId,
                 [FromRoute] string uploadId,
+                [FromQuery] string? fileSha256 = null,
                 CancellationToken ct = default) =>
             {
                 handler.Bind(http);
-                return handler.QueryRemoteUploadStatus(sessionId, uploadId, ct);
+                return handler.QueryRemoteUploadStatus(sessionId, uploadId, fileSha256, ct);
             })
             .Produces<RemoteAttachmentUploadStatusResponse>(StatusCodes.Status200OK, "text/plain", "application/json", "text/json")
+            .Produces<GatewayErrorResponse>(StatusCodes.Status409Conflict, "text/plain", "application/json", "text/json")
             .Produces<RemoteAttachmentUploadStatusResponse>(StatusCodes.Status404NotFound, "text/plain", "application/json", "text/json");
 
         endpoints.MapGet("/session/{sessionId}/ops/{clientOpId}", static (
@@ -185,12 +187,14 @@ internal static class StreamingGatewayEndpoints
                 [FromServices] CodexGatewayController handler,
                 [FromRoute] string sessionId,
                 [FromRoute] string clientOpId,
+                [FromQuery] string? requestDigest = null,
                 CancellationToken ct = default) =>
             {
                 handler.Bind(http);
-                return handler.QueryRemoteChatOpStatus(sessionId, clientOpId, ct);
+                return handler.QueryRemoteChatOpStatus(sessionId, clientOpId, requestDigest, ct);
             })
             .Produces<RemoteChatOpStatusResponse>(StatusCodes.Status200OK, "text/plain", "application/json", "text/json")
+            .Produces<GatewayErrorResponse>(StatusCodes.Status409Conflict, "text/plain", "application/json", "text/json")
             .Produces<RemoteChatOpStatusResponse>(StatusCodes.Status404NotFound, "text/plain", "application/json", "text/json");
 
         endpoints.MapGet("/events/summary", static (

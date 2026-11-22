@@ -672,25 +672,64 @@ export function buildPlanEnvV1(
   bindingVersion: number,
   sessionId: string,
   planArtifactId: string,
-  planVersion: number,
+  planVersion: string | number,
   planMarkdownSha256: string,
   allowedActionsCsv: string,
   startExecution: boolean,
   expiresAtUnix: number,
 ): string {
+  const versionText =
+    typeof planVersion === 'number'
+      ? ensureInteger(planVersion, 'planVersion')
+      : ensureNonEmptySingleLineField(planVersion, 'planVersion');
+
   return [
     'CF-PLAN-ENV-V1',
     ensureNonEmptySingleLineField(deviceId, 'deviceId'),
     ensureInteger(bindingVersion, 'bindingVersion'),
     ensureNonEmptySingleLineField(sessionId, 'sessionId'),
     ensureNonEmptySingleLineField(planArtifactId, 'planArtifactId'),
-    ensureInteger(planVersion, 'planVersion'),
+    versionText,
     ensureLowerHex64(planMarkdownSha256, 'planMarkdownSha256'),
     ensureNonEmptySingleLineField(allowedActionsCsv, 'allowedActionsCsv'),
     startExecution ? 'true' : 'false',
     'false',
     '[]',
     ensureInteger(expiresAtUnix, 'expiresAtUnix'),
+  ].join('\n');
+}
+
+export function sanitizeSingleLineSummaryText(raw: string, maxLen = 512): string {
+  return raw.replace(/[\r\n\0]+/g, ' ').trim().slice(0, maxLen);
+}
+
+export function buildApprovalCanonicalTextV1(params: {
+  approvalKind: string;
+  approvalId: string;
+  sessionId: string;
+  title: string;
+  summary: string;
+}): string {
+  return [
+    'CF-APPROVAL-TEXT-V1',
+    ensureNonEmptySingleLineField(params.approvalKind, 'approvalKind'),
+    ensureNonEmptySingleLineField(params.approvalId, 'approvalId'),
+    ensureNonEmptySingleLineField(params.sessionId, 'sessionId'),
+    sanitizeSingleLineSummaryText(params.title, 200) || params.approvalKind,
+    sanitizeSingleLineSummaryText(params.summary, 600) || params.approvalId,
+  ].join('\n');
+}
+
+export function buildApprovalCanonicalPayloadV1(params: {
+  approvalKind: string;
+  requestDigest: string;
+  payloadText: string;
+}): string {
+  return [
+    'CF-APPROVAL-PAYLOAD-V1',
+    ensureNonEmptySingleLineField(params.approvalKind, 'approvalKind'),
+    ensureNonEmptySingleLineField(params.requestDigest, 'requestDigest'),
+    sanitizeSingleLineSummaryText(params.payloadText, 4096),
   ].join('\n');
 }
 
@@ -773,6 +812,35 @@ export function sas6FromSha256Digest(digestBytes: Uint8Array): string {
   return String(u32 % 1_000_000).padStart(6, '0');
 }
 
+export interface CanonicalStructuredActionInput {
+  readonly action: string;
+  readonly planArtifactId?: string | null;
+  readonly planVersion?: string | null;
+  readonly planHash?: string | null;
+  readonly idempotencyKey?: string | null;
+  readonly startExecution?: boolean | null;
+}
+
+export function buildCanonicalStructuredActionV1(
+  sa: CanonicalStructuredActionInput | null | undefined,
+): string {
+  if (!sa) {
+    return '';
+  }
+  const action = ensureNonEmptySingleLineField(sa.action.trim().toLowerCase(), 'structuredAction.action');
+  const planArtifactId = ensureSingleLineField(sa.planArtifactId ?? '', 'structuredAction.planArtifactId');
+  const planVersion = ensureSingleLineField(sa.planVersion ?? '', 'structuredAction.planVersion');
+  const planHash = ensureSingleLineField(sa.planHash ?? '', 'structuredAction.planHash');
+  const idempotencyKey = ensureSingleLineField(sa.idempotencyKey ?? '', 'structuredAction.idempotencyKey');
+  const startExecution =
+    sa.startExecution === undefined || sa.startExecution === null
+      ? ''
+      : sa.startExecution
+        ? 'true'
+        : 'false';
+  return `${action}|${planArtifactId}|${planVersion}|${planHash}|${idempotencyKey}|${startExecution}`;
+}
+
 export function buildChatOpV1Payload(
   sessionId: string,
   conversationIdOrEmpty: string | null | undefined,
@@ -843,4 +911,123 @@ export function canonicalizeContentType(rawHeader: string | null | undefined): s
     renderedParams.push(`${pName}=${pVal}`);
   }
   return renderedParams.length > 0 ? `${mediaType}; ${renderedParams.join('; ')}` : mediaType;
+}
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const ALLOWED_QR_QUERY_KEYS = new Set(['v', 'i', 't', 'd', 'bv', 'k', 's', 'r']);
+
+export interface ParsedPairingQrUri {
+  readonly ticketId: string;
+  readonly qrBootstrapToken: string;
+  readonly deviceId: string;
+  readonly bindingVersion: number;
+  readonly desktopSpkiSha256: string;
+  readonly pairingSecretB64U: string;
+  readonly reviewSessionId?: string;
+}
+
+export function buildPairingQrUri(params: {
+  ticketId: string;
+  qrBootstrapToken: string;
+  deviceId: string;
+  bindingVersion: number;
+  desktopSpkiSha256: string;
+  pairingSecretB64U: string;
+  reviewSessionId?: string | null;
+}): string {
+  if (!UUID_REGEX.test(params.ticketId) || !UUID_REGEX.test(params.deviceId)) {
+    throw new Error('ticketId and deviceId must be valid UUID strings.');
+  }
+  ensureLowerHex64(params.desktopSpkiSha256, 'desktopSpkiSha256');
+  const secretBytes = base64UrlToBytes(params.pairingSecretB64U);
+  if (secretBytes.byteLength !== 32) {
+    throw new Error('pairingSecretB64U must decode to 32 bytes.');
+  }
+  const query = new URLSearchParams({
+    v: '1',
+    i: params.ticketId.toLowerCase(),
+    t: ensureNonEmptySingleLineField(params.qrBootstrapToken, 'qrBootstrapToken'),
+    d: params.deviceId.toLowerCase(),
+    bv: ensureInteger(params.bindingVersion, 'bindingVersion'),
+    k: params.desktopSpkiSha256,
+    s: params.pairingSecretB64U,
+  });
+  if (params.reviewSessionId) {
+    if (!UUID_REGEX.test(params.reviewSessionId)) {
+      throw new Error('reviewSessionId must be a valid UUID string.');
+    }
+    query.set('r', params.reviewSessionId.toLowerCase());
+  }
+  return `codexflow://pair?${query.toString()}`;
+}
+
+export function parsePairingQrUri(rawInput: string): ParsedPairingQrUri {
+  const trimmed = rawInput.trim();
+  if (!trimmed || trimmed.length > 1024 || /[\r\n\0]/.test(trimmed)) {
+    throw new Error('Pairing URI is empty, too long, or contains control characters.');
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error('Malformed pairing URI.');
+  }
+  if (parsed.protocol !== 'codexflow:' || parsed.hostname.toLowerCase() !== 'pair') {
+    throw new Error('Unsupported pairing URI scheme or host.');
+  }
+  if (parsed.username || parsed.password || (parsed.pathname && parsed.pathname !== '/')) {
+    throw new Error('Pairing URI must not contain userinfo or extra path segments.');
+  }
+
+  const seen = new Map<string, string>();
+  for (const [k, v] of parsed.searchParams.entries()) {
+    if (!ALLOWED_QR_QUERY_KEYS.has(k)) {
+      throw new Error(`Disallowed QR query parameter '${k}'.`);
+    }
+    if (seen.has(k)) {
+      throw new Error(`Duplicate QR query parameter '${k}'.`);
+    }
+    seen.set(k, v);
+  }
+
+  if (seen.get('v') !== '1') {
+    throw new Error('Unsupported pairing URI version.');
+  }
+  const ticketId = seen.get('i') ?? '';
+  const qrBootstrapToken = seen.get('t') ?? '';
+  const deviceId = seen.get('d') ?? '';
+  const bvRaw = seen.get('bv') ?? '';
+  const desktopSpkiSha256 = (seen.get('k') ?? '').toLowerCase();
+  const pairingSecretB64U = seen.get('s') ?? '';
+  const reviewSessionId = seen.get('r');
+
+  if (!UUID_REGEX.test(ticketId) || !UUID_REGEX.test(deviceId)) {
+    throw new Error('Invalid ticketId or deviceId inside pairing URI.');
+  }
+  if (!qrBootstrapToken || qrBootstrapToken.length > 256) {
+    throw new Error('Missing or invalid bootstrap token inside pairing URI.');
+  }
+  if (!/^[1-9][0-9]{0,9}$/.test(bvRaw)) {
+    throw new Error('Invalid bindingVersion inside pairing URI.');
+  }
+  if (!isLowerHex(desktopSpkiSha256, 64)) {
+    throw new Error('Invalid desktopSpkiSha256 inside pairing URI.');
+  }
+  const secretBytes = base64UrlToBytes(pairingSecretB64U);
+  if (secretBytes.byteLength !== 32) {
+    throw new Error('Invalid pairingSecret length inside pairing URI.');
+  }
+  if (reviewSessionId !== undefined && !UUID_REGEX.test(reviewSessionId)) {
+    throw new Error('Invalid reviewSessionId inside pairing URI.');
+  }
+
+  return {
+    ticketId: ticketId.toLowerCase(),
+    qrBootstrapToken,
+    deviceId: deviceId.toLowerCase(),
+    bindingVersion: Number.parseInt(bvRaw, 10),
+    desktopSpkiSha256,
+    pairingSecretB64U,
+    ...(reviewSessionId ? { reviewSessionId: reviewSessionId.toLowerCase() } : {}),
+  };
 }

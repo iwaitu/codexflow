@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,6 +8,7 @@ import {
   TUNNEL_MAX_PAYLOAD_BYTES,
   TunnelFrameFlags,
   TunnelFrameType,
+  base64UrlToBytes,
   buildApprovalEnvV1,
   buildBioPopV1,
   buildPairV1,
@@ -15,6 +17,7 @@ import {
   encodeFrame,
   encodeJsonFrame,
   encodeWindowUpdate,
+  parsePairingQrUri,
   tryDecodeFrame,
   tryDecodeWindowUpdate,
   type HostEventPayload,
@@ -27,11 +30,14 @@ import {
 } from '@codexflow-shared/remoteProtocol';
 import { RemoteConfigStore, type SecretProtector } from '../../../electron/main/remote/remoteConfigStore';
 import {
+  createSignedPlanEnvelopeV1,
   generateP256KeyPair,
   randomHex32,
   sha256HexLower,
   signP256LowS,
+  verifyApprovalEnvelopeV1,
   verifyP256LowS,
+  verifyPlanEnvelopeV1,
 } from '../../../electron/main/remote/remoteCrypto';
 import type { WsTransportSession } from '../../../electron/main/remote/remoteDialController';
 import { RemoteHostDispatcher } from '../../../electron/main/remote/remoteHostDispatcher';
@@ -477,6 +483,17 @@ describe('RemoteHostDispatcher & RemoteTunnelManager Integration', () => {
             status: 200,
           });
         }
+        if (url.includes('/qr-ticket')) {
+          return new Response(
+            JSON.stringify({
+              ticketId,
+              qrBootstrapToken: 'qr-boot-xyz',
+              bindingVersion: 1,
+              expiresAt: new Date(Date.now() + 120_000).toISOString(),
+            }),
+            { status: 200 },
+          );
+        }
         if (url.includes('/api/internal/remote/host-events')) {
           return new Response(
             JSON.stringify({
@@ -586,7 +603,15 @@ describe('RemoteHostDispatcher & RemoteTunnelManager Integration', () => {
       expect(hostEvent.summaryEpoch).toBe('9');
       expect(hostEvent.opaqueRefId).toBe('apr-77');
 
-      // Portal sends PairRequest; verify SAS6 + PairAck decision === 'approve'
+      // Issue QR ticket & compute HMAC-SHA256 from pairingSecret; forged HMAC must be denied
+      const qr = await mgr.issuePairingQrTicket();
+      expect(qr.qrUri.startsWith('codexflow://pair?')).toBe(true);
+      expect(qr.qrUri).not.toContain('portal=');
+      const parsedQr = parsePairingQrUri(qr.qrUri);
+      expect(parsedQr.ticketId).toBe(ticketId);
+      const qrSecret = Buffer.from(base64UrlToBytes(parsedQr.pairingSecretB64U));
+
+      // Portal sends PairRequest; verify HMAC failure is denied, then valid HMAC + SAS6 -> PairAck approve
       const pairNonce = randomHex32();
       const pairExp = Math.floor(Date.now() / 1000) + 180;
       const pairV1 = buildPairV1(
@@ -604,9 +629,10 @@ describe('RemoteHostDispatcher & RemoteTunnelManager Integration', () => {
         pairExp,
       );
       const bioPop = buildBioPopV1(mobileId, ticketId, bioKeys.keyId, pairNonce, pairExp);
-      const pairReqPayload: PairRequestPayload = {
+      const badPairingId = '77777777-7777-4777-8777-777777777777';
+      const forgedPairReq: PairRequestPayload = {
         ticketId,
-        pairingId,
+        pairingId: badPairingId,
         mobileId,
         platform: 'ios',
         deviceName: 'Test Phone',
@@ -621,17 +647,37 @@ describe('RemoteHostDispatcher & RemoteTunnelManager Integration', () => {
         expiresAtUnix: pairExp,
       };
       mockTransport.emitServerFrame(
+        encodeJsonFrame(TunnelFrameType.PairRequest, TunnelFrameFlags.Priority, 4, 0, forgedPairReq),
+      );
+      expect(mgr.getStatusSnapshot().pendingPairRequests).toHaveLength(0);
+
+      const validHmac = createHmac('sha256', qrSecret).update(pairV1, 'utf8').digest('hex');
+      const pairReqPayload: PairRequestPayload = {
+        ...forgedPairReq,
+        pairingId,
+        hmacHex: validHmac,
+      };
+      mockTransport.emitServerFrame(
         encodeJsonFrame(TunnelFrameType.PairRequest, TunnelFrameFlags.Priority, 4, 0, pairReqPayload),
       );
 
       expect(mgr.getStatusSnapshot().pendingPairRequests).toHaveLength(1);
+      // One-shot consumption: replaying the same ticketId/HMAC must be denied
+      mockTransport.emitServerFrame(
+        encodeJsonFrame(TunnelFrameType.PairRequest, TunnelFrameFlags.Priority, 4, 0, {
+          ...pairReqPayload,
+          pairingId: '88888888-8888-4888-8888-888888888888',
+        }),
+      );
+      expect(mgr.getStatusSnapshot().pendingPairRequests).toHaveLength(1);
+
       await mgr.respondToPairRequest(pairingId, true);
 
       const pairAckFrame = mockTransport
         .decodeSentFrames()
         .filter((f) => f.header.frameType === TunnelFrameType.HostState)
         .map((f) => deserializeJsonPayload<HostStatePayload>(f.payload))
-        .find((s) => s.state === 'pair_ack');
+        .find((s) => s.state === 'pair_ack' && s.pairAck?.pairingId === pairingId);
       expect(pairAckFrame?.pairAck?.decision).toBe('approve');
       expect(
         verifyP256LowS(
@@ -751,6 +797,653 @@ describe('RemoteHostDispatcher & RemoteTunnelManager Integration', () => {
       expect(mgr.getStatusSnapshot().config.watermarks.deviceRevocationSeq).toBe(15);
       expect(mgr.getStatusSnapshot().config.pairings[0]?.status).toBe('revoked');
       expect(revocationPushes.length).toBeGreaterThanOrEqual(2);
+
+      mgr.stop();
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('RemoteHostDispatcher enforces duplicate headers, URI-encodes upstream query, signs GET envelopes, and validates string planVersion', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'cf-rdisp-m0-'));
+    try {
+      const store = new RemoteConfigStore({
+        userDataDir: tempDir,
+        secretProtector: createMemoryProtector(),
+      });
+      const desktopKeys = generateP256KeyPair();
+      const sessionKeys = generateP256KeyPair();
+      const bioKeys = generateP256KeyPair();
+      const deviceId = '11111111-1111-4111-8111-111111111111';
+      const mobileId = '22222222-2222-4222-8222-222222222222';
+      const pairingId = '33333333-3333-4333-8333-333333333333';
+      const sessionEpochHex32 = 'b'.repeat(32);
+      const nowSec = 1_750_000_000;
+
+      store.commitDesktopBinding({
+        portalUrl: 'https://portal.codexflow.example',
+        userId: 'user-m0',
+        accountEmail: 'm0@example.com',
+        deviceId,
+        deviceName: 'M0Host',
+        hostInstanceId: 'inst-m0',
+        bindingVersion: 2,
+        dataDirHash: 'c'.repeat(64),
+        desktopSpkiB64: desktopKeys.spkiB64,
+        desktopKeyId: desktopKeys.keyId,
+        desktopSpkiSha256: desktopKeys.spkiSha256,
+        desktopPrivateKeyPem: desktopKeys.privateKeyPem,
+        deviceToken: 'cfd_tok',
+        revocationSeq: 1,
+      });
+      store.upsertActivePairing({
+        pairingId,
+        mobileId,
+        platform: 'ios',
+        deviceName: 'iPhone 16 Pro',
+        bindingVersion: 2,
+        sessionSpkiB64: sessionKeys.spkiB64,
+        sessionKeyId: sessionKeys.keyId,
+        bioSpkiB64: bioKeys.spkiB64,
+        bioKeyId: bioKeys.keyId,
+        status: 'active',
+        pairedAtUtc: new Date(nowSec * 1000).toISOString(),
+      });
+
+      const observedUrls: string[] = [];
+      const planHash = sha256HexLower('# Plan M0\n\n- Step 1\n');
+      const upstreamSpy = vi.fn(async (input: Parameters<typeof fetch>[0]) => {
+        const urlStr = String(input);
+        observedUrls.push(urlStr);
+        if (urlStr.includes('/api/gateway/session/sess-1/files?')) {
+          return new Response(JSON.stringify({ entries: [] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        if (urlStr.endsWith('/api/gateway/session/sess-1/approvals')) {
+          return new Response(
+            JSON.stringify({
+              sessionId: 'sess-1',
+              items: [
+                {
+                  approvalId: 'cmd-1',
+                  requestDigest: '1'.repeat(64),
+                  sessionId: 'sess-1',
+                  tool: 'pwsh',
+                  executable: 'pwsh',
+                  argv: ['-c', 'dir'],
+                  expiresAtUtc: new Date((nowSec + 120) * 1000).toISOString(),
+                },
+              ],
+              businessApprovals: [
+                {
+                  approvalId: 'biz-1',
+                  requestDigest: '2'.repeat(64),
+                  sessionId: 'sess-1',
+                  kind: 'skill',
+                  summary: { title: 'Run skill', summary: 'Approve report export' },
+                  expiresAtUtc: new Date((nowSec + 120) * 1000).toISOString(),
+                },
+              ],
+              browserApprovals: [],
+              computerApprovals: [],
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          );
+        }
+        if (urlStr.endsWith('/api/gateway/approvals/cmd-1/script')) {
+          return new Response(
+            JSON.stringify({
+              approvalId: 'cmd-1',
+              sessionId: 'sess-1',
+              requestDigest: '1'.repeat(64),
+              scriptSha256: '3'.repeat(64),
+              shell: 'pwsh',
+              scriptText: 'Write-Host "ok"',
+              expiresAtUtc: new Date((nowSec + 120) * 1000).toISOString(),
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          );
+        }
+        if (urlStr.includes('/api/gateway/events/summary')) {
+          return new Response(
+            JSON.stringify({
+              mode: 'snapshot',
+              summaryEpoch: 42,
+              latestEventId: 10,
+              hasMore: false,
+              items: [
+                {
+                  approvalId: 'cmd-1',
+                  requestDigest: '1'.repeat(64),
+                  sessionId: 'sess-1',
+                  sourceKind: 'execution',
+                  title: 'Run dir',
+                  summary: 'pwsh -c dir',
+                  readOnlyInRemote: false,
+                  isTerminal: false,
+                  expiresAtUtc: new Date((nowSec + 120) * 1000).toISOString(),
+                },
+                {
+                  approvalId: 'ro-1',
+                  requestDigest: '4'.repeat(64),
+                  sessionId: 'sess-ro',
+                  sourceKind: 'execution',
+                  title: 'Blocked',
+                  summary: 'readOnly',
+                  readOnlyInRemote: true,
+                  isTerminal: false,
+                  expiresAtUtc: new Date((nowSec + 120) * 1000).toISOString(),
+                },
+              ],
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          );
+        }
+        if (urlStr.endsWith('/api/gateway/session/sess-1/plan')) {
+          return new Response(
+            JSON.stringify({
+              planArtifactId: 'art-1',
+              version: 'a1b2c3d4',
+              markdownHash: planHash,
+              status: 'pending_approval',
+              goal: 'Ship M0',
+              markdown: '# Plan M0\n\n- Step 1\n',
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          );
+        }
+        return new Response(JSON.stringify({ ok: true, accepted: true }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      });
+
+      const dispatcher = new RemoteHostDispatcher({
+        configStore: store,
+        nonceGuard: new ReplayNonceGuard(),
+        uploadStaging: new RemoteUploadStaging({ userDataDir: tempDir }),
+        getDispatchTarget: () => ({
+          baseUrl: 'http://127.0.0.1:51235',
+          accessToken: 'acc-secret',
+          controlToken: 'ctrl-secret',
+          remoteBridgeToken: 'bridge-secret',
+          instanceId: 'inst-m0',
+          dataDirectory: tempDir,
+        }),
+        getValidEpochCerts: () => [
+          {
+            deviceId,
+            bindingVersion: 2,
+            sessionEpochHex32,
+            issuedAtUnix: nowSec - 10,
+            expiresAtUnix: nowSec + 3500,
+            signatureB64U: 'sig',
+          },
+        ],
+        upstreamFetch: upstreamSpy as unknown as typeof fetch,
+        nowMs: () => nowSec * 1000,
+      });
+
+      const signReq = (p: {
+        keyId: string;
+        privateKeyPem: string;
+        keyPurpose: 'device_session' | 'biometric_approval';
+        method: string;
+        path: string;
+        canonicalQuery: string;
+        bodyBytes?: Uint8Array;
+        contentType?: string;
+        clientOpId?: string;
+      }) => {
+        const bodyLen = p.bodyBytes?.byteLength ?? 0;
+        const bodySha = bodyLen > 0 ? sha256HexLower(p.bodyBytes!) : EMPTY_BODY_SHA256_HEX;
+        const nonce = randomHex32();
+        const sigText = buildRequestSigV1({
+          deviceId,
+          bindingVersion: 2,
+          sessionEpochHex32,
+          mobileId,
+          keyId: p.keyId,
+          keyPurpose: p.keyPurpose,
+          methodUpper: p.method,
+          canonicalPath: p.path,
+          canonicalQuery: p.canonicalQuery,
+          ifNoneMatchOrEmpty: '',
+          uploadIdOrEmpty: '',
+          fileSha256OrEmpty: '',
+          clientOpIdOrEmpty: p.clientOpId ?? '',
+          canonicalContentType: p.contentType ?? '',
+          declaredContentLength: bodyLen,
+          bodySha256LowerHex: bodySha,
+          unixTimestampSeconds: nowSec,
+          nonceHex32: nonce,
+        });
+        return [
+          { name: 'X-CF-Mobile-Id', value: mobileId },
+          { name: 'X-CF-Key-Id', value: p.keyId },
+          { name: 'X-CF-Key-Purpose', value: p.keyPurpose },
+          { name: 'X-CF-Session-Epoch', value: sessionEpochHex32 },
+          { name: 'X-CF-Timestamp', value: String(nowSec) },
+          { name: 'X-CF-Nonce', value: nonce },
+          { name: 'X-CF-Sig', value: signP256LowS(p.privateKeyPem, sigText) },
+          ...(p.clientOpId ? [{ name: 'X-CF-Client-Op-Id', value: p.clientOpId }] : []),
+          ...(p.contentType ? [{ name: 'Content-Type', value: p.contentType }] : []),
+          ...(bodyLen > 0
+            ? [
+                { name: 'Content-Length', value: String(bodyLen) },
+                { name: 'X-CF-Body-Sha256', value: bodySha },
+              ]
+            : []),
+        ];
+      };
+
+      // 1. Duplicate X-CF-Sig rejected with 400
+      const baseHdrs = signReq({
+        keyId: sessionKeys.keyId,
+        privateKeyPem: sessionKeys.privateKeyPem,
+        keyPurpose: 'device_session',
+        method: 'GET',
+        path: '/api/system/status',
+        canonicalQuery: '',
+      });
+      const dupRes = await dispatcher.dispatch({
+        method: 'GET',
+        path: '/api/system/status',
+        query: '',
+        headers: [...baseHdrs, { name: 'x-cf-sig', value: 'forged-dup' }],
+        bodyChunks: (async function* () {})(),
+        signal: new AbortController().signal,
+      });
+      expect(dupRes.statusCode).toBe(400);
+      expect(await readStreamText(dupRes.bodyStream)).toContain('duplicate_signature_header');
+
+      // 2. Special-char query signed over decoded values & re-encoded on upstream URL
+      const filesRes = await dispatcher.dispatch({
+        method: 'GET',
+        path: '/api/gateway/session/sess-1/files',
+        query: 'path=a%26b%2Fc.ts',
+        headers: signReq({
+          keyId: sessionKeys.keyId,
+          privateKeyPem: sessionKeys.privateKeyPem,
+          keyPurpose: 'device_session',
+          method: 'GET',
+          path: '/api/gateway/session/sess-1/files',
+          canonicalQuery: 'path=a&b/c.ts',
+        }),
+        bodyChunks: (async function* () {})(),
+        signal: new AbortController().signal,
+      });
+      expect(filesRes.statusCode).toBe(200);
+      expect(observedUrls[0]).toContain('/api/gateway/session/sess-1/files?path=a%26b%2Fc.ts');
+
+      // 3. gateway_session_create rejects non-empty JSON body
+      const badCreateBody = Buffer.from(JSON.stringify({ workspacePath: 'C:/secret' }), 'utf8');
+      const badCreateRes = await dispatcher.dispatch({
+        method: 'POST',
+        path: '/api/gateway/session',
+        query: '',
+        headers: signReq({
+          keyId: sessionKeys.keyId,
+          privateKeyPem: sessionKeys.privateKeyPem,
+          keyPurpose: 'device_session',
+          method: 'POST',
+          path: '/api/gateway/session',
+          canonicalQuery: '',
+          bodyBytes: badCreateBody,
+          contentType: 'application/json',
+        }),
+        bodyChunks: (async function* () {
+          yield badCreateBody;
+        })(),
+        signal: new AbortController().signal,
+      });
+      expect(badCreateRes.statusCode).toBe(403);
+
+      // 4. GET approvals, script, summary, plan automatically attach verifiable signedEnvelope
+      const approvalsRes = await dispatcher.dispatch({
+        method: 'GET',
+        path: '/api/gateway/session/sess-1/approvals',
+        query: '',
+        headers: signReq({
+          keyId: sessionKeys.keyId,
+          privateKeyPem: sessionKeys.privateKeyPem,
+          keyPurpose: 'device_session',
+          method: 'GET',
+          path: '/api/gateway/session/sess-1/approvals',
+          canonicalQuery: '',
+        }),
+        bodyChunks: (async function* () {})(),
+        signal: new AbortController().signal,
+      });
+      expect(approvalsRes.statusCode).toBe(200);
+      const approvalsJson = JSON.parse(await readStreamText(approvalsRes.bodyStream));
+      expect(approvalsJson.items[0].signedEnvelope).toBeTruthy();
+      expect(approvalsJson.businessApprovals[0].signedEnvelope).toBeTruthy();
+      expect(
+        verifyApprovalEnvelopeV1({
+          desktopSpkiB64: desktopKeys.spkiB64,
+          deviceId,
+          bindingVersion: 2,
+          sessionId: 'sess-1',
+          approvalKind: 'command',
+          approvalId: 'cmd-1',
+          textSummarySha256: approvalsJson.items[0].signedEnvelope.textSummarySha256,
+          payloadSha256: approvalsJson.items[0].signedEnvelope.payloadSha256,
+          requestDigest: '1'.repeat(64),
+          expiresAtUnix: approvalsJson.items[0].signedEnvelope.expiresAtUnix,
+          sigB64U: approvalsJson.items[0].signedEnvelope.sigB64U,
+          nowUnix: nowSec,
+        }),
+      ).toBe(true);
+
+      const scriptRes = await dispatcher.dispatch({
+        method: 'GET',
+        path: '/api/gateway/approvals/cmd-1/script',
+        query: '',
+        headers: signReq({
+          keyId: sessionKeys.keyId,
+          privateKeyPem: sessionKeys.privateKeyPem,
+          keyPurpose: 'device_session',
+          method: 'GET',
+          path: '/api/gateway/approvals/cmd-1/script',
+          canonicalQuery: '',
+        }),
+        bodyChunks: (async function* () {})(),
+        signal: new AbortController().signal,
+      });
+      expect(scriptRes.statusCode).toBe(200);
+      const scriptJson = JSON.parse(await readStreamText(scriptRes.bodyStream));
+      expect(scriptJson.signedEnvelope?.approvalId).toBe('cmd-1');
+
+      const summaryRes = await dispatcher.dispatch({
+        method: 'GET',
+        path: '/api/gateway/events/summary',
+        query: 'mode=snapshot',
+        headers: signReq({
+          keyId: sessionKeys.keyId,
+          privateKeyPem: sessionKeys.privateKeyPem,
+          keyPurpose: 'device_session',
+          method: 'GET',
+          path: '/api/gateway/events/summary',
+          canonicalQuery: 'mode=snapshot',
+        }),
+        bodyChunks: (async function* () {})(),
+        signal: new AbortController().signal,
+      });
+      expect(summaryRes.statusCode).toBe(200);
+      const summaryJson = JSON.parse(await readStreamText(summaryRes.bodyStream));
+      expect(summaryJson.bindingVersion).toBe(2);
+      expect(summaryJson.items[0].signedEnvelope).toBeTruthy();
+      expect(summaryJson.items[1].signedEnvelope).toBeUndefined();
+
+      const planRes = await dispatcher.dispatch({
+        method: 'GET',
+        path: '/api/gateway/session/sess-1/plan',
+        query: '',
+        headers: signReq({
+          keyId: sessionKeys.keyId,
+          privateKeyPem: sessionKeys.privateKeyPem,
+          keyPurpose: 'device_session',
+          method: 'GET',
+          path: '/api/gateway/session/sess-1/plan',
+          canonicalQuery: '',
+        }),
+        bodyChunks: (async function* () {})(),
+        signal: new AbortController().signal,
+      });
+      expect(planRes.statusCode).toBe(200);
+      const planJson = JSON.parse(await readStreamText(planRes.bodyStream));
+      expect(planJson.signedEnvelope?.planVersion).toBe('a1b2c3d4');
+      expect(planJson.signedEnvelopeApproveOnly?.startExecution).toBe(false);
+      expect(
+        verifyPlanEnvelopeV1({
+          desktopSpkiB64: desktopKeys.spkiB64,
+          deviceId,
+          bindingVersion: 2,
+          sessionId: 'sess-1',
+          planArtifactId: 'art-1',
+          planVersion: 'a1b2c3d4',
+          planMarkdownSha256: planHash,
+          allowedActionsCsv: planJson.signedEnvelopeApproveOnly.allowedActionsCsv,
+          startExecution: false,
+          expiresAtUnix: planJson.signedEnvelopeApproveOnly.expiresAtUnix,
+          sigB64U: planJson.signedEnvelopeApproveOnly.sigB64U,
+          nowUnix: nowSec,
+        }),
+      ).toBe(true);
+
+      // 5. Submitting POST /api/gateway/chat with string planVersion and signedEnvelopeApproveOnly passes, while missing startExecution or session-plan is rejected
+      const approveBody = Buffer.from(
+        JSON.stringify({
+          sessionId: 'sess-1',
+          message: '',
+          structuredAction: {
+            action: 'approve',
+            planArtifactId: 'art-1',
+            planVersion: 'a1b2c3d4',
+            planHash,
+            startExecution: false,
+          },
+          signedEnvelope: planJson.signedEnvelopeApproveOnly,
+        }),
+        'utf8',
+      );
+      const approveRes = await dispatcher.dispatch({
+        method: 'POST',
+        path: '/api/gateway/chat',
+        query: '',
+        headers: signReq({
+          keyId: bioKeys.keyId,
+          privateKeyPem: bioKeys.privateKeyPem,
+          keyPurpose: 'biometric_approval',
+          method: 'POST',
+          path: '/api/gateway/chat',
+          canonicalQuery: '',
+          bodyBytes: approveBody,
+          contentType: 'application/json',
+          clientOpId: 'op-plan-1',
+        }),
+        bodyChunks: (async function* () {
+          yield approveBody;
+        })(),
+        signal: new AbortController().signal,
+      });
+      expect(approveRes.statusCode).toBe(200);
+
+      const ephemeralBody = Buffer.from(
+        JSON.stringify({
+          sessionId: 'sess-1',
+          message: '',
+          structuredAction: {
+            action: 'approve',
+            planArtifactId: 'session-plan',
+            planVersion: 'a1b2c3d4',
+            planHash,
+            startExecution: false,
+          },
+          signedEnvelope: createSignedPlanEnvelopeV1({
+            desktopPrivateKeyPem: desktopKeys.privateKeyPem,
+            deviceId,
+            bindingVersion: 2,
+            sessionId: 'sess-1',
+            planArtifactId: 'session-plan',
+            planVersion: 'a1b2c3d4',
+            planMarkdownSha256: planHash,
+            allowedActionsCsv: 'approve',
+            startExecution: false,
+            expiresAtUnix: nowSec + 300,
+          }),
+        }),
+        'utf8',
+      );
+      const ephemeralRes = await dispatcher.dispatch({
+        method: 'POST',
+        path: '/api/gateway/chat',
+        query: '',
+        headers: signReq({
+          keyId: bioKeys.keyId,
+          privateKeyPem: bioKeys.privateKeyPem,
+          keyPurpose: 'biometric_approval',
+          method: 'POST',
+          path: '/api/gateway/chat',
+          canonicalQuery: '',
+          bodyBytes: ephemeralBody,
+          contentType: 'application/json',
+          clientOpId: 'op-plan-2',
+        }),
+        bodyChunks: (async function* () {
+          yield ephemeralBody;
+        })(),
+        signal: new AbortController().signal,
+      });
+      expect(ephemeralRes.statusCode).toBe(403);
+      expect(await readStreamText(ephemeralRes.bodyStream)).toContain('unsupported_ephemeral_plan');
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('RemoteTunnelManager resets lastHostEventId on summaryEpoch change and handles canonical + unknown revocation scopes fail-closed', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'cf-rtun-m0-'));
+    try {
+      const store = new RemoteConfigStore({
+        userDataDir: tempDir,
+        secretProtector: createMemoryProtector(),
+      });
+      const desktopKeys = generateP256KeyPair();
+      const sessionKeys = generateP256KeyPair();
+      const deviceId = '11111111-1111-4111-8111-111111111111';
+      const pairingId = '33333333-3333-4333-8333-333333333333';
+      const mobileId = '22222222-2222-4222-8222-222222222222';
+      store.commitDesktopBinding({
+        portalUrl: 'https://portal.codexflow.example',
+        userId: 'user-r',
+        accountEmail: 'r@example.com',
+        deviceId,
+        deviceName: 'RevHost',
+        hostInstanceId: 'inst-r',
+        bindingVersion: 1,
+        dataDirHash: 'c'.repeat(64),
+        desktopSpkiB64: desktopKeys.spkiB64,
+        desktopKeyId: desktopKeys.keyId,
+        desktopSpkiSha256: desktopKeys.spkiSha256,
+        desktopPrivateKeyPem: desktopKeys.privateKeyPem,
+        deviceToken: 'cfd_tok',
+        revocationSeq: 1,
+      });
+      store.upsertActivePairing({
+        pairingId,
+        mobileId,
+        platform: 'ios',
+        deviceName: 'iPhone',
+        bindingVersion: 1,
+        sessionSpkiB64: sessionKeys.spkiB64,
+        sessionKeyId: sessionKeys.keyId,
+        bioSpkiB64: null,
+        bioKeyId: null,
+        status: 'active',
+        pairedAtUtc: new Date().toISOString(),
+      });
+
+      const mockTransport = new MockWsTransport();
+      const polledUrls: string[] = [];
+      let hostEpoch = 100;
+      const fetchMock = vi.fn(async (input: Parameters<typeof fetch>[0]) => {
+        const url = String(input);
+        if (url.includes('/api/internal/remote/host-events')) {
+          polledUrls.push(url);
+          const events =
+            hostEpoch === 100
+              ? [
+                  {
+                    eventId: 50,
+                    summaryEpoch: 100,
+                    sourceKind: 'execution',
+                    opaqueRefId: 'ev-50',
+                    sessionId: 's-1',
+                    status: 'pending',
+                    isTerminal: false,
+                    summary: 'First',
+                    createdAtUtc: '2026-11-22T00:00:00Z',
+                    expiresAtUtc: '2026-11-22T00:05:00Z',
+                  },
+                ]
+              : [
+                  {
+                    eventId: 1,
+                    summaryEpoch: 200,
+                    sourceKind: 'execution',
+                    opaqueRefId: 'ev-1-new',
+                    sessionId: 's-1',
+                    status: 'pending',
+                    isTerminal: false,
+                    summary: 'After restart',
+                    createdAtUtc: '2026-11-22T00:01:00Z',
+                    expiresAtUtc: '2026-11-22T00:06:00Z',
+                  },
+                ];
+          return new Response(JSON.stringify({ summaryEpoch: hostEpoch, events }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      });
+
+      const mgr = new RemoteTunnelManager({
+        configStore: store,
+        nonceGuard: new ReplayNonceGuard(),
+        uploadStaging: new RemoteUploadStaging({ userDataDir: tempDir }),
+        getDispatchTarget: () => ({
+          baseUrl: 'http://127.0.0.1:52346',
+          accessToken: 'acc',
+          controlToken: 'ctrl',
+          remoteBridgeToken: 'bridge',
+          instanceId: 'inst-r',
+          dataDirectory: tempDir,
+        }),
+        getDataDirectory: () => tempDir,
+        switchAccountDataDirectory: async () => {},
+        dialWebSocket: async () => ({ ok: true, transport: mockTransport }),
+        fetchFn: fetchMock as unknown as typeof fetch,
+        epochRotateIntervalMs: 600_000,
+        pingIntervalMs: 600_000,
+        hostEventPollIntervalMs: 40,
+      });
+
+      await mgr.start();
+      await vi.waitFor(() => expect(mockTransport.sentRaw.length).toBeGreaterThanOrEqual(1));
+      mockTransport.emitServerFrame(
+        encodeJsonFrame(TunnelFrameType.HelloAck, TunnelFrameFlags.Priority, 5, 0, {
+          connEpoch: 5,
+          latestAccountRevSeq: 0,
+          latestDeviceRevSeq: 1,
+          activePairings: [pairingId],
+          revokedMobileIds: [],
+        }),
+      );
+
+      await vi.waitFor(() => expect(mgr.getStatusSnapshot().lastHostEventId).toBe(50));
+      hostEpoch = 200;
+      await vi.waitFor(() => {
+        const sentIds = mockTransport
+          .decodeSentFrames()
+          .filter((f) => f.header.frameType === TunnelFrameType.HostEvent)
+          .map((f) => deserializeJsonPayload<HostEventPayload>(f.payload).opaqueRefId);
+        expect(sentIds).toContain('ev-1-new');
+      });
+      expect(polledUrls.some((u) => u.endsWith('afterEventId=0&limit=100'))).toBe(true);
+      expect(mgr.getStatusSnapshot().lastHostEventId).toBe(1);
+
+      // Unknown revocation scope must fail-closed into rebind_required
+      mockTransport.emitServerFrame(
+        encodeJsonFrame(TunnelFrameType.RevokeNotice, TunnelFrameFlags.Priority, 5, 0, {
+          targetRevSeq: 99,
+          scope: 'brand_new_unknown_scope',
+          targetIds: [deviceId],
+        }),
+      );
+      await vi.waitFor(() => expect(mgr.getStatusSnapshot().dial.state).toBe('rebind_required'));
+      expect(mgr.getStatusSnapshot().config.watermarks.deviceRevocationSeq).toBe(99);
 
       mgr.stop();
     } finally {

@@ -64,8 +64,10 @@ describe('QR SVG Encoder & RemoteControlPanel UI', () => {
     expect(small.modules[1 * 21 + 1]).toBe(0);
 
     const uri =
-      'codexflow-pair://v1?portal=https%3A%2F%2Fportal.codexflow.example&deviceId=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee&ticketId=11111111-2222-3333-4444-555555555555&token=sampleBootstrapTokenValue1234567890&bv=1&fp=' +
-      'a'.repeat(64);
+      'codexflow://pair?v=1&i=11111111-2222-3333-4444-555555555555&t=sampleBootstrapTokenValue1234567890&d=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee&bv=1&k=' +
+      'a'.repeat(64) +
+      '&s=' +
+      'A'.repeat(43);
     const large = encodeQrMatrix(uri);
     expect(large.version).toBeGreaterThanOrEqual(7);
     expect(large.size).toBe(17 + 4 * large.version);
@@ -166,8 +168,10 @@ describe('QR SVG Encoder & RemoteControlPanel UI', () => {
           bindingVersion: 2,
           expiresAt: new Date(Date.now() + 120_000).toISOString(),
           qrUri:
-            'codexflow-pair://v1?portal=https%3A%2F%2Fportal.codexflow.example&deviceId=dev-1&ticketId=ticket-abc&token=qr-tok-xyz&bv=2&fp=' +
-            'e'.repeat(64),
+            'codexflow://pair?v=1&i=11111111-2222-3333-4444-555555555555&t=qr-tok-xyz&d=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee&bv=2&k=' +
+            'e'.repeat(64) +
+            '&s=' +
+            'A'.repeat(43),
         },
       }),
       respondPairRequest: vi.fn().mockResolvedValue({

@@ -499,6 +499,7 @@ public sealed class DefaultRemotePendingProjection : IRemotePendingProjection
         string SnapshotId,
         long ResumeAfterEventId,
         DateTimeOffset ExpiresAtUtc,
+        string? CallerScopeKey,
         IReadOnlyList<RemotePendingTodoItem> Items);
 
     public Task<long> PublishAsync(
@@ -561,7 +562,8 @@ public sealed class DefaultRemotePendingProjection : IRemotePendingProjection
                 Summary: summary,
                 CreatedAtUtc: now,
                 ExpiresAtUtc: expiresAtUtc,
-                ResolvedReason: resolvedReason));
+                ResolvedReason: resolvedReason,
+                ReadOnlyInRemote: readOnlyInRemote));
 
             if (_eventRing.Count > MaxRingEvents)
             {
@@ -579,7 +581,8 @@ public sealed class DefaultRemotePendingProjection : IRemotePendingProjection
         long? afterEventId,
         int limit,
         Func<string, CancellationToken, Task<bool>> isSessionAuthorizedAsync,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string? callerScopeKey = null)
     {
         ArgumentNullException.ThrowIfNull(isSessionAuthorizedAsync);
         ct.ThrowIfCancellationRequested();
@@ -644,7 +647,7 @@ public sealed class DefaultRemotePendingProjection : IRemotePendingProjection
                         Summary: env.Summary,
                         Status: env.Status,
                         IsTerminal: env.IsTerminal,
-                        ReadOnlyInRemote: false,
+                        ReadOnlyInRemote: env.ReadOnlyInRemote,
                         CreatedAtUtc: env.CreatedAtUtc,
                         ExpiresAtUtc: env.ExpiresAtUtc,
                         ResolvedReason: env.ResolvedReason));
@@ -678,7 +681,8 @@ public sealed class DefaultRemotePendingProjection : IRemotePendingProjection
                 if (!string.IsNullOrWhiteSpace(snapshotId) &&
                     offset >= 0 &&
                     _snapshots.TryGetValue(snapshotId, out var found) &&
-                    found.ExpiresAtUtc > now)
+                    found.ExpiresAtUtc > now &&
+                    string.Equals(found.CallerScopeKey, callerScopeKey, StringComparison.Ordinal))
                 {
                     existingSnapshot = found;
                 }
@@ -698,6 +702,15 @@ public sealed class DefaultRemotePendingProjection : IRemotePendingProjection
             }
 
             var slice = existingSnapshot.Items.Skip(offset).Take(boundedLimit).ToArray();
+            var authorizedSlice = new List<RemotePendingTodoItem>(slice.Length);
+            foreach (var item in slice)
+            {
+                if (await isSessionAuthorizedAsync(item.SessionId, ct).ConfigureAwait(false))
+                {
+                    authorizedSlice.Add(item);
+                }
+            }
+
             var nextOffset = offset + slice.Length;
             var complete = nextOffset >= existingSnapshot.Items.Count;
             return new RemotePendingSummarySnapshotResponse(
@@ -708,7 +721,7 @@ public sealed class DefaultRemotePendingProjection : IRemotePendingProjection
                 NextPageToken: complete ? null : nextOffset.ToString(CultureInfo.InvariantCulture),
                 SnapshotComplete: complete,
                 ResetRequired: false,
-                Items: slice);
+                Items: authorizedSlice);
         }
 
         List<RemotePendingTodoItem> rawSnapshot;
@@ -739,6 +752,7 @@ public sealed class DefaultRemotePendingProjection : IRemotePendingProjection
                 newSnapshotId,
                 resumeEventId,
                 now.Add(SnapshotTtl),
+                callerScopeKey,
                 authorizedItems);
         }
 

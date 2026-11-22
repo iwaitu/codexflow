@@ -325,7 +325,8 @@ public sealed record RemotePendingEventEnvelope(
     string Summary,
     DateTimeOffset CreatedAtUtc,
     DateTimeOffset ExpiresAtUtc,
-    string? ResolvedReason = null);
+    string? ResolvedReason = null,
+    bool ReadOnlyInRemote = false);
 
 public sealed record RemotePendingSummarySnapshotResponse(
     string Mode,
@@ -335,7 +336,8 @@ public sealed record RemotePendingSummarySnapshotResponse(
     string? NextPageToken,
     bool SnapshotComplete,
     bool ResetRequired,
-    IReadOnlyList<RemotePendingTodoItem> Items);
+    IReadOnlyList<RemotePendingTodoItem> Items,
+    int? BindingVersion = null);
 
 public interface IRemotePendingProjection
 {
@@ -363,7 +365,8 @@ public interface IRemotePendingProjection
         long? afterEventId,
         int limit,
         Func<string, CancellationToken, Task<bool>> isSessionAuthorizedAsync,
-        CancellationToken ct = default);
+        CancellationToken ct = default,
+        string? callerScopeKey = null);
 
     Task<IReadOnlyList<RemotePendingEventEnvelope>> ReadHostEventsAfterAsync(
         long afterEventId,

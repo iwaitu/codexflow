@@ -365,7 +365,7 @@ export function verifyPlanEnvelopeV1(params: {
   bindingVersion: number;
   sessionId: string;
   planArtifactId: string;
-  planVersion: number;
+  planVersion: string | number;
   planMarkdownSha256: string;
   allowedActionsCsv: string;
   startExecution: boolean;
@@ -393,6 +393,110 @@ export function verifyPlanEnvelopeV1(params: {
   } catch {
     return false;
   }
+}
+
+export interface SignedApprovalEnvelopeDto {
+  readonly deviceId: string;
+  readonly bindingVersion: number;
+  readonly sessionId: string;
+  readonly approvalKind: string;
+  readonly approvalId: string;
+  readonly textSummarySha256: string;
+  readonly payloadSha256: string;
+  readonly expiresAtUnix: number;
+  readonly sigB64U: string;
+}
+
+export function createSignedApprovalEnvelopeV1(params: {
+  desktopPrivateKeyPem: string;
+  deviceId: string;
+  bindingVersion: number;
+  sessionId: string;
+  approvalKind: string;
+  approvalId: string;
+  textSummarySha256: string;
+  payloadSha256: string;
+  requestDigest: string;
+  expiresAtUnix: number;
+}): SignedApprovalEnvelopeDto {
+  const text = buildApprovalEnvV1(
+    params.deviceId,
+    params.bindingVersion,
+    params.sessionId,
+    params.approvalKind,
+    params.approvalId,
+    params.textSummarySha256,
+    params.payloadSha256,
+    params.requestDigest,
+    params.expiresAtUnix,
+  );
+  const sigB64U = signP256LowS(params.desktopPrivateKeyPem, text);
+  return {
+    deviceId: params.deviceId,
+    bindingVersion: params.bindingVersion,
+    sessionId: params.sessionId,
+    approvalKind: params.approvalKind,
+    approvalId: params.approvalId,
+    textSummarySha256: params.textSummarySha256,
+    payloadSha256: params.payloadSha256,
+    expiresAtUnix: params.expiresAtUnix,
+    sigB64U,
+  };
+}
+
+export interface SignedPlanEnvelopeDto {
+  readonly deviceId: string;
+  readonly bindingVersion: number;
+  readonly sessionId: string;
+  readonly planArtifactId: string;
+  readonly planVersion: string;
+  readonly planHash: string;
+  readonly allowedActionsCsv: string;
+  readonly startExecution: boolean;
+  readonly acceptExistingDependencyDebt: false;
+  readonly approveDependencyUpgrades: readonly string[];
+  readonly expiresAtUnix: number;
+  readonly sigB64U: string;
+}
+
+export function createSignedPlanEnvelopeV1(params: {
+  desktopPrivateKeyPem: string;
+  deviceId: string;
+  bindingVersion: number;
+  sessionId: string;
+  planArtifactId: string;
+  planVersion: string;
+  planMarkdownSha256: string;
+  allowedActionsCsv: string;
+  startExecution: boolean;
+  expiresAtUnix: number;
+}): SignedPlanEnvelopeDto {
+  const text = buildPlanEnvV1(
+    params.deviceId,
+    params.bindingVersion,
+    params.sessionId,
+    params.planArtifactId,
+    params.planVersion,
+    params.planMarkdownSha256,
+    params.allowedActionsCsv,
+    params.startExecution,
+    params.expiresAtUnix,
+  );
+  const sigB64U = signP256LowS(params.desktopPrivateKeyPem, text);
+  return {
+    deviceId: params.deviceId,
+    bindingVersion: params.bindingVersion,
+    sessionId: params.sessionId,
+    planArtifactId: params.planArtifactId,
+    planVersion: params.planVersion,
+    planHash: params.planMarkdownSha256,
+    allowedActionsCsv: params.allowedActionsCsv,
+    startExecution: params.startExecution,
+    acceptExistingDependencyDebt: false,
+    approveDependencyUpgrades: [],
+    expiresAtUnix: params.expiresAtUnix,
+    sigB64U,
+  };
 }
 
 export function verifyExchangeSigV1(params: {

@@ -1,8 +1,11 @@
 import {
   EMPTY_BODY_SHA256_HEX,
+  buildApprovalCanonicalPayloadV1,
+  buildApprovalCanonicalTextV1,
   canonicalizeContentType,
   canonicalizeQuery,
   isLowerHex,
+  sanitizeSingleLineSummaryText,
   type KeyPurpose,
   type SessionEpochCertDto,
   type TunnelHttpHeader,
@@ -16,6 +19,8 @@ import {
 import { RemoteDispatchTarget } from '../backendManager';
 import { RemoteConfigStore } from './remoteConfigStore';
 import {
+  createSignedApprovalEnvelopeV1,
+  createSignedPlanEnvelopeV1,
   sha256HexLower,
   verifyApprovalEnvelopeV1,
   verifyPlanEnvelopeV1,
@@ -577,15 +582,24 @@ async function readBoundedBytes(
   return Buffer.concat(parts, total);
 }
 
-function normalizeHeaderMap(headers: readonly TunnelHttpHeader[]): Map<string, string> {
+const SINGLE_VALUE_STANDARD_HEADERS = new Set(['content-type', 'content-length', 'if-none-match']);
+
+function normalizeHeaderMap(
+  headers: readonly TunnelHttpHeader[],
+): { ok: true; map: Map<string, string> } | { ok: false; duplicateKey: string } {
   const map = new Map<string, string>();
   for (const h of headers) {
     const key = h.name.trim().toLowerCase();
-    if (!map.has(key)) {
-      map.set(key, h.value);
+    const isSingleValue = key.startsWith('x-cf-') || SINGLE_VALUE_STANDARD_HEADERS.has(key);
+    if (map.has(key)) {
+      if (isSingleValue) {
+        return { ok: false, duplicateKey: key };
+      }
+      continue;
     }
+    map.set(key, h.value);
   }
-  return map;
+  return { ok: true, map };
 }
 
 function parseRawQueryPairs(rawQuery: string): { pairs: Array<[string, string]>; map: Map<string, string> } | null {
@@ -638,7 +652,15 @@ export class RemoteHostDispatcher {
       return jsonResponse(403, 'remote_endpoint_forbidden', 'Invalid canonical path.');
     }
 
-    const headerMap = normalizeHeaderMap(req.headers);
+    const headerRes = normalizeHeaderMap(req.headers);
+    if (!headerRes.ok) {
+      return jsonResponse(
+        400,
+        'duplicate_signature_header',
+        `Duplicate header '${headerRes.duplicateKey}' is forbidden.`,
+      );
+    }
+    const headerMap = headerRes.map;
     const mobileId = (headerMap.get('x-cf-mobile-id') ?? '').trim();
     const keyId = (headerMap.get('x-cf-key-id') ?? '').trim();
     const keyPurposeRaw = (headerMap.get('x-cf-key-purpose') ?? '').trim();
@@ -901,7 +923,10 @@ export class RemoteHostDispatcher {
 
     upstreamHeaders['Authorization'] = `Bearer ${useControlToken ? target.controlToken : target.accessToken}`;
 
-    const targetUrl = `${target.baseUrl}${rawPath}${canonicalQuery ? `?${canonicalQuery}` : ''}`;
+    const upstreamQuery = parsedQuery.pairs
+      .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+      .join('&');
+    const targetUrl = `${target.baseUrl}${rawPath}${upstreamQuery ? `?${upstreamQuery}` : ''}`;
     const fetchImpl = this.deps.upstreamFetch ?? fetch;
 
     let upstreamResp: Response;
@@ -952,6 +977,20 @@ export class RemoteHostDispatcher {
       try {
         const parsed: unknown = JSON.parse(text);
         const projected = stripSensitiveImageFields(parsed);
+        if (upstreamResp.ok) {
+          const desktopPrivateKeyPem = this.deps.configStore.getDesktopPrivateKeyPem();
+          if (desktopPrivateKeyPem) {
+            this.signRemoteEnvelopesOnResponse({
+              policyId: policy.id,
+              rawPath,
+              body: projected,
+              desktopPrivateKeyPem,
+              deviceId: snap.device.deviceId,
+              bindingVersion: snap.device.bindingVersion,
+              nowSec,
+            });
+          }
+        }
         const bytes = Buffer.from(JSON.stringify(projected), 'utf8');
         return {
           statusCode: upstreamResp.status,
@@ -1079,6 +1118,7 @@ export class RemoteHostDispatcher {
         return { ok: true, rebuiltJson: JSON.stringify(rawJson) };
       }
 
+      case 'gateway_session_create':
       case 'gateway_session_daily':
       case 'gateway_session_cancel':
       case 'jobs_cancel_post':
@@ -1322,20 +1362,26 @@ export class RemoteHostDispatcher {
             const planArtifactId = rawJson.structuredAction.planArtifactId;
             const planVersionRaw = rawJson.structuredAction.planVersion;
             const planHash = rawJson.structuredAction.planHash;
-            const startExecution = rawJson.structuredAction.startExecution !== false;
+            const startExecution = rawJson.structuredAction.startExecution;
 
             if (
               typeof planArtifactId !== 'string' ||
               !planArtifactId ||
               typeof planVersionRaw !== 'string' ||
-              !/^\d+$/.test(planVersionRaw) ||
+              planVersionRaw.length === 0 ||
+              planVersionRaw.length > 128 ||
+              /[\r\n\0]/.test(planVersionRaw) ||
               typeof planHash !== 'string' ||
               !isLowerHex(planHash, 64) ||
+              typeof startExecution !== 'boolean' ||
               typeof env.allowedActionsCsv !== 'string' ||
               !Number.isInteger(env.expiresAtUnix) ||
               typeof env.sigB64U !== 'string'
             ) {
               return { ok: false, statusCode: 403, code: 'invalid_plan_envelope', message: 'Incomplete plan identity or signedEnvelope.' };
+            }
+            if (planArtifactId.trim().toLowerCase() === 'session-plan') {
+              return { ok: false, statusCode: 403, code: 'unsupported_ephemeral_plan', message: 'Remote approval requires a persisted PlanArtifact.' };
             }
             const allowedCsvParts = env.allowedActionsCsv.split(',').map((s) => s.trim().toLowerCase());
             if (!allowedCsvParts.includes(actLower)) {
@@ -1348,7 +1394,7 @@ export class RemoteHostDispatcher {
               bindingVersion: params.bindingVersion,
               sessionId: rawJson.sessionId,
               planArtifactId,
-              planVersion: Number.parseInt(planVersionRaw, 10),
+              planVersion: planVersionRaw,
               planMarkdownSha256: planHash,
               allowedActionsCsv: env.allowedActionsCsv,
               startExecution,
@@ -1396,6 +1442,346 @@ export class RemoteHostDispatcher {
 
       default:
         return { ok: true, rebuiltJson: JSON.stringify(rawJson) };
+    }
+  }
+
+  private signRemoteEnvelopesOnResponse(params: {
+    policyId: string;
+    rawPath: string;
+    body: unknown;
+    desktopPrivateKeyPem: string;
+    deviceId: string;
+    bindingVersion: number;
+    nowSec: number;
+  }): void {
+    if (!isPlainRecord(params.body)) {
+      return;
+    }
+
+    const extractSessionIdFromPath = (): string => {
+      const m = /^\/api\/gateway\/session\/([^/]+)(?:\/|$)/.exec(params.rawPath);
+      return m?.[1] ?? '';
+    };
+
+    const parseExpiresAtUnix = (raw: unknown): number | null => {
+      if (typeof raw === 'string' && raw.trim()) {
+        const ms = Date.parse(raw);
+        if (Number.isFinite(ms)) {
+          const sec = Math.floor(ms / 1000);
+          return sec > params.nowSec ? sec : null;
+        }
+      }
+      return params.nowSec + 600;
+    };
+
+    const strOrEmpty = (v: unknown): string => (typeof v === 'string' ? v : '');
+
+    const trySignApproval = (input: {
+      approvalKind: string;
+      sessionId: string;
+      approvalId: string;
+      requestDigest: string;
+      title: string;
+      summary: string;
+      payloadText: string;
+      expiresAtUtc: unknown;
+    }) => {
+      if (
+        !input.sessionId ||
+        !input.approvalId ||
+        !input.requestDigest ||
+        /[\r\n\0]/.test(input.sessionId) ||
+        /[\r\n\0]/.test(input.approvalId) ||
+        /[\r\n\0]/.test(input.requestDigest)
+      ) {
+        return null;
+      }
+      const expiresAtUnix = parseExpiresAtUnix(input.expiresAtUtc);
+      if (expiresAtUnix === null) {
+        return null;
+      }
+      try {
+        const canonicalText = buildApprovalCanonicalTextV1({
+          approvalKind: input.approvalKind,
+          approvalId: input.approvalId,
+          sessionId: input.sessionId,
+          title: sanitizeSingleLineSummaryText(input.title, 200) || input.approvalKind,
+          summary: sanitizeSingleLineSummaryText(input.summary, 600) || input.approvalId,
+        });
+        const canonicalPayload = buildApprovalCanonicalPayloadV1({
+          approvalKind: input.approvalKind,
+          requestDigest: input.requestDigest,
+          payloadText: sanitizeSingleLineSummaryText(input.payloadText, 4096),
+        });
+        return createSignedApprovalEnvelopeV1({
+          desktopPrivateKeyPem: params.desktopPrivateKeyPem,
+          deviceId: params.deviceId,
+          bindingVersion: params.bindingVersion,
+          sessionId: input.sessionId,
+          approvalKind: input.approvalKind,
+          approvalId: input.approvalId,
+          textSummarySha256: sha256HexLower(canonicalText),
+          payloadSha256: sha256HexLower(canonicalPayload),
+          requestDigest: input.requestDigest,
+          expiresAtUnix,
+        });
+      } catch {
+        return null;
+      }
+    };
+
+    switch (params.policyId) {
+      case 'gateway_approvals_get': {
+        const fallbackSessionId = strOrEmpty(params.body.sessionId) || extractSessionIdFromPath();
+        if (Array.isArray(params.body.items)) {
+          for (const rawItem of params.body.items) {
+            if (!isPlainRecord(rawItem)) continue;
+            const env = trySignApproval({
+              approvalKind: 'command',
+              sessionId: strOrEmpty(rawItem.sessionId) || fallbackSessionId,
+              approvalId: strOrEmpty(rawItem.approvalId),
+              requestDigest: strOrEmpty(rawItem.requestDigest),
+              title: strOrEmpty(rawItem.tool) || strOrEmpty(rawItem.executable) || 'command',
+              summary: [
+                strOrEmpty(rawItem.executable),
+                ...(Array.isArray(rawItem.argv) ? rawItem.argv.map((x) => String(x)) : []),
+                strOrEmpty(rawItem.cwd) ? `@${strOrEmpty(rawItem.cwd)}` : '',
+                strOrEmpty(rawItem.reason),
+              ]
+                .filter(Boolean)
+                .join(' '),
+              payloadText: JSON.stringify({
+                tool: rawItem.tool ?? null,
+                executable: rawItem.executable ?? null,
+                argv: rawItem.argv ?? null,
+                cwd: rawItem.cwd ?? null,
+                reason: rawItem.reason ?? null,
+                scriptPreview: rawItem.scriptPreview ?? null,
+              }),
+              expiresAtUtc: rawItem.expiresAtUtc,
+            });
+            if (env) {
+              rawItem.signedEnvelope = env;
+            }
+          }
+        }
+        if (Array.isArray(params.body.businessApprovals)) {
+          for (const rawItem of params.body.businessApprovals) {
+            if (!isPlainRecord(rawItem)) continue;
+            const sumObj = isPlainRecord(rawItem.summary) ? rawItem.summary : null;
+            const env = trySignApproval({
+              approvalKind: 'business',
+              sessionId: strOrEmpty(rawItem.sessionId) || fallbackSessionId,
+              approvalId: strOrEmpty(rawItem.approvalId),
+              requestDigest: strOrEmpty(rawItem.requestDigest),
+              title:
+                (sumObj ? strOrEmpty(sumObj.title) : '') ||
+                strOrEmpty(rawItem.kind) ||
+                'business',
+              summary:
+                (sumObj ? strOrEmpty(sumObj.summary) : strOrEmpty(rawItem.summary)) ||
+                strOrEmpty(rawItem.kind),
+              payloadText: JSON.stringify({
+                kind: rawItem.kind ?? null,
+                summary: rawItem.summary ?? null,
+              }),
+              expiresAtUtc: rawItem.expiresAtUtc,
+            });
+            if (env) {
+              rawItem.signedEnvelope = env;
+            }
+          }
+        }
+        if (Array.isArray(params.body.browserApprovals)) {
+          for (const rawItem of params.body.browserApprovals) {
+            if (!isPlainRecord(rawItem)) continue;
+            const env = trySignApproval({
+              approvalKind: 'browser',
+              sessionId: strOrEmpty(rawItem.sessionId) || fallbackSessionId,
+              approvalId: strOrEmpty(rawItem.approvalId),
+              requestDigest: strOrEmpty(rawItem.requestDigest),
+              title: strOrEmpty(rawItem.action) || strOrEmpty(rawItem.tool) || 'browser',
+              summary: [
+                strOrEmpty(rawItem.targetUrl),
+                strOrEmpty(rawItem.targetDescription),
+                strOrEmpty(rawItem.riskReason),
+              ]
+                .filter(Boolean)
+                .join(' | '),
+              payloadText: JSON.stringify({
+                tool: rawItem.tool ?? null,
+                action: rawItem.action ?? null,
+                targetUrl: rawItem.targetUrl ?? null,
+                targetDescription: rawItem.targetDescription ?? null,
+                riskReason: rawItem.riskReason ?? null,
+              }),
+              expiresAtUtc: rawItem.expiresAtUtc,
+            });
+            if (env) {
+              rawItem.signedEnvelope = env;
+            }
+          }
+        }
+        if (Array.isArray(params.body.computerApprovals)) {
+          for (const rawItem of params.body.computerApprovals) {
+            if (!isPlainRecord(rawItem)) continue;
+            const env = trySignApproval({
+              approvalKind: 'computer',
+              sessionId: strOrEmpty(rawItem.sessionId) || fallbackSessionId,
+              approvalId: strOrEmpty(rawItem.approvalId),
+              requestDigest: strOrEmpty(rawItem.requestDigest),
+              title: strOrEmpty(rawItem.action) || strOrEmpty(rawItem.tool) || 'computer',
+              summary: [
+                strOrEmpty(rawItem.targetProcessName),
+                strOrEmpty(rawItem.targetWindowTitle),
+                strOrEmpty(rawItem.actionSummary),
+                strOrEmpty(rawItem.riskReason),
+              ]
+                .filter(Boolean)
+                .join(' | '),
+              payloadText: JSON.stringify({
+                tool: rawItem.tool ?? null,
+                action: rawItem.action ?? null,
+                targetProcessName: rawItem.targetProcessName ?? null,
+                targetWindowTitle: rawItem.targetWindowTitle ?? null,
+                actionSummary: rawItem.actionSummary ?? null,
+                riskReason: rawItem.riskReason ?? null,
+              }),
+              expiresAtUtc: rawItem.expiresAtUtc,
+            });
+            if (env) {
+              rawItem.signedEnvelope = env;
+            }
+          }
+        }
+        break;
+      }
+
+      case 'gateway_approval_script': {
+        const approvalId = strOrEmpty(params.body.approvalId);
+        const sessionId = strOrEmpty(params.body.sessionId);
+        const requestDigest = strOrEmpty(params.body.requestDigest);
+        const shell = strOrEmpty(params.body.shell) || 'shell';
+        const scriptSha256 = strOrEmpty(params.body.scriptSha256);
+        const scriptText = typeof params.body.scriptText === 'string' ? params.body.scriptText : '';
+        const env = trySignApproval({
+          approvalKind: 'command',
+          sessionId,
+          approvalId,
+          requestDigest,
+          title: `script:${shell}`,
+          summary: `scriptSha256:${scriptSha256}`,
+          payloadText: scriptText,
+          expiresAtUtc: params.body.expiresAtUtc,
+        });
+        if (env) {
+          params.body.signedEnvelope = env;
+        }
+        break;
+      }
+
+      case 'gateway_events_summary': {
+        if (params.body.bindingVersion === undefined || params.body.bindingVersion === null) {
+          params.body.bindingVersion = params.bindingVersion;
+        }
+        if (Array.isArray(params.body.items)) {
+          for (const rawItem of params.body.items) {
+            if (!isPlainRecord(rawItem)) continue;
+            if (rawItem.readOnlyInRemote === true || rawItem.isTerminal === true) {
+              continue;
+            }
+            const rawKind = strOrEmpty(rawItem.sourceKind).trim().toLowerCase();
+            const mappedKind =
+              rawKind === 'execution' || rawKind === 'command'
+                ? 'command'
+                : rawKind === 'business' || rawKind === 'browser' || rawKind === 'computer'
+                  ? rawKind
+                  : null;
+            if (!mappedKind) {
+              continue;
+            }
+            const approvalId = strOrEmpty(rawItem.approvalId);
+            const requestDigest = strOrEmpty(rawItem.requestDigest);
+            const sessionId = strOrEmpty(rawItem.sessionId);
+            if (!approvalId || !requestDigest || !sessionId) {
+              continue;
+            }
+            const env = trySignApproval({
+              approvalKind: mappedKind,
+              sessionId,
+              approvalId,
+              requestDigest,
+              title: strOrEmpty(rawItem.title) || mappedKind,
+              summary: strOrEmpty(rawItem.summary) || approvalId,
+              payloadText: JSON.stringify({
+                sourceKind: rawItem.sourceKind ?? null,
+                approvalId,
+                sessionId,
+                title: rawItem.title ?? null,
+                summary: rawItem.summary ?? null,
+              }),
+              expiresAtUtc: rawItem.expiresAtUtc,
+            });
+            if (env) {
+              rawItem.signedEnvelope = env;
+            }
+          }
+        }
+        break;
+      }
+
+      case 'gateway_plan_get': {
+        const sessionId = extractSessionIdFromPath();
+        const planArtifactId = strOrEmpty(params.body.planArtifactId).trim();
+        const planVersion = strOrEmpty(params.body.version).trim();
+        const markdown = typeof params.body.markdown === 'string' ? params.body.markdown : '';
+        if (
+          !sessionId ||
+          !planArtifactId ||
+          planArtifactId.toLowerCase() === 'session-plan' ||
+          !planVersion ||
+          /[\r\n\0]/.test(planVersion) ||
+          !markdown ||
+          params.body.hostRefusal
+        ) {
+          break;
+        }
+        const rawHash = strOrEmpty(params.body.markdownHash).toLowerCase();
+        const planMarkdownSha256 = isLowerHex(rawHash, 64) ? rawHash : sha256HexLower(markdown);
+        const expiresAtUnix = params.nowSec + 600;
+        try {
+          params.body.signedEnvelope = createSignedPlanEnvelopeV1({
+            desktopPrivateKeyPem: params.desktopPrivateKeyPem,
+            deviceId: params.deviceId,
+            bindingVersion: params.bindingVersion,
+            sessionId,
+            planArtifactId,
+            planVersion,
+            planMarkdownSha256,
+            allowedActionsCsv: 'approve,execute',
+            startExecution: true,
+            expiresAtUnix,
+          });
+          params.body.signedEnvelopeApproveOnly = createSignedPlanEnvelopeV1({
+            desktopPrivateKeyPem: params.desktopPrivateKeyPem,
+            deviceId: params.deviceId,
+            bindingVersion: params.bindingVersion,
+            sessionId,
+            planArtifactId,
+            planVersion,
+            planMarkdownSha256,
+            allowedActionsCsv: 'approve',
+            startExecution: false,
+            expiresAtUnix,
+          });
+        } catch {
+          // Skip invalid plan envelope inputs rather than failing read response
+        }
+        break;
+      }
+
+      default:
+        break;
     }
   }
 }

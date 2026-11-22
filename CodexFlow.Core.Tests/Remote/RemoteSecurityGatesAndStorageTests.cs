@@ -782,7 +782,7 @@ public sealed class RemoteSecurityGatesAndStorageTests : IDisposable
 
         Func<string, CancellationToken, Task<bool>> authFilter = (sid, _) => Task.FromResult(sid == "s-ok");
 
-        var page1 = await projection.QuerySummaryAsync("snapshot", null, null, null, limit: 1, authFilter);
+        var page1 = await projection.QuerySummaryAsync("snapshot", null, null, null, limit: 1, authFilter, callerScopeKey: "u1:p1");
         Assert.False(page1.ResetRequired);
         Assert.False(page1.SnapshotComplete);
         Assert.NotNull(page1.SnapshotId);
@@ -790,20 +790,33 @@ public sealed class RemoteSecurityGatesAndStorageTests : IDisposable
         var item1 = Assert.Single(page1.Items);
         Assert.Equal("s-ok", item1.SessionId);
 
-        var page2 = await projection.QuerySummaryAsync("snapshot", page1.SnapshotId, page1.NextPageToken, null, limit: 1, authFilter);
+        // Cross-caller snapshot reuse must reset
+        var crossCallerSnap = await projection.QuerySummaryAsync("snapshot", page1.SnapshotId, page1.NextPageToken, null, limit: 1, authFilter, callerScopeKey: "u1:p2");
+        Assert.True(crossCallerSnap.ResetRequired);
+
+        var page2 = await projection.QuerySummaryAsync("snapshot", page1.SnapshotId, page1.NextPageToken, null, limit: 1, authFilter, callerScopeKey: "u1:p1");
         Assert.True(page2.SnapshotComplete);
         Assert.Null(page2.NextPageToken);
         Assert.Single(page2.Items);
 
+        // Page-level auth recheck filters out items if authorization was revoked after snapshot creation
+        var page2Revoked = await projection.QuerySummaryAsync("snapshot", page1.SnapshotId, page1.NextPageToken, null, limit: 1, (_, _) => Task.FromResult(false), callerScopeKey: "u1:p1");
+        Assert.Empty(page2Revoked.Items);
+
         var unknownSnap = await projection.QuerySummaryAsync("snapshot", "snap-does-not-exist", "0", null, limit: 10, authFilter);
         Assert.True(unknownSnap.ResetRequired);
 
+        var eRo = await projection.PublishAsync("computer_approval", "a4", "s-ok", "t4", "sum4", "pending", false, true, exp, resolvedReason: null);
         var e4 = await projection.PublishAsync("execution_approval", "a1", "s-ok", "t1", "sum1", "allow_once", true, false, exp, resolvedReason: "approved");
         var delta = await projection.QuerySummaryAsync("delta", null, null, afterEventId: page1.ResumeAfterEventId, limit: 10, authFilter);
         Assert.False(delta.ResetRequired);
-        var deltaItem = Assert.Single(delta.Items);
+        Assert.Equal(2, delta.Items.Count);
+        Assert.True(delta.Items[0].ReadOnlyInRemote);
+        Assert.Equal(eRo, delta.Items[0].EventId);
+        var deltaItem = delta.Items[1];
         Assert.Equal(e4, deltaItem.EventId);
         Assert.True(deltaItem.IsTerminal);
+        Assert.False(deltaItem.ReadOnlyInRemote);
 
         var futureDelta = await projection.QuerySummaryAsync("delta", null, null, afterEventId: 999999, limit: 10, authFilter);
         Assert.True(futureDelta.ResetRequired);

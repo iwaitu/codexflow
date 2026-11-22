@@ -9,7 +9,10 @@ using CodexFlow.Contracts.ComputerUse;
 using CodexFlow.Core.ComputerUse;
 using CodexFlow.Core.Configuration;
 using CodexFlow.Core.Execution.Approval;
+using CodexFlow.Core.Remote;
 using CodexFlow.Gateway.Http;
+using CodexFlow.Gateway.Http.Remote;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
 namespace CodexFlow.Controllers;
@@ -26,11 +29,37 @@ public sealed class ComputerSessionController(
     IComputerSettingsService? computerSettingsService = null,
     IControlPlaneStateProvider? controlPlane = null) : GatewayEndpointHandler
 {
+    private async Task<IResult?> AuthorizeRemoteSessionAsync(
+        string sessionId,
+        string? workspacePath,
+        string? projectLocation,
+        CancellationToken ct)
+    {
+        if (HttpContext is null || !RemoteRequestContextMiddleware.IsRemoteRequest(HttpContext))
+        {
+            return null;
+        }
+
+        var guard = HttpContext.RequestServices.GetService<IRemoteWorkspaceAuthorizationGuard>();
+        if (guard is null)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden,
+                new ComputerApiErrorDto("remote_workspace_not_authorized", "Remote workspace authorization guard is unavailable."));
+        }
+
+        var decision = await guard
+            .AuthorizeSessionAsync(sessionId, workspacePath, projectLocation, ct)
+            .ConfigureAwait(false);
+        return decision.Allowed
+            ? null
+            : StatusCode(StatusCodes.Status403Forbidden,
+                new ComputerApiErrorDto(decision.ReasonCode, decision.Message));
+    }
+
     public async Task<IResult> GetComputerState(
         string sessionId,
         CancellationToken ct = default)
     {
-        _ = ct;
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrEmpty(userId))
         {
@@ -41,6 +70,11 @@ public sealed class ComputerSessionController(
         if (session is null || !string.Equals(session.UserId, userId, StringComparison.Ordinal))
         {
             return NotFound(new ComputerApiErrorDto("session_not_found", "Session does not exist or is not owned by the caller."));
+        }
+
+        if (await AuthorizeRemoteSessionAsync(session.Id, session.WorkspacePath, session.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+        {
+            return denied;
         }
 
         return Ok(computerSessionManager.GetSessionState(sessionId));
@@ -50,7 +84,6 @@ public sealed class ComputerSessionController(
         string sessionId,
         CancellationToken ct = default)
     {
-        _ = ct;
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrEmpty(userId))
         {
@@ -61,6 +94,11 @@ public sealed class ComputerSessionController(
         if (session is null || !string.Equals(session.UserId, userId, StringComparison.Ordinal))
         {
             return NotFound(new ComputerApiErrorDto("session_not_found", "Session does not exist or is not owned by the caller."));
+        }
+
+        if (await AuthorizeRemoteSessionAsync(session.Id, session.WorkspacePath, session.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+        {
+            return denied;
         }
 
         if (!computerSessionManager.TryGetLatestScreenshot(sessionId, out var screenshot) || screenshot is null)
@@ -103,6 +141,11 @@ public sealed class ComputerSessionController(
             return NotFound(new ComputerApiErrorDto("session_not_found", "Session does not exist or is not owned by the caller."));
         }
 
+        if (await AuthorizeRemoteSessionAsync(session.Id, session.WorkspacePath, session.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+        {
+            return denied;
+        }
+
         await computerSessionManager.CloseSessionAsync(sessionId, "closed_by_user", ct).ConfigureAwait(false);
         return Ok(new ComputerSessionCloseResponse(true, sessionId));
     }
@@ -127,6 +170,11 @@ public sealed class ComputerSessionController(
         if (session is null || !string.Equals(session.UserId, userId, StringComparison.Ordinal))
         {
             return NotFound(new ComputerApiErrorDto("session_not_found", "Session does not exist or is not owned by the caller."));
+        }
+
+        if (await AuthorizeRemoteSessionAsync(session.Id, session.WorkspacePath, session.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+        {
+            return denied;
         }
 
         var result = await computerSessionManager
@@ -162,6 +210,11 @@ public sealed class ComputerSessionController(
             return NotFound(new ComputerApiErrorDto("session_not_found", "Session does not exist or is not owned by the caller."));
         }
 
+        if (await AuthorizeRemoteSessionAsync(session.Id, session.WorkspacePath, session.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+        {
+            return denied;
+        }
+
         var result = await computerSessionManager
             .CompleteTakeoverAsync(sessionId, request?.Note, ct)
             .ConfigureAwait(false);
@@ -188,12 +241,23 @@ public sealed class ComputerSessionController(
             return Forbid();
         }
 
+        var isRemote = HttpContext is not null && RemoteRequestContextMiddleware.IsRemoteRequest(HttpContext);
+        if (isRemote && string.IsNullOrWhiteSpace(request?.SessionId))
+        {
+            return BadRequest(new ComputerApiErrorDto("remote_session_id_required", "Remote emergency stop requires a target sessionId."));
+        }
+
         if (!string.IsNullOrWhiteSpace(request?.SessionId))
         {
             var session = await chatService.GetSession(request.SessionId).ConfigureAwait(false);
             if (session is null || !string.Equals(session.UserId, userId, StringComparison.Ordinal))
             {
                 return NotFound(new ComputerApiErrorDto("session_not_found", "Session does not exist or is not owned by the caller."));
+            }
+
+            if (await AuthorizeRemoteSessionAsync(session.Id, session.WorkspacePath, session.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+            {
+                return denied;
             }
         }
 

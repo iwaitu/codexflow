@@ -58,8 +58,11 @@ export function formatSseEvent(frame: SseEventFrame): string {
   return out;
 }
 
+const MAX_SSE_BUFFER_BYTES = 1024 * 1024;
+
 export class SseStreamParser {
   private buffer = '';
+  private pendingCr = false;
   private currentId: string | undefined;
   private currentEvent: string | undefined;
   private dataLines: string[] = [];
@@ -68,7 +71,28 @@ export class SseStreamParser {
     if (!chunkText) {
       return [];
     }
-    this.buffer += chunkText.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+    let text = chunkText;
+    if (this.pendingCr) {
+      this.pendingCr = false;
+      if (text.startsWith('\n')) {
+        text = text.slice(1);
+      }
+    }
+
+    if (text.endsWith('\r')) {
+      this.pendingCr = true;
+    }
+
+    const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    if (this.buffer.length + normalized.length > MAX_SSE_BUFFER_BYTES) {
+      this.buffer = '';
+      this.pendingCr = false;
+      this.resetFields();
+      throw new Error('SSE frame buffer exceeded 1 MiB safety limit.');
+    }
+
+    this.buffer += normalized;
     const emitted: SseEventFrame[] = [];
 
     let newlineIdx = this.buffer.indexOf('\n');
@@ -86,19 +110,11 @@ export class SseStreamParser {
   }
 
   public flush(): SseEventFrame[] {
-    const emitted: SseEventFrame[] = [];
-    if (this.buffer.length > 0) {
-      const lineFrame = this.processLine(this.buffer);
-      this.buffer = '';
-      if (lineFrame) {
-        emitted.push(lineFrame);
-      }
-    }
-    const pending = this.dispatchEvent();
-    if (pending) {
-      emitted.push(pending);
-    }
-    return emitted;
+    // WHATWG EventSource: incomplete trailing frames without blank line terminator MUST NOT dispatch.
+    this.buffer = '';
+    this.pendingCr = false;
+    this.resetFields();
+    return [];
   }
 
   private processLine(line: string): SseEventFrame | null {

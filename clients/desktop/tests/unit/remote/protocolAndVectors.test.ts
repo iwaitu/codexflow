@@ -15,12 +15,16 @@ import {
   TunnelFrameFlags,
   TunnelFrameType,
   base64UrlToBytes,
+  buildApprovalCanonicalPayloadV1,
+  buildApprovalCanonicalTextV1,
   buildApprovalEnvV1,
   buildBioPopV1,
+  buildCanonicalStructuredActionV1,
   buildEpochCertV1,
   buildExchangeV1,
   buildPairAckV1,
   buildPairV1,
+  buildPairingQrUri,
   buildPlanEnvV1,
   buildRequestSigV1,
   bytesToBase64Url,
@@ -30,6 +34,7 @@ import {
   encodeFrame,
   encodeWindowUpdate,
   hexToBytes,
+  parsePairingQrUri,
   tryDecodeFrame,
   tryDecodeWindowUpdate,
 } from '@codexflow-shared/remoteProtocol';
@@ -41,6 +46,8 @@ import {
 import {
   computeChatOpDigestV1,
   computeSas6Digits,
+  createSignedApprovalEnvelopeV1,
+  createSignedPlanEnvelopeV1,
   generateP256KeyPair,
   sha256HexLower,
   signP256LowS,
@@ -454,5 +461,132 @@ describe('Remote Protocol & Frozen Cross-Stack Vectors (v1)', () => {
     const sanitized = sanitizeSseDataJson(part2[0]!.data);
     expect(sanitized).not.toContain('SECRET_PIXELS');
     expect(sanitized).toContain('"safe":"ok"');
+  });
+
+  it('supports Phase M0 SSE CRLF splitting, string planVersion envelopes, WYSIWYS approval helpers, and frozen QR codec', () => {
+    // 1. SSE cross-chunk \r\n and incomplete tail discarded on flush
+    const parser = new SseStreamParser();
+    expect(parser.push('id: 7\r')).toEqual([]);
+    expect(parser.push('\nevent: token\r')).toEqual([]);
+    expect(parser.push('\ndata: hello\r')).toEqual([]);
+    const frames = parser.push('\n\r');
+    expect(frames).toEqual([{ id: '7', event: 'token', data: 'hello' }]);
+    expect(parser.push('\ndata: partial-without-blank-line')).toEqual([]);
+    expect(parser.flush()).toEqual([]);
+
+    // 2. QR URI codec
+    const secretB64U = bytesToBase64Url(new Uint8Array(32).fill(0x2a));
+    const ticketId = '11111111-2222-4333-8444-555555555555';
+    const deviceId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const reviewId = '99999999-8888-4777-8666-555555555555';
+    const uri = buildPairingQrUri({
+      ticketId,
+      qrBootstrapToken: 'boot-tok-123',
+      deviceId,
+      bindingVersion: 4,
+      desktopSpkiSha256: 'c'.repeat(64),
+      pairingSecretB64U: secretB64U,
+      reviewSessionId: reviewId,
+    });
+    expect(uri.startsWith('codexflow://pair?')).toBe(true);
+    expect(uri).not.toContain('portal=');
+    expect(parsePairingQrUri(uri)).toEqual({
+      ticketId,
+      qrBootstrapToken: 'boot-tok-123',
+      deviceId,
+      bindingVersion: 4,
+      desktopSpkiSha256: 'c'.repeat(64),
+      pairingSecretB64U: secretB64U,
+      reviewSessionId: reviewId,
+    });
+    expect(() => parsePairingQrUri(`${uri}&portal=https://evil.test`)).toThrow();
+
+    // 3. String planVersion envelope + WYSIWYS approval envelope + CanonicalStructuredAction
+    const kp = generateP256KeyPair();
+    const nowUnix = 1_750_000_000;
+    const planEnv = createSignedPlanEnvelopeV1({
+      desktopPrivateKeyPem: kp.privateKeyPem,
+      deviceId,
+      bindingVersion: 4,
+      sessionId: 'sess-1',
+      planArtifactId: 'plan-art-1',
+      planVersion: 'a1b2c3d4',
+      planMarkdownSha256: 'd'.repeat(64),
+      allowedActionsCsv: 'approve',
+      startExecution: false,
+      expiresAtUnix: nowUnix + 300,
+    });
+    expect(
+      verifyPlanEnvelopeV1({
+        desktopSpkiB64: kp.spkiB64,
+        deviceId,
+        bindingVersion: 4,
+        sessionId: 'sess-1',
+        planArtifactId: 'plan-art-1',
+        planVersion: 'a1b2c3d4',
+        planMarkdownSha256: 'd'.repeat(64),
+        allowedActionsCsv: 'approve',
+        startExecution: false,
+        expiresAtUnix: nowUnix + 300,
+        sigB64U: planEnv.sigB64U,
+        nowUnix,
+      }),
+    ).toBe(true);
+
+    const textSha = sha256HexLower(
+      buildApprovalCanonicalTextV1({
+        approvalKind: 'command',
+        approvalId: 'apr-1',
+        sessionId: 'sess-1',
+        title: 'Run tests',
+        summary: 'npm test',
+      }),
+    );
+    const payloadSha = sha256HexLower(
+      buildApprovalCanonicalPayloadV1({
+        approvalKind: 'command',
+        requestDigest: 'e'.repeat(64),
+        payloadText: 'npm test',
+      }),
+    );
+    const approvalEnv = createSignedApprovalEnvelopeV1({
+      desktopPrivateKeyPem: kp.privateKeyPem,
+      deviceId,
+      bindingVersion: 4,
+      sessionId: 'sess-1',
+      approvalKind: 'command',
+      approvalId: 'apr-1',
+      textSummarySha256: textSha,
+      payloadSha256: payloadSha,
+      requestDigest: 'e'.repeat(64),
+      expiresAtUnix: nowUnix + 300,
+    });
+    expect(
+      verifyApprovalEnvelopeV1({
+        desktopSpkiB64: kp.spkiB64,
+        deviceId,
+        bindingVersion: 4,
+        sessionId: 'sess-1',
+        approvalKind: 'command',
+        approvalId: 'apr-1',
+        textSummarySha256: textSha,
+        payloadSha256: payloadSha,
+        requestDigest: 'e'.repeat(64),
+        expiresAtUnix: nowUnix + 300,
+        sigB64U: approvalEnv.sigB64U,
+        nowUnix,
+      }),
+    ).toBe(true);
+
+    expect(
+      buildCanonicalStructuredActionV1({
+        action: ' Approve ',
+        planArtifactId: 'plan-1',
+        planVersion: 'a1b2c3d4',
+        planHash: 'f'.repeat(64),
+        idempotencyKey: 'idem-1',
+        startExecution: false,
+      }),
+    ).toBe(`approve|plan-1|a1b2c3d4|${'f'.repeat(64)}|idem-1|false`);
   });
 });

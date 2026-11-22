@@ -9,8 +9,11 @@ using CodexFlow.Contracts.Browser;
 using CodexFlow.Core.Browser;
 using CodexFlow.Core.Configuration;
 using CodexFlow.Core.Execution.Approval;
+using CodexFlow.Core.Remote;
 using CodexFlow.Core.Security;
 using CodexFlow.Gateway.Http;
+using CodexFlow.Gateway.Http.Remote;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
 namespace CodexFlow.Controllers;
@@ -38,12 +41,37 @@ public sealed class BrowserSessionController(
     IControlPlaneStateProvider? controlPlane = null,
     ProtectedLocalPortRegistry? portRegistry = null) : GatewayEndpointHandler
 {
+    private async Task<IResult?> AuthorizeRemoteSessionAsync(
+        string sessionId,
+        string? workspacePath,
+        string? projectLocation,
+        CancellationToken ct)
+    {
+        if (HttpContext is null || !RemoteRequestContextMiddleware.IsRemoteRequest(HttpContext))
+        {
+            return null;
+        }
+
+        var guard = HttpContext.RequestServices.GetService<IRemoteWorkspaceAuthorizationGuard>();
+        if (guard is null)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden,
+                new BrowserApiErrorDto("remote_workspace_not_authorized", "Remote workspace authorization guard is unavailable."));
+        }
+
+        var decision = await guard
+            .AuthorizeSessionAsync(sessionId, workspacePath, projectLocation, ct)
+            .ConfigureAwait(false);
+        return decision.Allowed
+            ? null
+            : StatusCode(StatusCodes.Status403Forbidden,
+                new BrowserApiErrorDto(decision.ReasonCode, decision.Message));
+    }
 
     public async Task<IResult> GetBrowserState(
         string sessionId,
         CancellationToken ct = default)
     {
-        _ = ct;
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrEmpty(userId))
         {
@@ -54,6 +82,11 @@ public sealed class BrowserSessionController(
         if (session is null || !string.Equals(session.UserId, userId, StringComparison.Ordinal))
         {
             return NotFound(new BrowserApiErrorDto("session_not_found", "Session does not exist or is not owned by the caller."));
+        }
+
+        if (await AuthorizeRemoteSessionAsync(session.Id, session.WorkspacePath, session.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+        {
+            return denied;
         }
 
         return Ok(browserSessionManager.GetSessionState(sessionId));
@@ -63,7 +96,6 @@ public sealed class BrowserSessionController(
         string sessionId,
         CancellationToken ct = default)
     {
-        _ = ct;
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrEmpty(userId))
         {
@@ -74,6 +106,11 @@ public sealed class BrowserSessionController(
         if (session is null || !string.Equals(session.UserId, userId, StringComparison.Ordinal))
         {
             return NotFound(new BrowserApiErrorDto("session_not_found", "Session does not exist or is not owned by the caller."));
+        }
+
+        if (await AuthorizeRemoteSessionAsync(session.Id, session.WorkspacePath, session.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+        {
+            return denied;
         }
 
         if (!browserSessionManager.TryGetLatestScreenshot(sessionId, out var screenshot) || screenshot is null)
@@ -117,6 +154,11 @@ public sealed class BrowserSessionController(
             return NotFound(new BrowserApiErrorDto("session_not_found", "Session does not exist or is not owned by the caller."));
         }
 
+        if (await AuthorizeRemoteSessionAsync(session.Id, session.WorkspacePath, session.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+        {
+            return denied;
+        }
+
         await browserSessionManager.CloseSessionAsync(sessionId, "closed_by_user", ct).ConfigureAwait(false);
         return Ok(new BrowserSessionCloseResponse(true, sessionId));
     }
@@ -141,6 +183,11 @@ public sealed class BrowserSessionController(
         if (session is null || !string.Equals(session.UserId, userId, StringComparison.Ordinal))
         {
             return NotFound(new BrowserApiErrorDto("session_not_found", "Session does not exist or is not owned by the caller."));
+        }
+
+        if (await AuthorizeRemoteSessionAsync(session.Id, session.WorkspacePath, session.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+        {
+            return denied;
         }
 
         var result = await browserSessionManager
@@ -180,6 +227,11 @@ public sealed class BrowserSessionController(
         if (session is null || !string.Equals(session.UserId, userId, StringComparison.Ordinal))
         {
             return NotFound(new BrowserApiErrorDto("session_not_found", "Session does not exist or is not owned by the caller."));
+        }
+
+        if (await AuthorizeRemoteSessionAsync(session.Id, session.WorkspacePath, session.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+        {
+            return denied;
         }
 
         var result = await browserSessionManager

@@ -150,6 +150,10 @@ public sealed class RemoteGatewayHttpAndRevocationTests : IDisposable
         Assert.DoesNotContain(listBefore!, w => w.SessionId == extSessionId);
 
         Assert.Equal(HttpStatusCode.Forbidden, (await remoteClient.GetAsync($"/api/gateway/session/{extSessionId}/tasklist")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await remoteClient.GetAsync($"/api/gateway/session/{extSessionId}/browser")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await remoteClient.GetAsync($"/api/gateway/session/{extSessionId}/computer")).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await remoteControlClient.PostAsJsonAsync("/api/gateway/computer/emergency-stop", new ComputerEmergencyStopRequest(null))).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await remoteControlClient.PostAsJsonAsync("/api/gateway/computer/emergency-stop", new ComputerEmergencyStopRequest(extSessionId))).StatusCode);
 
         // OpenLocalWorkspace (POST /api/gateway/workspaces) is strictly forbidden in remote channel even with control token
         var openLocalResp = await remoteControlClient.PostAsJsonAsync(
@@ -171,6 +175,8 @@ public sealed class RemoteGatewayHttpAndRevocationTests : IDisposable
 
         var tasklistAfter = await remoteClient.GetAsync($"/api/gateway/session/{extSessionId}/tasklist");
         Assert.NotEqual(HttpStatusCode.Forbidden, tasklistAfter.StatusCode);
+        Assert.NotEqual(HttpStatusCode.Forbidden, (await remoteClient.GetAsync($"/api/gateway/session/{extSessionId}/browser")).StatusCode);
+        Assert.NotEqual(HttpStatusCode.Forbidden, (await remoteClient.GetAsync($"/api/gateway/session/{extSessionId}/computer")).StatusCode);
     }
 
     [Fact]
@@ -203,10 +209,14 @@ public sealed class RemoteGatewayHttpAndRevocationTests : IDisposable
             Assert.StartsWith(".codexflow-attachments/", uploadedDto.RelativePath, StringComparison.Ordinal);
 
             var statusResp = await uploadClient.GetFromJsonAsync<RemoteAttachmentUploadStatusResponse>(
-                $"/api/gateway/session/{sessionId}/attachments/uploads/{uploadId}");
+                $"/api/gateway/session/{sessionId}/attachments/uploads/{uploadId}?fileSha256={fileSha256}");
             Assert.NotNull(statusResp);
             Assert.Equal("completed", statusResp!.Status);
             Assert.Equal(uploadedDto.RelativePath, statusResp.Attachment!.RelativePath);
+
+            var conflictStatusResp = await uploadClient.GetAsync(
+                $"/api/gateway/session/{sessionId}/attachments/uploads/{uploadId}?fileSha256={new string('0', 64)}");
+            Assert.Equal(HttpStatusCode.Conflict, conflictStatusResp.StatusCode);
         }
 
         // Missing X-CF-Client-Op-Id -> 400
@@ -293,6 +303,10 @@ public sealed class RemoteGatewayHttpAndRevocationTests : IDisposable
                 $"/api/gateway/session/{sessionId}/ops/op-1");
             Assert.NotNull(opStatus);
             Assert.Equal(firstBody.MessageId, opStatus!.MessageId);
+
+            var opConflict = await p1ChatClient.GetAsync(
+                $"/api/gateway/session/{sessionId}/ops/op-1?requestDigest={new string('0', 64)}");
+            Assert.Equal(HttpStatusCode.Conflict, opConflict.StatusCode);
         }
 
         // Structured Approve without X-CF-Verified-Envelope-* headers -> 403
@@ -365,37 +379,142 @@ public sealed class RemoteGatewayHttpAndRevocationTests : IDisposable
 
         var p1 = new RemotePrincipalStamp(Guid.NewGuid(), 1, 0, 0);
         using var remoteClient = host.CreateRemoteClient(p1);
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        using var req = new HttpRequestMessage(HttpMethod.Get, $"/api/gateway/sse?sessionId={Uri.EscapeDataString(sessionId)}&lastEventId=999999");
-        req.Headers.TryAddWithoutValidation("Last-Event-ID", "999999");
-
-        using var resp = await remoteClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
-        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
-        Assert.Equal("text/event-stream", resp.Content.Headers.ContentType?.MediaType);
-
-        await using var stream = await resp.Content.ReadAsStreamAsync(cts.Token);
-        using var reader = new StreamReader(stream);
-        var collected = new StringBuilder();
-        while (!cts.IsCancellationRequested)
+        long firstEventId = 0;
+        using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
         {
-            var line = await reader.ReadLineAsync(cts.Token);
-            if (line is null)
+            // Unauthenticated Last-Event-ID header must be ignored when query lastEventId is absent
+            using var req = new HttpRequestMessage(HttpMethod.Get, $"/api/gateway/sse?sessionId={Uri.EscapeDataString(sessionId)}");
+            req.Headers.TryAddWithoutValidation("Last-Event-ID", "999999");
+
+            using var resp = await remoteClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+            Assert.Equal("text/event-stream", resp.Content.Headers.ContentType?.MediaType);
+
+            await using var stream = await resp.Content.ReadAsStreamAsync(cts.Token);
+            using var reader = new StreamReader(stream);
+            var collected = new StringBuilder();
+            while (!cts.IsCancellationRequested)
             {
-                break;
+                var line = await reader.ReadLineAsync(cts.Token);
+                if (line is null)
+                {
+                    break;
+                }
+
+                collected.AppendLine(line);
+                if (line.StartsWith("id:", StringComparison.Ordinal) &&
+                    long.TryParse(line.AsSpan(3).Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedId))
+                {
+                    firstEventId = parsedId;
+                }
+                if (line.StartsWith("data:", StringComparison.Ordinal) &&
+                    line.Contains("cappr-sse-1", StringComparison.Ordinal))
+                {
+                    break;
+                }
             }
 
-            collected.AppendLine(line);
-            if (line.StartsWith("data:", StringComparison.Ordinal) &&
-                line.Contains("cappr-sse-1", StringComparison.Ordinal))
-            {
-                break;
-            }
+            var sseText = collected.ToString();
+            Assert.Contains("cappr-sse-1", sseText, StringComparison.Ordinal);
+            Assert.DoesNotContain("SECRET_BASE64_DATA", sseText, StringComparison.Ordinal);
+            Assert.DoesNotContain("previewImageBase64", sseText, StringComparison.OrdinalIgnoreCase);
+            Assert.True(firstEventId > 0);
         }
 
-        var sseText = collected.ToString();
-        Assert.Contains("cappr-sse-1", sseText, StringComparison.Ordinal);
-        Assert.DoesNotContain("SECRET_BASE64_DATA", sseText, StringComparison.Ordinal);
-        Assert.DoesNotContain("previewImageBase64", sseText, StringComparison.OrdinalIgnoreCase);
+        // Signed query lastEventId resumes from subsequent events without replaying event 1
+        await host.Gateway.PublishEventAsync(sessionId, new GatewaySseEvent
+        {
+            Type = GatewaySseEventType.ComputerApprovalRequested,
+            Payload = new ComputerApprovalRequestDto(
+                "cappr-sse-2",
+                "digest-2",
+                sessionId,
+                "computer_act",
+                "click",
+                "notepad",
+                "Notes",
+                "0x1",
+                "click",
+                "Ask",
+                10,
+                20,
+                DateTimeOffset.UtcNow.AddMinutes(5),
+                ["allow_once", "deny"],
+                true,
+                true,
+                PreviewImageBase64: "SECRET_2")
+        });
+
+        using (var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+        using (var req2 = new HttpRequestMessage(HttpMethod.Get, $"/api/gateway/sse?sessionId={Uri.EscapeDataString(sessionId)}&lastEventId={firstEventId}"))
+        using (var resp2 = await remoteClient.SendAsync(req2, HttpCompletionOption.ResponseHeadersRead, cts2.Token))
+        {
+            Assert.Equal(HttpStatusCode.OK, resp2.StatusCode);
+            await using var stream2 = await resp2.Content.ReadAsStreamAsync(cts2.Token);
+            using var reader2 = new StreamReader(stream2);
+            var collected2 = new StringBuilder();
+            while (!cts2.IsCancellationRequested)
+            {
+                var line = await reader2.ReadLineAsync(cts2.Token);
+                if (line is null)
+                {
+                    break;
+                }
+
+                collected2.AppendLine(line);
+                if (line.StartsWith("data:", StringComparison.Ordinal) &&
+                    line.Contains("cappr-sse-2", StringComparison.Ordinal))
+                {
+                    break;
+                }
+            }
+
+            var text2 = collected2.ToString();
+            Assert.Contains("cappr-sse-2", text2, StringComparison.Ordinal);
+            Assert.DoesNotContain("cappr-sse-1", text2, StringComparison.Ordinal);
+            Assert.DoesNotContain("SECRET_2", text2, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void ComputeRemoteChatDigest_MatchesFrozenChatOpV1Spec()
+    {
+        var req = new GatewayChatRequest
+        {
+            SessionId = "sess-001",
+            ConversationId = "conv-001",
+            ConversationMode = "default",
+            Message = "Line 1\nLine 2"
+        };
+        var uploads = new List<VerifiedRemoteAttachment>
+        {
+            new("up-2", ".codexflow-attachments/b.txt", "b.txt", "text/plain", new string('b', 64), 10),
+            new("up-1", ".codexflow-attachments/a.txt", "a.txt", "text/plain", new string('a', 64), 10)
+        };
+        var actual = CodexGatewayController.ComputeRemoteChatDigest(req, uploads);
+        var expectedPayload = "CF-CHAT-OP-V1\nsess-001\nconv-001\ndefault\nup-1,up-2\n\nLine 1\nLine 2";
+        var expectedDigest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(expectedPayload))).ToLowerInvariant();
+        Assert.Equal(expectedDigest, actual);
+
+        var actionReq = new GatewayChatRequest
+        {
+            SessionId = "sess-001",
+            ConversationMode = "PLAN",
+            Message = "",
+            StructuredAction = new GatewayStructuredActionRequest
+            {
+                Action = " Approve ",
+                PlanArtifactId = "plan-1",
+                PlanVersion = "a1b2c3d4",
+                PlanHash = new string('f', 64),
+                IdempotencyKey = "idem-1",
+                StartExecution = false
+            }
+        };
+        var actionActual = CodexGatewayController.ComputeRemoteChatDigest(actionReq, null);
+        var actionExpected = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+            $"CF-CHAT-OP-V1\nsess-001\n\nplan\n\napprove|plan-1|a1b2c3d4|{new string('f', 64)}|idem-1|false\n"))).ToLowerInvariant();
+        Assert.Equal(actionExpected, actionActual);
     }
 
     [Fact]
