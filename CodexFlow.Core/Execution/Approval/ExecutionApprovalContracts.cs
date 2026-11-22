@@ -102,6 +102,7 @@ public sealed record ExecutionRequest
     public string? BackendNotice { get; init; }
     public ApprovalOwnerKind OwnerKind { get; init; } = ApprovalOwnerKind.Unspecified;
     public string? OwnerId { get; init; }
+    public CodexFlow.Core.Remote.ControlChannel ControlChannel { get; init; } = CodexFlow.Core.Remote.ControlChannel.Local;
 
     public bool ExecutesWorkspaceCode => !IsVerifiedNonCodeCommand(Executable, Argv);
 
@@ -112,6 +113,12 @@ public sealed record ExecutionRequest
             ExecutionApprovalDecisionKind.Deny,
             ExecutionApprovalDecisionKind.AllowOnce
         };
+
+        if (ControlChannel == CodexFlow.Core.Remote.ControlChannel.Remote ||
+            CodexFlow.Core.Remote.RemoteExecutionAmbientContext.IsRemote)
+        {
+            return list;
+        }
 
         // Guard: run_shell executes arbitrary shell scripts and must NEVER be granted reusable allow_session or allow_always.
         if (ToolName.Equals("run_shell", StringComparison.OrdinalIgnoreCase))
@@ -315,7 +322,8 @@ public sealed record PendingApprovalItem(
     int? ScriptLength = null,
     string? Shell = null,
     string? BackendNotice = null,
-    string? Origin = null);
+    string? Origin = null,
+    string? ControlChannel = null);
 
 public sealed record ExecutionApprovalDecisionSubmission(
     string RequestDigest,

@@ -16,10 +16,11 @@ import { usePreferencesStore } from '../stores/usePreferencesStore';
 import { AppUpdatePanel } from './AppUpdatePanel';
 import { EnvironmentCheckPanel } from './EnvironmentCheckPanel';
 import { MaxContextField } from './MaxContextField';
+import { RemoteControlPanel } from './RemoteControlPanel';
 
 export { isRelaxingPermission };
 
-export type SettingsTabKind = 'execution' | 'model' | 'browser' | 'computer' | 'rules' | 'environment' | 'preferences';
+export type SettingsTabKind = 'execution' | 'model' | 'browser' | 'computer' | 'remote' | 'rules' | 'environment' | 'preferences';
 
 interface SettingsModalProps {
   open: boolean;
@@ -332,6 +333,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 ['model', t('settings.tab.model')],
                 ['browser', language === 'en-US' ? 'Browser' : '浏览器'],
                 ['computer', t('settings.tab.computer')],
+                ['remote', t('settings.tab.remote')],
                 ['rules', t('settings.tab.rules')],
                 ['environment', t('settings.tab.environment')],
                 ['preferences', t('settings.tab.preferences')],
@@ -734,6 +736,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <EnvironmentCheckPanel
               active={open && tab === 'environment'}
               computerDriverStatus={computerSettings?.driverStatus ?? null}
+            />
+          )}
+
+          {tab === 'remote' && (
+            <RemoteControlPanel
+              active={open && tab === 'remote'}
+              controlPlaneAvailable={controlPlaneAvailable}
             />
           )}
 

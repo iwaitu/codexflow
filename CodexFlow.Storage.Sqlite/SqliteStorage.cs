@@ -6,6 +6,7 @@ using CodexFlow.Application;
 using CodexFlow.Application.Jobs;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Browser;
+using CodexFlow.Core.Remote;
 using CodexFlow.Infrastructure.Persistence;
 using CodexFlow.Orchestration.BusinessSkills;
 using CodexFlow.Orchestration.Chat;
@@ -13,6 +14,7 @@ using CodexFlow.Orchestration.Hosting;
 using CodexFlow.Orchestration.Jobs;
 using CodexFlow.Services.Background;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 
 namespace CodexFlow.Storage.Sqlite;
@@ -60,6 +62,19 @@ public static class SqliteStorage
             sp.GetRequiredService<IChatPersistence>(), sp.GetRequiredService<ILogger<ChatService>>(),
             sp.GetService<IWorkspaceRootProvider>(), sp.GetRequiredService<IConversationMessageStore>(),
             sp.GetService<IBrowserSessionManager>()));
+
+        services.RemoveAll<SqliteRemoteControlStore>();
+        services.AddSingleton<SqliteRemoteControlStore>();
+        services.RemoveAll<IRemoteAttachmentUploadStore>();
+        services.AddSingleton<IRemoteAttachmentUploadStore>(sp => sp.GetRequiredService<SqliteRemoteControlStore>());
+        services.RemoveAll<IRemoteChatOpStore>();
+        services.AddSingleton<IRemoteChatOpStore>(sp => sp.GetRequiredService<SqliteRemoteControlStore>());
+        services.RemoveAll<IRemoteWorkspaceAuthorizationStore>();
+        services.AddSingleton<IRemoteWorkspaceAuthorizationStore>(sp => sp.GetRequiredService<SqliteRemoteControlStore>());
+        services.RemoveAll<IRemoteRevocationStore>();
+        services.AddSingleton<IRemoteRevocationStore>(sp => sp.GetRequiredService<SqliteRemoteControlStore>());
+        services.RemoveAll<IRemoteJobOriginStore>();
+        services.AddSingleton<IRemoteJobOriginStore>(sp => sp.GetRequiredService<SqliteRemoteControlStore>());
         return services;
     }
 }

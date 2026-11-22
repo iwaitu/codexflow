@@ -400,6 +400,32 @@ public static class OrchestrationServiceCollectionExtensions
                 sp.GetRequiredService<ILogger<CodexFlow.Orchestration.BusinessSkills.BusinessSkillRetentionService>>()));
         services.AddHostedService<CodexFlow.Orchestration.BusinessSkills.BusinessSkillRunRecoveryHostedService>();
 
+        // Remote control (default in-memory stores can be replaced by SqliteStorage when durable storage is enabled)
+        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<
+            CodexFlow.Core.Remote.IRemoteAttachmentUploadStore,
+            CodexFlow.Core.Remote.InMemoryRemoteAttachmentUploadStore>(services);
+        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<
+            CodexFlow.Core.Remote.IRemoteChatOpStore,
+            CodexFlow.Core.Remote.InMemoryRemoteChatOpStore>(services);
+        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<
+            CodexFlow.Core.Remote.IRemoteWorkspaceAuthorizationStore,
+            CodexFlow.Core.Remote.InMemoryRemoteWorkspaceAuthorizationStore>(services);
+        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<
+            CodexFlow.Core.Remote.IRemoteRevocationStore,
+            CodexFlow.Core.Remote.InMemoryRemoteRevocationStore>(services);
+        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<
+            CodexFlow.Core.Remote.IRemoteJobOriginStore,
+            CodexFlow.Core.Remote.InMemoryRemoteJobOriginStore>(services);
+        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<
+            CodexFlow.Core.Remote.IRemotePendingProjection,
+            CodexFlow.Core.Remote.DefaultRemotePendingProjection>(services);
+        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<
+            CodexFlow.Core.Remote.IRemoteWorkspaceAuthorizationGuard,
+            CodexFlow.Orchestration.Remote.RemoteWorkspaceAuthorizationGuard>(services);
+        Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<
+            CodexFlow.Orchestration.Remote.RemoteAttachmentStagingCoordinator>(services);
+        services.AddHostedService<CodexFlow.Orchestration.Remote.RemoteAttachmentRecoveryHostedService>();
+
         return services;
     }
 

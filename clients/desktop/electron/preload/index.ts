@@ -21,6 +21,10 @@ import {
   type PlanChatControlPayload,
   type PublishSkillDraftRequest,
   type PutDraftSelectionRequest,
+  type RemoteBindPayload,
+  type RemoteProxyUpdatePayload,
+  type RemoteSendOtpPayload,
+  type RemoteStatusSnapshot,
   type SetPlanModePayload,
   type SetPluginCredentialRequest,
   type StartSkillRunRequest,
@@ -186,6 +190,41 @@ const api: DesktopBridge = {
     return () => {
       ipcRenderer.removeListener(IPC_CHANNELS.environmentInstallEvent, handler);
     };
+  },
+  remote: {
+    getStatus: () => ipcRenderer.invoke(IPC_CHANNELS.remoteGetStatus),
+    onStatusChanged: (listener: (snapshot: RemoteStatusSnapshot) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, snapshot: RemoteStatusSnapshot) => {
+        listener(snapshot);
+      };
+      ipcRenderer.on(IPC_CHANNELS.remoteStatusChanged, handler);
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.remoteStatusChanged, handler);
+      };
+    },
+    setPortalUrl: (portalUrl: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.remoteSetPortalUrl, portalUrl),
+    sendBindOtp: (payload: RemoteSendOtpPayload) =>
+      ipcRenderer.invoke(IPC_CHANNELS.remoteSendBindOtp, payload),
+    verifyAndBind: (payload: RemoteBindPayload) =>
+      ipcRenderer.invoke(IPC_CHANNELS.remoteVerifyAndBind, payload),
+    unbind: () => ipcRenderer.invoke(IPC_CHANNELS.remoteUnbind),
+    setManualPaused: (paused: boolean) =>
+      ipcRenderer.invoke(IPC_CHANNELS.remoteSetManualPaused, Boolean(paused)),
+    setProxySettings: (payload: RemoteProxyUpdatePayload) =>
+      ipcRenderer.invoke(IPC_CHANNELS.remoteSetProxySettings, payload),
+    issueQrTicket: () => ipcRenderer.invoke(IPC_CHANNELS.remoteIssueQrTicket),
+    respondPairRequest: (payload: { pairingId: string; approved: boolean }) =>
+      ipcRenderer.invoke(IPC_CHANNELS.remoteRespondPairRequest, payload),
+    revokePairing: (pairingId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.remoteRevokePairing, pairingId),
+    listWorkspaceAuthorizations: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.remoteListWorkspaceAuthorizations),
+    setWorkspaceAuthorization: (payload: {
+      workspacePath: string;
+      sessionId?: string;
+      authorized: boolean;
+    }) => ipcRenderer.invoke(IPC_CHANNELS.remoteSetWorkspaceAuthorization, payload),
   },
 };
 

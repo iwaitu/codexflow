@@ -214,6 +214,8 @@ public sealed record TrustedExecutionContext
     public DateTimeOffset? NotAfter { get; init; }
     public bool TrustedOriginVerified { get; init; }
     public int PolicyVersion { get; init; }
+    public CodexFlow.Core.Remote.ControlChannel ControlChannel { get; init; } = CodexFlow.Core.Remote.ControlChannel.Local;
+    public CodexFlow.Core.Remote.RemotePrincipalStamp? RemoteStamp { get; init; }
 
     public ExecutionDecision Validate()
     {

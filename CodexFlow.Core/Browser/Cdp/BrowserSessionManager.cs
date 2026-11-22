@@ -2962,8 +2962,10 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             return null;
         }
 
+        var isRemote = CodexFlow.Core.Remote.RemoteExecutionAmbientContext.IsRemote;
         var origin = BrowserTargetPolicyGuard.GetOriginString(targetUri);
-        if (_approvalCoordinator is not null &&
+        if (!isRemote &&
+            _approvalCoordinator is not null &&
             _approvalCoordinator.IsSessionOriginApproved(session.SessionId, origin, "persistent_nav"))
         {
             return null;
@@ -2985,7 +2987,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 TargetDescription: $"允许持久化登录态浏览器导航至外部站点 {origin}",
                 RiskReason: "当前处于持久化登录态 Profile，访问外部站点会携带已保存登录 Cookie/状态，请确认站点归属与导航安全性。",
                 ExpressionOrPath: targetUri.AbsoluteUri,
-                AllowSessionScope: true),
+                AllowSessionScope: !isRemote),
             ct).ConfigureAwait(false);
         session.Touch();
 
@@ -3017,8 +3019,9 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             return (null, false);
         }
 
+        var isRemote = CodexFlow.Core.Remote.RemoteExecutionAmbientContext.IsRemote;
         var policy = _options.CurrentValue.InteractionApprovalPolicy;
-        var requiresApproval = isSensitive || policy switch
+        var requiresApproval = isRemote || isSensitive || policy switch
         {
             BrowserInteractionApprovalPolicy.AlwaysAsk => true,
             BrowserInteractionApprovalPolicy.HighRiskOnly => false,
@@ -3033,7 +3036,8 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
 
         var effectiveUrl = string.IsNullOrWhiteSpace(liveUrl) ? tab.Url : liveUrl;
         var origin = ExtractOrigin(effectiveUrl);
-        if (!isSensitive &&
+        if (!isRemote &&
+            !isSensitive &&
             _approvalCoordinator is not null &&
             _approvalCoordinator.IsSessionOriginApproved(caller.SessionId, origin, "interact"))
         {
@@ -3077,7 +3081,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 TargetDescription: desc,
                 RiskReason: riskReason,
                 ExpressionOrPath: detail,
-                AllowSessionScope: !isSensitive),
+                AllowSessionScope: !isRemote && !isSensitive),
             ct).ConfigureAwait(false);
         session.Touch();
 

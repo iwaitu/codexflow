@@ -181,6 +181,7 @@ if (layout.AllowedOrigins.Length > 0)
 
 builder.Services.AddSingleton(credentials);
 builder.Services.AddSingleton<IControlPlaneStateProvider>(credentials);
+builder.Services.AddSingleton<CodexFlow.Core.Remote.IRemoteBridgeAuthenticator>(credentials);
 builder.Services.AddSingleton(accessToken);
 builder.Services.AddSingleton<IWorkspaceRootProvider>(_ =>
     new WorkspaceRootProvider(layout.WorkspacesRoot, layout.DataDirectory));

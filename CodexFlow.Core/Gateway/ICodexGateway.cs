@@ -70,6 +70,16 @@ public interface ICodexGateway
     Task<bool> CancelTurnAsync(string sessionId, CancellationToken ct = default);
 
     /// <summary>
+    /// 按远程吊销水位或配对 ID 精准取消受影响的活跃远程对话回合；绝不取消本地控制通道发起的回合。
+    /// </summary>
+    Task<int> CancelActiveRemoteTurnsAsync(
+        long? minAccountRevocationSeq,
+        long? minDeviceRevocationSeq,
+        IReadOnlyList<Guid>? revokedPairingIds,
+        CancellationToken ct = default)
+        => Task.FromResult(0);
+
+    /// <summary>
     /// 获取指定 Session 通道的权威状态快照元数据（epoch、最新事件序号、活跃回合及实时工具结果）。
     /// </summary>
     GatewayChannelSnapshotState? GetChannelSnapshotState(string sessionId);

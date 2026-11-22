@@ -202,6 +202,11 @@ public static class GatewayIntentResolver
             return FromStructured(structured);
         }
 
+        if (message.ControlChannel == CodexFlow.Core.Remote.ControlChannel.Remote)
+        {
+            return GatewayIntentDecision.NoAuthority("remote_natural_language_disabled");
+        }
+
         return GatewayIntentClassifier.Classify(message.Content);
     }
 

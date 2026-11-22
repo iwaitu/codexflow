@@ -9,21 +9,26 @@ using CodexFlow.Core.Configuration;
 using CodexFlow.Core.Documents;
 using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Core.Gateway;
+using CodexFlow.Core.Remote;
 using CodexFlow.Core.Services;
 using CodexFlow.Gateway;
 using CodexFlow.Core.Agents;
 using CodexFlow.Core.Models;
 using CodexFlow.Logging;
 using CodexFlow.Orchestration.Hosting;
+using CodexFlow.Orchestration.Remote;
 using CodexFlow.Orchestration.Services;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Http.Features;
 using System.Net;
 using System.Globalization;
 using CodexFlow.Gateway.Http;
+using CodexFlow.Gateway.Http.Remote;
 
 namespace CodexFlow.Controllers;
 
@@ -52,6 +57,11 @@ public class CodexGatewayController : GatewayEndpointHandler
     private readonly IWorkflowAuditStore? _auditStore;
     private readonly IConfiguration? _configuration;
     private readonly IModelSettingsService? _modelSettingsService;
+    private readonly IRemoteWorkspaceAuthorizationGuard? _remoteWorkspaceAuthorizationGuard;
+    private readonly RemoteAttachmentStagingCoordinator? _remoteAttachmentStagingCoordinator;
+    private readonly IRemoteAttachmentUploadStore? _remoteAttachmentUploadStore;
+    private readonly IRemoteChatOpStore? _remoteChatOpStore;
+    private readonly IRemotePendingProjection? _remotePendingProjection;
 
     /// <summary>
     /// Initializes the gateway controller.
@@ -71,6 +81,11 @@ public class CodexGatewayController : GatewayEndpointHandler
     /// <param name="modelSettingsService">Optional model settings service for live multimodal capability lookup.</param>
     /// <param name="contextCompressionOptions">Prompt history and summary limits.</param>
     /// <param name="conversationDirectory">Conversation metadata lookup for scoped history reads.</param>
+    /// <param name="remoteWorkspaceAuthorizationGuard">Optional remote workspace authorization guard.</param>
+    /// <param name="remoteAttachmentStagingCoordinator">Optional pairing-isolated remote attachment staging coordinator.</param>
+    /// <param name="remoteAttachmentUploadStore">Optional remote attachment upload ledger store.</param>
+    /// <param name="remoteChatOpStore">Optional remote chat operation idempotency store.</param>
+    /// <param name="remotePendingProjection">Optional remote pending TODO projection store.</param>
     public CodexGatewayController(
         ICodexGateway gateway,
         IChatService chatService,
@@ -86,7 +101,12 @@ public class CodexGatewayController : GatewayEndpointHandler
         IConfiguration? configuration = null,
         IModelSettingsService? modelSettingsService = null,
         IOptions<CodexFlow.Models.ContextCompressionOptions>? contextCompressionOptions = null,
-        IConversationDirectory? conversationDirectory = null)
+        IConversationDirectory? conversationDirectory = null,
+        IRemoteWorkspaceAuthorizationGuard? remoteWorkspaceAuthorizationGuard = null,
+        RemoteAttachmentStagingCoordinator? remoteAttachmentStagingCoordinator = null,
+        IRemoteAttachmentUploadStore? remoteAttachmentUploadStore = null,
+        IRemoteChatOpStore? remoteChatOpStore = null,
+        IRemotePendingProjection? remotePendingProjection = null)
     {
         _gateway = gateway;
         _chatService = chatService;
@@ -103,6 +123,37 @@ public class CodexGatewayController : GatewayEndpointHandler
         _auditStore = auditStore;
         _configuration = configuration;
         _modelSettingsService = modelSettingsService;
+        _remoteWorkspaceAuthorizationGuard = remoteWorkspaceAuthorizationGuard;
+        _remoteAttachmentStagingCoordinator = remoteAttachmentStagingCoordinator;
+        _remoteAttachmentUploadStore = remoteAttachmentUploadStore;
+        _remoteChatOpStore = remoteChatOpStore;
+        _remotePendingProjection = remotePendingProjection;
+    }
+
+    private async Task<IResult?> AuthorizeRemoteSessionAsync(
+        string? sessionId,
+        string? workspacePath,
+        string? projectLocation,
+        CancellationToken ct)
+    {
+        if (!RemoteRequestContextMiddleware.IsRemoteRequest(HttpContext))
+        {
+            return null;
+        }
+
+        if (_remoteWorkspaceAuthorizationGuard is null || string.IsNullOrWhiteSpace(sessionId))
+        {
+            return StatusCode(StatusCodes.Status403Forbidden,
+                new GatewayErrorResponse("remote_workspace_not_authorized", "远程工作区授权守卫未就绪。"));
+        }
+
+        var decision = await _remoteWorkspaceAuthorizationGuard
+            .AuthorizeSessionAsync(sessionId, workspacePath, projectLocation, ct)
+            .ConfigureAwait(false);
+        return decision.Allowed
+            ? null
+            : StatusCode(StatusCodes.Status403Forbidden,
+                new GatewayErrorResponse(decision.ReasonCode, decision.Message));
     }
 
     /// <summary>
@@ -125,6 +176,11 @@ public class CodexGatewayController : GatewayEndpointHandler
                 var targetSession = await _chatService.GetSession(request.TargetSessionId);
                 if (targetSession != null && targetSession.UserId == userId)
                 {
+                    if (await AuthorizeRemoteSessionAsync(targetSession.Id, targetSession.WorkspacePath, targetSession.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+                    {
+                        return denied;
+                    }
+
                     // Pre-warm Redis session to prevent subsequent Redis miss
                     await _sessionManager.GetOrCreateSessionAsync(
                         targetSession.Id,
@@ -205,7 +261,29 @@ public class CodexGatewayController : GatewayEndpointHandler
         if (string.IsNullOrEmpty(userId)) return Unauthorized();
 
         var workspaces = await _chatService.GetWorkspaces(userId);
-        return Ok(workspaces);
+        if (!RemoteRequestContextMiddleware.IsRemoteRequest(HttpContext))
+        {
+            return Ok(workspaces);
+        }
+
+        if (_remoteWorkspaceAuthorizationGuard is null)
+        {
+            return Ok(new List<CodexFlow.Contracts.HistoryViewModel>());
+        }
+
+        var filtered = new List<CodexFlow.Contracts.HistoryViewModel>(workspaces.Count);
+        foreach (var item in workspaces)
+        {
+            var decision = await _remoteWorkspaceAuthorizationGuard
+                .AuthorizeWorkspacePathAsync(item.WorkspacePath, ct)
+                .ConfigureAwait(false);
+            if (decision.Allowed)
+            {
+                filtered.Add(item);
+            }
+        }
+
+        return Ok(filtered);
     }
 
     /// <summary>
@@ -217,6 +295,12 @@ public class CodexGatewayController : GatewayEndpointHandler
         OpenLocalWorkspaceRequest request,
         CancellationToken ct = default)
     {
+        if (RemoteRequestContextMiddleware.IsRemoteRequest(HttpContext))
+        {
+            return StatusCode(StatusCodes.Status403Forbidden,
+                new GatewayErrorResponse("remote_open_local_workspace_forbidden", "远程控制通道禁止直接在宿主机打开或绑定任意本地目录。"));
+        }
+
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrEmpty(userId)) return Unauthorized();
 
@@ -420,6 +504,8 @@ public class CodexGatewayController : GatewayEndpointHandler
 
         var session = await _chatService.GetSession(sessionId);
         if (session == null || session.UserId != userId) return NotFound("Session not found");
+        if (await AuthorizeRemoteSessionAsync(session.Id, session.WorkspacePath, session.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+            return denied;
 
         if (_taskListService == null) return NoContent();
 
@@ -443,6 +529,8 @@ public class CodexGatewayController : GatewayEndpointHandler
 
         var dbSession = await _chatService.GetSession(sessionId);
         if (dbSession == null || dbSession.UserId != userId) return NotFound("Session not found");
+        if (await AuthorizeRemoteSessionAsync(dbSession.Id, dbSession.WorkspacePath, dbSession.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+            return denied;
 
         var session = await _sessionManager.GetOrCreateSessionAsync(
             sessionId,
@@ -509,6 +597,11 @@ public class CodexGatewayController : GatewayEndpointHandler
         if (dbSession == null || dbSession.UserId != userId)
         {
             return NotFound(new GatewayErrorResponse("session_not_found", "Session not found."));
+        }
+
+        if (await AuthorizeRemoteSessionAsync(dbSession.Id, dbSession.WorkspacePath, dbSession.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+        {
+            return denied;
         }
 
         var channelState = _gateway.GetChannelSnapshotState(sessionId);
@@ -691,6 +784,8 @@ public class CodexGatewayController : GatewayEndpointHandler
 
         var conversation = await _chatService.Get(conversationId);
         if (conversation == null || conversation.UserId != userId) return NotFound("Conversation not found");
+        if (await AuthorizeRemoteSessionAsync(conversation.SessionId, workspacePath: null, projectLocation: null, ct).ConfigureAwait(false) is { } denied)
+            return denied;
 
         var messages = await _chatService.GetConversationMessages(conversationId);
         var result = new JsonArray();
@@ -751,6 +846,11 @@ public class CodexGatewayController : GatewayEndpointHandler
             return NotFound("Session not found");
         }
 
+        if (await AuthorizeRemoteSessionAsync(dbSession.Id, dbSession.WorkspacePath, dbSession.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+        {
+            return denied;
+        }
+
         const long requestSizeLimit = GatewayAttachmentService.MaxAttachmentBytes + 1024 * 1024;
         if (Request.ContentLength > requestSizeLimit)
         {
@@ -785,6 +885,47 @@ public class CodexGatewayController : GatewayEndpointHandler
         if (file is null)
         {
             return BadRequest(new GatewayErrorResponse("invalid_attachment", "请选择要上传的附件文件。"));
+        }
+
+        if (RemoteRequestContextMiddleware.IsRemoteRequest(HttpContext))
+        {
+            var remoteMeta = RemoteRequestContextMiddleware.GetMetadata(HttpContext);
+            if (remoteMeta is null || _remoteAttachmentStagingCoordinator is null)
+            {
+                return StatusCode(StatusCodes.Status403Forbidden,
+                    new GatewayErrorResponse("remote_staging_unavailable", "远程附件写前占位服务未就绪或缺少配对凭据。"));
+            }
+
+            await using var remoteStream = file.OpenReadStream();
+            var staged = await _remoteAttachmentStagingCoordinator.UploadRemoteAttachmentAsync(
+                remoteMeta.Stamp.PairingId,
+                sessionId,
+                dbSession.WorkspacePath,
+                remoteMeta.UploadId,
+                remoteMeta.FileSha256,
+                file.FileName,
+                file.ContentType,
+                remoteStream,
+                file.Length,
+                ct).ConfigureAwait(false);
+
+            return staged.Outcome switch
+            {
+                RemoteAttachmentUploadOutcome.Success when staged.Attachment is not null => Ok(new UploadedAttachmentDto(
+                    staged.Attachment.Name,
+                    staged.Attachment.RelativePath,
+                    staged.Attachment.SizeBytes,
+                    staged.Attachment.ContentType)),
+                RemoteAttachmentUploadOutcome.BadRequest => BadRequest(new GatewayErrorResponse(
+                    staged.ErrorCode ?? "invalid_attachment",
+                    staged.ErrorMessage ?? "远程附件参数或校验摘要无效。")),
+                RemoteAttachmentUploadOutcome.Forbidden => StatusCode(StatusCodes.Status403Forbidden, new GatewayErrorResponse(
+                    staged.ErrorCode ?? "remote_attachment_forbidden",
+                    staged.ErrorMessage ?? "远程附件存储被拒绝。")),
+                _ => Conflict(new GatewayErrorResponse(
+                    staged.ErrorCode ?? "upload_conflict",
+                    staged.ErrorMessage ?? "远程附件写前占位冲突。"))
+            };
         }
 
         try
@@ -835,13 +976,61 @@ public class CodexGatewayController : GatewayEndpointHandler
             return NotFound("Session not found");
         }
 
+        var isRemote = RemoteRequestContextMiddleware.IsRemoteRequest(HttpContext);
+        var remoteMeta = isRemote ? RemoteRequestContextMiddleware.GetMetadata(HttpContext) : null;
+        if (isRemote && remoteMeta is null)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden,
+                new GatewayErrorResponse("remote_context_missing", "远程控制通道缺少已认证的配对上下文。"));
+        }
+
+        if (await AuthorizeRemoteSessionAsync(request.SessionId, workspacePath: null, projectLocation: null, ct).ConfigureAwait(false) is { } denied)
+        {
+            return denied;
+        }
+
+        if (isRemote)
+        {
+            if (string.IsNullOrWhiteSpace(remoteMeta!.ClientOpId))
+            {
+                return BadRequest(new GatewayErrorResponse("remote_client_op_id_required", "远程发送消息必须携带 X-CF-Client-Op-Id 幂等键。"));
+            }
+
+            if (!string.IsNullOrWhiteSpace(request.GitRepoUrl) ||
+                !string.IsNullOrWhiteSpace(request.Branch) ||
+                !string.IsNullOrWhiteSpace(request.SystemPrompt) ||
+                request.ApproveGitPush)
+            {
+                return BadRequest(new GatewayErrorResponse(
+                    "remote_restricted_chat_fields",
+                    "远程控制通道禁止传递 gitRepoUrl、branch、systemPrompt 或 approveGitPush。"));
+            }
+        }
+
         var messageContent = request.Message ?? string.Empty;
         var attachmentCount = 0;
+        IReadOnlyList<VerifiedRemoteAttachment>? verifiedRemoteAttachments = null;
         if (hasAttachments)
         {
             var dbSession = await _chatService.GetSession(request.SessionId).ConfigureAwait(false);
             try
             {
+                if (isRemote)
+                {
+                    if (request.Attachments!.Any(static a => a is null || a.IsWorkspaceReference))
+                    {
+                        return BadRequest(new GatewayErrorResponse(
+                            "remote_workspace_reference_forbidden",
+                            "远程控制通道禁止直接引用工作区既有文件，只能引用本配对已上传核验的附件。"));
+                    }
+
+                    if (_remoteAttachmentUploadStore is null)
+                    {
+                        return StatusCode(StatusCodes.Status403Forbidden,
+                            new GatewayErrorResponse("remote_upload_store_unavailable", "远程附件核验账本未就绪。"));
+                    }
+                }
+
                 var inputs = request.Attachments!
                     .Select(static a => new ChatAttachmentInput(
                         a.Name,
@@ -864,12 +1053,133 @@ public class CodexGatewayController : GatewayEndpointHandler
                         $"当前模型未启用多模态能力，无法读取图片文件（{names}）。请在「设置 -> 模型配置」中配置支持多模态的模型。"));
                 }
 
-                attachmentCount = validated.Count;
-                messageContent = GatewayAttachmentService.FormatUserMessageWithAttachments(request.Message, validated);
+                if (isRemote)
+                {
+                    var verifiedList = new List<VerifiedRemoteAttachment>(validated.Count);
+                    var pairingIdStr = remoteMeta!.Stamp.PairingId.ToString("D");
+                    foreach (var item in validated)
+                    {
+                        var record = await _remoteAttachmentUploadStore!
+                            .FindCompletedByRelativePathAsync(request.SessionId, item.RelativePath, ct)
+                            .ConfigureAwait(false);
+                        if (record is null || !string.Equals(record.PairingId, pairingIdStr, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return StatusCode(StatusCodes.Status403Forbidden, new GatewayErrorResponse(
+                                "remote_attachment_not_owned",
+                                $"附件 {item.RelativePath} 未经当前远程配对上传确认，拒绝接入对话。"));
+                        }
+
+                        verifiedList.Add(new VerifiedRemoteAttachment(
+                            record.UploadId,
+                            item.RelativePath,
+                            item.Name,
+                            item.ContentType,
+                            record.FileSha256,
+                            item.SizeBytes));
+                    }
+
+                    verifiedRemoteAttachments = verifiedList;
+                    attachmentCount = verifiedList.Count;
+                    // Model A: never inject <codexflow_attachments> or local paths into messageContent in remote channel.
+                    messageContent = string.IsNullOrWhiteSpace(request.Message)
+                        ? GatewayAttachmentService.DefaultAttachmentMessage
+                        : request.Message.Trim();
+                }
+                else
+                {
+                    attachmentCount = validated.Count;
+                    messageContent = GatewayAttachmentService.FormatUserMessageWithAttachments(request.Message, validated);
+                }
             }
             catch (GatewayAttachmentValidationException ex)
             {
                 return BadRequest(new GatewayErrorResponse(ex.ErrorCode, ex.Message));
+            }
+        }
+
+        GatewayStructuredAction? validatedStructuredAction = null;
+        if (request.StructuredAction != null)
+        {
+            if (!GatewayStructuredActionMapper.TryCreate(request.StructuredAction, out validatedStructuredAction, out var structuredError))
+            {
+                return BadRequest(structuredError);
+            }
+
+            if (validatedStructuredAction!.Kind is GatewayStructuredActionKind.Approve or GatewayStructuredActionKind.Execute)
+            {
+                var controlPlaneState = HttpContext?.RequestServices.GetService<CodexFlow.Core.Execution.Approval.IControlPlaneStateProvider>();
+                if (!CodexFlow.Core.Execution.Approval.ControlPlaneAuthConstants.IsControlPlanePrincipal(User, controlPlaneState))
+                {
+                    return Forbid();
+                }
+
+                if (isRemote &&
+                    (string.IsNullOrWhiteSpace(remoteMeta!.VerifiedEnvelopeKind) ||
+                     string.IsNullOrWhiteSpace(remoteMeta.VerifiedEnvelopeHash) ||
+                     !RemoteAttachmentStagingCoordinator.TryNormalizeSha256(remoteMeta.VerifiedEnvelopeHash, out _)))
+                {
+                    return StatusCode(StatusCodes.Status403Forbidden, new GatewayErrorResponse(
+                        "remote_unverified_envelope",
+                        "远程控制通道批准或启动计划必须携带经宿主验签的 X-CF-Verified-Envelope-* 头。"));
+                }
+            }
+        }
+
+        var candidateMessageId = Guid.NewGuid().ToString("N");
+        if (isRemote)
+        {
+            if (_remoteChatOpStore is null)
+            {
+                return StatusCode(StatusCodes.Status403Forbidden,
+                    new GatewayErrorResponse("remote_chat_op_store_unavailable", "远程消息幂等账本未就绪。"));
+            }
+
+            var requestDigest = ComputeRemoteChatDigest(userId, request);
+            var now = DateTimeOffset.UtcNow;
+            var reserveResult = await _remoteChatOpStore.TryReserveAsync(
+                new RemoteChatOpRecord(
+                    PairingId: remoteMeta!.Stamp.PairingId.ToString("D"),
+                    SessionId: request.SessionId,
+                    ClientOpId: remoteMeta.ClientOpId!,
+                    RequestDigest: requestDigest,
+                    Status: "queued",
+                    ConversationId: request.ConversationId,
+                    MessageId: candidateMessageId,
+                    BindingVersion: remoteMeta.Stamp.BindingVersion,
+                    AccountRevocationSeq: remoteMeta.Stamp.AccountRevocationSeq,
+                    DeviceRevocationSeq: remoteMeta.Stamp.DeviceRevocationSeq,
+                    ResponseDtoJson: null,
+                    CreatedAtUtc: now,
+                    UpdatedAtUtc: now),
+                ct).ConfigureAwait(false);
+
+            if (reserveResult.Outcome == RemoteChatOpReserveOutcome.DigestConflict)
+            {
+                return Conflict(new GatewayErrorResponse(
+                    "client_op_conflict",
+                    "相同的 X-CF-Client-Op-Id 不能对应不同的消息请求体。"));
+            }
+
+            if (reserveResult.Outcome == RemoteChatOpReserveOutcome.DuplicateSameDigest && reserveResult.Existing is { } existingOp)
+            {
+                if (string.Equals(existingOp.Status, "cancelled_revoked", StringComparison.OrdinalIgnoreCase))
+                {
+                    return StatusCode(StatusCodes.Status403Forbidden,
+                        new GatewayErrorResponse("remote_principal_revoked", "该远程消息已因配对或设备吊销而被取消。"));
+                }
+
+                if (!string.IsNullOrWhiteSpace(existingOp.ResponseDtoJson))
+                {
+                    var cachedAccepted = TryDeserializeAcceptedResponse(existingOp.ResponseDtoJson);
+                    if (cachedAccepted is not null)
+                    {
+                        return Accepted(cachedAccepted);
+                    }
+                }
+
+                return Accepted(new GatewayChatAcceptedResponse(
+                    existingOp.MessageId ?? candidateMessageId,
+                    existingOp.SessionId));
             }
         }
 
@@ -891,41 +1201,32 @@ public class CodexGatewayController : GatewayEndpointHandler
 
         var message = new GatewayMessage
         {
+            MessageId = candidateMessageId,
             Source = GatewayMessageSource.UserChat,
             SessionId = request.SessionId,
             UserId = userId,
             ConversationId = request.ConversationId,
             TaskId = request.TaskId,
             Content = messageContent,
+            ControlChannel = isRemote ? ControlChannel.Remote : ControlChannel.Local,
+            RemoteStamp = remoteMeta?.Stamp,
+            VerifiedRemoteAttachments = verifiedRemoteAttachments,
+            RemoteClientOpId = remoteMeta?.ClientOpId,
             Meta = new GatewayMessageMeta
             {
-                GitRepoUrl = request.GitRepoUrl,
-                Branch = request.Branch,
-                ApproveGitPush = request.ApproveGitPush,
+                GitRepoUrl = isRemote ? null : request.GitRepoUrl,
+                Branch = isRemote ? null : request.Branch,
+                ApproveGitPush = !isRemote && request.ApproveGitPush,
                 ReplyId = request.ReplyId,
-                SystemPrompt = request.SystemPrompt,
+                SystemPrompt = isRemote ? null : request.SystemPrompt,
                 ConversationMode = request.ConversationMode // P3-01: 传递会话模式
             }
         };
 
         // Trusted structured action: attached only here, after authentication; message text can never create one.
-        if (request.StructuredAction != null)
+        if (validatedStructuredAction != null)
         {
-            if (!GatewayStructuredActionMapper.TryCreate(request.StructuredAction, out var structuredAction, out var structuredError))
-            {
-                return BadRequest(structuredError);
-            }
-
-            if (structuredAction!.Kind is GatewayStructuredActionKind.Approve or GatewayStructuredActionKind.Execute)
-            {
-                var controlPlaneState = HttpContext?.RequestServices.GetService<CodexFlow.Core.Execution.Approval.IControlPlaneStateProvider>();
-                if (!CodexFlow.Core.Execution.Approval.ControlPlaneAuthConstants.IsControlPlanePrincipal(User, controlPlaneState))
-                {
-                    return Forbid();
-                }
-            }
-
-            GatewayStructuredActions.Attach(message, structuredAction);
+            GatewayStructuredActions.Attach(message, validatedStructuredAction);
         }
 
         string messageId;
@@ -935,6 +1236,18 @@ public class CodexGatewayController : GatewayEndpointHandler
         }
         catch (GatewayMessageRejectedException ex)
         {
+            if (isRemote && _remoteChatOpStore is not null && remoteMeta is not null)
+            {
+                await _remoteChatOpStore.UpdateStatusAsync(
+                    remoteMeta.Stamp.PairingId.ToString("D"),
+                    request.SessionId,
+                    remoteMeta.ClientOpId!,
+                    "rejected",
+                    request.ConversationId,
+                    candidateMessageId,
+                    ct: CancellationToken.None).ConfigureAwait(false);
+            }
+
             _logger.LogInformation(
                 "[Gateway] Rejecting chat enqueue for session {SessionId}. Reason={Reason}",
                 request.SessionId,
@@ -955,6 +1268,23 @@ public class CodexGatewayController : GatewayEndpointHandler
             return Conflict(new GatewayChatRejectedResponse(false, ex.Reason, ex.Message, request.SessionId));
         }
 
+        var acceptedResponse = new GatewayChatAcceptedResponse(messageId, request.SessionId);
+        if (isRemote && _remoteChatOpStore is not null && remoteMeta is not null)
+        {
+            var acceptedJson = JsonSerializer.Serialize(
+                acceptedResponse,
+                StreamingGatewayJsonContext.Default.GatewayChatAcceptedResponse);
+            await _remoteChatOpStore.UpdateStatusAsync(
+                remoteMeta.Stamp.PairingId.ToString("D"),
+                request.SessionId,
+                remoteMeta.ClientOpId!,
+                "queued",
+                request.ConversationId,
+                messageId,
+                responseDtoJson: acceptedJson,
+                ct: CancellationToken.None).ConfigureAwait(false);
+        }
+
         FullTextAuditLogger.Log(
             _logger,
             "gateway_chat_accepted",
@@ -967,7 +1297,7 @@ public class CodexGatewayController : GatewayEndpointHandler
                 ("conversationId", request.ConversationId),
                 ("taskId", request.TaskId)));
 
-        return Accepted(new GatewayChatAcceptedResponse(messageId, request.SessionId));
+        return Accepted(acceptedResponse);
     }
 
     /// <summary>
@@ -996,15 +1326,27 @@ public class CodexGatewayController : GatewayEndpointHandler
             return;
         }
 
-        // Only the session owner may subscribe: 404 before any channel is created or replayed.
-        if (!await IsSessionOwnerAsync(sessionId, userId))
+        var dbSession = await _chatService.GetSession(sessionId).ConfigureAwait(false);
+        if (dbSession is null || !string.Equals(dbSession.UserId, userId, StringComparison.Ordinal))
         {
             Response.StatusCode = 404;
             return;
         }
 
-        // 支持标准 SSE 断线重连 (Last-Event-ID header)
-        if (lastEventId == 0 && Request.Headers.TryGetValue("Last-Event-ID", out var headerValue)
+        if (await AuthorizeRemoteSessionAsync(dbSession.Id, dbSession.WorkspacePath, dbSession.ProjectUrl, ct).ConfigureAwait(false) is not null)
+        {
+            Response.StatusCode = 403;
+            return;
+        }
+
+        var isRemote = RemoteRequestContextMiddleware.IsRemoteRequest(HttpContext);
+        if (isRemote)
+        {
+            // Model A: never honor unauthenticated / remote Last-Event-ID replay filters.
+            lastEventId = 0;
+            epoch = null;
+        }
+        else if (lastEventId == 0 && Request.Headers.TryGetValue("Last-Event-ID", out var headerValue)
             && long.TryParse(headerValue, out var parsedId))
         {
             lastEventId = parsedId;
@@ -1033,6 +1375,10 @@ public class CodexGatewayController : GatewayEndpointHandler
             await foreach (var evt in _gateway.SubscribeAsync(sessionId, userId, lastEventId: lastEventId, ct: ct, channelEpoch: epoch))
             {
                 var data = StreamingGatewayEventJson.Serialize(evt.Payload);
+                if (isRemote)
+                {
+                    data = RemotePayloadSanitizer.SanitizeSsePayloadJson(data);
+                }
 
                 // SSE 标准格式：id + event + data
                 if (evt.Seq > 0)
@@ -1075,10 +1421,193 @@ public class CodexGatewayController : GatewayEndpointHandler
 
         var statusUserId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrEmpty(statusUserId)) return Unauthorized();
-        if (!await IsSessionOwnerAsync(sessionId, statusUserId)) return NotFound("Session not found");
+        var dbSession = await _chatService.GetSession(sessionId).ConfigureAwait(false);
+        if (dbSession is null || !string.Equals(dbSession.UserId, statusUserId, StringComparison.Ordinal))
+            return NotFound("Session not found");
+
+        if (await AuthorizeRemoteSessionAsync(dbSession.Id, dbSession.WorkspacePath, dbSession.ProjectUrl, HttpContext.RequestAborted).ConfigureAwait(false) is { } denied)
+            return denied;
 
         return Ok(new GatewayStatusResponse(
             sessionId, _gateway.IsSessionActive(sessionId), _gateway.HasActiveSubscribers(sessionId)));
+    }
+
+    public async Task<IResult> QueryRemoteUploadStatus(
+        string sessionId,
+        string uploadId,
+        CancellationToken ct = default)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrEmpty(userId)) return Unauthorized();
+
+        var dbSession = await _chatService.GetSession(sessionId).ConfigureAwait(false);
+        if (dbSession is null || !string.Equals(dbSession.UserId, userId, StringComparison.Ordinal))
+            return NotFound("Session not found");
+
+        if (await AuthorizeRemoteSessionAsync(dbSession.Id, dbSession.WorkspacePath, dbSession.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+            return denied;
+
+        var remoteMeta = RemoteRequestContextMiddleware.GetMetadata(HttpContext);
+        if (remoteMeta is null || _remoteAttachmentStagingCoordinator is null)
+            return NotFound(new RemoteAttachmentUploadStatusResponse("not_found", uploadId, null, null));
+
+        var result = await _remoteAttachmentStagingCoordinator
+            .QueryUploadStatusAsync(remoteMeta.Stamp.PairingId, sessionId, uploadId, ct)
+            .ConfigureAwait(false);
+        if (string.Equals(result.Status, "not_found", StringComparison.OrdinalIgnoreCase))
+        {
+            return NotFound(new RemoteAttachmentUploadStatusResponse("not_found", uploadId, null, null));
+        }
+
+        UploadedAttachmentDto? dto = result.Attachment is null
+            ? null
+            : new UploadedAttachmentDto(
+                result.Attachment.Name,
+                result.Attachment.RelativePath,
+                result.Attachment.SizeBytes,
+                result.Attachment.ContentType);
+        return Ok(new RemoteAttachmentUploadStatusResponse(result.Status, result.UploadId ?? uploadId, result.FileSha256, dto));
+    }
+
+    public async Task<IResult> QueryRemoteChatOpStatus(
+        string sessionId,
+        string clientOpId,
+        CancellationToken ct = default)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrEmpty(userId)) return Unauthorized();
+
+        var dbSession = await _chatService.GetSession(sessionId).ConfigureAwait(false);
+        if (dbSession is null || !string.Equals(dbSession.UserId, userId, StringComparison.Ordinal))
+            return NotFound("Session not found");
+
+        if (await AuthorizeRemoteSessionAsync(dbSession.Id, dbSession.WorkspacePath, dbSession.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+            return denied;
+
+        var remoteMeta = RemoteRequestContextMiddleware.GetMetadata(HttpContext);
+        if (remoteMeta is null || _remoteChatOpStore is null || string.IsNullOrWhiteSpace(clientOpId))
+            return NotFound(new RemoteChatOpStatusResponse("not_found", clientOpId, null, null, null));
+
+        var op = await _remoteChatOpStore
+            .FindAsync(remoteMeta.Stamp.PairingId.ToString("D"), sessionId, clientOpId.Trim(), ct)
+            .ConfigureAwait(false);
+        if (op is null)
+            return NotFound(new RemoteChatOpStatusResponse("not_found", clientOpId, null, null, null));
+
+        var accepted = TryDeserializeAcceptedResponse(op.ResponseDtoJson);
+        return Ok(new RemoteChatOpStatusResponse(op.Status, op.ClientOpId, op.ConversationId, op.MessageId, accepted));
+    }
+
+    public async Task<IResult> GetEventsSummary(
+        string? mode = "snapshot",
+        string? snapshotId = null,
+        string? pageToken = null,
+        long? afterEventId = null,
+        int limit = 50,
+        CancellationToken ct = default)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrEmpty(userId)) return Unauthorized();
+
+        if (_remotePendingProjection is null)
+        {
+            return Ok(new RemotePendingSummarySnapshotResponse(
+                mode ?? "snapshot",
+                snapshotId,
+                0,
+                0,
+                null,
+                true,
+                false,
+                []));
+        }
+
+        var isRemote = RemoteRequestContextMiddleware.IsRemoteRequest(HttpContext);
+        var result = await _remotePendingProjection.QuerySummaryAsync(
+            mode ?? "snapshot",
+            snapshotId,
+            pageToken,
+            afterEventId,
+            Math.Clamp(limit, 1, 200),
+            async (sid, token) =>
+            {
+                var s = await _chatService.GetSession(sid).ConfigureAwait(false);
+                if (s is null || !string.Equals(s.UserId, userId, StringComparison.Ordinal))
+                {
+                    return false;
+                }
+
+                if (!isRemote)
+                {
+                    return true;
+                }
+
+                if (_remoteWorkspaceAuthorizationGuard is null)
+                {
+                    return false;
+                }
+
+                var decision = await _remoteWorkspaceAuthorizationGuard
+                    .AuthorizeSessionAsync(s.Id, s.WorkspacePath, s.ProjectUrl, token)
+                    .ConfigureAwait(false);
+                return decision.Allowed;
+            },
+            ct).ConfigureAwait(false);
+
+        return Ok(result);
+    }
+
+    private static string ComputeRemoteChatDigest(string userId, GatewayChatRequest request)
+    {
+        var sb = new StringBuilder();
+        sb.Append("CF-CHAT-OP-V1\n")
+          .Append(userId).Append('\n')
+          .Append(request.SessionId).Append('\n')
+          .Append(request.ConversationId ?? string.Empty).Append('\n')
+          .Append(request.TaskId ?? string.Empty).Append('\n')
+          .Append(request.ReplyId ?? string.Empty).Append('\n')
+          .Append(request.ConversationMode ?? string.Empty).Append('\n')
+          .Append(request.Message ?? string.Empty).Append('\n');
+        if (request.Attachments is { Count: > 0 })
+        {
+            foreach (var att in request.Attachments)
+            {
+                sb.Append(att.Name).Append('|')
+                  .Append(att.RelativePath).Append('|')
+                  .Append(att.SizeBytes.ToString(CultureInfo.InvariantCulture)).Append('|')
+                  .Append(att.ContentType ?? string.Empty).Append('\n');
+            }
+        }
+
+        if (request.StructuredAction is { } sa)
+        {
+            sb.Append(sa.Action).Append('|')
+              .Append(sa.PlanArtifactId ?? string.Empty).Append('|')
+              .Append(sa.PlanVersion ?? string.Empty).Append('|')
+              .Append(sa.PlanHash ?? string.Empty).Append('|')
+              .Append(sa.IdempotencyKey ?? string.Empty).Append('|')
+              .Append(sa.StartExecution?.ToString(CultureInfo.InvariantCulture) ?? string.Empty).Append('|')
+              .Append(sa.AcceptExistingDependencyDebt?.ToString(CultureInfo.InvariantCulture) ?? string.Empty).Append('\n');
+        }
+
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString()))).ToLowerInvariant();
+    }
+
+    private static GatewayChatAcceptedResponse? TryDeserializeAcceptedResponse(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize(json, StreamingGatewayJsonContext.Default.GatewayChatAcceptedResponse);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     private async Task<bool> IsSessionOwnerAsync(string sessionId, string userId)
@@ -1386,7 +1915,20 @@ internal sealed record BootstrapErrorResponse(string Error);
 
 internal sealed record SessionCreationResponse(string SessionId, string WorkMode);
 
-internal sealed record GatewayChatAcceptedResponse(string MessageId, string SessionId);
+public sealed record GatewayChatAcceptedResponse(string MessageId, string SessionId);
+
+public sealed record RemoteAttachmentUploadStatusResponse(
+    string Status,
+    string UploadId,
+    string? FileSha256,
+    UploadedAttachmentDto? Attachment);
+
+public sealed record RemoteChatOpStatusResponse(
+    string Status,
+    string ClientOpId,
+    string? ConversationId,
+    string? MessageId,
+    GatewayChatAcceptedResponse? Accepted);
 
 internal sealed record GatewayChatRejectedResponse(bool Success, string Reason, string Message, string SessionId);
 

@@ -266,6 +266,29 @@ public sealed class CodexGateway : ICodexGateway, IAsyncDisposable
         return Task.FromResult(channel.CancelActiveTurn());
     }
 
+    public Task<int> CancelActiveRemoteTurnsAsync(
+        long? minAccountRevocationSeq,
+        long? minDeviceRevocationSeq,
+        IReadOnlyList<Guid>? revokedPairingIds,
+        CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        var cancelledCount = 0;
+
+        foreach (var channel in _channels.Values)
+        {
+            if (channel.CancelActiveTurnIfRevoked(stamp =>
+                    (minAccountRevocationSeq.HasValue && stamp.AccountRevocationSeq < minAccountRevocationSeq.Value) ||
+                    (minDeviceRevocationSeq.HasValue && stamp.DeviceRevocationSeq < minDeviceRevocationSeq.Value) ||
+                    (revokedPairingIds is not null && revokedPairingIds.Contains(stamp.PairingId))))
+            {
+                cancelledCount++;
+            }
+        }
+
+        return Task.FromResult(cancelledCount);
+    }
+
     public GatewayChannelSnapshotState? GetChannelSnapshotState(string sessionId)
         => !string.IsNullOrWhiteSpace(sessionId) && _channels.TryGetValue(sessionId, out var channel)
             ? channel.GetSnapshotState()

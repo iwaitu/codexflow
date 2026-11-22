@@ -22,6 +22,7 @@ using CodexFlow.Core.Gateway;
 using CodexFlow.Core.Governance;
 using CodexFlow.Core.Models;
 using CodexFlow.Core.Protocols;
+using CodexFlow.Core.Remote;
 using CodexFlow.Core.Runtime;
 using CodexFlow.Core.Workers;
 using CodexFlow.Orchestration.BusinessSkills;
@@ -209,6 +210,8 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
     private readonly IOptionsMonitor<ExecutionOptions>? _executionOptions;
     private readonly IOptionsMonitor<BusinessSkillsOptions>? _businessSkillsOptions;
     private readonly CodexFlow.Core.ComputerUse.IComputerSessionManager? _computerSessionManager;
+    private readonly IRemotePendingProjection? _remotePendingProjection;
+    private readonly IRemoteWorkspaceAuthorizationGuard? _remoteWorkspaceAuthorizationGuard;
     private readonly DocumentReaderRouter _documentReaderRouter;
     private readonly ContextCompressionOptions _compressionOptions;
     private readonly OpenSpecExecutionOptions _openSpecExecutionOptions;
@@ -262,7 +265,9 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         IControlPlaneStateProvider? controlPlaneStateProvider = null,
         IOptionsMonitor<ExecutionOptions>? executionOptions = null,
         IOptionsMonitor<BusinessSkillsOptions>? businessSkillsOptions = null,
-        CodexFlow.Core.ComputerUse.IComputerSessionManager? computerSessionManager = null)
+        CodexFlow.Core.ComputerUse.IComputerSessionManager? computerSessionManager = null,
+        IRemotePendingProjection? remotePendingProjection = null,
+        IRemoteWorkspaceAuthorizationGuard? remoteWorkspaceAuthorizationGuard = null)
     {
         _jobStore = jobStore;
         _jobReadStore = jobReadStore;
@@ -290,8 +295,10 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         _executionOptions = executionOptions;
         _businessSkillsOptions = businessSkillsOptions;
         _computerSessionManager = computerSessionManager;
+        _remotePendingProjection = remotePendingProjection;
+        _remoteWorkspaceAuthorizationGuard = remoteWorkspaceAuthorizationGuard;
         _documentReaderRouter = documentReaderRouter ?? DocumentReaderRouter.CreateDefault();
-        _approvalGate = new GatewayApprovalGate(scopeFactory);
+        _approvalGate = new GatewayApprovalGate(scopeFactory, remotePendingProjection: remotePendingProjection);
     }
 
     /// <summary>
@@ -816,6 +823,35 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             throw new GatewayLocalRepositoryDeniedException(localRepositoryRefusal);
         }
 
+        if ((message.ControlChannel == ControlChannel.Remote || RemoteExecutionAmbientContext.IsRemote) &&
+            _remoteWorkspaceAuthorizationGuard is not null)
+        {
+            var resolvedProjectRoot = ToolPathResolver.ResolveProjectRoot(
+                session.WorkspacePath,
+                null,
+                session.ProjectUrl,
+                session.Metadata);
+
+            var workspaceAuth = await _remoteWorkspaceAuthorizationGuard
+                .AuthorizeSessionAsync(message.SessionId, session.WorkspacePath, session.ProjectUrl?.ToString(), ct)
+                .ConfigureAwait(false);
+            if (workspaceAuth.Allowed && !string.IsNullOrWhiteSpace(resolvedProjectRoot))
+            {
+                workspaceAuth = await _remoteWorkspaceAuthorizationGuard
+                    .AuthorizeWorkspacePathAsync(resolvedProjectRoot, ct)
+                    .ConfigureAwait(false);
+            }
+
+            if (!workspaceAuth.Allowed)
+            {
+                var refusal = $"[{workspaceAuth.ReasonCode}] {workspaceAuth.Message}";
+                await _chatService.AddMessage(
+                    message.UserId, conversationId!, message.Content ?? string.Empty, refusal,
+                    0, "codex-v2", message.Meta.ReplyId ?? "", "", null);
+                throw new GatewayLocalRepositoryDeniedException(refusal);
+            }
+        }
+
         // 3. 构造消息上下文（包含完整项目上下文，与 CodexController 对齐）
         string? fullContext = null;
         try { fullContext = await _sessionManager.GetFullContextAsync(message.SessionId); }
@@ -858,11 +894,18 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         var isMultimodalModel = _modelSettingsService?.Read().SupportsMultimodal
             ?? ModelSettingsService.IsMultimodalConfigured(_configuration);
         var visualStore = new TurnVisualAttachmentStore(isMultimodalModel);
-        var modelUserContent = await PrepareModelUserContentWithVisualAttachmentsAsync(
-            userContent,
-            session?.WorkspacePath,
-            visualStore,
-            ct).ConfigureAwait(false);
+        var modelUserContent = message.ControlChannel == ControlChannel.Remote
+            ? await PrepareRemoteModelUserContentWithVisualAttachmentsAsync(
+                userContent,
+                session?.WorkspacePath,
+                message.VerifiedRemoteAttachments,
+                visualStore,
+                ct).ConfigureAwait(false)
+            : await PrepareModelUserContentWithVisualAttachmentsAsync(
+                userContent,
+                session?.WorkspacePath,
+                visualStore,
+                ct).ConfigureAwait(false);
         chatMessages.Add(new ChatMessage(ChatRole.User, modelUserContent));
 
         var directApprovalAnswer = turnPolicy.WorkMode == SessionWorkMode.Daily || turnPolicy.PlanModeActive
@@ -2545,6 +2588,18 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                     executionWorkspacePath = latestSession.WorkspacePath;
                 }
 
+                if ((message.ControlChannel == ControlChannel.Remote || RemoteExecutionAmbientContext.IsRemote) &&
+                    _remoteWorkspaceAuthorizationGuard is not null)
+                {
+                    var workerWorkspaceAuth = await _remoteWorkspaceAuthorizationGuard
+                        .AuthorizeSessionAsync(message.SessionId, executionWorkspacePath, projectLocation: null, ct)
+                        .ConfigureAwait(false);
+                    if (!workerWorkspaceAuth.Allowed)
+                    {
+                        return $"⛔ [{workerWorkspaceAuth.ReasonCode}] {workerWorkspaceAuth.Message}";
+                    }
+                }
+
                 if (latestSession.Metadata.TryGetValue(PlanGuardMetadataKeys.PlanResetRequired, out var resetRequiredRaw) &&
                     bool.TryParse(resetRequiredRaw, out var resetRequired) &&
                     resetRequired)
@@ -3229,6 +3284,26 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                                     ["taskCount"] = taskCount
                                 }
                             }).ConfigureAwait(false);
+
+                            if (_remotePendingProjection is not null)
+                            {
+                                var opaqueRef = string.IsNullOrWhiteSpace(planArtifactId)
+                                    ? $"plan:{message.SessionId}"
+                                    : planArtifactId;
+                                await _remotePendingProjection.PublishAsync(
+                                    sourceKind: "plan_approval",
+                                    opaqueRefId: opaqueRef,
+                                    sessionId: message.SessionId,
+                                    title: string.IsNullOrWhiteSpace(goal) ? "计划审批请求" : $"计划审批：{goal}",
+                                    summary: $"版本 {planVersion ?? "-"}，任务数 {taskCount}",
+                                    status: "pending",
+                                    isTerminal: false,
+                                    readOnlyInRemote: message.ControlChannel != ControlChannel.Remote,
+                                    expiresAtUtc: DateTimeOffset.UtcNow.AddDays(1),
+                                    approvalId: planArtifactId,
+                                    requestDigest: markdownHash,
+                                    ct: ct).ConfigureAwait(false);
+                            }
                         }
                         : null;
 
@@ -3935,6 +4010,103 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         return sb.ToString();
     }
 
+    /// <summary>
+    /// 远程控制横切守卫 ①：完全禁止解析用户消息正文中的 <c>&lt;codexflow_attachments&gt;</c> 标签；
+    /// 仅基于随消息传入、经过本会话 <c>RemoteAttachmentUploads</c> 配对与哈希校验的
+    /// <see cref="VerifiedRemoteAttachment"/> 注入视觉附件与安全文本摘要。
+    /// </summary>
+    internal static async Task<string> PrepareRemoteModelUserContentWithVisualAttachmentsAsync(
+        string userContent,
+        string? workspacePath,
+        IReadOnlyList<VerifiedRemoteAttachment>? verifiedAttachments,
+        TurnVisualAttachmentStore visualStore,
+        CancellationToken ct)
+    {
+        if (verifiedAttachments is null || verifiedAttachments.Count == 0)
+        {
+            return userContent;
+        }
+
+        const long maxRemoteVisualImageBytes = 10L * 1024 * 1024;
+        var sb = new StringBuilder(userContent);
+        sb.AppendLine();
+        sb.AppendLine();
+        sb.AppendLine("[远程已核验附件]");
+
+        var hasImage = false;
+        var imageLines = new List<string>();
+        foreach (var att in verifiedAttachments)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!WorkspaceFileExplorerService.TryResolveWorkspaceRelativePath(
+                    workspacePath,
+                    att.RelativePath,
+                    allowEmpty: false,
+                    out _,
+                    out var fullTarget,
+                    out var normalizedRel,
+                    out _,
+                    out _) ||
+                !File.Exists(fullTarget))
+            {
+                continue;
+            }
+
+            var shortHash = att.FileSha256.Length >= 8 ? att.FileSha256[..8] : att.FileSha256;
+            sb.Append("- ")
+              .Append(att.FileName)
+              .Append(" (")
+              .Append(normalizedRel)
+              .Append(", ")
+              .Append(att.SizeBytes)
+              .Append(" B, sha256:")
+              .Append(shortHash)
+              .AppendLine(")");
+
+            if (DocumentFileFormats.IsImageFile(att.FileName, att.ContentType))
+            {
+                hasImage = true;
+                if (!visualStore.IsMultimodalEnabled)
+                {
+                    continue;
+                }
+
+                var info = new FileInfo(fullTarget);
+                if (info.Length is <= 0 or > maxRemoteVisualImageBytes)
+                {
+                    imageLines.Add($"[系统提示：远程图片附件 {att.FileName} 超过 10 MiB 多模态直注上限或为空，未直接内联图片像素。]");
+                    continue;
+                }
+
+                var bytes = await File.ReadAllBytesAsync(fullTarget, ct).ConfigureAwait(false);
+                var mime = DocumentFileFormats.ResolveImageMimeType(att.FileName, att.ContentType);
+                var registered = visualStore.Register(att.FileName, mime, bytes);
+                if (registered is not null)
+                {
+                    imageLines.Add(TurnVisualAttachmentStore.FormatMarker(registered));
+                }
+            }
+        }
+
+        sb.Append("以上远程附件已落盘至当前授权工作区，请使用 `ivilson_read` 或 `search_in_files` 按工作区相对路径按需读取。");
+
+        if (hasImage && !visualStore.IsMultimodalEnabled)
+        {
+            sb.AppendLine();
+            sb.Append("[系统提示：用户附带了图片文件，但当前模型未启用多模态能力，无法读取图片内容。请明确告知用户当前模型不支持读取图片，并引导其在「设置 -> 模型配置」中切换支持多模态的模型。]");
+        }
+        else
+        {
+            foreach (var line in imageLines)
+            {
+                sb.AppendLine();
+                sb.Append(line);
+            }
+        }
+
+        return sb.ToString();
+    }
+
     private static bool IsPreviewableTextFile(string path, byte[] content)
     {
         var extension = Path.GetExtension(path);
@@ -4150,6 +4322,21 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             return null;
         }
 
+        if (RemoteExecutionAmbientContext.IsRemote)
+        {
+            if (_remoteWorkspaceAuthorizationGuard is not null)
+            {
+                var remoteAuth = _remoteWorkspaceAuthorizationGuard.AuthorizeWorkspacePathAsync(path).GetAwaiter().GetResult();
+                return remoteAuth.Allowed
+                    ? CodexFlow.Core.Services.LocalRepositoryDecision.Allow(remoteAuth.ResolvedPath ?? path)
+                    : CodexFlow.Core.Services.LocalRepositoryDecision.Deny(
+                        CodexFlow.Core.Services.LocalRepositoryDenial.OutsideSessionAndAllowedRoots,
+                        remoteAuth.Message);
+            }
+
+            return CodexFlow.Core.Services.LocalRepositoryAuthorization.Evaluate(path, trustedSessionRoot, configuration: null);
+        }
+
         using var scope = _scopeFactory.CreateScope();
         var configuration = scope.ServiceProvider.GetService<Microsoft.Extensions.Configuration.IConfiguration>();
         var decision = CodexFlow.Core.Services.LocalRepositoryAuthorization.Evaluate(path, trustedSessionRoot, configuration);
@@ -4215,7 +4402,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                "或由管理员在 Workspace:AllowedLocalRepositoryRoots 中显式配置共享根目录。";
     }
 
-    private static string? ResolveRepositoryUrl(GatewayMessage message)
+    internal static string? ResolveRepositoryUrl(GatewayMessage message)
     {
         if (!string.IsNullOrWhiteSpace(message.Meta.GitRepoUrl))
         {
@@ -4235,6 +4422,11 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         if (match.Success)
         {
             return match.Value;
+        }
+
+        if (message.ControlChannel == ControlChannel.Remote || RemoteExecutionAmbientContext.IsRemote)
+        {
+            return null;
         }
 
         var fileMatch = Regex.Match(

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, shell, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, powerMonitor, session, shell, type IpcMainInvokeEvent } from 'electron';
 import { existsSync, lstatSync, realpathSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 import {
@@ -24,6 +24,11 @@ import {
   type PublishSkillDraftRequest,
   type PutDraftSelectionRequest,
   type RegisterProtectedWindowsResponse,
+  type RemoteActionResult,
+  type RemoteBindPayload,
+  type RemoteProxyUpdatePayload,
+  type RemoteSendOtpPayload,
+  type RemoteStatusSnapshot,
   type SetPlanModePayload,
   type SetPluginCredentialRequest,
   type StartSkillRunRequest,
@@ -55,6 +60,13 @@ import {
   registerAppSchemePrivileges,
 } from './protocol';
 import { isTrustedRendererOrigin, validateIpcCaller } from './securityUtils';
+import { RemoteConfigStore } from './remote/remoteConfigStore';
+import {
+  RemoteTunnelManager,
+  type RemoteManagerStatusSnapshot,
+} from './remote/remoteTunnelManager';
+import { RemoteUploadStaging } from './remote/remoteUploadStaging';
+import { ReplayNonceGuard } from './remote/replayNonceGuard';
 import { TrayManager } from './trayManager';
 import { UpdaterManager } from './updaterManager';
 import {
@@ -73,6 +85,8 @@ let trayManager: TrayManager | null = null;
 let updaterManager: UpdaterManager | null = null;
 let environmentManager: EnvironmentManager | null = null;
 let computerOverlayManager: ComputerOverlayManager | null = null;
+let remoteConfigStore: RemoteConfigStore | null = null;
+let remoteTunnelManager: RemoteTunnelManager | null = null;
 let hostAvoidedByComputer = false;
 let lastProtectedWindowsSignature = '';
 let isQuitting = false;
@@ -211,6 +225,71 @@ function broadcastEnvironmentInstallEvent(payload: EnvironmentInstallEvent): voi
   mainWindow.webContents.send(IPC_CHANNELS.environmentInstallEvent, payload);
 }
 
+function toSafeRemoteStatusSnapshot(snap: RemoteManagerStatusSnapshot): RemoteStatusSnapshot {
+  return {
+    config: {
+      portalUrl: snap.config.portalUrl,
+      account: snap.config.account ? { ...snap.config.account } : null,
+      device: snap.config.device
+        ? {
+            deviceId: snap.config.device.deviceId,
+            deviceName: snap.config.device.deviceName,
+            hostInstanceId: snap.config.device.hostInstanceId,
+            bindingVersion: snap.config.device.bindingVersion,
+            dataDirHash: snap.config.device.dataDirHash,
+            desktopKeyId: snap.config.device.desktopKeyId,
+            desktopSpkiSha256: snap.config.device.desktopSpkiSha256,
+          }
+        : null,
+      bound: snap.config.bound,
+      hasDeviceToken: snap.config.hasDeviceToken,
+      manualRemotePaused: snap.config.manualRemotePaused,
+      watermarks: { ...snap.config.watermarks },
+      pairings: snap.config.pairings.map((p) => ({
+        pairingId: p.pairingId,
+        mobileId: p.mobileId,
+        platform: p.platform,
+        deviceName: p.deviceName,
+        bindingVersion: p.bindingVersion,
+        sessionKeyId: p.sessionKeyId,
+        bioKeyId: p.bioKeyId,
+        status: p.status,
+        pairedAtUtc: p.pairedAtUtc,
+        revokedAtUtc: p.revokedAtUtc,
+      })),
+      proxy: { ...snap.config.proxy },
+    },
+    dial: { ...snap.dial },
+    connEpoch: snap.connEpoch,
+    activeEpochExpiresAtUnix: snap.activeEpochExpiresAtUnix,
+    lastPongAtUtc: snap.lastPongAtUtc,
+    pendingPairRequests: snap.pendingPairRequests.map((p) => ({ ...p })),
+    activeStreamCount: snap.activeStreamCount,
+    safeStorageAvailable: snap.safeStorageAvailable,
+    lastHostEventId: snap.lastHostEventId,
+  };
+}
+
+function broadcastRemoteStatus(snap: RemoteManagerStatusSnapshot): void {
+  trayManager?.refreshMenu();
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  mainWindow.webContents.send(IPC_CHANNELS.remoteStatusChanged, toSafeRemoteStatusSnapshot(snap));
+}
+
+async function runRemoteIpcAction<T>(fn: () => Promise<T> | T): Promise<RemoteActionResult<T>> {
+  try {
+    const data = await fn();
+    return { ok: true, data };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 function formatNativeWindowHandle(win: BrowserWindow | null): string | null {
   if (!win || win.isDestroyed() || process.platform !== 'win32') {
     return null;
@@ -282,6 +361,7 @@ function broadcastConnectionChange(): void {
   const info = backendManager.getPublicInfo();
   if (info.status === 'ready') {
     void syncProtectedWindowsToBackend(true);
+    void remoteTunnelManager?.notifyBackendReady();
   } else {
     lastProtectedWindowsSignature = '';
   }
@@ -1378,6 +1458,106 @@ function registerIpcHandlers(manager: BackendManager): void {
     assertTrustedIpcSender(event);
     return environmentManager?.cancelInstall() ?? false;
   });
+
+  const requireRemoteManager = (): RemoteTunnelManager => {
+    if (!remoteTunnelManager) {
+      throw new Error('Remote control manager is not initialized.');
+    }
+    return remoteTunnelManager;
+  };
+
+  ipcMain.handle(IPC_CHANNELS.remoteGetStatus, (event) => {
+    assertTrustedIpcSender(event);
+    return runRemoteIpcAction(() => toSafeRemoteStatusSnapshot(requireRemoteManager().getStatusSnapshot()));
+  });
+
+  ipcMain.handle(IPC_CHANNELS.remoteSetPortalUrl, (event, portalUrl: string) => {
+    assertTrustedIpcSender(event);
+    return runRemoteIpcAction(() =>
+      toSafeRemoteStatusSnapshot(requireRemoteManager().setPortalUrl(String(portalUrl ?? ''))),
+    );
+  });
+
+  ipcMain.handle(IPC_CHANNELS.remoteSendBindOtp, (event, payload: RemoteSendOtpPayload) => {
+    assertTrustedIpcSender(event);
+    return runRemoteIpcAction(() =>
+      requireRemoteManager().sendBindOtp(payload.email, payload.deviceName),
+    );
+  });
+
+  ipcMain.handle(IPC_CHANNELS.remoteVerifyAndBind, (event, payload: RemoteBindPayload) => {
+    assertTrustedIpcSender(event);
+    return runRemoteIpcAction(async () => {
+      const res = await requireRemoteManager().verifyBindOtpAndBind(payload);
+      if (res.status === 'bound') {
+        return {
+          status: 'bound' as const,
+          snapshot: toSafeRemoteStatusSnapshot(res.snapshot),
+        };
+      }
+      return res;
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.remoteUnbind, (event) => {
+    assertTrustedIpcSender(event);
+    return runRemoteIpcAction(async () =>
+      toSafeRemoteStatusSnapshot(await requireRemoteManager().unbindDesktop()),
+    );
+  });
+
+  ipcMain.handle(IPC_CHANNELS.remoteSetManualPaused, (event, paused: boolean) => {
+    assertTrustedIpcSender(event);
+    return runRemoteIpcAction(() =>
+      toSafeRemoteStatusSnapshot(requireRemoteManager().setManualPaused(Boolean(paused))),
+    );
+  });
+
+  ipcMain.handle(IPC_CHANNELS.remoteSetProxySettings, (event, payload: RemoteProxyUpdatePayload) => {
+    assertTrustedIpcSender(event);
+    return runRemoteIpcAction(() =>
+      toSafeRemoteStatusSnapshot(requireRemoteManager().setProxySettings(payload)),
+    );
+  });
+
+  ipcMain.handle(IPC_CHANNELS.remoteIssueQrTicket, (event) => {
+    assertTrustedIpcSender(event);
+    return runRemoteIpcAction(() => requireRemoteManager().issuePairingQrTicket());
+  });
+
+  ipcMain.handle(
+    IPC_CHANNELS.remoteRespondPairRequest,
+    (event, payload: { pairingId: string; approved: boolean }) => {
+      assertTrustedIpcSender(event);
+      return runRemoteIpcAction(async () =>
+        toSafeRemoteStatusSnapshot(
+          await requireRemoteManager().respondToPairRequest(payload.pairingId, Boolean(payload.approved)),
+        ),
+      );
+    },
+  );
+
+  ipcMain.handle(IPC_CHANNELS.remoteRevokePairing, (event, pairingId: string) => {
+    assertTrustedIpcSender(event);
+    return runRemoteIpcAction(async () =>
+      toSafeRemoteStatusSnapshot(await requireRemoteManager().revokePairing(pairingId)),
+    );
+  });
+
+  ipcMain.handle(IPC_CHANNELS.remoteListWorkspaceAuthorizations, (event) => {
+    assertTrustedIpcSender(event);
+    return runRemoteIpcAction(() => requireRemoteManager().listExternalWorkspaceAuthorizations());
+  });
+
+  ipcMain.handle(
+    IPC_CHANNELS.remoteSetWorkspaceAuthorization,
+    (event, payload: { workspacePath: string; sessionId?: string; authorized: boolean }) => {
+      assertTrustedIpcSender(event);
+      return runRemoteIpcAction(() =>
+        requireRemoteManager().setExternalWorkspaceAuthorization(payload),
+      );
+    },
+  );
 }
 
 const singleInstanceLock = app.requestSingleInstanceLock();
@@ -1403,6 +1583,15 @@ if (!singleInstanceLock) {
       }
     }
 
+    remoteConfigStore = new RemoteConfigStore({
+      userDataDir: app.getPath('userData'),
+    });
+    const initialRemoteSnap = remoteConfigStore.getPublicSnapshot();
+    const initialRemoteUserIdHash =
+      initialRemoteSnap.bound && initialRemoteSnap.account
+        ? initialRemoteSnap.account.userIdHash
+        : null;
+
     backendManager = new BackendManager({
       userDataDir: app.getPath('userData'),
       resourcesPath: process.resourcesPath,
@@ -1410,8 +1599,27 @@ if (!singleInstanceLock) {
       isPackaged: app.isPackaged,
       isDev,
       devRendererOrigin,
+      initialRemoteUserIdHash,
       getProxyOrigin: () => gatewayProxy?.getOrigin() ?? null,
       onChange: () => broadcastConnectionChange(),
+    });
+
+    const remoteUploadStaging = new RemoteUploadStaging({
+      userDataDir: app.getPath('userData'),
+    });
+    remoteTunnelManager = new RemoteTunnelManager({
+      configStore: remoteConfigStore,
+      nonceGuard: new ReplayNonceGuard(),
+      uploadStaging: remoteUploadStaging,
+      getDispatchTarget: () => backendManager?.getRemoteDispatchTarget() ?? null,
+      getDataDirectory: () => backendManager?.getDataDirectory() ?? app.getPath('userData'),
+      switchAccountDataDirectory: async (userIdHash) => {
+        if (backendManager) {
+          await backendManager.switchAccountDataDirectory(userIdHash);
+        }
+      },
+      resolveSystemProxy: (targetUrl) => session.defaultSession.resolveProxy(targetUrl),
+      onStateChanged: (snap) => broadcastRemoteStatus(snap),
     });
 
     updaterManager = new UpdaterManager({
@@ -1488,6 +1696,25 @@ if (!singleInstanceLock) {
         ],
         getLanguage: () => desktopPreferences.language,
         getConnectionStatus: () => backendManager?.getPublicInfo().status ?? 'starting',
+        getRemoteStatus: () => {
+          const snap = remoteTunnelManager?.getStatusSnapshot();
+          if (!snap) {
+            return null;
+          }
+          return {
+            bound: snap.config.bound,
+            paused: snap.config.manualRemotePaused,
+            dialState: snap.dial.state,
+            pendingPairCount: snap.pendingPairRequests.length,
+          };
+        },
+        onToggleRemotePaused: () => {
+          if (!remoteTunnelManager) {
+            return;
+          }
+          const cur = remoteTunnelManager.getStatusSnapshot().config.manualRemotePaused;
+          remoteTunnelManager.setManualPaused(!cur);
+        },
         isWindowVisible: () => Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()),
         onShowWindow: () => restoreMainWindow(),
         onHideWindow: () => {
@@ -1509,6 +1736,14 @@ if (!singleInstanceLock) {
 
     // Launch managed backend without blocking initial window paint.
     void backendManager.startManaged();
+    void remoteTunnelManager.start();
+
+    powerMonitor.on('suspend', () => {
+      remoteTunnelManager?.handlePowerSuspend();
+    });
+    powerMonitor.on('resume', () => {
+      remoteTunnelManager?.handlePowerResume();
+    });
 
     app.on('activate', () => {
       restoreMainWindow();
@@ -1524,6 +1759,7 @@ if (!singleInstanceLock) {
   let isDisposing = false;
   app.on('before-quit', (event) => {
     isQuitting = true;
+    remoteTunnelManager?.stop();
     computerOverlayManager?.dispose();
     environmentManager?.dispose();
     updaterManager?.dispose();

@@ -27,6 +27,7 @@ public static class GatewayHttpExtensions
             SimpleGatewayEndpoints.ConfigureJson(json);
             StreamingGatewayEndpoints.ConfigureJson(json);
             BusinessGatewayEndpoints.ConfigureJson(json);
+            CodexFlow.Gateway.Http.Remote.RemoteInternalEndpoints.ConfigureJson(json);
         });
         services.AddProblemDetails(options => options.CustomizeProblemDetails = context =>
             context.ProblemDetails.Extensions.TryAdd("traceId", Activity.Current?.Id ?? context.HttpContext.TraceIdentifier));
@@ -47,7 +48,8 @@ public static class GatewayHttpExtensions
 
     /// <summary>Formats failures from request binding on mapped Gateway endpoints.</summary>
     public static IApplicationBuilder UseCodexFlowGatewayBindingErrors(this IApplicationBuilder app)
-        => app.Use(static (context, next) => GatewayBinding.InvokeAsync(context, next));
+        => app.Use(static (context, next) => CodexFlow.Gateway.Http.Remote.RemoteRequestContextMiddleware.InvokeAsync(context, next))
+              .Use(static (context, next) => GatewayBinding.InvokeAsync(context, next));
 
     public static IEndpointRouteBuilder MapCodexFlowGateway(this IEndpointRouteBuilder endpoints)
     {
@@ -67,6 +69,7 @@ public static class GatewayHttpExtensions
         SimpleGatewayEndpoints.Map(gateway);
         StreamingGatewayEndpoints.Map(gateway);
         BusinessGatewayEndpoints.Map(gateway);
+        CodexFlow.Gateway.Http.Remote.RemoteInternalEndpoints.MapCodexFlowRemoteInternalEndpoints(endpoints);
         return endpoints;
     }
 }

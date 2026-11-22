@@ -6,9 +6,12 @@ using System.Text;
 using System.Text.Json;
 using CodexFlow.Orchestration.Persistence;
 using System.Threading.Channels;
+using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Core.Gateway;
+using CodexFlow.Core.Remote;
 using CodexFlow.Logging;
 using CodexFlow.Orchestration.Chat;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace CodexFlow.Gateway;
 
@@ -46,6 +49,8 @@ public sealed class SessionChannel : IAsyncDisposable
 
     private readonly Lock _turnLock = new();
     private CancellationTokenSource? _activeTurnCts;
+    private ControlChannel _activeControlChannel;
+    private RemotePrincipalStamp? _activePrincipalStamp;
     private string? _activeMessageId;
     private string? _activeConversationId;
     private readonly StringBuilder _activeContent = new();
@@ -344,6 +349,39 @@ public sealed class SessionChannel : IAsyncDisposable
         return true;
     }
 
+    /// <summary>
+    /// 精准取消匹配吊销条件的活跃远程轮次；本地控制通道轮次不受影响。
+    /// </summary>
+    public bool CancelActiveTurnIfRevoked(Func<RemotePrincipalStamp, bool> predicate)
+    {
+        ArgumentNullException.ThrowIfNull(predicate);
+        CancellationTokenSource? activeCts = null;
+        lock (_turnLock)
+        {
+            if (_activeControlChannel == ControlChannel.Remote &&
+                _activePrincipalStamp is not null &&
+                predicate(_activePrincipalStamp))
+            {
+                activeCts = _activeTurnCts;
+            }
+        }
+
+        if (activeCts is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            activeCts.Cancel();
+            return true;
+        }
+        catch (ObjectDisposedException)
+        {
+            return false;
+        }
+    }
+
     public GatewayChannelSnapshotState GetSnapshotState()
     {
         lock (_turnLock)
@@ -402,11 +440,67 @@ public sealed class SessionChannel : IAsyncDisposable
                     ReleaseExclusiveUserChatSlot(message);
                 }
 
+                var chatOpStore = _serviceProvider.GetService<IRemoteChatOpStore>();
+                if (message.ControlChannel == ControlChannel.Remote)
+                {
+                    var revocationStore = _serviceProvider.GetService<IRemoteRevocationStore>();
+                    if (revocationStore is not null &&
+                        await revocationStore.IsRevokedAsync(message.RemoteStamp, ct).ConfigureAwait(false))
+                    {
+                        if (chatOpStore is not null &&
+                            message.RemoteStamp is not null &&
+                            !string.IsNullOrWhiteSpace(message.RemoteClientOpId))
+                        {
+                            try
+                            {
+                                await chatOpStore.UpdateStatusAsync(
+                                    message.RemoteStamp.PairingId.ToString("D"),
+                                    SessionId,
+                                    message.RemoteClientOpId,
+                                    "cancelled_revoked",
+                                    message.ConversationId,
+                                    message.MessageId,
+                                    ct: CancellationToken.None).ConfigureAwait(false);
+                            }
+                            catch (Exception ex) when (ex is not OperationCanceledException)
+                            {
+                                _logger.LogDebug(ex, "[Gateway] Failed updating RemoteChatOps status to cancelled_revoked.");
+                            }
+                        }
+
+                        ReleaseSlotOnce();
+                        PublishAndCommit(new GatewaySseEvent
+                        {
+                            Type = GatewaySseEventType.Error,
+                            Payload = new Dictionary<string, object?>
+                            {
+                                ["messageId"] = message.MessageId,
+                                ["error"] = "remote_principal_revoked"
+                            }
+                        }, captureTelemetry: false, completeTurn: false);
+                        PublishAndCommit(new GatewaySseEvent
+                        {
+                            Type = GatewaySseEventType.Done,
+                            Payload = new Dictionary<string, object?>
+                            {
+                                ["messageId"] = message.MessageId,
+                                ["source"] = "revoked"
+                            }
+                        }, captureTelemetry: false, completeTurn: true);
+
+                        Interlocked.Decrement(ref _pendingMessageCount);
+                        LastActivityUtc = DateTime.UtcNow;
+                        continue;
+                    }
+                }
+
                 using var turnCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 lock (_turnLock)
                 {
                     _hasTurnTelemetry = true;
                     _activeTurnCts = turnCts;
+                    _activeControlChannel = message.ControlChannel;
+                    _activePrincipalStamp = message.RemoteStamp;
                     _activeMessageId = message.MessageId;
                     _activeConversationId = message.ConversationId;
                     _activeContent.Clear();
@@ -425,9 +519,33 @@ public sealed class SessionChannel : IAsyncDisposable
 
                 try
                 {
+                    if (message.ControlChannel == ControlChannel.Remote &&
+                        chatOpStore is not null &&
+                        message.RemoteStamp is not null &&
+                        !string.IsNullOrWhiteSpace(message.RemoteClientOpId))
+                    {
+                        await chatOpStore.UpdateStatusAsync(
+                            message.RemoteStamp.PairingId.ToString("D"),
+                            SessionId,
+                            message.RemoteClientOpId,
+                            "running",
+                            message.ConversationId,
+                            message.MessageId,
+                            ct: turnCts.Token).ConfigureAwait(false);
+                    }
+
                     // 每条消息使用独立的 DI scope（确保 DbContext 等 scoped 服务隔离）
                     await using var scope = _serviceProvider.CreateAsyncScope();
                     var processor = scope.ServiceProvider.GetRequiredService<IGatewayMessageProcessor>();
+                    var approvalBroker = scope.ServiceProvider.GetService<IExecutionApprovalBroker>()
+                        ?? _serviceProvider.GetService<IExecutionApprovalBroker>();
+                    using var remoteScope = message.ControlChannel == ControlChannel.Remote
+                        ? RemoteExecutionAmbientContext.BeginScope(
+                            ControlChannel.Remote,
+                            message.RemoteStamp,
+                            SessionId,
+                            approvalBroker: approvalBroker)
+                        : null;
 
                     await processor.ProcessAsync(message, sseEvent =>
                     {
@@ -442,6 +560,21 @@ public sealed class SessionChannel : IAsyncDisposable
                         PublishAndCommit(sseEvent, captureTelemetry: true, completeTurn: false);
                         return ValueTask.CompletedTask;
                     }, turnCts.Token);
+
+                    if (message.ControlChannel == ControlChannel.Remote &&
+                        chatOpStore is not null &&
+                        message.RemoteStamp is not null &&
+                        !string.IsNullOrWhiteSpace(message.RemoteClientOpId))
+                    {
+                        await chatOpStore.UpdateStatusAsync(
+                            message.RemoteStamp.PairingId.ToString("D"),
+                            SessionId,
+                            message.RemoteClientOpId,
+                            "completed",
+                            message.ConversationId,
+                            message.MessageId,
+                            ct: CancellationToken.None).ConfigureAwait(false);
+                    }
 
                     // 消息处理完毕后发送 done 事件，并在发布完成事件时原子切换活跃态与 committed seq
                     ReleaseSlotOnce();
@@ -467,6 +600,24 @@ public sealed class SessionChannel : IAsyncDisposable
                 }
                 catch (OperationCanceledException) when (turnCts.IsCancellationRequested)
                 {
+                    if (message.ControlChannel == ControlChannel.Remote &&
+                        chatOpStore is not null &&
+                        message.RemoteStamp is not null &&
+                        !string.IsNullOrWhiteSpace(message.RemoteClientOpId))
+                    {
+                        var revStore = _serviceProvider.GetService<IRemoteRevocationStore>();
+                        var isRevoked = revStore is not null &&
+                            await revStore.IsRevokedAsync(message.RemoteStamp, CancellationToken.None).ConfigureAwait(false);
+                        await chatOpStore.UpdateStatusAsync(
+                            message.RemoteStamp.PairingId.ToString("D"),
+                            SessionId,
+                            message.RemoteClientOpId,
+                            isRevoked ? "cancelled_revoked" : "cancelled",
+                            message.ConversationId,
+                            message.MessageId,
+                            ct: CancellationToken.None).ConfigureAwait(false);
+                    }
+
                     _logger.LogInformation("[Gateway] Session {SessionId} 回合 {MessageId} 已被取消",
                         SessionId, message.MessageId);
                     ReleaseSlotOnce();
@@ -488,6 +639,28 @@ public sealed class SessionChannel : IAsyncDisposable
                 }
                 catch (Exception ex)
                 {
+                    if (message.ControlChannel == ControlChannel.Remote &&
+                        chatOpStore is not null &&
+                        message.RemoteStamp is not null &&
+                        !string.IsNullOrWhiteSpace(message.RemoteClientOpId))
+                    {
+                        try
+                        {
+                            await chatOpStore.UpdateStatusAsync(
+                                message.RemoteStamp.PairingId.ToString("D"),
+                                SessionId,
+                                message.RemoteClientOpId,
+                                "failed",
+                                message.ConversationId,
+                                message.MessageId,
+                                ct: CancellationToken.None).ConfigureAwait(false);
+                        }
+                        catch (Exception updateEx) when (updateEx is not OperationCanceledException)
+                        {
+                            _logger.LogDebug(updateEx, "[Gateway] Failed updating RemoteChatOps status to failed.");
+                        }
+                    }
+
                     _logger.LogError(ex, "[Gateway] Session {SessionId} 处理消息 {MessageId} 失败",
                         SessionId, message.MessageId);
                     FullTextAuditLogger.Log(
@@ -601,6 +774,8 @@ public sealed class SessionChannel : IAsyncDisposable
         _lastCompletedToolOutputsTruncated = _toolOutputsTruncated;
 
         _activeTurnCts = null;
+        _activeControlChannel = ControlChannel.Local;
+        _activePrincipalStamp = null;
         _activeMessageId = null;
         _activeConversationId = null;
         _activeContent.Clear();

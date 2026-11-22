@@ -11,6 +11,8 @@ using CodexFlow.Contracts.ComputerUse;
 using CodexFlow.Core.Browser;
 using CodexFlow.Core.ComputerUse;
 using CodexFlow.Core.Execution.Approval;
+using CodexFlow.Core.Remote;
+using CodexFlow.Gateway.Http.Remote;
 using CodexFlow.Orchestration.BusinessSkills;
 
 namespace CodexFlow.Controllers;
@@ -52,8 +54,34 @@ public sealed class GatewayApprovalController(
     IControlPlaneStateProvider? controlPlane = null,
     IBusinessSkillApprovalCoordinator? businessApprovalCoordinator = null,
     IBrowserApprovalCoordinator? browserApprovalCoordinator = null,
-    IComputerApprovalCoordinator? computerApprovalCoordinator = null) : GatewayEndpointHandler
+    IComputerApprovalCoordinator? computerApprovalCoordinator = null,
+    IRemoteWorkspaceAuthorizationGuard? remoteWorkspaceAuthorizationGuard = null) : GatewayEndpointHandler
 {
+    private async Task<IResult?> AuthorizeRemoteSessionAsync(
+        string sessionId,
+        string? workspacePath,
+        string? projectLocation,
+        CancellationToken ct)
+    {
+        if (!RemoteRequestContextMiddleware.IsRemoteRequest(HttpContext))
+        {
+            return null;
+        }
+
+        if (remoteWorkspaceAuthorizationGuard is null)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden,
+                new ExecutionApprovalErrorResponse(false, "remote_workspace_not_authorized", "Remote workspace authorization guard is unavailable."));
+        }
+
+        var decision = await remoteWorkspaceAuthorizationGuard
+            .AuthorizeSessionAsync(sessionId, workspacePath, projectLocation, ct)
+            .ConfigureAwait(false);
+        return decision.Allowed
+            ? null
+            : StatusCode(StatusCodes.Status403Forbidden,
+                new ExecutionApprovalErrorResponse(false, decision.ReasonCode, decision.Message));
+    }
     /// <summary>
     /// Returns all currently pending execution approval items for the owned session so clients can reconcile
     /// after SSE reconnects, <c>replay_gap</c> markers, or heartbeat count mismatches.
@@ -76,6 +104,11 @@ public sealed class GatewayApprovalController(
             return NotFound(new ExecutionApprovalErrorResponse(false, "session_not_found", "Session does not exist or is not owned by the caller."));
         }
 
+        if (await AuthorizeRemoteSessionAsync(session.Id, session.WorkspacePath, session.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+        {
+            return denied;
+        }
+
         var items = approvalBroker.GetPendingApprovals(sessionId);
         IReadOnlyList<BusinessApprovalRequestDto> businessApprovals = businessApprovalCoordinator is not null
             ? await businessApprovalCoordinator.GetPendingApprovalsForSessionAsync(sessionId, ct).ConfigureAwait(false)
@@ -86,7 +119,7 @@ public sealed class GatewayApprovalController(
         IReadOnlyList<ComputerApprovalRequestDto> computerApprovals = computerApprovalCoordinator is not null
             ? computerApprovalCoordinator.GetPendingApprovalsForSession(sessionId)
             : [];
-        return Ok(new PendingApprovalsResponse(
+        var response = new PendingApprovalsResponse(
             sessionId,
             items.Count,
             items,
@@ -94,7 +127,13 @@ public sealed class GatewayApprovalController(
             controlPlane?.SelfApprovalProtection ?? true,
             businessApprovals,
             browserApprovals,
-            computerApprovals));
+            computerApprovals);
+        if (RemoteRequestContextMiddleware.IsRemoteRequest(HttpContext))
+        {
+            response = RemotePayloadSanitizer.SanitizePendingApprovals(response);
+        }
+
+        return Ok(response);
     }
 
     /// <summary>
@@ -129,6 +168,11 @@ public sealed class GatewayApprovalController(
         if (session is null || !string.Equals(session.UserId, userId, StringComparison.Ordinal))
         {
             return NotFound(new ExecutionApprovalErrorResponse(false, "approval_not_found", "Approval request was not found or is not owned by the caller."));
+        }
+
+        if (await AuthorizeRemoteSessionAsync(session.Id, session.WorkspacePath, session.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+        {
+            return denied;
         }
 
         if (!approvalBroker.TryGetPendingApprovalScript(approvalId, session.Id, out var scriptSnapshot) || scriptSnapshot is null)
@@ -173,6 +217,15 @@ public sealed class GatewayApprovalController(
                 "decision must be one of: allow_once, allow_session, allow_always, deny."));
         }
 
+        if (RemoteRequestContextMiddleware.IsRemoteRequest(HttpContext) &&
+            decisionKind is not (ExecutionApprovalDecisionKind.AllowOnce or ExecutionApprovalDecisionKind.Deny))
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new ExecutionApprovalErrorResponse(
+                false,
+                "decision_not_allowed_in_remote",
+                "Remote control channel only permits allow_once or deny."));
+        }
+
         var existingItem = approvalBroker.GetPendingApprovalById(approvalId);
         if (existingItem is not null)
         {
@@ -183,6 +236,11 @@ public sealed class GatewayApprovalController(
                     false,
                     "approval_not_found",
                     "Approval request was not found or is not owned by the caller."));
+            }
+
+            if (await AuthorizeRemoteSessionAsync(session.Id, session.WorkspacePath, session.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+            {
+                return denied;
             }
         }
         else if (businessApprovalCoordinator is not null && businessApprovalCoordinator.HasApproval(approvalId))
@@ -199,6 +257,11 @@ public sealed class GatewayApprovalController(
                         false,
                         "approval_not_found",
                         "Approval request was not found or is not owned by the caller."));
+                }
+
+                if (await AuthorizeRemoteSessionAsync(bizSession.Id, bizSession.WorkspacePath, bizSession.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+                {
+                    return denied;
                 }
             }
 
@@ -228,6 +291,11 @@ public sealed class GatewayApprovalController(
                     false,
                     "approval_not_found",
                     "Approval request was not found or is not owned by the caller."));
+            }
+
+            if (await AuthorizeRemoteSessionAsync(brSession.Id, brSession.WorkspacePath, brSession.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+            {
+                return denied;
             }
 
             var brOutcome = await browserApprovalCoordinator
@@ -261,6 +329,11 @@ public sealed class GatewayApprovalController(
                     false,
                     "approval_not_found",
                     "Approval request was not found or is not owned by the caller."));
+            }
+
+            if (await AuthorizeRemoteSessionAsync(cuSession.Id, cuSession.WorkspacePath, cuSession.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+            {
+                return denied;
             }
 
             var cuOutcome = await computerApprovalCoordinator
@@ -314,6 +387,12 @@ public sealed class GatewayApprovalController(
                     "transient_failure",
                     outcome.Message,
                     outcome.Item?.RequestDigest)),
+            ApprovalSubmissionOutcome.DecisionNotAllowed when RemoteRequestContextMiddleware.IsRemoteRequest(HttpContext) => StatusCode(
+                StatusCodes.Status403Forbidden,
+                new ExecutionApprovalErrorResponse(
+                    false,
+                    "decision_not_allowed",
+                    outcome.Message)),
             ApprovalSubmissionOutcome.DecisionNotAllowed => BadRequest(new ExecutionApprovalErrorResponse(
                 false,
                 "decision_not_allowed",

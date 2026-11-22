@@ -22,6 +22,7 @@ public sealed class SqliteSchemaMigrator
         "20261116134656_AddSessionArchiveAndExternalWorkspace",
         "20261117061315_AddBusinessPluginBuilderTables",
         "20261117191659_AddSessionWorkModeAndPlanMode",
+        "20261122000001_AddRemoteControlTables",
     ];
 
     private readonly SqliteConnectionFactory _connections;

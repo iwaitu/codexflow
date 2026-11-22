@@ -47,6 +47,18 @@ public sealed class GatewayMessage
     /// 附加元数据（任务结果详情、重试计数等）
     /// </summary>
     public GatewayMessageMeta Meta { get; init; } = new();
+
+    /// <summary>正交持久化渠道标识（默认 Local；仅 Electron 受控网关桥可注入 Remote）。</summary>
+    public CodexFlow.Core.Remote.ControlChannel ControlChannel { get; init; } = CodexFlow.Core.Remote.ControlChannel.Local;
+
+    /// <summary>远程来源配对时间戳与吊销水印，供出队/工具调用时原子防重放与吊销检查。</summary>
+    public CodexFlow.Core.Remote.RemotePrincipalStamp? RemoteStamp { get; init; }
+
+    /// <summary>经本会话 RemoteAttachmentUploads 核验后直通多模态通道的远程上传附件列表。</summary>
+    public IReadOnlyList<CodexFlow.Core.Remote.VerifiedRemoteAttachment>? VerifiedRemoteAttachments { get; init; }
+
+    /// <summary>远程请求幂等操作 ID（用于出队吊销或执行完成时回写 RemoteChatOps 状态）。</summary>
+    public string? RemoteClientOpId { get; init; }
 }
 
 /// <summary>

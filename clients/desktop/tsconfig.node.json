@@ -12,14 +12,21 @@
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "esModuleInterop": true,
-    "noEmit": true
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@shared/*": ["src/shared/*"],
+      "@codexflow-shared/*": ["../shared/*"]
+    }
   },
   "include": [
     "electron/**/*",
     "src/shared/**/*",
+    "../shared/**/*",
     "electron.vite.config.ts",
     "scripts/**/*",
     "tests/e2e/**/*",
-    "tests/unit/main*.test.ts"
+    "tests/unit/main*.test.ts",
+    "tests/unit/remote/**/*.test.ts"
   ]
 }

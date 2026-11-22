@@ -994,6 +994,9 @@ export const App: React.FC = () => {
         case 'open-settings':
           actions.openSettings('execution');
           return;
+        case 'open-remote-settings':
+          actions.openSettings('remote');
+          return;
         case 'open-environment':
           actions.openSettings('environment');
           return;

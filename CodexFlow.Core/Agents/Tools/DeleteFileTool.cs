@@ -3,8 +3,10 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 using CodexFlow.Core.Abstractions;
+using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Core.LanguageServices;
 using CodexFlow.Core.Models;
+using CodexFlow.Core.Remote;
 using Microsoft.Extensions.Logging;
 
 namespace CodexFlow.Core.Agents.Tools;
@@ -16,11 +18,16 @@ public class DeleteFileTool : ICodexTool
 {
     private readonly ILogger<DeleteFileTool> _logger;
     private readonly ILanguageServiceRefreshNotifier? _refreshNotifier;
+    private readonly IExecutionApprovalBroker? _approvalBroker;
 
-    public DeleteFileTool(ILogger<DeleteFileTool> logger, ILanguageServiceRefreshNotifier? refreshNotifier = null)
+    public DeleteFileTool(
+        ILogger<DeleteFileTool> logger,
+        ILanguageServiceRefreshNotifier? refreshNotifier = null,
+        IExecutionApprovalBroker? approvalBroker = null)
     {
         _logger = logger;
         _refreshNotifier = refreshNotifier;
+        _approvalBroker = approvalBroker;
     }
 
     public string Name => "delete_file";
@@ -66,6 +73,13 @@ public class DeleteFileTool : ICodexTool
 
         try
         {
+            var remoteRefusal = await RemoteWorkspaceWriteGate.AuthorizeWriteIfRemoteAsync(
+                Name, baseRoot, normalizedPath, $"delete_file {normalizedPath}", _approvalBroker, arguments, ct).ConfigureAwait(false);
+            if (remoteRefusal is not null)
+            {
+                return remoteRefusal;
+            }
+
             var deleteVersion = ToolPathResolver.TryReadVersion(fullPath);
             if (deleteVersion is null)
                 return CodexToolResult.Error($"File not found: {normalizedPath}");

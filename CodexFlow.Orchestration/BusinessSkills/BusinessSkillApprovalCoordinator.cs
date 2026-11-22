@@ -8,6 +8,7 @@ using CodexFlow.Contracts.BusinessSkills;
 using CodexFlow.Core.BusinessSkills;
 using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Core.Gateway;
+using CodexFlow.Core.Remote;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -63,6 +64,7 @@ public sealed class BusinessSkillApprovalCoordinator : IBusinessSkillApprovalCoo
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ICodexGateway? _gateway;
     private readonly ILogger<BusinessSkillApprovalCoordinator> _logger;
+    private readonly IRemotePendingProjection? _remotePendingProjection;
 
     private readonly ConcurrentDictionary<string, PendingBusinessApprovalEntry> _pending = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, ActiveRunState> _activeRuns = new(StringComparer.Ordinal);
@@ -70,13 +72,15 @@ public sealed class BusinessSkillApprovalCoordinator : IBusinessSkillApprovalCoo
     public BusinessSkillApprovalCoordinator(
         IServiceScopeFactory scopeFactory,
         ILogger<BusinessSkillApprovalCoordinator> logger,
-        ICodexGateway? gateway = null)
+        ICodexGateway? gateway = null,
+        IRemotePendingProjection? remotePendingProjection = null)
     {
         ArgumentNullException.ThrowIfNull(scopeFactory);
         ArgumentNullException.ThrowIfNull(logger);
         _scopeFactory = scopeFactory;
         _logger = logger;
         _gateway = gateway;
+        _remotePendingProjection = remotePendingProjection;
     }
 
     public bool HasApproval(string approvalId)
@@ -103,6 +107,7 @@ public sealed class BusinessSkillApprovalCoordinator : IBusinessSkillApprovalCoo
         {
             if (_pending.TryRemove(entry.Request.ApprovalId, out var removed))
             {
+                _ = PublishToRemoteProjectionAsync(removed.Request, removed.OriginChannel, "cancelled", isTerminal: true, reason, CancellationToken.None);
                 removed.Tcs.TrySetResult(new SkillApprovalGrantOutcome(
                     Approved: false,
                     Denied: true,
@@ -234,10 +239,12 @@ public sealed class BusinessSkillApprovalCoordinator : IBusinessSkillApprovalCoo
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(digestInput);
 
+        var originChannel = RemoteExecutionAmbientContext.Current?.Channel ?? ControlChannel.Local;
         var tcs = new TaskCompletionSource<SkillApprovalGrantOutcome>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var entry = new PendingBusinessApprovalEntry(pluginId, request, digestInput, tcs);
+        var entry = new PendingBusinessApprovalEntry(pluginId, request, digestInput, tcs, originChannel);
         _pending[request.ApprovalId] = entry;
 
+        await PublishToRemoteProjectionAsync(request, originChannel, "pending", isTerminal: false, null, CancellationToken.None).ConfigureAwait(false);
         await PersistPendingApprovalStateAsync(request, SkillRunStatus.WaitingForApproval, ct).ConfigureAwait(false);
         await PublishApprovalRequestedSseAsync(request, ct).ConfigureAwait(false);
 
@@ -245,6 +252,7 @@ public sealed class BusinessSkillApprovalCoordinator : IBusinessSkillApprovalCoo
         {
             if (_pending.TryRemove(request.ApprovalId, out _))
             {
+                await PublishToRemoteProjectionAsync(request, originChannel, "cancelled", isTerminal: true, "Run stopped or invalidated before approval decision.", CancellationToken.None).ConfigureAwait(false);
                 return new SkillApprovalGrantOutcome(false, true, true, BusinessSkillErrorCodes.ApprovalExpired, "Run stopped or invalidated before approval decision.");
             }
         }
@@ -252,7 +260,10 @@ public sealed class BusinessSkillApprovalCoordinator : IBusinessSkillApprovalCoo
         var remaining = request.ExpiresAtUtc - DateTimeOffset.UtcNow;
         if (remaining <= TimeSpan.Zero)
         {
-            _pending.TryRemove(request.ApprovalId, out _);
+            if (_pending.TryRemove(request.ApprovalId, out _))
+            {
+                await PublishToRemoteProjectionAsync(request, originChannel, "expired", isTerminal: true, "Approval request expired.", CancellationToken.None).ConfigureAwait(false);
+            }
             return new SkillApprovalGrantOutcome(false, false, true, BusinessSkillErrorCodes.ApprovalExpired, "Approval request expired.");
         }
 
@@ -266,6 +277,13 @@ public sealed class BusinessSkillApprovalCoordinator : IBusinessSkillApprovalCoo
                 if (tuple.Self._pending.TryRemove(tuple.ApprovalId, out var timedOut))
                 {
                     var isHostCancelled = tuple.HostCt.IsCancellationRequested;
+                    _ = tuple.Self.PublishToRemoteProjectionAsync(
+                        timedOut.Request,
+                        timedOut.OriginChannel,
+                        isHostCancelled ? "cancelled" : "expired",
+                        isTerminal: true,
+                        isHostCancelled ? "Run cancelled while waiting for approval." : "Business write approval request expired.",
+                        CancellationToken.None);
                     timedOut.Tcs.TrySetResult(new SkillApprovalGrantOutcome(
                         Approved: false,
                         Denied: isHostCancelled,
@@ -311,6 +329,15 @@ public sealed class BusinessSkillApprovalCoordinator : IBusinessSkillApprovalCoo
                 "Business approval request was already resolved, invalidated, or expired.");
         }
 
+        if (RemoteExecutionAmbientContext.IsRemote &&
+            entry.OriginChannel != ControlChannel.Remote &&
+            decision != ExecutionApprovalDecisionKind.Deny)
+        {
+            return new ApprovalSubmissionResult(
+                ApprovalSubmissionOutcome.DecisionNotAllowed,
+                "Remote channel may only deny business skill approvals initiated locally.");
+        }
+
         if (!string.Equals(entry.Request.RequestDigest, requestDigest, StringComparison.Ordinal))
         {
             return new ApprovalSubmissionResult(
@@ -322,6 +349,7 @@ public sealed class BusinessSkillApprovalCoordinator : IBusinessSkillApprovalCoo
         {
             if (_pending.TryRemove(approvalId, out var expired))
             {
+                await PublishToRemoteProjectionAsync(expired.Request, expired.OriginChannel, "expired", isTerminal: true, "Approval expired before decision.", CancellationToken.None).ConfigureAwait(false);
                 expired.Tcs.TrySetResult(new SkillApprovalGrantOutcome(
                     false, false, true, BusinessSkillErrorCodes.ApprovalExpired, "Approval expired before decision."));
             }
@@ -337,6 +365,7 @@ public sealed class BusinessSkillApprovalCoordinator : IBusinessSkillApprovalCoo
         {
             if (_pending.TryRemove(approvalId, out var invalidated))
             {
+                await PublishToRemoteProjectionAsync(invalidated.Request, invalidated.OriginChannel, "invalidated", isTerminal: true, contextMismatch, CancellationToken.None).ConfigureAwait(false);
                 invalidated.Tcs.TrySetResult(new SkillApprovalGrantOutcome(
                     false, false, true, BusinessSkillErrorCodes.CatalogChanged, contextMismatch));
             }
@@ -354,6 +383,7 @@ public sealed class BusinessSkillApprovalCoordinator : IBusinessSkillApprovalCoo
         }
 
         var wireDecision = ExecutionApprovalBroker.ToWireDecision(decision);
+        await PublishToRemoteProjectionAsync(entry.Request, entry.OriginChannel, wireDecision, isTerminal: true, note, CancellationToken.None).ConfigureAwait(false);
         await PublishApprovalResolvedSseAsync(entry.Request, wireDecision, decidedBy, note, ct).ConfigureAwait(false);
 
         if (decision == ExecutionApprovalDecisionKind.Deny)
@@ -397,6 +427,7 @@ public sealed class BusinessSkillApprovalCoordinator : IBusinessSkillApprovalCoo
         {
             if (_pending.TryRemove(entry.Request.ApprovalId, out var removed))
             {
+                await PublishToRemoteProjectionAsync(removed.Request, removed.OriginChannel, "invalidated", isTerminal: true, reason, CancellationToken.None).ConfigureAwait(false);
                 removed.Tcs.TrySetResult(new SkillApprovalGrantOutcome(
                     Approved: false,
                     Denied: false,
@@ -540,6 +571,42 @@ public sealed class BusinessSkillApprovalCoordinator : IBusinessSkillApprovalCoo
         }
     }
 
+    private async Task PublishToRemoteProjectionAsync(
+        BusinessApprovalRequestDto request,
+        ControlChannel originChannel,
+        string status,
+        bool isTerminal,
+        string? resolvedReason,
+        CancellationToken ct)
+    {
+        if (_remotePendingProjection is null || string.IsNullOrWhiteSpace(request.SessionId))
+        {
+            return;
+        }
+
+        try
+        {
+            await _remotePendingProjection.PublishAsync(
+                sourceKind: "business_skill_approval",
+                opaqueRefId: request.ApprovalId,
+                sessionId: request.SessionId,
+                title: $"业务写入审批：{request.Kind}",
+                summary: $"Run {request.RunId} / Step {request.StepId}",
+                status: status,
+                isTerminal: isTerminal,
+                readOnlyInRemote: originChannel != ControlChannel.Remote,
+                expiresAtUtc: request.ExpiresAtUtc,
+                resolvedReason: resolvedReason,
+                approvalId: request.ApprovalId,
+                requestDigest: request.RequestDigest,
+                ct: ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to update remote pending projection for business approval {ApprovalId}.", request.ApprovalId);
+        }
+    }
+
     private sealed class ActiveRunState(string pluginId)
     {
         private volatile bool _stopped;
@@ -552,5 +619,6 @@ public sealed class BusinessSkillApprovalCoordinator : IBusinessSkillApprovalCoo
         string PluginId,
         BusinessApprovalRequestDto Request,
         BusinessApprovalDigestInput DigestInput,
-        TaskCompletionSource<SkillApprovalGrantOutcome> Tcs);
+        TaskCompletionSource<SkillApprovalGrantOutcome> Tcs,
+        ControlChannel OriginChannel);
 }

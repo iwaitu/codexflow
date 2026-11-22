@@ -5,6 +5,7 @@
 using CodexFlow.Application.Jobs;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Models.Jobs;
+using CodexFlow.Core.Remote;
 using CodexFlow.Core.Workers;
 using CodexFlow.Domain.Jobs;
 using Microsoft.Extensions.Logging;
@@ -26,6 +27,7 @@ namespace CodexFlow.Services.Background
         private readonly IKeyValueTextStore _keyValueStore;
         private readonly IJobEventLog _eventLog;
         private readonly ILogger<BackgroundJobService> _logger;
+        private readonly IRemoteJobOriginStore? _remoteJobOriginStore;
 
         /// <summary>
         /// Initializes the background job service.
@@ -37,6 +39,7 @@ namespace CodexFlow.Services.Background
         /// <param name="keyValueStore">Runtime key-value store holding the session's task-list snapshot.</param>
         /// <param name="eventLog">Job event history that is cleared together with a session's jobs.</param>
         /// <param name="logger">Logger used for cleanup and lifecycle diagnostics.</param>
+        /// <param name="remoteJobOriginStore">Optional origin ledger separating local vs remote jobs.</param>
         public BackgroundJobService(
             IJobStore store,
             IOutboxSignal outboxSignal,
@@ -44,7 +47,8 @@ namespace CodexFlow.Services.Background
             IJobHotView hotView,
             IKeyValueTextStore keyValueStore,
             IJobEventLog eventLog,
-            ILogger<BackgroundJobService> logger)
+            ILogger<BackgroundJobService> logger,
+            IRemoteJobOriginStore? remoteJobOriginStore = null)
         {
             _store = store;
             _outboxSignal = outboxSignal;
@@ -53,6 +57,7 @@ namespace CodexFlow.Services.Background
             _keyValueStore = keyValueStore;
             _eventLog = eventLog;
             _logger = logger;
+            _remoteJobOriginStore = remoteJobOriginStore;
         }
 
         /// <summary>
@@ -99,6 +104,17 @@ namespace CodexFlow.Services.Background
                 CheckpointData = payloadJson
             };
             await _store.CreateAsync(job, checkpoint, outboxEvent).ConfigureAwait(false);
+            if (_remoteJobOriginStore is not null)
+            {
+                var remoteScope = RemoteExecutionAmbientContext.Current;
+                await _remoteJobOriginStore.RecordJobOriginAsync(
+                    new RemoteJobOriginRecord(
+                        job.JobId,
+                        remoteScope?.Channel ?? ControlChannel.Local,
+                        remoteScope?.Stamp,
+                        DateTimeOffset.UtcNow)).ConfigureAwait(false);
+            }
+
             _outboxSignal.Pulse();
             if (!startRunning)
             {
@@ -138,6 +154,14 @@ namespace CodexFlow.Services.Background
         {
             var job = await _store.FindAsync(jobId);
             if (job == null) return new RetryOutcome(BackgroundJobCommandResult.NotFound);
+
+            if (await IsRemoteDisallowedForJobAsync(jobId).ConfigureAwait(false))
+            {
+                return new RetryOutcome(
+                    BackgroundJobCommandResult.Conflict,
+                    "remote_job_retry_forbidden",
+                    "远程通道禁止重试非远程来源创建的历史后台作业。");
+            }
 
             if (job.Status is not (BackgroundJobStatus.Failed or BackgroundJobStatus.FailedRecoveryNeeded or BackgroundJobStatus.Cancelled))
             {
@@ -391,6 +415,11 @@ namespace CodexFlow.Services.Background
             var job = await _store.FindAsync(jobId);
             if (job == null) return BackgroundJobCommandResult.NotFound;
 
+            if (await IsRemoteDisallowedForJobAsync(jobId).ConfigureAwait(false))
+            {
+                return BackgroundJobCommandResult.Conflict;
+            }
+
             if (job.Status is not (BackgroundJobStatus.WaitingUser or BackgroundJobStatus.FailedRecoveryNeeded))
             {
                 return BackgroundJobCommandResult.Conflict;
@@ -468,6 +497,22 @@ namespace CodexFlow.Services.Background
             _outboxSignal.Pulse();
             _jobSignal.Pulse();
             return BackgroundJobCommandResult.Success;
+        }
+
+        private async Task<bool> IsRemoteDisallowedForJobAsync(string jobId)
+        {
+            if (!RemoteExecutionAmbientContext.IsRemote)
+            {
+                return false;
+            }
+
+            if (_remoteJobOriginStore is null)
+            {
+                return true;
+            }
+
+            var origin = await _remoteJobOriginStore.FindJobOriginAsync(jobId).ConfigureAwait(false);
+            return origin is null || origin.Channel != ControlChannel.Remote;
         }
     }
 }

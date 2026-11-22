@@ -10,6 +10,7 @@ using CodexFlow.Contracts.ComputerUse;
 using CodexFlow.Core.ComputerUse;
 using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Core.Gateway;
+using CodexFlow.Core.Remote;
 using CodexFlow.Orchestration.Persistence;
 using Microsoft.Extensions.Logging;
 
@@ -33,6 +34,7 @@ public sealed class ComputerApprovalCoordinator : IComputerApprovalCoordinator
     private readonly ICodexGateway? _gateway;
     private readonly IControlPlaneStateProvider? _controlPlane;
     private readonly ILogger<ComputerApprovalCoordinator> _logger;
+    private readonly IRemotePendingProjection? _remotePendingProjection;
 
     private readonly ConcurrentDictionary<string, PendingComputerApprovalEntry> _pending = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> _sessionGrants = new(StringComparer.Ordinal);
@@ -40,12 +42,14 @@ public sealed class ComputerApprovalCoordinator : IComputerApprovalCoordinator
     public ComputerApprovalCoordinator(
         ILogger<ComputerApprovalCoordinator> logger,
         ICodexGateway? gateway = null,
-        IControlPlaneStateProvider? controlPlane = null)
+        IControlPlaneStateProvider? controlPlane = null,
+        IRemotePendingProjection? remotePendingProjection = null)
     {
         ArgumentNullException.ThrowIfNull(logger);
         _logger = logger;
         _gateway = gateway;
         _controlPlane = controlPlane;
+        _remotePendingProjection = remotePendingProjection;
     }
 
     public bool HasApproval(string approvalId)
@@ -90,7 +94,9 @@ public sealed class ComputerApprovalCoordinator : IComputerApprovalCoordinator
         var timeout = hasSubscribers ? DefaultApprovalTimeout : NoSubscriberTimeout;
         var approvalId = ApprovalIdPrefix + Guid.NewGuid().ToString("N")[..16];
         var expiresAt = DateTimeOffset.UtcNow.Add(timeout);
-        var allowedDecisions = prompt.AllowSessionScope
+        var originChannel = RemoteExecutionAmbientContext.Current?.Channel ?? ControlChannel.Local;
+        var allowSessionScope = originChannel != ControlChannel.Remote && prompt.AllowSessionScope;
+        var allowedDecisions = allowSessionScope
             ? new[] { "allow_once", "allow_session", "deny" }
             : new[] { "allow_once", "deny" };
 
@@ -114,9 +120,10 @@ public sealed class ComputerApprovalCoordinator : IComputerApprovalCoordinator
             SelfApprovalProtection: _controlPlane?.SelfApprovalProtection ?? true,
             PreviewImageBase64: prompt.PreviewImageBase64);
 
-        var entry = new PendingComputerApprovalEntry(dto, prompt.AllowSessionScope);
+        var entry = new PendingComputerApprovalEntry(dto, allowSessionScope, originChannel);
         _pending[approvalId] = entry;
 
+        await PublishToRemoteProjectionAsync(dto, originChannel, "pending", isTerminal: false, null, CancellationToken.None).ConfigureAwait(false);
         await PublishEventAsync(
             prompt.SessionId,
             GatewaySseEventType.ComputerApprovalRequested,
@@ -143,7 +150,7 @@ public sealed class ComputerApprovalCoordinator : IComputerApprovalCoordinator
 
             if (_pending.TryRemove(approvalId, out var removed) && removed.Tcs.TrySetResult(cancelledOutcome))
             {
-                await PublishResolvedAsync(dto, "cancelled", "system", "Turn cancelled.").ConfigureAwait(false);
+                await PublishResolvedAsync(dto, removed.OriginChannel, "cancelled", "system", "Turn cancelled.").ConfigureAwait(false);
             }
 
             return cancelledOutcome;
@@ -164,7 +171,7 @@ public sealed class ComputerApprovalCoordinator : IComputerApprovalCoordinator
 
             if (_pending.TryRemove(approvalId, out var removed) && removed.Tcs.TrySetResult(expiredOutcome))
             {
-                await PublishResolvedAsync(dto, "expired", "system", "Approval timed out.").ConfigureAwait(false);
+                await PublishResolvedAsync(dto, removed.OriginChannel, "expired", "system", "Approval timed out.").ConfigureAwait(false);
             }
 
             return expiredOutcome;
@@ -198,7 +205,7 @@ public sealed class ComputerApprovalCoordinator : IComputerApprovalCoordinator
                     ErrorMessage: "桌面操控审批请求已过期。");
                 if (expiredEntry.Tcs.TrySetResult(expiredOutcome))
                 {
-                    await PublishResolvedAsync(expiredEntry.Request, "expired", "system", "Approval expired before submission.").ConfigureAwait(false);
+                    await PublishResolvedAsync(expiredEntry.Request, expiredEntry.OriginChannel, "expired", "system", "Approval expired before submission.").ConfigureAwait(false);
                 }
             }
 
@@ -218,6 +225,23 @@ public sealed class ComputerApprovalCoordinator : IComputerApprovalCoordinator
             return new ApprovalSubmissionResult(
                 ApprovalSubmissionOutcome.DecisionNotAllowed,
                 "Computer Use approvals do not permit allow_always; use allow_once, allow_session, or deny.");
+        }
+
+        if (RemoteExecutionAmbientContext.IsRemote)
+        {
+            if (decision == ExecutionApprovalDecisionKind.AllowSession)
+            {
+                return new ApprovalSubmissionResult(
+                    ApprovalSubmissionOutcome.DecisionNotAllowed,
+                    "Remote channel only permits allow_once or deny for Computer Use approvals.");
+            }
+
+            if (entry.OriginChannel != ControlChannel.Remote && decision != ExecutionApprovalDecisionKind.Deny)
+            {
+                return new ApprovalSubmissionResult(
+                    ApprovalSubmissionOutcome.DecisionNotAllowed,
+                    "Remote channel may only deny Computer Use approvals initiated locally.");
+            }
         }
 
         if (decision == ExecutionApprovalDecisionKind.AllowSession && !entry.AllowSessionScope)
@@ -257,7 +281,7 @@ public sealed class ComputerApprovalCoordinator : IComputerApprovalCoordinator
             grants[BuildGrantKey(removed.Request.TargetProcessName)] = 0;
         }
 
-        await PublishResolvedAsync(removed.Request, wireDecision, decidedBy ?? "user", note).ConfigureAwait(false);
+        await PublishResolvedAsync(removed.Request, removed.OriginChannel, wireDecision, decidedBy ?? "user", note).ConfigureAwait(false);
         return new ApprovalSubmissionResult(ApprovalSubmissionOutcome.Resolved, $"Computer approval resolved with '{wireDecision}'.");
     }
 
@@ -300,7 +324,7 @@ public sealed class ComputerApprovalCoordinator : IComputerApprovalCoordinator
                     GrantedForSession: false,
                     ErrorCode: "approval_cancelled",
                     ErrorMessage: reason));
-                _ = PublishResolvedAsync(removed.Request, "cancelled", "system", reason);
+                _ = PublishResolvedAsync(removed.Request, removed.OriginChannel, "cancelled", "system", reason);
             }
         }
     }
@@ -313,8 +337,15 @@ public sealed class ComputerApprovalCoordinator : IComputerApprovalCoordinator
         }
     }
 
-    private Task PublishResolvedAsync(ComputerApprovalRequestDto request, string decision, string decidedBy, string? note)
-        => PublishEventAsync(
+    private async Task PublishResolvedAsync(
+        ComputerApprovalRequestDto request,
+        ControlChannel originChannel,
+        string decision,
+        string decidedBy,
+        string? note)
+    {
+        await PublishToRemoteProjectionAsync(request, originChannel, decision, isTerminal: true, note, CancellationToken.None).ConfigureAwait(false);
+        await PublishEventAsync(
             request.SessionId,
             GatewaySseEventType.ComputerApprovalResolved,
             new Dictionary<string, object?>
@@ -326,7 +357,8 @@ public sealed class ComputerApprovalCoordinator : IComputerApprovalCoordinator
                 ["note"] = note,
                 ["resolvedAtUtc"] = DateTimeOffset.UtcNow
             },
-            CancellationToken.None);
+            CancellationToken.None).ConfigureAwait(false);
+    }
 
     private async Task PublishEventAsync(string sessionId, string eventType, object payload, CancellationToken ct)
     {
@@ -370,10 +402,51 @@ public sealed class ComputerApprovalCoordinator : IComputerApprovalCoordinator
     private static string BuildGrantKey(string processName)
         => ComputerPermissionClamp.NormalizeSingleProcessName(processName);
 
-    private sealed class PendingComputerApprovalEntry(ComputerApprovalRequestDto request, bool allowSessionScope)
+    private async Task PublishToRemoteProjectionAsync(
+        ComputerApprovalRequestDto request,
+        ControlChannel originChannel,
+        string status,
+        bool isTerminal,
+        string? resolvedReason,
+        CancellationToken ct)
+    {
+        if (_remotePendingProjection is null)
+        {
+            return;
+        }
+
+        try
+        {
+            // Model A: never project PreviewImageBase64 into mobile remote TODO stream or summaries.
+            await _remotePendingProjection.PublishAsync(
+                sourceKind: "computer_approval",
+                opaqueRefId: request.ApprovalId,
+                sessionId: request.SessionId,
+                title: $"{request.Tool}: {request.Action}",
+                summary: request.ActionSummary,
+                status: status,
+                isTerminal: isTerminal,
+                readOnlyInRemote: originChannel != ControlChannel.Remote,
+                expiresAtUtc: request.ExpiresAtUtc,
+                resolvedReason: resolvedReason,
+                approvalId: request.ApprovalId,
+                requestDigest: request.RequestDigest,
+                ct: ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to update remote pending projection for computer approval {ApprovalId}.", request.ApprovalId);
+        }
+    }
+
+    private sealed class PendingComputerApprovalEntry(
+        ComputerApprovalRequestDto request,
+        bool allowSessionScope,
+        ControlChannel originChannel)
     {
         public ComputerApprovalRequestDto Request { get; } = request;
         public bool AllowSessionScope { get; } = allowSessionScope;
+        public ControlChannel OriginChannel { get; } = originChannel;
         public TaskCompletionSource<ComputerApprovalOutcome> Tcs { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 }

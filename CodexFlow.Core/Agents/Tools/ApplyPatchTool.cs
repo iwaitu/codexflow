@@ -3,11 +3,13 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 using CodexFlow.Core.Abstractions;
+using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Core.Hashline.Constants;
 using CodexFlow.Core.Hashline.Infrastructure;
 using CodexFlow.Core.Hashline.Models;
 using CodexFlow.Core.LanguageServices;
 using CodexFlow.Core.Models;
+using CodexFlow.Core.Remote;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json.Linq;
 using System.Collections;
@@ -28,19 +30,22 @@ public class ApplyPatchTool : ICodexTool
     private readonly HashlineOptions? _hashlineOptions;
     private readonly ILanguageServiceRefreshNotifier? _refreshNotifier;
     private readonly ILogger<ApplyPatchTool> _logger;
+    private readonly IExecutionApprovalBroker? _approvalBroker;
 
     public ApplyPatchTool(
         IGitService gitService,
         IHashlineFileService? hashlineService,
         HashlineOptions? hashlineOptions,
         ILanguageServiceRefreshNotifier? refreshNotifier,
-        ILogger<ApplyPatchTool> logger)
+        ILogger<ApplyPatchTool> logger,
+        IExecutionApprovalBroker? approvalBroker = null)
     {
         _gitService = gitService;
         _hashlineService = hashlineService;
         _hashlineOptions = hashlineOptions;
         _refreshNotifier = refreshNotifier;
         _logger = logger;
+        _approvalBroker = approvalBroker;
     }
 
     // Backward-compatible constructor
@@ -200,6 +205,19 @@ public class ApplyPatchTool : ICodexTool
                 return CodexToolResult.Error($"❌ apply_patch 收到的补丁不是有效的 unified diff：{validationError} 请改用 ivilson_smart_patch 或修正 hunk 结构。");
             }
 
+            var remoteRefusal = await RemoteWorkspaceWriteGate.AuthorizeWriteIfRemoteAsync(
+                Name,
+                baseRoot,
+                ExtractTargetFileFromPatch(cleanedPatch) ?? "(unified-diff)",
+                cleanedPatch,
+                _approvalBroker,
+                arguments,
+                ct).ConfigureAwait(false);
+            if (remoteRefusal is not null)
+            {
+                return remoteRefusal;
+            }
+
             // Inside a trusted execution context the diff is NEVER applied by host git against the worktree: it is applied in a
             // private copy and published through the identity-checked, all-or-nothing writer. The host-git path remains only
             // for plain library use without such a context.
@@ -276,6 +294,26 @@ public class ApplyPatchTool : ICodexTool
                     ? string.Join("\n", parseResult.Errors)
                     : "request.operations 中没有任何合法 operation。";
                 return CodexToolResult.Error($"[HASHLINE_REQUEST_INVALID] Hashline 编辑请求未包含合法操作。\n{errorText}\n\n{BuildHashlineRequestFormatGuidance()}");
+            }
+
+            if (!parseResult.Request.DryRun)
+            {
+                var gateRoot = workspaceRoot ?? Path.GetDirectoryName(parseResult.Request.FilePath) ?? Directory.GetCurrentDirectory();
+                var gateRelPath = workspaceRoot is not null
+                    ? Path.GetRelativePath(workspaceRoot, parseResult.Request.FilePath).Replace('\\', '/')
+                    : parseResult.Request.FilePath;
+                var remoteRefusal = await RemoteWorkspaceWriteGate.AuthorizeWriteIfRemoteAsync(
+                    Name,
+                    gateRoot,
+                    gateRelPath,
+                    $"hashline edit {gateRelPath} ({parseResult.Request.Operations.Count} ops)",
+                    _approvalBroker,
+                    arguments,
+                    ct).ConfigureAwait(false);
+                if (remoteRefusal is not null)
+                {
+                    return remoteRefusal;
+                }
             }
 
             // 执行编辑
@@ -856,6 +894,19 @@ public class ApplyPatchTool : ICodexTool
             {
                 StructuredLog.Warning(_logger, "apply_patch: Codex patch envelope detected but no sections parsed");
                 return CodexToolResult.Error("❌ Codex Patch 未包含可解析的 Update/Add/Delete File 段。");
+            }
+
+            var remoteRefusal = await RemoteWorkspaceWriteGate.AuthorizeWriteIfRemoteAsync(
+                Name,
+                baseRoot,
+                sections[0].Path,
+                patchContent,
+                _approvalBroker,
+                null,
+                ct).ConfigureAwait(false);
+            if (remoteRefusal is not null)
+            {
+                return remoteRefusal;
             }
 
             var changedCount = 0;

@@ -160,14 +160,19 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
             var requestDigest = request.ComputeRequestDigest();
             var allowedDecisions = request.GetAllowedDecisions();
 
+            var isRemote = request.ControlChannel == CodexFlow.Core.Remote.ControlChannel.Remote ||
+                           CodexFlow.Core.Remote.RemoteExecutionAmbientContext.IsRemote;
+
             // Check single-use pre-approval granted while a background job was suspended in WaitingUser.
             // Bound to (SessionId, JobId, RequestDigest, ApprovedBackend, ExpiresAtUtc).
+            // In Remote channel, non-remote recovery tickets must be ignored.
             if (!string.IsNullOrWhiteSpace(request.JobId))
             {
                 var ticketKey = (request.SessionId, request.JobId, requestDigest);
                 if (_resumedOnceAllowances.TryRemove(ticketKey, out var onceTicket))
                 {
-                    if (onceTicket.IsValidFor(backendSnapshot, DateTimeOffset.UtcNow) &&
+                    if ((!isRemote || onceTicket.CreatedChannel == CodexFlow.Core.Remote.ControlChannel.Remote) &&
+                        onceTicket.IsValidFor(backendSnapshot, DateTimeOffset.UtcNow) &&
                         onceTicket.TryConsumeOnce() &&
                         VerifyArtifactsOrInvalidate(activeCtx))
                     {
@@ -178,7 +183,8 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
             }
 
             // Check session-scoped allowance (exact RequestDigest match within the same session and backend).
-            if (allowedDecisions.Contains(ExecutionApprovalDecisionKind.AllowSession) &&
+            if (!isRemote &&
+                allowedDecisions.Contains(ExecutionApprovalDecisionKind.AllowSession) &&
                 _sessionAllowances.TryGetValue(request.SessionId, out var sessionDigests) &&
                 sessionDigests.ContainsKey(requestDigest))
             {
@@ -193,7 +199,7 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
             }
 
             // Check persistent allow_always rule (exact session-agnostic digest + trusted origin required).
-            if (allowedDecisions.Contains(ExecutionApprovalDecisionKind.AllowAlways))
+            if (!isRemote && allowedDecisions.Contains(ExecutionApprovalDecisionKind.AllowAlways))
             {
                 var agnosticDigest = request.ComputeSessionAgnosticDigest();
                 if (_permissionStore.IsAllowedAlways(agnosticDigest))
@@ -309,7 +315,8 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
                 ScriptLength: request.ScriptLength,
                 Shell: request.ShellKind,
                 BackendNotice: request.BackendNotice,
-                Origin: request.Origin == ExecutionOrigin.Unspecified ? null : request.Origin.ToString());
+                Origin: request.Origin == ExecutionOrigin.Unspecified ? null : request.Origin.ToString(),
+                ControlChannel: isRemote ? nameof(CodexFlow.Core.Remote.ControlChannel.Remote) : null);
 
             var entry = new PendingApprovalEntry(item, request, allowedDecisions, backendSnapshot, modeSnapshot);
 
@@ -381,8 +388,11 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
                 ["scriptLength"] = item.ScriptLength,
                 ["shell"] = item.Shell,
                 ["backendNotice"] = item.BackendNotice,
-                ["origin"] = item.Origin
+                ["origin"] = item.Origin,
+                ["controlChannel"] = item.ControlChannel
             }, ct).ConfigureAwait(false);
+
+            await PublishToRemoteProjectionAsync(item, "pending", isTerminal: false, null, ct).ConfigureAwait(false);
 
             if (shouldSuspendUnsubscribedJob && waitTimeout <= TimeSpan.Zero)
             {
@@ -563,6 +573,16 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
                 entry.Item);
         }
 
+        if (CodexFlow.Core.Remote.RemoteExecutionAmbientContext.IsRemote &&
+            entry.Request.ControlChannel != CodexFlow.Core.Remote.ControlChannel.Remote &&
+            submission.Decision != ExecutionApprovalDecisionKind.Deny)
+        {
+            return new ApprovalSubmissionResult(
+                ApprovalSubmissionOutcome.DecisionNotAllowed,
+                "Remote channel may only deny non-remote pending approvals.",
+                entry.Item);
+        }
+
         if (!entry.AllowedDecisions.Contains(submission.Decision))
         {
             return new ApprovalSubmissionResult(
@@ -650,7 +670,8 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
                 submission.DecidedBy ?? "control_plane",
                 submission.Note,
                 entry.BackendSnapshot,
-                DateTimeOffset.UtcNow.AddMinutes(30));
+                DateTimeOffset.UtcNow.AddMinutes(30),
+                entry.Request.ControlChannel);
             preMintedOnceTicket = true;
         }
 
@@ -775,7 +796,8 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
                         submission.DecidedBy ?? "control_plane",
                         submission.Note,
                         entry.BackendSnapshot,
-                        DateTimeOffset.UtcNow.AddMinutes(30));
+                        DateTimeOffset.UtcNow.AddMinutes(30),
+                        entry.Request.ControlChannel);
                     degradedAlwaysToOnce = true;
                 }
             }
@@ -1286,6 +1308,12 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
         string requestDigest,
         ExecutionApprovalDecisionSubmission submission)
     {
+        if (request.ControlChannel == CodexFlow.Core.Remote.ControlChannel.Remote ||
+            CodexFlow.Core.Remote.RemoteExecutionAmbientContext.IsRemote)
+        {
+            return;
+        }
+
         if (submission.Decision == ExecutionApprovalDecisionKind.AllowSession)
         {
             var dict = _sessionAllowances.GetOrAdd(request.SessionId, _ => new ConcurrentDictionary<string, byte>(StringComparer.Ordinal));
@@ -1298,9 +1326,19 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
     }
 
     private static ExecutionPermissionMode EffectivePermissionModeForRequest(
-        ExecutionRequest _,
+        ExecutionRequest request,
         ExecutionPermissionMode globalMode)
-        => globalMode;
+    {
+        if (request.ControlChannel == CodexFlow.Core.Remote.ControlChannel.Remote ||
+            CodexFlow.Core.Remote.RemoteExecutionAmbientContext.IsRemote)
+        {
+            return globalMode == ExecutionPermissionMode.Deny
+                ? ExecutionPermissionMode.Deny
+                : ExecutionPermissionMode.Ask;
+        }
+
+        return globalMode;
+    }
 
     private static bool VerifyArtifactsOrInvalidate(ExecutionAuthorizationContext ctx)
         => ctx.VerifyStagedArtifactsUnchanged is null || ctx.VerifyStagedArtifactsUnchanged();
@@ -1337,15 +1375,59 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
         }
     }
 
-    private Task PublishResolvedSseAsync(PendingApprovalItem item, string decision, string? note, CancellationToken ct)
-        => PublishSseAsync(item.SessionId, GatewaySseEventType.ToolApprovalResolved, new Dictionary<string, object?>
+    private async Task PublishResolvedSseAsync(PendingApprovalItem item, string decision, string? note, CancellationToken ct)
+    {
+        await PublishSseAsync(item.SessionId, GatewaySseEventType.ToolApprovalResolved, new Dictionary<string, object?>
         {
             ["approvalId"] = item.ApprovalId,
             ["requestDigest"] = item.RequestDigest,
             ["sessionId"] = item.SessionId,
             ["decision"] = decision,
             ["note"] = note
-        }, ct);
+        }, ct).ConfigureAwait(false);
+
+        await PublishToRemoteProjectionAsync(item, decision, isTerminal: true, note, ct).ConfigureAwait(false);
+    }
+
+    private async Task PublishToRemoteProjectionAsync(
+        PendingApprovalItem item,
+        string status,
+        bool isTerminal,
+        string? resolvedReason,
+        CancellationToken ct)
+    {
+        var projection = _serviceProvider?.GetService<CodexFlow.Core.Remote.IRemotePendingProjection>();
+        if (projection is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var readOnlyInRemote = !string.Equals(
+                item.ControlChannel,
+                nameof(CodexFlow.Core.Remote.ControlChannel.Remote),
+                StringComparison.Ordinal);
+            await projection.PublishAsync(
+                sourceKind: "execution_approval",
+                opaqueRefId: item.ApprovalId,
+                sessionId: item.SessionId,
+                title: $"{item.Tool}: {item.Executable}",
+                summary: item.Reason,
+                status: status,
+                isTerminal: isTerminal,
+                readOnlyInRemote: readOnlyInRemote,
+                expiresAtUtc: item.ExpiresAtUtc,
+                resolvedReason: resolvedReason,
+                approvalId: item.ApprovalId,
+                requestDigest: item.RequestDigest,
+                ct: ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to update remote pending projection for approval {ApprovalId}.", item.ApprovalId);
+        }
+    }
 
     private async Task RecordAuditAsync(
         ExecutionRequest request,
@@ -1427,13 +1509,15 @@ public sealed class ExecutionApprovalBroker : IExecutionApprovalBroker, IDisposa
         string decidedBy,
         string? note,
         ExecutionBackend approvedBackend,
-        DateTimeOffset expiresAtUtc)
+        DateTimeOffset expiresAtUtc,
+        CodexFlow.Core.Remote.ControlChannel createdChannel = CodexFlow.Core.Remote.ControlChannel.Local)
     {
         private int _consumed;
         public string DecidedBy { get; } = decidedBy;
         public string? Note { get; } = note;
         public ExecutionBackend ApprovedBackend { get; } = approvedBackend;
         public DateTimeOffset ExpiresAtUtc { get; } = expiresAtUtc;
+        public CodexFlow.Core.Remote.ControlChannel CreatedChannel { get; } = createdChannel;
 
         public bool IsValidFor(ExecutionBackend currentBackend, DateTimeOffset now)
             => currentBackend == ApprovedBackend && now < ExpiresAtUtc;

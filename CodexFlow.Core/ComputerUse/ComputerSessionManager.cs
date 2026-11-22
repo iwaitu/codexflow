@@ -458,7 +458,7 @@ public sealed class ComputerSessionManager : IComputerSessionManager
             return Fail("target_window_unavailable", "无法确认键盘输入的前台窗口，请重新观察桌面后重试。");
         }
 
-        var useFullAuto = IsManagedFullAuto();
+        var useFullAuto = !CodexFlow.Core.Remote.RemoteExecutionAmbientContext.IsRemote && IsManagedFullAuto();
         var (needsApproval, allowSessionScope) = useFullAuto
             ? (false, false)
             : EvaluateApprovalRequirement(session.SessionId, action, targetWindowSnapshot?.ProcessName);
@@ -1202,6 +1202,11 @@ public sealed class ComputerSessionManager : IComputerSessionManager
         string action,
         string? targetProcessName)
     {
+        if (CodexFlow.Core.Remote.RemoteExecutionAmbientContext.IsRemote)
+        {
+            return (true, false);
+        }
+
         var policy = _options.CurrentValue.InteractionApprovalPolicy;
         if (policy == ComputerInteractionApprovalPolicy.AlwaysAsk)
         {

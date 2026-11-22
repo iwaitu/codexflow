@@ -10,6 +10,7 @@ using CodexFlow.Contracts.Browser;
 using CodexFlow.Contracts.ComputerUse;
 using CodexFlow.Controllers;
 using CodexFlow.Core.Gateway;
+using CodexFlow.Core.Remote;
 using CodexFlow.Orchestration.Persistence;
 
 namespace CodexFlow.Gateway.Http;
@@ -27,6 +28,11 @@ namespace CodexFlow.Gateway.Http;
 [JsonSerializable(typeof(CompactSessionContextRequest))]
 [JsonSerializable(typeof(CompactSessionContextResponse))]
 [JsonSerializable(typeof(UploadedAttachmentDto))]
+[JsonSerializable(typeof(RemoteAttachmentUploadStatusResponse))]
+[JsonSerializable(typeof(RemoteChatOpStatusResponse))]
+[JsonSerializable(typeof(RemotePendingSummarySnapshotResponse))]
+[JsonSerializable(typeof(RemotePendingTodoItem))]
+[JsonSerializable(typeof(IReadOnlyList<RemotePendingTodoItem>))]
 [JsonSerializable(typeof(StreamingGatewayEndpoints.UploadAttachmentForm))]
 [JsonSerializable(typeof(IFormFile))]
 [JsonSerializable(typeof(GatewayChatRequest))]

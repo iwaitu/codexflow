@@ -46,6 +46,19 @@ public sealed class BackgroundJobApprovalResumer(
         await using var scope = serviceProvider.CreateAsyncScope();
         if (submission.Decision != ExecutionApprovalDecisionKind.Deny)
         {
+            if (CodexFlow.Core.Remote.RemoteExecutionAmbientContext.IsRemote)
+            {
+                var originStore = scope.ServiceProvider.GetService<CodexFlow.Core.Remote.IRemoteJobOriginStore>();
+                var origin = originStore is null
+                    ? null
+                    : await originStore.FindJobOriginAsync(jobId, ct).ConfigureAwait(false);
+                if (origin is null || origin.Channel != CodexFlow.Core.Remote.ControlChannel.Remote)
+                {
+                    logger.LogWarning("Blocked remote approval resumption for non-remote background job {JobId}.", jobId);
+                    return SuspendedJobResolutionStatus.AlreadyLeftWaitingUser;
+                }
+            }
+
             var jobService = scope.ServiceProvider.GetRequiredService<IBackgroundJobService>();
             var outcome = await jobService.ResumeJobAsync(jobId, resumeToken, payloadJson: null).ConfigureAwait(false);
             logger.LogInformation(

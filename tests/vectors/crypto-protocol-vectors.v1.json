@@ -1,0 +1,78 @@
+{
+  "version": "crypto-protocol-vectors.v1",
+  "ids": {
+    "ticketId": "11111111-2222-3333-4444-555555555555",
+    "deviceId": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    "mobileId": "99999999-8888-7777-6666-555555555555",
+    "pairingId": "77777777-6666-5555-4444-333333333333",
+    "bindingVersion": 3,
+    "nonceHex32": "0123456789abcdef0123456789abcdef",
+    "sessionEpochHex32": "fedcba9876543210fedcba9876543210",
+    "expiresAtUnix": 1795300000
+  },
+  "keys": {
+    "desktop": {
+      "spkiB64": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEE6MmWU+YWT2YiyAoYOYqz4LoB4n19Pt8wpEEJpop+HymFDT29k9UmkJ4sbst0xo3IYtOBoDGCe5QG7xrpB0C3Q==",
+      "spkiSha256": "cec39cef492e238714f215e786851049fe302406204b3300e69556a8d76cb945",
+      "keyId": "cec39cef492e238714f215e786851049"
+    },
+    "mobileSession": {
+      "spkiB64": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEi4lSRCUagbUx5qf/n+kNNESLgNnOBwtmEJEAISkwKAS7+OcM9GumpGFYRbcPVkiYwDhMWqxod3XbozKihfM10g==",
+      "spkiSha256": "17e509832241c13f003f06e4f7bb56de4fcd5cfd1bab8cb3d4f5e523106c0104",
+      "keyId": "17e509832241c13f003f06e4f7bb56de"
+    },
+    "mobileBio": {
+      "spkiB64": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE5/6Kih6uIsw7b16OuHhHmW8Qe14Y0WP2H4oUGdczAppWjQbBUSe+KfgKHPeoX+7nhNsNVe0VTxHbetN5DfGT7A==",
+      "spkiSha256": "fa9917c861cc27f19cdddc9b5746a2006c6ae60f31adc5737c802c20da381002",
+      "keyId": "fa9917c861cc27f19cdddc9b5746a200"
+    }
+  },
+  "domains": {
+    "pairV1": {
+      "text": "CF-PAIR-V1\n11111111-2222-3333-4444-555555555555\naaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\n3\n99999999-8888-7777-6666-555555555555\ncec39cef492e238714f215e786851049\ncec39cef492e238714f215e786851049fe302406204b3300e69556a8d76cb945\n17e509832241c13f003f06e4f7bb56de\n17e509832241c13f003f06e4f7bb56de4fcd5cfd1bab8cb3d4f5e523106c0104\nfa9917c861cc27f19cdddc9b5746a200\nfa9917c861cc27f19cdddc9b5746a2006c6ae60f31adc5737c802c20da381002\n0123456789abcdef0123456789abcdef\n1795300000",
+      "sha256": "baf42727e5f517a5cab249b9b2c8efb10c5bd8bc77f79337a2057209e32d2533",
+      "sas6": "784231",
+      "sigB64U": "TWON_1gLCTBFIjgb6WQfzZ7-3qfXj7AvmDiqEaDTdDcoIxWoWyQd7NDNJBvuc7cfDGVyXlmPfaMbVgk-aLLf7Q"
+    },
+    "bioPopV1": {
+      "text": "CF-BIO-POP-V1\n99999999-8888-7777-6666-555555555555\n11111111-2222-3333-4444-555555555555\nfa9917c861cc27f19cdddc9b5746a200\n0123456789abcdef0123456789abcdef\n1795300000",
+      "sigB64U": "aVkfhde11mndw3fa2zT2B-CHdiJni8slLs3BsGCiWjk9zU3Yb6AFrhcfDCj3mpQOtEv1-RjKVCK-ae5L3VEJRA"
+    },
+    "pairAckV1": {
+      "text": "CF-PAIR-ACK-V1\n77777777-6666-5555-4444-333333333333\nbaf42727e5f517a5cab249b9b2c8efb10c5bd8bc77f79337a2057209e32d2533\n1795299500",
+      "sigB64U": "nrk8EP7f3iZMPd0XEZbSrzafELZPchzQsgFYJ5NXu8B5_uB-nB6agzClJ-jdN3fFrwjHI4NWZpH6ohIXNRQg_A"
+    },
+    "exchangeV1": {
+      "text": "CF-EXCHANGE-V1\n77777777-6666-5555-4444-333333333333\n99999999-8888-7777-6666-555555555555\n0123456789abcdef0123456789abcdef\n1795299550",
+      "sigB64U": "iK4oW5Ye0jqbZi263wuEigak92OvD56X0smqxpvmPTBbQogJh8jw95tt6JZ-0n_lPJcub1dCv_92R4L4a6m3nQ"
+    },
+    "epochCertV1": {
+      "text": "CF-EPOCH-CERT-V1\naaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\n3\nfedcba9876543210fedcba9876543210\n1795299000\n1795313400",
+      "sigB64U": "OuTX_Sf8kFGPRsfLWDGpyBKMWj5TApvWSvGh50B2u_RtAeIyPmHJ8iZ6X1xMcVKgt3vZOaD7GAAb5uzTFrTvyw"
+    },
+    "approvalEnvV1": {
+      "text": "CF-APPROVAL-ENV-V1\naaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\n3\nsess-001\ncommand\napr-001\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nallow_once,deny\ncccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n1795300000",
+      "sigB64U": "yEBKybig3FgmOBTO5idYitwbs9_BN2pcitblRarHTtcAlFnFgABY23B5qEjCc_RFKiYuyt4BstSvncAM1seLsQ"
+    },
+    "planEnvV1": {
+      "text": "CF-PLAN-ENV-V1\naaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\n3\nsess-001\nplan-001\n7\ndddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\napprove,execute\ntrue\nfalse\n[]\n1795300000",
+      "sigB64U": "DhxZVswjCR_f5ZyFYbfMp5ZXkLlJfze4gz4KoiYOf8g_iPtFPLFwXC9vOaGGkyLklCAdS4fZhq3NNY-GlM9IwQ"
+    },
+    "sigV1GetScreenshot": {
+      "text": "CF-SIG-V1\naaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\n3\nfedcba9876543210fedcba9876543210\n99999999-8888-7777-6666-555555555555\n17e509832241c13f003f06e4f7bb56de\ndevice_session\nGET\n/api/gateway/session/sess-001/browser/screenshot\n\n\"etag-v1\"\n\n\n\n\n0\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n1795299600\n0123456789abcdef0123456789abcdef",
+      "sigB64U": "Gk4h47Hva25YDRd16fNEuxqE3bjOi788JOL88anUlSwUob_U0cqRrAgYEBikfhHPaCEvLZMufimAAXI0pPn8LQ"
+    },
+    "sigV1Upload": {
+      "text": "CF-SIG-V1\naaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\n3\nfedcba9876543210fedcba9876543210\n99999999-8888-7777-6666-555555555555\n17e509832241c13f003f06e4f7bb56de\ndevice_session\nPOST\n/api/gateway/session/sess-001/attachments\n\n\n9f8e7d6c-5b4a-4321-8765-abcdef012345\n2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824\n\nmultipart/form-data; boundary=boundary-123\n109\n03aed8354c785d2a152d2afc8c64a98e5ce76a3c9038fc2ca349eefc27a5029d\n1795299601\n0123456789abcdef0123456789abcdef",
+      "bodySha256": "03aed8354c785d2a152d2afc8c64a98e5ce76a3c9038fc2ca349eefc27a5029d",
+      "fileSha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+      "sigB64U": "9o4vy2MRCRipFp93U0nWEiYRdZCAQtnuaMgRShZuwJQ8Fievha9uAjVILRSuWHLrkNUIuVw9MYcOFIGR6AaAxA"
+    }
+  },
+  "frames": {
+    "windowUpdateHex": "010902000000000c00000003000000080001000000000100"
+  },
+  "chatOpV1": {
+    "digestHex64": "f279a55dab42d06296a824566e3671f8ca7ddad25cb3dea82c647953da730a13"
+  }
+}

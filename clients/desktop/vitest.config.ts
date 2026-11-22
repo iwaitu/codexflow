@@ -8,6 +8,7 @@ export default defineConfig({
     alias: {
       '@shared': resolve(__dirname, 'src/shared'),
       '@renderer': resolve(__dirname, 'src/renderer'),
+      '@codexflow-shared': resolve(__dirname, '../shared'),
     },
   },
   test: {

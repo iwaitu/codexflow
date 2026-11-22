@@ -7,6 +7,7 @@ using CodexFlow.Application.Jobs.Dtos;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Agents.Tools;
 using CodexFlow.Core.Protocols;
+using CodexFlow.Core.Remote;
 using CodexFlow.Core.Workers;
 using CodexFlow.Domain.Jobs;
 using Newtonsoft.Json;
@@ -27,6 +28,7 @@ public sealed class WorkerCoordinatorService
     private readonly IBackgroundJobService _backgroundJobService;
     private readonly IJobViewService _jobViewService;
     private readonly IGitService _gitService;
+    private readonly IRemoteJobOriginStore? _remoteJobOriginStore;
 
     /// <summary>
     /// 初始化 worker 协调服务。
@@ -36,18 +38,21 @@ public sealed class WorkerCoordinatorService
     /// <param name="backgroundJobService">后台作业生命周期管理服务。</param>
     /// <param name="jobViewService">后台作业只读视图服务。</param>
     /// <param name="gitService">用于 forge worker shadow worktree 管理的 Git 服务。</param>
+    /// <param name="remoteJobOriginStore">可选远程来源账本，防止远程通道继续或恢复非远程作业。</param>
     public WorkerCoordinatorService(
         IJobStore jobs,
         IWorkerJobStore workerJobs,
         IBackgroundJobService backgroundJobService,
         IJobViewService jobViewService,
-        IGitService gitService)
+        IGitService gitService,
+        IRemoteJobOriginStore? remoteJobOriginStore = null)
     {
         _jobs = jobs;
         _workerJobs = workerJobs;
         _backgroundJobService = backgroundJobService;
         _jobViewService = jobViewService;
         _gitService = gitService;
+        _remoteJobOriginStore = remoteJobOriginStore;
     }
 
     /// <summary>
@@ -134,6 +139,23 @@ public sealed class WorkerCoordinatorService
         }
 
         var job = continuation.Job;
+        if (RemoteExecutionAmbientContext.IsRemote)
+        {
+            var origin = _remoteJobOriginStore is null
+                ? null
+                : await _remoteJobOriginStore.FindJobOriginAsync(job.JobId, ct).ConfigureAwait(false);
+            if (origin is null || origin.Channel != ControlChannel.Remote)
+            {
+                return new ContinueWorkerResult
+                {
+                    Success = false,
+                    Mode = ContinueWorkerMode.SpawnedFollowUp,
+                    JobId = request.JobId,
+                    Message = "远程通道禁止唤醒、继续或派生非远程来源的历史 worker 作业。"
+                };
+            }
+        }
+
         if (!WorkerJobTypes.TryResolveWorkerType(job.JobType, out var workerType))
         {
             return new ContinueWorkerResult

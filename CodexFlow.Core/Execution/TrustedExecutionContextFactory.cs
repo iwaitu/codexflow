@@ -52,6 +52,7 @@ public static class TrustedExecutionContextFactory
         DateTimeOffset? deadline = null)
     {
         var scope = ToExportScope(taskScope);
+        var remoteScope = CodexFlow.Core.Remote.RemoteExecutionAmbientContext.Current;
         return new TrustedExecutionContext
         {
             UserId = userId,
@@ -66,7 +67,9 @@ public static class TrustedExecutionContextFactory
             Limits = limits ?? new ExecutionResourceLimits(),
             Deadline = deadline,
             Origin = ExecutionOrigin.DevWorker,
-            TrustedOriginVerified = true
+            TrustedOriginVerified = true,
+            ControlChannel = remoteScope?.Channel ?? CodexFlow.Core.Remote.ControlChannel.Local,
+            RemoteStamp = remoteScope?.Stamp
         };
     }
 
@@ -86,6 +89,7 @@ public static class TrustedExecutionContextFactory
     {
         ArgumentNullException.ThrowIfNull(scope);
         ArgumentNullException.ThrowIfNull(grantedTools);
+        var remoteScope = CodexFlow.Core.Remote.RemoteExecutionAmbientContext.Current;
         return new TrustedExecutionContext
         {
             UserId = userId,
@@ -104,7 +108,9 @@ public static class TrustedExecutionContextFactory
             PolicyVersion = policyVersion,
             TrustedOriginVerified = true,
             NotAfter = notAfter ?? DateTimeOffset.UtcNow.AddMinutes(30),
-            Deadline = deadline
+            Deadline = deadline,
+            ControlChannel = remoteScope?.Channel ?? CodexFlow.Core.Remote.ControlChannel.Local,
+            RemoteStamp = remoteScope?.Stamp
         };
     }
 }

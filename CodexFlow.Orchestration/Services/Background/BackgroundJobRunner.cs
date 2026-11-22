@@ -11,6 +11,7 @@ using CodexFlow.Application.Services;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Agents;
 using CodexFlow.Core.Models;
+using CodexFlow.Core.Remote;
 using CodexFlow.Domain.Jobs;
 using CodexFlow.Core.Runtime;
 using CodexFlow.Core.Telemetry;
@@ -286,6 +287,29 @@ namespace CodexFlow.Services.Background
                 }
 
                 // Real handler dispatch by JobType (with interactive execution approval suspension support)
+                var originStore = execScope.ServiceProvider.GetService<IRemoteJobOriginStore>();
+                var jobOrigin = originStore is null ? null : await originStore.FindJobOriginAsync(job.JobId, ct).ConfigureAwait(false);
+                if (jobOrigin is { Channel: ControlChannel.Remote })
+                {
+                    var revStore = execScope.ServiceProvider.GetService<IRemoteRevocationStore>();
+                    if (revStore is not null && await revStore.IsRevokedAsync(jobOrigin.Stamp, ct).ConfigureAwait(false))
+                    {
+                        preflightDeniedPayload ??= OrchestrationPayloadJson.Write(
+                            ("success", false),
+                            ("reasonCode", "remote_principal_revoked"),
+                            ("message", "远程设备/配对凭据已吊销，中止后台作业执行。"));
+                    }
+                }
+
+                using var remoteJobScope = jobOrigin is { Channel: ControlChannel.Remote }
+                    ? RemoteExecutionAmbientContext.BeginScope(
+                        ControlChannel.Remote,
+                        jobOrigin.Stamp,
+                        job.SessionId,
+                        job.JobId,
+                        execScope.ServiceProvider.GetService<CodexFlow.Core.Execution.Approval.IExecutionApprovalBroker>())
+                    : null;
+
                 using var approvalSuspensionScope = CodexFlow.Core.Execution.Approval.AmbientBackgroundJobApprovalContext.BeginScope(
                     job.JobId,
                     Guid.NewGuid().ToString("N"),

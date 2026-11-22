@@ -3,8 +3,10 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 using CodexFlow.Core.Abstractions;
+using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Core.LanguageServices;
 using CodexFlow.Core.Models;
+using CodexFlow.Core.Remote;
 using Microsoft.Extensions.Logging;
 
 namespace CodexFlow.Core.Agents.Tools;
@@ -16,11 +18,16 @@ public class WriteFileTool : ICodexTool
 {
     private readonly ILogger<WriteFileTool> _logger;
     private readonly ILanguageServiceRefreshNotifier? _refreshNotifier;
+    private readonly IExecutionApprovalBroker? _approvalBroker;
 
-    public WriteFileTool(ILogger<WriteFileTool> logger, ILanguageServiceRefreshNotifier? refreshNotifier = null)
+    public WriteFileTool(
+        ILogger<WriteFileTool> logger,
+        ILanguageServiceRefreshNotifier? refreshNotifier = null,
+        IExecutionApprovalBroker? approvalBroker = null)
     {
         _logger = logger;
         _refreshNotifier = refreshNotifier;
+        _approvalBroker = approvalBroker;
     }
 
     // [Bug-04 Fix] High-risk files that should never be blindly overwritten with full-file write.
@@ -115,6 +122,12 @@ public class WriteFileTool : ICodexTool
 
         try
         {
+            var remoteRefusal = await RemoteWorkspaceWriteGate.AuthorizeWriteIfRemoteAsync(
+                Name, baseRoot, normalizedPath, content, _approvalBroker, arguments, ct).ConfigureAwait(false);
+            if (remoteRefusal is not null)
+            {
+                return remoteRefusal;
+            }
 
             await ToolPathResolver.WriteAllTextSafeAsync(fullPath, baseRoot, content, ct).ConfigureAwait(false);
             await NotifyRefreshAsync(baseRoot, arguments, normalizedPath, ct).ConfigureAwait(false);

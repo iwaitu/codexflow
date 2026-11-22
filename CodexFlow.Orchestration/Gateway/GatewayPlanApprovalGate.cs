@@ -10,6 +10,7 @@ using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Gateway;
 using CodexFlow.Core.Models;
 using CodexFlow.Core.Planning.Artifacts;
+using CodexFlow.Core.Remote;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace CodexFlow.Gateway;
@@ -278,11 +279,16 @@ public sealed class GatewayApprovalGate
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly GatewayApprovalLedger _ledger;
+    private readonly IRemotePendingProjection? _remotePendingProjection;
 
-    public GatewayApprovalGate(IServiceScopeFactory scopeFactory, GatewayApprovalLedger? ledger = null)
+    public GatewayApprovalGate(
+        IServiceScopeFactory scopeFactory,
+        GatewayApprovalLedger? ledger = null,
+        IRemotePendingProjection? remotePendingProjection = null)
     {
         _scopeFactory = scopeFactory;
         _ledger = ledger ?? GatewayApprovalLedger.Shared;
+        _remotePendingProjection = remotePendingProjection;
     }
 
     public GatewayApprovalLedger Ledger => _ledger;
@@ -360,6 +366,28 @@ public sealed class GatewayApprovalGate
 
         if (decision.Structured is { } structured)
         {
+            if (message.ControlChannel == CodexFlow.Core.Remote.ControlChannel.Remote)
+            {
+                if (string.IsNullOrWhiteSpace(structured.PlanArtifactId) ||
+                    string.IsNullOrWhiteSpace(structured.PlanVersion) ||
+                    string.IsNullOrWhiteSpace(structured.PlanHash))
+                {
+                    return GatewayGateResult.Deny(
+                        "remote_structured_plan_identity_required",
+                        "远程批准计划必须携带完整的 planArtifactId、planVersion 与 planHash（且需通过原生信封验签）。",
+                        identity);
+                }
+
+                if (structured.AcceptExistingDependencyDebt ||
+                    structured.ApproveDependencyUpgrades is { Count: > 0 })
+                {
+                    return GatewayGateResult.Deny(
+                        "remote_dependency_override_forbidden",
+                        "首版远程通道禁止接受既有依赖债务或批准大版本依赖升级，请返回桌面端处理。",
+                        identity);
+                }
+            }
+
             if ((structured.PlanArtifactId != null && structured.PlanArtifactId != identity.PlanArtifactId) ||
                 (structured.PlanVersion != null && structured.PlanVersion != identity.PlanVersion) ||
                 (structured.PlanHash != null && !string.Equals(structured.PlanHash, identity.PlanHash, StringComparison.OrdinalIgnoreCase)))
@@ -370,6 +398,13 @@ public sealed class GatewayApprovalGate
                     "计划自您操作后已发生变化，旧批准失效。请查看最新计划并重新明确批准。",
                     identity);
             }
+        }
+        else if (message.ControlChannel == CodexFlow.Core.Remote.ControlChannel.Remote)
+        {
+            return GatewayGateResult.Deny(
+                "remote_structured_approval_required",
+                "远程通道禁止通过非结构化消息批准计划。",
+                identity);
         }
 
         if (TurnStart.TryGetValue(message, out var box) &&
@@ -410,6 +445,16 @@ public sealed class GatewayApprovalGate
 
         var key = GatewayIntentResolver.Resolve(message).Structured?.IdempotencyKey ?? message.MessageId;
         _ledger.TryRecordApproval(identity, $"{key}|{identity.PlanKey}");
+        PublishPlanProjection(
+            identity.SessionId,
+            identity.PlanArtifactId,
+            $"计划审批：{identity.PlanArtifactId}",
+            $"版本 {identity.PlanVersion} 已获批准",
+            "approved",
+            isTerminal: true,
+            readOnlyInRemote: message.ControlChannel != ControlChannel.Remote,
+            requestDigest: identity.PlanHash,
+            resolvedReason: "approved");
     }
 
     /// <summary>Gate for reject_plan: needs an explicit rejection and a plan that belongs to this session.</summary>
@@ -438,7 +483,51 @@ public sealed class GatewayApprovalGate
         }
 
         _ledger.Invalidate(message.SessionId);
+        var resolvedArtifactId = requestedPlanArtifactId ?? current?.Identity.PlanArtifactId;
+        PublishPlanProjection(
+            message.SessionId,
+            resolvedArtifactId,
+            "计划审批已拒绝",
+            "用户拒绝或撤销了待审批计划",
+            "rejected",
+            isTerminal: true,
+            readOnlyInRemote: message.ControlChannel != ControlChannel.Remote,
+            requestDigest: current?.Identity.PlanHash,
+            resolvedReason: "rejected");
         return GatewayGateResult.Allow(current?.Identity);
+    }
+
+    private void PublishPlanProjection(
+        string sessionId,
+        string? planArtifactId,
+        string title,
+        string summary,
+        string status,
+        bool isTerminal,
+        bool readOnlyInRemote,
+        string? requestDigest,
+        string? resolvedReason = null)
+    {
+        if (_remotePendingProjection is null || string.IsNullOrWhiteSpace(sessionId))
+        {
+            return;
+        }
+
+        var opaqueRefId = string.IsNullOrWhiteSpace(planArtifactId) ? $"plan:{sessionId}" : planArtifactId;
+        _ = _remotePendingProjection.PublishAsync(
+            sourceKind: "plan_approval",
+            opaqueRefId: opaqueRefId,
+            sessionId: sessionId,
+            title: title,
+            summary: summary,
+            status: status,
+            isTerminal: isTerminal,
+            readOnlyInRemote: readOnlyInRemote,
+            expiresAtUtc: DateTimeOffset.UtcNow.AddDays(1),
+            resolvedReason: resolvedReason,
+            approvalId: planArtifactId,
+            requestDigest: requestDigest,
+            ct: CancellationToken.None);
     }
 
     /// <summary>

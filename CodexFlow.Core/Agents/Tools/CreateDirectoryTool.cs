@@ -3,7 +3,9 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 using CodexFlow.Core.Abstractions;
+using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Core.Models;
+using CodexFlow.Core.Remote;
 using Microsoft.Extensions.Logging;
 
 namespace CodexFlow.Core.Agents.Tools;
@@ -11,7 +13,9 @@ namespace CodexFlow.Core.Agents.Tools;
 /// <summary>
 /// 确保工作区目录存在（替代 MCP create_directory / ensure_directory）。
 /// </summary>
-public class CreateDirectoryTool(ILogger<CreateDirectoryTool> logger) : ICodexTool
+public class CreateDirectoryTool(
+    ILogger<CreateDirectoryTool> logger,
+    IExecutionApprovalBroker? approvalBroker = null) : ICodexTool
 {
     public string Name => "create_directory";
     public string Description => "在工作区中创建目录，支持递归创建多级目录（类似 mkdir -p）。\n" +
@@ -47,6 +51,13 @@ public class CreateDirectoryTool(ILogger<CreateDirectoryTool> logger) : ICodexTo
 
         try
         {
+            var remoteRefusal = await RemoteWorkspaceWriteGate.AuthorizeWriteIfRemoteAsync(
+                Name, baseRoot, normalizedPath, $"create_directory {normalizedPath}", approvalBroker, arguments, ct).ConfigureAwait(false);
+            if (remoteRefusal is not null)
+            {
+                return remoteRefusal;
+            }
+
             ToolPathResolver.EnsureDirectoryVerified(fullPath, baseRoot);
             StructuredLog.Information(logger, "create_directory: {Path}", normalizedPath);
             return CodexToolResult.Succeeded($"✅ 目录已创建: {normalizedPath}");

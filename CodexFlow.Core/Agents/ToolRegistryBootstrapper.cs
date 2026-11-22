@@ -216,11 +216,12 @@ public sealed class ToolRegistryBootstrapper
             _modelSettingsService);
         toolRegistry.RegisterTool(readFileTool, ToolLoading.AlwaysOn);
         toolRegistry.RegisterTool(new HashlineReadTool(readFileTool), ToolLoading.AlwaysOn);
-        toolRegistry.RegisterTool(new WriteFileTool(_loggerFactory.CreateLogger<WriteFileTool>(), _languageServiceRefreshNotifier), ToolLoading.AlwaysOn);
-        toolRegistry.RegisterTool(new EditFileTool(_loggerFactory.CreateLogger<EditFileTool>(), _languageServiceRefreshNotifier), ToolLoading.AlwaysOn);
-        toolRegistry.RegisterTool(new NotebookEditTool(_loggerFactory.CreateLogger<NotebookEditTool>(), _languageServiceRefreshNotifier), ToolLoading.AlwaysOn);
-        toolRegistry.RegisterTool(new DeleteFileTool(_loggerFactory.CreateLogger<DeleteFileTool>(), _languageServiceRefreshNotifier), ToolLoading.AlwaysOn);
-        toolRegistry.RegisterTool(new CreateDirectoryTool(_loggerFactory.CreateLogger<CreateDirectoryTool>()), ToolLoading.AlwaysOn);
+        var approvalBroker = _isolationGate?.ApprovalBroker;
+        toolRegistry.RegisterTool(new WriteFileTool(_loggerFactory.CreateLogger<WriteFileTool>(), _languageServiceRefreshNotifier, approvalBroker), ToolLoading.AlwaysOn);
+        toolRegistry.RegisterTool(new EditFileTool(_loggerFactory.CreateLogger<EditFileTool>(), _languageServiceRefreshNotifier, approvalBroker), ToolLoading.AlwaysOn);
+        toolRegistry.RegisterTool(new NotebookEditTool(_loggerFactory.CreateLogger<NotebookEditTool>(), _languageServiceRefreshNotifier, approvalBroker), ToolLoading.AlwaysOn);
+        toolRegistry.RegisterTool(new DeleteFileTool(_loggerFactory.CreateLogger<DeleteFileTool>(), _languageServiceRefreshNotifier, approvalBroker), ToolLoading.AlwaysOn);
+        toolRegistry.RegisterTool(new CreateDirectoryTool(_loggerFactory.CreateLogger<CreateDirectoryTool>(), approvalBroker), ToolLoading.AlwaysOn);
         toolRegistry.RegisterTool(new SearchInFilesTool(_loggerFactory.CreateLogger<SearchInFilesTool>()), ToolLoading.AlwaysOn);
 
         // 执行与命令
@@ -446,7 +447,7 @@ public sealed class ToolRegistryBootstrapper
         // ──────────────────────────────────────────────────────────
 
         // Git 操作类
-        var applyPatchTool = new ApplyPatchTool(_gitService, _hashlineService, _hashlineOptions, _languageServiceRefreshNotifier, _loggerFactory.CreateLogger<ApplyPatchTool>());
+        var applyPatchTool = new ApplyPatchTool(_gitService, _hashlineService, _hashlineOptions, _languageServiceRefreshNotifier, _loggerFactory.CreateLogger<ApplyPatchTool>(), approvalBroker);
         toolRegistry.RegisterTool(applyPatchTool, ToolLoading.Deferred);
         toolRegistry.RegisterTool(new HashlineWriteTool(applyPatchTool, _hashlineService), ToolLoading.AlwaysOn);
         toolRegistry.RegisterTool(new GitWorkspaceTool(
@@ -483,7 +484,8 @@ public sealed class ToolRegistryBootstrapper
             _hashlineService,
             _hashlineOptions,
             _languageServiceRefreshNotifier,
-            _loggerFactory.CreateLogger<SmartPatchTool>()), ToolLoading.Deferred);
+            _loggerFactory.CreateLogger<SmartPatchTool>(),
+            approvalBroker), ToolLoading.Deferred);
 
         _logger.LogDebug("Tool registry bootstrap completed for scope. Use tool_search() to activate deferred tools.");
     }

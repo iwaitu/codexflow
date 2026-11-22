@@ -1,6 +1,6 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { createWriteStream, existsSync, mkdirSync, readFileSync, type WriteStream } from 'node:fs';
+import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync, type WriteStream } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, posix, resolve } from 'node:path';
 import type {
@@ -28,6 +28,7 @@ export interface BackendManagerOptions {
   isDev: boolean;
   devRendererOrigin?: string | null;
   readyTimeoutMs?: number;
+  initialRemoteUserIdHash?: string | null;
   getProxyOrigin: () => string | null;
   onChange: (info: BackendConnectionPublicInfo) => void;
 }
@@ -164,9 +165,18 @@ function isProcessGroupAlive(pgid: number): boolean {
   }
 }
 
+export interface RemoteDispatchTarget {
+  baseUrl: string;
+  accessToken: string;
+  controlToken: string;
+  remoteBridgeToken: string;
+  instanceId: string;
+  dataDirectory: string;
+}
+
 export class BackendManager {
   private readonly options: BackendManagerOptions;
-  private readonly dataDirectory: string;
+  private dataDirectory: string;
   private readonly logDir: string;
   private readonly readyTimeoutMs: number;
   private logStream: WriteStream | null = null;
@@ -188,6 +198,9 @@ export class BackendManager {
   private targetBaseUrl: string | null = null;
   private accessToken: string | null = null;
   private controlToken: string | null = null;
+  private remoteBridgeToken: string | null = null;
+  private codexflowHomeOverride: string | null = null;
+  private activeRemoteUserIdHash: string | null = null;
   private instanceId: string | null = null;
   private controlPlaneAvailable = true;
   private selfApprovalProtection = true;
@@ -202,9 +215,16 @@ export class BackendManager {
   constructor(options: BackendManagerOptions) {
     this.options = options;
     this.readyTimeoutMs = options.readyTimeoutMs ?? READY_TIMEOUT_MS;
-    this.dataDirectory = process.env.CODEXFLOW_DATA_DIR
-      ? resolve(process.env.CODEXFLOW_DATA_DIR)
-      : join(options.userDataDir, 'host-data');
+    if (options.initialRemoteUserIdHash) {
+      const resolved = this.prepareRemoteProfileDirectories(options.initialRemoteUserIdHash);
+      this.dataDirectory = resolved.dataDir;
+      this.codexflowHomeOverride = resolved.homeDir;
+      this.activeRemoteUserIdHash = resolved.userIdHash;
+    } else {
+      this.dataDirectory = process.env.CODEXFLOW_DATA_DIR
+        ? resolve(process.env.CODEXFLOW_DATA_DIR)
+        : join(options.userDataDir, 'host-data');
+    }
     this.logDir = join(options.userDataDir, 'logs');
     mkdirSync(this.dataDirectory, { recursive: true });
     mkdirSync(this.logDir, { recursive: true });
@@ -247,6 +267,110 @@ export class BackendManager {
 
   public getTargetBaseUrl(): string | null {
     return this.targetBaseUrl;
+  }
+
+  public getDataDirectory(): string {
+    return this.dataDirectory;
+  }
+
+  public resolveRemoteAccountDataDir(userIdHash: string): string {
+    const normalized = validateRemoteUserIdHash(userIdHash);
+    return join(this.options.userDataDir, 'remote-profiles', normalized, 'host-data');
+  }
+
+  public resolveRemoteAccountHomeDir(userIdHash: string): string {
+    const normalized = validateRemoteUserIdHash(userIdHash);
+    return join(this.options.userDataDir, 'remote-profiles', normalized, 'codexflow-home');
+  }
+
+  public getCodexflowHomeOverride(): string | null {
+    return this.codexflowHomeOverride;
+  }
+
+  public getActiveRemoteUserIdHash(): string | null {
+    return this.activeRemoteUserIdHash;
+  }
+
+  private prepareRemoteProfileDirectories(userIdHash: string): {
+    userIdHash: string;
+    profileRoot: string;
+    dataDir: string;
+    homeDir: string;
+  } {
+    const normalized = validateRemoteUserIdHash(userIdHash);
+    const profileRoot = join(this.options.userDataDir, 'remote-profiles', normalized);
+    ensureRemoteProfileOwnerAnchor(profileRoot, normalized);
+    const dataDir = join(profileRoot, 'host-data');
+    const homeDir = join(profileRoot, 'codexflow-home');
+    mkdirSync(dataDir, { recursive: true });
+    mkdirSync(homeDir, { recursive: true });
+    return { userIdHash: normalized, profileRoot, dataDir, homeDir };
+  }
+
+  public getRemoteDispatchTarget(): RemoteDispatchTarget | null {
+    if (
+      this.mode !== 'managed' ||
+      this.status !== 'ready' ||
+      !this.targetBaseUrl ||
+      !this.accessToken ||
+      !this.controlToken ||
+      !this.remoteBridgeToken
+    ) {
+      return null;
+    }
+    return {
+      baseUrl: this.targetBaseUrl,
+      accessToken: this.accessToken,
+      controlToken: this.controlToken,
+      remoteBridgeToken: this.remoteBridgeToken,
+      instanceId: this.instanceId ?? '',
+      dataDirectory: this.dataDirectory,
+    };
+  }
+
+  public switchAccountDataDirectory(userIdHash: string | null): Promise<BackendConnectionPublicInfo> {
+    return this.enqueueLifecycle(async () => {
+      let nextDir: string;
+      let nextHome: string | null = null;
+      let nextHash: string | null = null;
+
+      if (userIdHash !== null) {
+        const prepared = this.prepareRemoteProfileDirectories(userIdHash);
+        nextDir = prepared.dataDir;
+        nextHome = prepared.homeDir;
+        nextHash = prepared.userIdHash;
+      } else {
+        nextDir = process.env.CODEXFLOW_DATA_DIR
+          ? resolve(process.env.CODEXFLOW_DATA_DIR)
+          : join(this.options.userDataDir, 'host-data');
+        mkdirSync(nextDir, { recursive: true });
+      }
+
+      if (
+        nextDir === this.dataDirectory &&
+        nextHome === this.codexflowHomeOverride &&
+        nextHash === this.activeRemoteUserIdHash
+      ) {
+        if (this.mode === 'managed' && this.status === 'ready') {
+          return this.getPublicInfo();
+        }
+        if (this.mode !== 'managed') {
+          this.emitChange();
+          return this.getPublicInfo();
+        }
+      }
+
+      this.dataDirectory = nextDir;
+      this.codexflowHomeOverride = nextHome;
+      this.activeRemoteUserIdHash = nextHash;
+      if (this.mode === 'managed') {
+        this.consecutiveFailures = 0;
+        this.failureTimestamps = [];
+        return this.startManagedInternal(this.child !== null);
+      }
+      this.emitChange();
+      return this.getPublicInfo();
+    });
   }
 
   private enqueueLifecycle<T>(operation: () => Promise<T>): Promise<T> {
@@ -330,6 +454,7 @@ export class BackendManager {
     this.targetBaseUrl = null;
     this.accessToken = null;
     this.controlToken = null;
+    this.remoteBridgeToken = null;
     this.controlPlaneAvailable = false;
     this.lastError = null;
     this.emitChange();
@@ -430,6 +555,7 @@ export class BackendManager {
     this.targetBaseUrl = null;
     this.accessToken = null;
     this.controlToken = null;
+    this.remoteBridgeToken = null;
     this.controlPlaneAvailable = false;
     this.status = 'error';
     this.lastError = message;
@@ -548,8 +674,13 @@ export class BackendManager {
     const launch = this.resolveLaunchTarget();
     const accessToken = randomBytes(32).toString('hex');
     const controlToken = randomBytes(32).toString('hex');
+    let remoteBridgeToken = randomBytes(32).toString('hex');
+    while (remoteBridgeToken === accessToken || remoteBridgeToken === controlToken) {
+      remoteBridgeToken = randomBytes(32).toString('hex');
+    }
     this.accessToken = accessToken;
     this.controlToken = controlToken;
+    this.remoteBridgeToken = remoteBridgeToken;
 
     this.ensureLogStream();
 
@@ -563,6 +694,7 @@ export class BackendManager {
       ...resolveManagedBackendEnvironment(this.options, enhancedBaseEnv),
       ...launch.extraEnv,
       ...(bundledLibreOffice ? { CODEXFLOW_LIBREOFFICE_PATH: bundledLibreOffice } : {}),
+      ...(this.codexflowHomeOverride ? { CODEXFLOW_HOME: this.codexflowHomeOverride } : {}),
       Local__Port: '0',
       Local__DataDirectory: this.dataDirectory,
       Local__PreflightMode: 'Report',
@@ -605,9 +737,12 @@ export class BackendManager {
       }, this.readyTimeoutMs);
       readyTimeout.unref();
 
-      // Deliver normal + control credentials via stdin pipe only (never written to disk or env).
+      // Deliver normal + control + internal remote bridge credentials via stdin pipe only (never written to disk or env).
       try {
-        child.stdin.write(`${JSON.stringify({ accessToken, controlToken })}\n`, 'utf-8');
+        child.stdin.write(
+          `${JSON.stringify({ accessToken, controlToken, remoteBridgeToken })}\n`,
+          'utf-8',
+        );
         child.stdin.end();
       } catch (err) {
         this.appendLog(`[main] failed writing credentials to stdin: ${String(err)}`);
@@ -1024,4 +1159,50 @@ export class BackendManager {
   private emitChange(): void {
     this.options.onChange(this.getPublicInfo());
   }
+}
+
+export function validateRemoteUserIdHash(userIdHash: string): string {
+  const normalized = userIdHash.trim().toLowerCase();
+  if (!/^[0-9a-f]{16,64}$/.test(normalized)) {
+    throw new Error('Invalid account userIdHash for remote profile directory isolation.');
+  }
+  return normalized;
+}
+
+export function ensureRemoteProfileOwnerAnchor(profileRoot: string, userIdHash: string): void {
+  const normalized = validateRemoteUserIdHash(userIdHash);
+  mkdirSync(profileRoot, { recursive: true });
+  const anchorPath = join(profileRoot, '.codexflow-remote-owner.json');
+  if (existsSync(anchorPath)) {
+    let parsed: { version?: unknown; userIdHash?: unknown };
+    try {
+      parsed = JSON.parse(readFileSync(anchorPath, 'utf-8')) as {
+        version?: unknown;
+        userIdHash?: unknown;
+      };
+    } catch {
+      throw new Error('Corrupt .codexflow-remote-owner.json anchor; refusing to mount remote profile directory.');
+    }
+    if (
+      typeof parsed.userIdHash !== 'string' ||
+      parsed.userIdHash.trim().toLowerCase() !== normalized
+    ) {
+      throw new Error('Remote profile directory owner mismatch; refusing cross-account mount.');
+    }
+    return;
+  }
+
+  writeFileSync(
+    anchorPath,
+    JSON.stringify(
+      {
+        version: 1,
+        userIdHash: normalized,
+        createdAtUtc: new Date().toISOString(),
+      },
+      null,
+      2,
+    ),
+    { encoding: 'utf-8', mode: 0o600 },
+  );
 }

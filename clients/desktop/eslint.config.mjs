@@ -18,7 +18,15 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ['electron/**/*.ts', 'scripts/**/*.{mjs,cjs}', 'tests/e2e/**/*.{ts,mjs}', '*.cjs'],
+    files: [
+      'electron/**/*.ts',
+      'scripts/**/*.{mjs,cjs}',
+      'tests/e2e/**/*.{ts,mjs}',
+      'tests/unit/main*.test.ts',
+      'tests/unit/remote/**/*.test.ts',
+      '../shared/**/*.ts',
+      '*.cjs',
+    ],
     languageOptions: {
       globals: {
         ...globals.node,

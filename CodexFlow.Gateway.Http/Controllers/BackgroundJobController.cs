@@ -3,6 +3,7 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 using CodexFlow.Gateway.Http;
+using CodexFlow.Gateway.Http.Remote;
 using CodexFlow.Application.Jobs;
 using CodexFlow.Core.Agents.Tools;
 using CodexFlow.Core.Workers;
@@ -33,6 +34,7 @@ namespace CodexFlow.Controllers
         private readonly IJobViewService _jobViewService;
         private readonly WorkerCoordinatorService _workerCoordinatorService;
         private readonly IJobStore _store;
+        private readonly CodexFlow.Core.Remote.IRemoteWorkspaceAuthorizationGuard? _remoteWorkspaceAuthorizationGuard;
 
         /// <summary>
         /// 初始化后台作业控制器。
@@ -41,16 +43,42 @@ namespace CodexFlow.Controllers
         /// <param name="jobViewService">负责读取作业当前视图与历史事件的查询服务。</param>
         /// <param name="workerCoordinatorService">负责向 worker coordinator 转发恢复和控制请求的服务。</param>
         /// <param name="store">用于校验会话归属关系的数据库上下文。</param>
+        /// <param name="remoteWorkspaceAuthorizationGuard">可选远程工作区访问守卫。</param>
         public BackgroundJobController(
             IBackgroundJobService jobService,
             IJobViewService jobViewService,
             WorkerCoordinatorService workerCoordinatorService,
-            IJobStore store)
+            IJobStore store,
+            CodexFlow.Core.Remote.IRemoteWorkspaceAuthorizationGuard? remoteWorkspaceAuthorizationGuard = null)
         {
             _jobService = jobService;
             _jobViewService = jobViewService;
             _workerCoordinatorService = workerCoordinatorService;
             _store = store;
+            _remoteWorkspaceAuthorizationGuard = remoteWorkspaceAuthorizationGuard;
+        }
+
+        private async Task<IResult?> AuthorizeRemoteSessionIdAsync(string? sessionId)
+        {
+            if (!RemoteRequestContextMiddleware.IsRemoteRequest(HttpContext))
+            {
+                return null;
+            }
+
+            if (_remoteWorkspaceAuthorizationGuard is null || string.IsNullOrWhiteSpace(sessionId))
+            {
+                return StatusCode(StatusCodes.Status403Forbidden, new JobReasonResponse("remote_workspace_not_authorized"));
+            }
+
+            var decision = await _remoteWorkspaceAuthorizationGuard
+                .AuthorizeSessionAsync(sessionId, workspacePath: null, projectLocation: null, HttpContext.RequestAborted)
+                .ConfigureAwait(false);
+            if (!decision.Allowed)
+            {
+                return StatusCode(StatusCodes.Status403Forbidden, new JobReasonResponse(decision.ReasonCode));
+            }
+
+            return null;
         }
 
         /// <summary>
@@ -105,6 +133,11 @@ namespace CodexFlow.Controllers
                 return NotFound(new JobReasonResponse("Session not found or not owned by current user."));
             }
 
+            if (await AuthorizeRemoteSessionIdAsync(request.SessionId).ConfigureAwait(false) is { } denied)
+            {
+                return denied;
+            }
+
             // Resolve with the same lenient parser the runner uses elsewhere (trim/case/aliases such as "forge" or
             // "ExecuteCodeTask"), then also require an exact allow-list hit: unknown strings are not "safe by default".
             if (WorkerJobTypes.IsWorkerJobType(request.JobType))
@@ -142,7 +175,9 @@ namespace CodexFlow.Controllers
         {
             var userId = CurrentUserId;
             if (string.IsNullOrWhiteSpace(userId)) return Unauthorized();
-            if (await LoadOwnedJobAsync(jobId, userId) is null) return NotFound();
+            var owned = await LoadOwnedJobAsync(jobId, userId);
+            if (owned is null) return NotFound();
+            if (await AuthorizeRemoteSessionIdAsync(owned.SessionId).ConfigureAwait(false) is { } denied) return denied;
 
             var view = await _jobViewService.GetViewAsync(jobId);
             if (view == null) return NotFound();
@@ -167,6 +202,7 @@ namespace CodexFlow.Controllers
             var userId = CurrentUserId;
             if (string.IsNullOrWhiteSpace(userId)) return Unauthorized();
             if (!await OwnsSessionAsync(sessionId, userId)) return NotFound();
+            if (await AuthorizeRemoteSessionIdAsync(sessionId).ConfigureAwait(false) is { } denied) return denied;
 
             var jobs = await _jobViewService.GetSessionJobsAsync(sessionId);
             return Ok(jobs.ToArray());
@@ -183,7 +219,9 @@ namespace CodexFlow.Controllers
         {
             var userId = CurrentUserId;
             if (string.IsNullOrWhiteSpace(userId)) return Unauthorized();
-            if (await LoadOwnedJobAsync(jobId, userId) is null) return NotFound();
+            var owned = await LoadOwnedJobAsync(jobId, userId);
+            if (owned is null) return NotFound();
+            if (await AuthorizeRemoteSessionIdAsync(owned.SessionId).ConfigureAwait(false) is { } denied) return denied;
 
             var history = await _jobViewService.GetHistoryAsync(jobId, afterSeq);
             return Ok(history.ToArray());
@@ -199,7 +237,9 @@ namespace CodexFlow.Controllers
         {
             var userId = CurrentUserId;
             if (string.IsNullOrWhiteSpace(userId)) return Unauthorized();
-            if (await LoadOwnedJobAsync(jobId, userId) is null) return NotFound();
+            var owned = await LoadOwnedJobAsync(jobId, userId);
+            if (owned is null) return NotFound();
+            if (await AuthorizeRemoteSessionIdAsync(owned.SessionId).ConfigureAwait(false) is { } denied) return denied;
 
             var result = await _jobService.CancelJobAsync(jobId);
             return result switch
@@ -226,6 +266,11 @@ namespace CodexFlow.Controllers
 
         public async Task<IResult> RetryJob(string jobId)
         {
+            if (RemoteRequestContextMiddleware.IsRemoteRequest(HttpContext))
+            {
+                return StatusCode(StatusCodes.Status403Forbidden, new JobReasonResponse("remote_job_retry_forbidden"));
+            }
+
             var userId = CurrentUserId;
             if (string.IsNullOrWhiteSpace(userId)) return Unauthorized();
             if (await LoadOwnedJobAsync(jobId, userId) is null) return NotFound();
@@ -254,6 +299,11 @@ namespace CodexFlow.Controllers
 
         public async Task<IResult> ResumeJob(string jobId, ResumeJobRequest? request)
         {
+            if (RemoteRequestContextMiddleware.IsRemoteRequest(HttpContext))
+            {
+                return StatusCode(StatusCodes.Status403Forbidden, new JobReasonResponse("remote_job_resume_forbidden"));
+            }
+
             var userId = CurrentUserId;
             if (string.IsNullOrWhiteSpace(userId)) return Unauthorized();
             var owned = await LoadOwnedJobAsync(jobId, userId);
@@ -289,6 +339,11 @@ namespace CodexFlow.Controllers
 
         public async Task<IResult> ContinueWorker(string jobId, ContinueWorkerHttpRequest? request)
         {
+            if (RemoteRequestContextMiddleware.IsRemoteRequest(HttpContext))
+            {
+                return StatusCode(StatusCodes.Status403Forbidden, new JobReasonResponse("remote_job_continue_forbidden"));
+            }
+
             var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
             if (string.IsNullOrWhiteSpace(userId))
             {
@@ -350,6 +405,8 @@ namespace CodexFlow.Controllers
             // Verify the session belongs to the current user
             if (!await OwnsSessionAsync(sessionId, userId))
                 return NotFound(new JobReasonResponse("Session not found or not owned by current user."));
+            if (await AuthorizeRemoteSessionIdAsync(sessionId).ConfigureAwait(false) is { } denied)
+                return denied;
 
             var cancelled = await _jobService.CancelSessionJobsAsync(sessionId);
             return Ok(new CancelJobsResponse(true, cancelled));
@@ -368,9 +425,15 @@ namespace CodexFlow.Controllers
 
             if (sessionIds.Count == 0) return Ok(new CancelJobsResponse(true, 0));
 
+            var isRemote = RemoteRequestContextMiddleware.IsRemoteRequest(HttpContext);
             var totalCancelled = 0;
             foreach (var sid in sessionIds)
             {
+                if (isRemote && await AuthorizeRemoteSessionIdAsync(sid).ConfigureAwait(false) is not null)
+                {
+                    continue;
+                }
+
                 totalCancelled += await _jobService.CancelSessionJobsAsync(sid);
             }
 

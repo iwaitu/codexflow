@@ -15,15 +15,18 @@
     "baseUrl": ".",
     "paths": {
       "@shared/*": ["src/shared/*"],
-      "@renderer/*": ["src/renderer/*"]
+      "@renderer/*": ["src/renderer/*"],
+      "@codexflow-shared/*": ["../shared/*"]
     }
   },
   "include": [
     "src/renderer/**/*",
     "src/shared/**/*",
+    "../shared/**/*",
     "tests/unit/**/*"
   ],
   "exclude": [
-    "tests/unit/main*.test.ts"
+    "tests/unit/main*.test.ts",
+    "tests/unit/remote/**/*.test.ts"
   ]
 }

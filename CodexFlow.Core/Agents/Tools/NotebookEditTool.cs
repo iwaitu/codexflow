@@ -6,8 +6,10 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using CodexFlow.Core.Abstractions;
+using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Core.LanguageServices;
 using CodexFlow.Core.Models;
+using CodexFlow.Core.Remote;
 using Microsoft.Extensions.Logging;
 
 namespace CodexFlow.Core.Agents.Tools;
@@ -17,7 +19,8 @@ namespace CodexFlow.Core.Agents.Tools;
 /// </summary>
 public sealed class NotebookEditTool(
     ILogger<NotebookEditTool> logger,
-    ILanguageServiceRefreshNotifier? refreshNotifier = null) : ICodexTool
+    ILanguageServiceRefreshNotifier? refreshNotifier = null,
+    IExecutionApprovalBroker? approvalBroker = null) : ICodexTool
 {
     public string Name => "notebook_edit";
 
@@ -131,6 +134,13 @@ public sealed class NotebookEditTool(
 
             if (!dryRun)
             {
+                var remoteRefusal = await RemoteWorkspaceWriteGate.AuthorizeWriteIfRemoteAsync(
+                    Name, baseRoot, normalizedPath, preview, approvalBroker, arguments, ct).ConfigureAwait(false);
+                if (remoteRefusal is not null)
+                {
+                    return remoteRefusal;
+                }
+
                 await ToolPathResolver.WriteAllTextVerifiedAsync(fullPath, baseRoot, updatedJson, readVersion, ct).ConfigureAwait(false);
                 await NotifyRefreshAsync(baseRoot, arguments, normalizedPath, ct).ConfigureAwait(false);
             }

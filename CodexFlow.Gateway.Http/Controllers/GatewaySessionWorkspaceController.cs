@@ -15,11 +15,13 @@ using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Core.Gateway;
 using CodexFlow.Core.Models;
 using CodexFlow.Core.Planning.Artifacts;
+using CodexFlow.Core.Remote;
 using CodexFlow.Domain.Chat;
 using CodexFlow.Gateway;
 using CodexFlow.Orchestration.Services;
 
 using CodexFlow.Gateway.Http;
+using CodexFlow.Gateway.Http.Remote;
 
 namespace CodexFlow.Controllers;
 
@@ -199,7 +201,8 @@ public sealed class GatewaySessionWorkspaceController(
     IJobViewService? jobViewService = null,
     IGitService? gitService = null,
     IControlPlaneStateProvider? controlPlane = null,
-    DocumentReaderRouter? documentReaderRouter = null) : GatewayEndpointHandler
+    DocumentReaderRouter? documentReaderRouter = null,
+    IRemoteWorkspaceAuthorizationGuard? remoteWorkspaceAuthorizationGuard = null) : GatewayEndpointHandler
 {
     private const string DefaultWorkspaceName = "默认工作区";
     private const string DailyAssistantWorkspaceName = "日常助手";
@@ -208,19 +211,72 @@ public sealed class GatewaySessionWorkspaceController(
     private static bool IsReservedWorkspaceName(string? name)
         => string.Equals(name?.Trim(), DefaultWorkspaceName, StringComparison.Ordinal)
         || string.Equals(name?.Trim(), DailyAssistantWorkspaceName, StringComparison.Ordinal);
+
+    private async Task<IResult?> AuthorizeRemoteSessionAsync(
+        string? sessionId,
+        string? workspacePath,
+        string? projectLocation,
+        CancellationToken ct)
+    {
+        if (!RemoteRequestContextMiddleware.IsRemoteRequest(HttpContext))
+        {
+            return null;
+        }
+
+        if (remoteWorkspaceAuthorizationGuard is null || string.IsNullOrWhiteSpace(sessionId))
+        {
+            return StatusCode(StatusCodes.Status403Forbidden,
+                new GatewayErrorResponse("remote_workspace_not_authorized", "远程工作区访问守卫不可用。"));
+        }
+
+        var decision = await remoteWorkspaceAuthorizationGuard
+            .AuthorizeSessionAsync(sessionId, workspacePath, projectLocation, ct)
+            .ConfigureAwait(false);
+        return decision.Allowed
+            ? null
+            : StatusCode(StatusCodes.Status403Forbidden,
+                new GatewayErrorResponse(decision.ReasonCode, decision.Message));
+    }
+
     public async Task<IResult> ListSessions(
         int page = 1,
         int pageSize = 20,
         bool includeArchived = false,
         CancellationToken ct = default)
     {
-        _ = ct;
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrEmpty(userId)) return Unauthorized();
 
-        var paged = await chatService.GetSessionsPaged(userId, page, pageSize, includeArchived).ConfigureAwait(false);
-        var items = paged.List.Select(ToSessionDto).ToArray();
-        return Ok(new PagedResponseDto<SessionSummaryDto>(items, paged.Total, paged.Page, paged.PageSize));
+        if (!RemoteRequestContextMiddleware.IsRemoteRequest(HttpContext))
+        {
+            var paged = await chatService.GetSessionsPaged(userId, page, pageSize, includeArchived).ConfigureAwait(false);
+            var items = paged.List.Select(ToSessionDto).ToArray();
+            return Ok(new PagedResponseDto<SessionSummaryDto>(items, paged.Total, paged.Page, paged.PageSize));
+        }
+
+        if (remoteWorkspaceAuthorizationGuard is null)
+        {
+            return Ok(new PagedResponseDto<SessionSummaryDto>([], 0, page, pageSize));
+        }
+
+        var safePage = Math.Max(1, page);
+        var safePageSize = Math.Clamp(pageSize, 1, 100);
+        var all = await chatService.GetSessionsPaged(userId, 1, 500, includeArchived).ConfigureAwait(false);
+        var authorized = new List<SessionSummaryDto>();
+        foreach (var s in all.List)
+        {
+            var decision = await remoteWorkspaceAuthorizationGuard
+                .AuthorizeSessionAsync(s.Id, s.WorkspacePath, s.ProjectUrl, ct)
+                .ConfigureAwait(false);
+            if (decision.Allowed)
+            {
+                authorized.Add(ToSessionDto(s));
+            }
+        }
+
+        var skip = (safePage - 1) * safePageSize;
+        var pageItems = authorized.Skip(skip).Take(safePageSize).ToArray();
+        return Ok(new PagedResponseDto<SessionSummaryDto>(pageItems, authorized.Count, safePage, safePageSize));
     }
     public async Task<IResult> UpdateSession(
         string sessionId,
@@ -250,6 +306,11 @@ public sealed class GatewaySessionWorkspaceController(
         if (existing is null || !string.Equals(existing.UserId, userId, StringComparison.Ordinal))
         {
             return NotFound(new GatewayErrorResponse("session_not_found", "Session not found."));
+        }
+
+        if (await AuthorizeRemoteSessionAsync(existing.Id, existing.WorkspacePath, existing.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+        {
+            return denied;
         }
 
         if (IsReservedWorkspaceName(existing.Name))
@@ -314,6 +375,20 @@ public sealed class GatewaySessionWorkspaceController(
             return StatusCode(503, new GatewayErrorResponse("policy_resolver_unavailable", "Session policy resolver is not configured."));
         }
 
+        if (RemoteRequestContextMiddleware.IsRemoteRequest(HttpContext))
+        {
+            var planModeSession = await chatService.GetSession(sessionId).ConfigureAwait(false);
+            if (planModeSession is null || !string.Equals(planModeSession.UserId, userId, StringComparison.Ordinal))
+            {
+                return NotFound(new GatewayErrorResponse("session_not_found", "Session not found."));
+            }
+
+            if (await AuthorizeRemoteSessionAsync(planModeSession.Id, planModeSession.WorkspacePath, planModeSession.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+            {
+                return denied;
+            }
+        }
+
         var transition = await resolver.SetPlanModeAsync(
             sessionId,
             userId,
@@ -358,6 +433,11 @@ public sealed class GatewaySessionWorkspaceController(
             return NotFound(new GatewayErrorResponse("session_not_found", "Session not found."));
         }
 
+        if (await AuthorizeRemoteSessionAsync(existing.Id, existing.WorkspacePath, existing.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+        {
+            return denied;
+        }
+
         if (IsReservedWorkspaceName(existing.Name))
         {
             return BadRequest(new GatewayErrorResponse("default_workspace_protected", "The default workspace cannot be deleted."));
@@ -384,6 +464,11 @@ public sealed class GatewaySessionWorkspaceController(
             return NotFound(new GatewayErrorResponse("session_not_found", "Session not found."));
         }
 
+        if (await AuthorizeRemoteSessionAsync(session.Id, session.WorkspacePath, session.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+        {
+            return denied;
+        }
+
         var paged = await chatService.GetSessionConversations(sessionId, userId, page, pageSize, includeArchived).ConfigureAwait(false);
         var items = paged.List.Select(ToConversationDto).ToArray();
         return Ok(new PagedResponseDto<ConversationSummaryDto>(items, paged.Total, paged.Page, paged.PageSize));
@@ -401,6 +486,11 @@ public sealed class GatewaySessionWorkspaceController(
         if (session is null || !string.Equals(session.UserId, userId, StringComparison.Ordinal))
         {
             return NotFound(new GatewayErrorResponse("session_not_found", "Session not found."));
+        }
+
+        if (await AuthorizeRemoteSessionAsync(session.Id, session.WorkspacePath, session.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+        {
+            return denied;
         }
 
         var initialTitle = string.IsNullOrWhiteSpace(request?.Name)
@@ -450,6 +540,11 @@ public sealed class GatewaySessionWorkspaceController(
             return NotFound(new GatewayErrorResponse("conversation_not_found", "Conversation not found."));
         }
 
+        if (await AuthorizeRemoteSessionAsync(existing.SessionId, workspacePath: null, projectLocation: null, ct).ConfigureAwait(false) is { } denied)
+        {
+            return denied;
+        }
+
         var updated = existing;
         if (request.Name is not null)
         {
@@ -482,6 +577,11 @@ public sealed class GatewaySessionWorkspaceController(
             return NotFound(new GatewayErrorResponse("conversation_not_found", "Conversation not found."));
         }
 
+        if (await AuthorizeRemoteSessionAsync(existing.SessionId, workspacePath: null, projectLocation: null, ct).ConfigureAwait(false) is { } denied)
+        {
+            return denied;
+        }
+
         await chatService.DeleteConversation(conversationId, userId).ConfigureAwait(false);
         return Ok(new DeleteResourceResponse(true, conversationId));
     }
@@ -498,6 +598,11 @@ public sealed class GatewaySessionWorkspaceController(
             return NotFound(new GatewayErrorResponse("session_not_found", "Session not found."));
         }
 
+        if (await AuthorizeRemoteSessionAsync(session.Id, session.WorkspacePath, session.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+        {
+            return denied;
+        }
+
         var cancelled = await gateway.CancelTurnAsync(sessionId, ct).ConfigureAwait(false);
         return Ok(new CancelTurnResponse(sessionId, cancelled, cancelled ? "cancelled" : "idle"));
     }
@@ -512,6 +617,11 @@ public sealed class GatewaySessionWorkspaceController(
         if (session is null || !string.Equals(session.UserId, userId, StringComparison.Ordinal))
         {
             return NotFound(new GatewayErrorResponse("session_not_found", "Session not found."));
+        }
+
+        if (await AuthorizeRemoteSessionAsync(session.Id, session.WorkspacePath, session.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+        {
+            return denied;
         }
 
         var plan = await ResolveCurrentPlanDtoAsync(session, ct).ConfigureAwait(false);
@@ -537,6 +647,11 @@ public sealed class GatewaySessionWorkspaceController(
             return NotFound(new GatewayErrorResponse("session_not_found", "Session not found."));
         }
 
+        if (await AuthorizeRemoteSessionAsync(session.Id, session.WorkspacePath, session.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+        {
+            return denied;
+        }
+
         var listing = WorkspaceFileExplorerService.ListDirectory(session.WorkspacePath, path);
         if (!listing.Success)
         {
@@ -560,6 +675,11 @@ public sealed class GatewaySessionWorkspaceController(
         if (session is null || !string.Equals(session.UserId, userId, StringComparison.Ordinal))
         {
             return NotFound(new GatewayErrorResponse("session_not_found", "Session not found."));
+        }
+
+        if (await AuthorizeRemoteSessionAsync(session.Id, session.WorkspacePath, session.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+        {
+            return denied;
         }
 
         var content = await WorkspaceFileExplorerService
@@ -590,6 +710,11 @@ public sealed class GatewaySessionWorkspaceController(
         if (session is null || !string.Equals(session.UserId, userId, StringComparison.Ordinal))
         {
             return NotFound(new GatewayErrorResponse("session_not_found", "Session not found."));
+        }
+
+        if (await AuthorizeRemoteSessionAsync(session.Id, session.WorkspacePath, session.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+        {
+            return denied;
         }
 
         if (gitService is null)
@@ -625,6 +750,11 @@ public sealed class GatewaySessionWorkspaceController(
             return NotFound(new GatewayErrorResponse("session_not_found", "Session not found."));
         }
 
+        if (await AuthorizeRemoteSessionAsync(session.Id, session.WorkspacePath, session.ProjectUrl, ct).ConfigureAwait(false) is { } denied)
+        {
+            return denied;
+        }
+
         var channelState = gateway.GetChannelSnapshotState(sessionId);
         string? resolvedConvId;
         if (!string.IsNullOrWhiteSpace(conversationId))
@@ -654,6 +784,7 @@ public sealed class GatewaySessionWorkspaceController(
         var messages = new List<SnapshotMessageDto>();
         string? latestPersistedToolEnvelope = null;
         var latestPersistedToolTextTruncated = false;
+        var isRemote = RemoteRequestContextMiddleware.IsRemoteRequest(HttpContext);
         if (!string.IsNullOrWhiteSpace(resolvedConvId))
         {
             var rawMessages = await chatService.GetConversationMessages(resolvedConvId).ConfigureAwait(false);
@@ -662,13 +793,16 @@ public sealed class GatewaySessionWorkspaceController(
                 if (!string.IsNullOrWhiteSpace(m.MessageType))
                 {
                     var (bounded, truncated) = ToolEventSanitizer.TruncateText(m.AiContent, MaxSnapshotMessageContentChars);
+                    var safeMeta = isRemote && !string.IsNullOrWhiteSpace(m.NotificationMeta)
+                        ? RemotePayloadSanitizer.SanitizeSsePayloadJson(m.NotificationMeta)
+                        : m.NotificationMeta;
                     messages.Add(new SnapshotMessageDto(
                         m.Id + "_n",
                         "system",
                         bounded,
                         null,
                         m.MessageType,
-                        m.NotificationMeta,
+                        safeMeta,
                         null,
                         truncated,
                         m.Created));
@@ -695,6 +829,10 @@ public sealed class GatewaySessionWorkspaceController(
                     var (boundedAi, aiTruncated) = ToolEventSanitizer.TruncateText(m.AiContent, MaxSnapshotMessageContentChars);
                     var (boundedThinking, thinkTruncated) = ToolEventSanitizer.TruncateText(m.ThinkingContent, MaxSnapshotMessageContentChars);
                     var (boundedTool, toolTruncated) = BoundSnapshotToolHistory(m.ToolCallResult);
+                    if (isRemote && !string.IsNullOrEmpty(boundedTool))
+                    {
+                        boundedTool = RemotePayloadSanitizer.SanitizeSsePayloadJson(boundedTool);
+                    }
                     if (!string.IsNullOrWhiteSpace(m.ToolCallResult))
                     {
                         latestPersistedToolEnvelope = m.ToolCallResult;

@@ -163,7 +163,51 @@ internal static class StreamingGatewayEndpoints
                 handler.Bind(http);
                 return handler.Chat(request, ct);
             })
-            .Produces(StatusCodes.Status200OK);
+            .Produces<GatewayChatAcceptedResponse>(StatusCodes.Status202Accepted, "text/plain", "application/json", "text/json")
+            .Produces<GatewayChatRejectedResponse>(StatusCodes.Status409Conflict, "text/plain", "application/json", "text/json")
+            .Produces<GatewayErrorResponse>(StatusCodes.Status400BadRequest, "text/plain", "application/json", "text/json");
+
+        endpoints.MapGet("/session/{sessionId}/attachments/uploads/{uploadId}", static (
+                HttpContext http,
+                [FromServices] CodexGatewayController handler,
+                [FromRoute] string sessionId,
+                [FromRoute] string uploadId,
+                CancellationToken ct = default) =>
+            {
+                handler.Bind(http);
+                return handler.QueryRemoteUploadStatus(sessionId, uploadId, ct);
+            })
+            .Produces<RemoteAttachmentUploadStatusResponse>(StatusCodes.Status200OK, "text/plain", "application/json", "text/json")
+            .Produces<RemoteAttachmentUploadStatusResponse>(StatusCodes.Status404NotFound, "text/plain", "application/json", "text/json");
+
+        endpoints.MapGet("/session/{sessionId}/ops/{clientOpId}", static (
+                HttpContext http,
+                [FromServices] CodexGatewayController handler,
+                [FromRoute] string sessionId,
+                [FromRoute] string clientOpId,
+                CancellationToken ct = default) =>
+            {
+                handler.Bind(http);
+                return handler.QueryRemoteChatOpStatus(sessionId, clientOpId, ct);
+            })
+            .Produces<RemoteChatOpStatusResponse>(StatusCodes.Status200OK, "text/plain", "application/json", "text/json")
+            .Produces<RemoteChatOpStatusResponse>(StatusCodes.Status404NotFound, "text/plain", "application/json", "text/json");
+
+        endpoints.MapGet("/events/summary", static (
+                HttpContext http,
+                [FromServices] CodexGatewayController handler,
+                [FromQuery] string? mode = "snapshot",
+                [FromQuery] string? snapshotId = null,
+                [FromQuery] string? pageToken = null,
+                [FromQuery] long? afterEventId = null,
+                [FromQuery] int limit = 50,
+                CancellationToken ct = default) =>
+            {
+                handler.Bind(http);
+                return handler.GetEventsSummary(mode, snapshotId, pageToken, afterEventId, limit, ct);
+            })
+            .WithMetadata(GatewayBinding.OptionalInt64Query("afterEventId"))
+            .Produces<CodexFlow.Core.Remote.RemotePendingSummarySnapshotResponse>(StatusCodes.Status200OK, "text/plain", "application/json", "text/json");
 
         endpoints.MapGet("/sse", static (
                 HttpContext http,

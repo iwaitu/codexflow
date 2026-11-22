@@ -352,7 +352,11 @@ public sealed class ToolIsolationGate(
                 ScriptLength = scriptLength,
                 BackendNotice = backendNotice,
                 OwnerKind = ownerKind,
-                OwnerId = ownerId
+                OwnerId = ownerId,
+                ControlChannel = context.ControlChannel == CodexFlow.Core.Remote.ControlChannel.Remote ||
+                                 CodexFlow.Core.Remote.RemoteExecutionAmbientContext.IsRemote
+                    ? CodexFlow.Core.Remote.ControlChannel.Remote
+                    : CodexFlow.Core.Remote.ControlChannel.Local
             };
 
             return new ExecutionAuthorizationContext(

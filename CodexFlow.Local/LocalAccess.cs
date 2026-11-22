@@ -11,6 +11,7 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using CodexFlow.Core.Execution;
 using CodexFlow.Core.Execution.Approval;
+using CodexFlow.Core.Remote;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.Extensions.Options;
 
@@ -35,12 +36,13 @@ public enum LocalTokenDeliveryMode
 /// - Control plane (<c>control.token</c> or stdin pipe <c>controlToken</c>) is required to approve untrusted code,
 ///   approve/execute plans, relax permission modes, or manage persistent permission rules (<c>ControlPlane</c>).
 /// </summary>
-public sealed class LocalHostCredentials : IControlPlaneStateProvider
+public sealed class LocalHostCredentials : IControlPlaneStateProvider, IRemoteBridgeAuthenticator
 {
     public const string AccessTokenFileName = "host.token";
     public const string ControlTokenFileName = "control.token";
 
     private readonly byte[] _accessTokenBytes;
+    private readonly byte[]? _remoteBridgeTokenBytes;
     private readonly string? _controlTokenFilePath;
     private readonly object _controlGate = new();
     private byte[]? _controlTokenBytes;
@@ -52,6 +54,7 @@ public sealed class LocalHostCredentials : IControlPlaneStateProvider
         string? accessTokenPath,
         string? controlToken,
         string? controlTokenPath,
+        string? remoteBridgeToken,
         ExecutionBackend initialBackend,
         bool unsafeFileControlToken)
     {
@@ -62,6 +65,7 @@ public sealed class LocalHostCredentials : IControlPlaneStateProvider
         _controlTokenFilePath = controlTokenPath;
         _accessTokenBytes = Encoding.UTF8.GetBytes(accessToken);
         _controlTokenBytes = string.IsNullOrEmpty(controlToken) ? null : Encoding.UTF8.GetBytes(controlToken);
+        _remoteBridgeTokenBytes = string.IsNullOrEmpty(remoteBridgeToken) ? null : Encoding.UTF8.GetBytes(remoteBridgeToken);
         _activeBackend = initialBackend;
         UnsafeFileControlToken = unsafeFileControlToken;
     }
@@ -210,6 +214,7 @@ public sealed class LocalHostCredentials : IControlPlaneStateProvider
             var root = doc.RootElement;
             var access = root.TryGetProperty("accessToken", out var ap) ? ap.GetString() : null;
             var control = root.TryGetProperty("controlToken", out var cp) ? cp.GetString() : null;
+            var remoteBridge = root.TryGetProperty("remoteBridgeToken", out var rp) ? rp.GetString() : null;
             if (string.IsNullOrWhiteSpace(access) || access.Length < 16 ||
                 string.IsNullOrWhiteSpace(control) || control.Length < 16)
             {
@@ -221,12 +226,27 @@ public sealed class LocalHostCredentials : IControlPlaneStateProvider
                 throw new InvalidOperationException("Normal accessToken and controlToken must be distinct secrets.");
             }
 
+            if (!string.IsNullOrWhiteSpace(remoteBridge))
+            {
+                if (remoteBridge.Length < 16 ||
+                    string.Equals(remoteBridge, access, StringComparison.Ordinal) ||
+                    string.Equals(remoteBridge, control, StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException("Pipe credential 'remoteBridgeToken' must be at least 16 chars and distinct from access/control tokens.");
+                }
+            }
+            else
+            {
+                remoteBridge = null;
+            }
+
             return new LocalHostCredentials(
                 LocalTokenDeliveryMode.Pipe,
                 access,
                 accessTokenPath: null,
                 control,
                 controlTokenPath: null,
+                remoteBridge,
                 initialBackend,
                 unsafeFileControlToken: false);
         }
@@ -246,6 +266,7 @@ public sealed class LocalHostCredentials : IControlPlaneStateProvider
                 accessFile,
                 controlToken: null,
                 controlTokenPath: controlFile,
+                remoteBridgeToken: null,
                 initialBackend,
                 unsafeFileControlToken: false);
         }
@@ -266,9 +287,18 @@ public sealed class LocalHostCredentials : IControlPlaneStateProvider
             accessFile,
             generatedControl,
             controlFile,
+            remoteBridgeToken: null,
             initialBackend,
             unsafeFileControlToken);
     }
+
+    public bool IsBridgeAvailable => DeliveryMode == LocalTokenDeliveryMode.Pipe && _remoteBridgeTokenBytes is not null;
+
+    public bool ValidateBridgeToken(string? candidate)
+        => DeliveryMode == LocalTokenDeliveryMode.Pipe &&
+           _remoteBridgeTokenBytes is not null &&
+           !string.IsNullOrEmpty(candidate) &&
+           FixedTimeMatches(candidate, _remoteBridgeTokenBytes);
 
     public bool MatchesAccessToken(string? candidate)
         => !string.IsNullOrEmpty(candidate) &&

@@ -1387,8 +1387,277 @@
           "required": true
         },
         "responses": {
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayChatAcceptedResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayChatAcceptedResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayChatAcceptedResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayChatRejectedResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayChatRejectedResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayChatRejectedResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayErrorResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayErrorResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/gateway/session/{sessionId}/attachments/uploads/{uploadId}": {
+      "get": {
+        "tags": [
+          "CodexGateway"
+        ],
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "uploadId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
           "200": {
-            "description": "OK"
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoteAttachmentUploadStatusResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoteAttachmentUploadStatusResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoteAttachmentUploadStatusResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoteAttachmentUploadStatusResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoteAttachmentUploadStatusResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoteAttachmentUploadStatusResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/gateway/session/{sessionId}/ops/{clientOpId}": {
+      "get": {
+        "tags": [
+          "CodexGateway"
+        ],
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "clientOpId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoteChatOpStatusResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoteChatOpStatusResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoteChatOpStatusResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoteChatOpStatusResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoteChatOpStatusResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoteChatOpStatusResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/gateway/events/summary": {
+      "get": {
+        "tags": [
+          "CodexGateway"
+        ],
+        "parameters": [
+          {
+            "name": "mode",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "default": "snapshot"
+            }
+          },
+          {
+            "name": "snapshotId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "pageToken",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "afterEventId",
+            "in": "query",
+            "schema": {
+              "pattern": "^-?(?:0|[1-9]\\d*)$",
+              "type": [
+                "integer",
+                "string"
+              ],
+              "format": "int64"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "pattern": "^-?(?:0|[1-9]\\d*)$",
+              "type": [
+                "integer",
+                "string"
+              ],
+              "format": "int32",
+              "default": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemotePendingSummarySnapshotResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemotePendingSummarySnapshotResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemotePendingSummarySnapshotResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -9160,6 +9429,44 @@
           }
         }
       },
+      "GatewayChatAcceptedResponse": {
+        "required": [
+          "messageId",
+          "sessionId"
+        ],
+        "type": "object",
+        "properties": {
+          "messageId": {
+            "type": "string"
+          },
+          "sessionId": {
+            "type": "string"
+          }
+        }
+      },
+      "GatewayChatRejectedResponse": {
+        "required": [
+          "success",
+          "reason",
+          "message",
+          "sessionId"
+        ],
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "sessionId": {
+            "type": "string"
+          }
+        }
+      },
       "GatewayChatRequest": {
         "type": "object",
         "properties": {
@@ -9703,6 +10010,12 @@
             ]
           },
           "origin": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "controlChannel": {
             "type": [
               "null",
               "string"
@@ -10377,6 +10690,213 @@
               "string"
             ],
             "format": "int32"
+          }
+        }
+      },
+      "RemoteAttachmentUploadStatusResponse": {
+        "required": [
+          "status",
+          "uploadId",
+          "fileSha256",
+          "attachment"
+        ],
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "uploadId": {
+            "type": "string"
+          },
+          "fileSha256": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "attachment": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/UploadedAttachmentDto"
+              }
+            ]
+          }
+        }
+      },
+      "RemoteChatOpStatusResponse": {
+        "required": [
+          "status",
+          "clientOpId",
+          "conversationId",
+          "messageId",
+          "accepted"
+        ],
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "clientOpId": {
+            "type": "string"
+          },
+          "conversationId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "messageId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "accepted": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GatewayChatAcceptedResponse"
+              }
+            ]
+          }
+        }
+      },
+      "RemotePendingSummarySnapshotResponse": {
+        "required": [
+          "mode",
+          "snapshotId",
+          "summaryEpoch",
+          "resumeAfterEventId",
+          "nextPageToken",
+          "snapshotComplete",
+          "resetRequired",
+          "items"
+        ],
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string"
+          },
+          "snapshotId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "summaryEpoch": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "resumeAfterEventId": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "nextPageToken": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "snapshotComplete": {
+            "type": "boolean"
+          },
+          "resetRequired": {
+            "type": "boolean"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RemotePendingTodoItem"
+            }
+          }
+        }
+      },
+      "RemotePendingTodoItem": {
+        "required": [
+          "eventId",
+          "sourceKind",
+          "opaqueRefId",
+          "sessionId",
+          "title",
+          "summary",
+          "status",
+          "isTerminal",
+          "readOnlyInRemote",
+          "createdAtUtc",
+          "expiresAtUtc"
+        ],
+        "type": "object",
+        "properties": {
+          "eventId": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "sourceKind": {
+            "type": "string"
+          },
+          "opaqueRefId": {
+            "type": "string"
+          },
+          "sessionId": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "isTerminal": {
+            "type": "boolean"
+          },
+          "readOnlyInRemote": {
+            "type": "boolean"
+          },
+          "createdAtUtc": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expiresAtUtc": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "resolvedReason": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "approvalId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "requestDigest": {
+            "type": [
+              "null",
+              "string"
+            ]
           }
         }
       },

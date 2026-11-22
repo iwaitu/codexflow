@@ -4,8 +4,10 @@
 
 using System.Text;
 using CodexFlow.Core.Abstractions;
+using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Core.LanguageServices;
 using CodexFlow.Core.Models;
+using CodexFlow.Core.Remote;
 using Microsoft.Extensions.Logging;
 
 namespace CodexFlow.Core.Agents.Tools;
@@ -15,7 +17,8 @@ namespace CodexFlow.Core.Agents.Tools;
 /// </summary>
 public sealed class EditFileTool(
     ILogger<EditFileTool> logger,
-    ILanguageServiceRefreshNotifier? refreshNotifier = null) : ICodexTool
+    ILanguageServiceRefreshNotifier? refreshNotifier = null,
+    IExecutionApprovalBroker? approvalBroker = null) : ICodexTool
 {
     public string Name => "edit_file";
 
@@ -127,6 +130,13 @@ public sealed class EditFileTool(
                         DryRun = true
                     },
                     summary: $"Dry run edit_file {normalizedPath}: {ReplacementCount(matchCount, replaceAll)} replacement(s).");
+            }
+
+            var remoteRefusal = await RemoteWorkspaceWriteGate.AuthorizeWriteIfRemoteAsync(
+                Name, baseRoot, normalizedPath, preview, approvalBroker, arguments, ct).ConfigureAwait(false);
+            if (remoteRefusal is not null)
+            {
+                return remoteRefusal;
             }
 
             await ToolPathResolver.WriteAllTextVerifiedAsync(fullPath, baseRoot, updated, readVersion, ct).ConfigureAwait(false);

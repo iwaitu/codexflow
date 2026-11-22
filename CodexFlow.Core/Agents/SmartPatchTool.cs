@@ -3,11 +3,13 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 using CodexFlow.Core.Abstractions;
+using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Core.Hashline.Constants;
 using CodexFlow.Core.Hashline.Infrastructure;
 using CodexFlow.Core.Hashline.Models;
 using CodexFlow.Core.LanguageServices;
 using CodexFlow.Core.Models;
+using CodexFlow.Core.Remote;
 using Microsoft.Extensions.Logging;
 using CodexFlow.Core.Agents.Tools;
 using Newtonsoft.Json.Linq;
@@ -33,6 +35,7 @@ public class SmartPatchTool : ICodexTool
     private readonly HashlineOptions? _hashlineOptions;
     private readonly ILanguageServiceRefreshNotifier? _refreshNotifier;
     private readonly ILogger<SmartPatchTool> _logger;
+    private readonly IExecutionApprovalBroker? _approvalBroker;
 
     public string Name => "ivilson_smart_patch";
     public string Description => "在影子工作区应用 Unified Diff 格式补丁。执行前自动创建 Git 快照，失败时自动回滚，确保工作区安全。\n" +
@@ -135,13 +138,15 @@ public class SmartPatchTool : ICodexTool
         IHashlineFileService? hashlineService,
         HashlineOptions? hashlineOptions,
         ILanguageServiceRefreshNotifier? refreshNotifier,
-        ILogger<SmartPatchTool> logger)
+        ILogger<SmartPatchTool> logger,
+        IExecutionApprovalBroker? approvalBroker = null)
     {
         _gitService = gitService;
         _hashlineService = hashlineService;
         _hashlineOptions = hashlineOptions;
         _refreshNotifier = refreshNotifier;
         _logger = logger;
+        _approvalBroker = approvalBroker;
     }
 
     public async Task<CodexToolResult> ExecuteAsync(Dictionary<string, object?> arguments, CancellationToken ct = default)
@@ -186,6 +191,19 @@ public class SmartPatchTool : ICodexTool
 
         try
         {
+            var remoteRefusal = await RemoteWorkspaceWriteGate.AuthorizeWriteIfRemoteAsync(
+                Name,
+                baseRoot,
+                ExtractTargetFileFromPatch(patchContent) ?? "(smart-patch)",
+                patchContent,
+                _approvalBroker,
+                arguments,
+                ct).ConfigureAwait(false);
+            if (remoteRefusal is not null)
+            {
+                return remoteRefusal;
+            }
+
             // 1. 执行前原子快照 (Checkpoint)
             // 在影子路径的分支上记录当前状态，确保万一 patch 导致环境崩溃可以瞬间通过 git reset 恢复
             // Inside a trusted context the write below is all-or-nothing and identity-checked, so no host-git checkpoint commit
@@ -315,6 +333,23 @@ public class SmartPatchTool : ICodexTool
             }
 
             NormalizeHashlineRequestFilePath(parseResult.Request, baseRoot);
+
+            if (!parseResult.Request.DryRun)
+            {
+                var gateRelPath = Path.GetRelativePath(baseRoot, parseResult.Request.FilePath).Replace('\\', '/');
+                var remoteRefusal = await RemoteWorkspaceWriteGate.AuthorizeWriteIfRemoteAsync(
+                    Name,
+                    baseRoot,
+                    gateRelPath,
+                    $"hashline smart_patch {gateRelPath} ({parseResult.Request.Operations.Count} ops)",
+                    _approvalBroker,
+                    arguments,
+                    ct).ConfigureAwait(false);
+                if (remoteRefusal is not null)
+                {
+                    return remoteRefusal;
+                }
+            }
 
             // 2. 执行前原子快照 (Checkpoint)
             if (!Tools.ToolPathResolver.HasAmbientTrustedContext)

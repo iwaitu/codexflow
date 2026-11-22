@@ -11,6 +11,7 @@ using CodexFlow.Contracts.Browser;
 using CodexFlow.Core.Browser;
 using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Core.Gateway;
+using CodexFlow.Core.Remote;
 using Microsoft.Extensions.Logging;
 
 namespace CodexFlow.Orchestration.Browser;
@@ -33,6 +34,7 @@ public sealed class BrowserApprovalCoordinator : IBrowserApprovalCoordinator
     private readonly ICodexGateway? _gateway;
     private readonly IControlPlaneStateProvider? _controlPlane;
     private readonly ILogger<BrowserApprovalCoordinator> _logger;
+    private readonly IRemotePendingProjection? _remotePendingProjection;
 
     private readonly ConcurrentDictionary<string, PendingBrowserApprovalEntry> _pending = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> _sessionGrants = new(StringComparer.Ordinal);
@@ -40,12 +42,14 @@ public sealed class BrowserApprovalCoordinator : IBrowserApprovalCoordinator
     public BrowserApprovalCoordinator(
         ILogger<BrowserApprovalCoordinator> logger,
         ICodexGateway? gateway = null,
-        IControlPlaneStateProvider? controlPlane = null)
+        IControlPlaneStateProvider? controlPlane = null,
+        IRemotePendingProjection? remotePendingProjection = null)
     {
         ArgumentNullException.ThrowIfNull(logger);
         _logger = logger;
         _gateway = gateway;
         _controlPlane = controlPlane;
+        _remotePendingProjection = remotePendingProjection;
     }
 
     public bool HasApproval(string approvalId)
@@ -90,7 +94,9 @@ public sealed class BrowserApprovalCoordinator : IBrowserApprovalCoordinator
         var timeout = hasSubscribers ? DefaultApprovalTimeout : NoSubscriberTimeout;
         var approvalId = ApprovalIdPrefix + Guid.NewGuid().ToString("N")[..16];
         var expiresAt = DateTimeOffset.UtcNow.Add(timeout);
-        var allowedDecisions = prompt.AllowSessionScope
+        var originChannel = RemoteExecutionAmbientContext.Current?.Channel ?? ControlChannel.Local;
+        var allowSessionScope = originChannel != ControlChannel.Remote && prompt.AllowSessionScope;
+        var allowedDecisions = allowSessionScope
             ? new[] { "allow_once", "allow_session", "deny" }
             : new[] { "allow_once", "deny" };
 
@@ -111,9 +117,10 @@ public sealed class BrowserApprovalCoordinator : IBrowserApprovalCoordinator
             ControlPlaneAvailable: controlPlaneAvailable,
             SelfApprovalProtection: _controlPlane?.SelfApprovalProtection ?? true);
 
-        var entry = new PendingBrowserApprovalEntry(dto, prompt.AllowSessionScope);
+        var entry = new PendingBrowserApprovalEntry(dto, allowSessionScope, originChannel);
         _pending[approvalId] = entry;
 
+        await PublishToRemoteProjectionAsync(dto, originChannel, "pending", isTerminal: false, null, CancellationToken.None).ConfigureAwait(false);
         await PublishEventAsync(
             prompt.SessionId,
             GatewaySseEventType.BrowserApprovalRequested,
@@ -141,7 +148,7 @@ public sealed class BrowserApprovalCoordinator : IBrowserApprovalCoordinator
 
             if (_pending.TryRemove(approvalId, out var removed) && removed.Tcs.TrySetResult(cancelledOutcome))
             {
-                await PublishResolvedAsync(dto, "cancelled", "system", "Turn cancelled.").ConfigureAwait(false);
+                await PublishResolvedAsync(dto, removed.OriginChannel, "cancelled", "system", "Turn cancelled.").ConfigureAwait(false);
             }
 
             return cancelledOutcome;
@@ -162,7 +169,7 @@ public sealed class BrowserApprovalCoordinator : IBrowserApprovalCoordinator
 
             if (_pending.TryRemove(approvalId, out var removed) && removed.Tcs.TrySetResult(expiredOutcome))
             {
-                await PublishResolvedAsync(dto, "expired", "system", "Approval timed out.").ConfigureAwait(false);
+                await PublishResolvedAsync(dto, removed.OriginChannel, "expired", "system", "Approval timed out.").ConfigureAwait(false);
             }
 
             return expiredOutcome;
@@ -196,7 +203,7 @@ public sealed class BrowserApprovalCoordinator : IBrowserApprovalCoordinator
                     ErrorMessage: "浏览器高风险操作审批已过期。");
                 if (expiredEntry.Tcs.TrySetResult(expiredOutcome))
                 {
-                    await PublishResolvedAsync(expiredEntry.Request, "expired", "system", "Approval expired before submission.").ConfigureAwait(false);
+                    await PublishResolvedAsync(expiredEntry.Request, expiredEntry.OriginChannel, "expired", "system", "Approval expired before submission.").ConfigureAwait(false);
                 }
             }
 
@@ -215,6 +222,23 @@ public sealed class BrowserApprovalCoordinator : IBrowserApprovalCoordinator
             return new ApprovalSubmissionResult(
                 ApprovalSubmissionOutcome.DecisionNotAllowed,
                 "Browser approvals do not permit allow_always; use allow_once, allow_session, or deny.");
+        }
+
+        if (RemoteExecutionAmbientContext.IsRemote)
+        {
+            if (decision == ExecutionApprovalDecisionKind.AllowSession)
+            {
+                return new ApprovalSubmissionResult(
+                    ApprovalSubmissionOutcome.DecisionNotAllowed,
+                    "Remote channel only permits allow_once or deny for browser approvals.");
+            }
+
+            if (entry.OriginChannel != ControlChannel.Remote && decision != ExecutionApprovalDecisionKind.Deny)
+            {
+                return new ApprovalSubmissionResult(
+                    ApprovalSubmissionOutcome.DecisionNotAllowed,
+                    "Remote channel may only deny browser approvals initiated locally.");
+            }
         }
 
         if (decision == ExecutionApprovalDecisionKind.AllowSession && !entry.AllowSessionScope)
@@ -253,7 +277,7 @@ public sealed class BrowserApprovalCoordinator : IBrowserApprovalCoordinator
             grants[BuildGrantKey(removed.Request.TargetOrigin, category)] = 0;
         }
 
-        await PublishResolvedAsync(removed.Request, wireDecision, decidedBy ?? "user", note).ConfigureAwait(false);
+        await PublishResolvedAsync(removed.Request, removed.OriginChannel, wireDecision, decidedBy ?? "user", note).ConfigureAwait(false);
         return new ApprovalSubmissionResult(ApprovalSubmissionOutcome.Resolved, $"Browser approval resolved with '{wireDecision}'.");
     }
 
@@ -296,7 +320,7 @@ public sealed class BrowserApprovalCoordinator : IBrowserApprovalCoordinator
                     GrantedForSession: false,
                     ErrorCode: "approval_cancelled",
                     ErrorMessage: reason));
-                _ = PublishResolvedAsync(removed.Request, "cancelled", "system", reason);
+                _ = PublishResolvedAsync(removed.Request, removed.OriginChannel, "cancelled", "system", reason);
             }
         }
     }
@@ -309,8 +333,15 @@ public sealed class BrowserApprovalCoordinator : IBrowserApprovalCoordinator
         }
     }
 
-    private Task PublishResolvedAsync(BrowserApprovalRequestDto request, string decision, string decidedBy, string? note)
-        => PublishEventAsync(
+    private async Task PublishResolvedAsync(
+        BrowserApprovalRequestDto request,
+        ControlChannel originChannel,
+        string decision,
+        string decidedBy,
+        string? note)
+    {
+        await PublishToRemoteProjectionAsync(request, originChannel, decision, isTerminal: true, note, CancellationToken.None).ConfigureAwait(false);
+        await PublishEventAsync(
             request.SessionId,
             GatewaySseEventType.BrowserApprovalResolved,
             new Dictionary<string, object?>
@@ -322,7 +353,8 @@ public sealed class BrowserApprovalCoordinator : IBrowserApprovalCoordinator
                 ["note"] = note,
                 ["resolvedAtUtc"] = DateTimeOffset.UtcNow
             },
-            CancellationToken.None);
+            CancellationToken.None).ConfigureAwait(false);
+    }
 
     private async Task PublishEventAsync(string sessionId, string eventType, object payload, CancellationToken ct)
     {
@@ -369,10 +401,50 @@ public sealed class BrowserApprovalCoordinator : IBrowserApprovalCoordinator
     private static string BuildGrantKey(string origin, string actionCategory)
         => $"{origin.Trim().ToLowerInvariant()}|{actionCategory.Trim().ToLowerInvariant()}";
 
-    private sealed class PendingBrowserApprovalEntry(BrowserApprovalRequestDto request, bool allowSessionScope)
+    private async Task PublishToRemoteProjectionAsync(
+        BrowserApprovalRequestDto request,
+        ControlChannel originChannel,
+        string status,
+        bool isTerminal,
+        string? resolvedReason,
+        CancellationToken ct)
+    {
+        if (_remotePendingProjection is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _remotePendingProjection.PublishAsync(
+                sourceKind: "browser_approval",
+                opaqueRefId: request.ApprovalId,
+                sessionId: request.SessionId,
+                title: $"{request.Tool}: {request.TargetOrigin}",
+                summary: string.IsNullOrWhiteSpace(request.TargetDescription) ? request.Action : request.TargetDescription,
+                status: status,
+                isTerminal: isTerminal,
+                readOnlyInRemote: originChannel != ControlChannel.Remote,
+                expiresAtUtc: request.ExpiresAtUtc,
+                resolvedReason: resolvedReason,
+                approvalId: request.ApprovalId,
+                requestDigest: request.RequestDigest,
+                ct: ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to update remote pending projection for browser approval {ApprovalId}.", request.ApprovalId);
+        }
+    }
+
+    private sealed class PendingBrowserApprovalEntry(
+        BrowserApprovalRequestDto request,
+        bool allowSessionScope,
+        ControlChannel originChannel)
     {
         public BrowserApprovalRequestDto Request { get; } = request;
         public bool AllowSessionScope { get; } = allowSessionScope;
+        public ControlChannel OriginChannel { get; } = originChannel;
         public TaskCompletionSource<BrowserApprovalOutcome> Tcs { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 }

@@ -22,6 +22,7 @@ namespace CodexFlow.Orchestration.Persistence;
 [JsonSerializable(typeof(GatewayChannelToolResultSnapshot[]), TypeInfoPropertyName = "ToolResults")]
 [JsonSerializable(typeof(GatewayChannelToolOutputSnapshot[]), TypeInfoPropertyName = "ToolOutputs")]
 [JsonSerializable(typeof(GatewayToolHistoryEnvelope))]
+[JsonSerializable(typeof(UploadedAttachmentResult))]
 [JsonSerializable(typeof(IReadOnlyList<ValidatedChatAttachment>), TypeInfoPropertyName = "AttachmentList")]
 [JsonSerializable(typeof(List<ValidatedChatAttachment>), TypeInfoPropertyName = "Attachments")]
 [JsonSerializable(typeof(HostManagedNuGetAdvisoryProvider.CacheDocument), TypeInfoPropertyName = "NuGetAdvisoryCache")]

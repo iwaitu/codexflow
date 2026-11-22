@@ -141,7 +141,8 @@ public sealed class PlanTaskDispatchService(
     CodexSessionManager sessionManager,
     IServiceScopeFactory scopeFactory,
     IOptions<OpenSpecExecutionOptions>? openSpecExecutionOptions,
-    ILogger<PlanTaskDispatchService> logger) : IPlanTaskDispatchService
+    ILogger<PlanTaskDispatchService> logger,
+    CodexFlow.Core.Remote.IRemoteWorkspaceAuthorizationGuard? remoteWorkspaceAuthorizationGuard = null) : IPlanTaskDispatchService
 {
     private readonly OpenSpecExecutionOptions _openSpecExecutionOptions =
         openSpecExecutionOptions?.Value ?? new OpenSpecExecutionOptions();
@@ -301,6 +302,19 @@ public sealed class PlanTaskDispatchService(
         if (string.IsNullOrWhiteSpace(executionWorkspacePath))
         {
             executionWorkspacePath = latestSession.WorkspacePath;
+        }
+
+        if (CodexFlow.Core.Remote.RemoteExecutionAmbientContext.IsRemote && remoteWorkspaceAuthorizationGuard is not null)
+        {
+            var workspaceAuth = await remoteWorkspaceAuthorizationGuard
+                .AuthorizeSessionAsync(request.SessionId, executionWorkspacePath, projectLocation: null, ct)
+                .ConfigureAwait(false);
+            if (!workspaceAuth.Allowed)
+            {
+                return new PlanTaskDispatchResult(
+                    PlanTaskDispatchStatus.PlanInvalid,
+                    $"⛔ [{workspaceAuth.ReasonCode}] {workspaceAuth.Message}");
+            }
         }
 
         var workerPrompt = BuildWorkerExecutionPrompt(target, workerType);

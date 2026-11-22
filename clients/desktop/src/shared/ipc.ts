@@ -309,6 +309,7 @@ export type DesktopCommandAction =
   | 'new-workspace'
   | 'open-folder'
   | 'open-settings'
+  | 'open-remote-settings'
   | 'open-environment'
   | 'open-updates'
   | 'open-about'
@@ -408,6 +409,172 @@ export interface AppUpdateState {
   message: string | null;
 }
 
+export type RemoteProxyMode = 'system' | 'direct' | 'custom';
+
+export type RemoteDialState =
+  | 'stopped'
+  | 'paused'
+  | 'dialing'
+  | 'connected'
+  | 'backoff'
+  | 'auth_required_407'
+  | 'forbidden_403'
+  | 'unauthorized_401'
+  | 'rebind_required'
+  | 'upgrade_failed'
+  | 'network_error';
+
+export interface RemotePairingView {
+  pairingId: string;
+  mobileId: string;
+  platform: string;
+  deviceName: string;
+  bindingVersion: number;
+  sessionKeyId: string;
+  bioKeyId: string | null;
+  status: 'active' | 'revoked';
+  pairedAtUtc: string;
+  revokedAtUtc?: string | null;
+}
+
+export interface PendingPairPromptView {
+  pairingId: string;
+  ticketId: string;
+  mobileId: string;
+  platform: string;
+  deviceName: string;
+  sas6: string;
+  expiresAtUnix: number;
+  receivedAtUtc: string;
+}
+
+export interface RemoteStatusSnapshot {
+  config: {
+    portalUrl: string;
+    account: {
+      userId: string;
+      userIdHash: string;
+      accountEmail: string;
+    } | null;
+    device: {
+      deviceId: string;
+      deviceName: string;
+      hostInstanceId: string;
+      bindingVersion: number;
+      dataDirHash: string;
+      desktopKeyId: string;
+      desktopSpkiSha256: string;
+    } | null;
+    bound: boolean;
+    hasDeviceToken: boolean;
+    manualRemotePaused: boolean;
+    watermarks: {
+      accountRevocationSeq: number;
+      deviceRevocationSeq: number;
+    };
+    pairings: RemotePairingView[];
+    proxy: {
+      mode: RemoteProxyMode;
+      customUrl: string;
+      username: string;
+      hasPassword: boolean;
+    };
+  };
+  dial: {
+    state: RemoteDialState;
+    dialGeneration: number;
+    retryAttempt: number;
+    nextRetryAtUtc: string | null;
+    lastError: string | null;
+    resolvedProxyDescription: string;
+  };
+  connEpoch: number | null;
+  activeEpochExpiresAtUnix: number | null;
+  lastPongAtUtc: string | null;
+  pendingPairRequests: PendingPairPromptView[];
+  activeStreamCount: number;
+  safeStorageAvailable: boolean;
+  lastHostEventId: number;
+}
+
+export interface RemoteActionResult<T> {
+  ok: boolean;
+  data?: T;
+  error?: string;
+}
+
+export interface RemoteSendOtpPayload {
+  email: string;
+  deviceName?: string;
+}
+
+export interface RemoteSendOtpResult {
+  message: string;
+}
+
+export interface RemoteBindPayload {
+  email: string;
+  code: string;
+  deviceName?: string;
+  confirmAccountSwitch?: boolean;
+}
+
+export type RemoteBindResult =
+  | {
+      status: 'bound';
+      snapshot: RemoteStatusSnapshot;
+    }
+  | {
+      status: 'requires_account_switch_confirmation';
+      previousAccountEmail: string | null;
+      nextUserId: string;
+    };
+
+export interface RemoteQrTicketResult {
+  ticketId: string;
+  qrBootstrapToken: string;
+  bindingVersion: number;
+  expiresAt: string;
+  qrUri: string;
+}
+
+export interface RemoteProxyUpdatePayload {
+  mode: RemoteProxyMode;
+  customUrl?: string;
+  username?: string;
+  password?: string | null;
+  clearPassword?: boolean;
+}
+
+export interface RemoteWorkspaceAuthItem {
+  workspaceRealPath: string;
+  sessionId: string | null;
+  authorizedAtUtc: string;
+}
+
+export interface RemoteControlBridge {
+  getStatus(): Promise<RemoteActionResult<RemoteStatusSnapshot>>;
+  onStatusChanged(listener: (snapshot: RemoteStatusSnapshot) => void): () => void;
+  setPortalUrl(portalUrl: string): Promise<RemoteActionResult<RemoteStatusSnapshot>>;
+  sendBindOtp(payload: RemoteSendOtpPayload): Promise<RemoteActionResult<RemoteSendOtpResult>>;
+  verifyAndBind(payload: RemoteBindPayload): Promise<RemoteActionResult<RemoteBindResult>>;
+  unbind(): Promise<RemoteActionResult<RemoteStatusSnapshot>>;
+  setManualPaused(paused: boolean): Promise<RemoteActionResult<RemoteStatusSnapshot>>;
+  setProxySettings(payload: RemoteProxyUpdatePayload): Promise<RemoteActionResult<RemoteStatusSnapshot>>;
+  issueQrTicket(): Promise<RemoteActionResult<RemoteQrTicketResult>>;
+  respondPairRequest(payload: {
+    pairingId: string;
+    approved: boolean;
+  }): Promise<RemoteActionResult<RemoteStatusSnapshot>>;
+  revokePairing(pairingId: string): Promise<RemoteActionResult<RemoteStatusSnapshot>>;
+  listWorkspaceAuthorizations(): Promise<RemoteActionResult<RemoteWorkspaceAuthItem[]>>;
+  setWorkspaceAuthorization(payload: {
+    workspacePath: string;
+    sessionId?: string;
+    authorized: boolean;
+  }): Promise<RemoteActionResult<{ workspaceRealPath: string; authorized: boolean }>>;
+}
+
 export interface DesktopBridge {
   getBackendConnection(): Promise<BackendConnectionPublicInfo>;
   onBackendConnectionChanged(listener: (info: BackendConnectionPublicInfo) => void): () => void;
@@ -505,6 +672,7 @@ export interface DesktopBridge {
   ): Promise<EnvironmentInstallStartResult>;
   cancelEnvironmentInstall(): Promise<boolean>;
   onEnvironmentInstallEvent(listener: (event: EnvironmentInstallEvent) => void): () => void;
+  remote?: RemoteControlBridge;
 }
 
 export const IPC_CHANNELS = {
@@ -568,4 +736,17 @@ export const IPC_CHANNELS = {
   installEnvironmentDependency: 'codexflow:install-environment-dependency',
   cancelEnvironmentInstall: 'codexflow:cancel-environment-install',
   environmentInstallEvent: 'codexflow:environment-install-event',
+  remoteGetStatus: 'codexflow:remote-get-status',
+  remoteStatusChanged: 'codexflow:remote-status-changed',
+  remoteSetPortalUrl: 'codexflow:remote-set-portal-url',
+  remoteSendBindOtp: 'codexflow:remote-send-bind-otp',
+  remoteVerifyAndBind: 'codexflow:remote-verify-and-bind',
+  remoteUnbind: 'codexflow:remote-unbind',
+  remoteSetManualPaused: 'codexflow:remote-set-manual-paused',
+  remoteSetProxySettings: 'codexflow:remote-set-proxy-settings',
+  remoteIssueQrTicket: 'codexflow:remote-issue-qr-ticket',
+  remoteRespondPairRequest: 'codexflow:remote-respond-pair-request',
+  remoteRevokePairing: 'codexflow:remote-revoke-pairing',
+  remoteListWorkspaceAuthorizations: 'codexflow:remote-list-workspace-authorizations',
+  remoteSetWorkspaceAuthorization: 'codexflow:remote-set-workspace-authorization',
 } as const;
