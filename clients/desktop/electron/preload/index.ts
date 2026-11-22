@@ -63,6 +63,8 @@ const api: DesktopBridge = {
     ipcRenderer.invoke(IPC_CHANNELS.closeBrowserSession, sessionId),
   startBrowserTakeover: (sessionId: string, reason?: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.startBrowserTakeover, sessionId, reason),
+  controlBrowserPanel: (sessionId, request) =>
+    ipcRenderer.invoke(IPC_CHANNELS.controlBrowserPanel, sessionId, request),
   completeBrowserTakeover: (sessionId: string, note?: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.completeBrowserTakeover, sessionId, note),
   updateComputerSettings: (payload: UpdateComputerSettingsRequest) =>

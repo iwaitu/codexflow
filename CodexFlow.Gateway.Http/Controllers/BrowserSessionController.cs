@@ -38,6 +38,24 @@ public sealed class BrowserSessionController(
     IControlPlaneStateProvider? controlPlane = null,
     ProtectedLocalPortRegistry? portRegistry = null) : GatewayEndpointHandler
 {
+    public async Task<IResult> ControlBrowserPanel(
+        string sessionId, BrowserPanelRequest request, CancellationToken ct)
+    {
+        if (!ControlPlaneAuthConstants.IsControlPlanePrincipal(User, controlPlane))
+            return Forbid();
+
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        var session = await chatService.GetSession(sessionId).ConfigureAwait(false);
+        if (session is null || string.IsNullOrEmpty(userId) || !string.Equals(session.UserId, userId, StringComparison.Ordinal))
+            return NotFound(new BrowserApiErrorDto("session_not_found", "Session does not exist or is not owned by the caller."));
+
+        var caller = new BrowserTrustedCallerContext(sessionId, session.WorkMode, session.PlanModeActive, session.WorkspacePath);
+        var result = await browserSessionManager.ControlPanelAsync(caller, request, ct).ConfigureAwait(false);
+        if (result.Response is null)
+            return BadRequest(new BrowserApiErrorDto(result.ErrorCode ?? "browser_panel_failed", result.Message ?? "浏览器操作失败。"));
+        Response.Headers.CacheControl = "no-store";
+        return Ok(result.Response);
+    }
 
     public async Task<IResult> GetBrowserState(
         string sessionId,

@@ -52,6 +52,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\CodexFlow.Contracts\CodexFlow.Contracts.csproj" />
+    <EmbeddedResource Include="Skills/frontend-browser-debug/SKILL.md" LogicalName="CodexFlow.Skills.frontend-browser-debug.SKILL.md" />
   </ItemGroup>
 
 </Project>

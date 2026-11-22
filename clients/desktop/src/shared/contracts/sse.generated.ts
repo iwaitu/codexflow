@@ -353,6 +353,8 @@ export interface SseBrowserStateUpdatedPayload {
   takeoverReason?: string | null;
   takeoverStartedAtUtc?: string | null;
   isRemote?: boolean | null;
+  panelControlAvailable?: boolean | null;
+  panelControlActive?: boolean | null;
   [key: string]: unknown;
 }
 

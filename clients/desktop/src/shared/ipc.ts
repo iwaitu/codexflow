@@ -253,6 +253,9 @@ export type BrowserSessionStateDto = components['schemas']['BrowserSessionStateD
 export type BrowserApprovalRequestDto = components['schemas']['BrowserApprovalRequestDto'];
 export type BrowserSessionCloseResponse = components['schemas']['BrowserSessionCloseResponse'];
 export type BrowserTakeoverResponse = components['schemas']['BrowserTakeoverResponse'];
+export type BrowserPanelRequest = components['schemas']['BrowserPanelRequest'];
+export type BrowserPanelResponse = components['schemas']['BrowserPanelResponse'];
+export type BrowserPanelFrame = components['schemas']['BrowserPanelFrame'];
 export type ComputerDriverStatusDto = components['schemas']['ComputerDriverStatusDto'];
 export type ComputerSettingsDto = components['schemas']['ComputerSettingsDto'];
 export type UpdateComputerSettingsRequest = components['schemas']['UpdateComputerSettingsRequest'];
@@ -420,6 +423,7 @@ export interface DesktopBridge {
   updateBrowserSettings(payload: UpdateBrowserSettingsRequest): Promise<ControlPlaneCallResult<BrowserSettingsDto>>;
   closeBrowserSession(sessionId: string): Promise<ControlPlaneCallResult<BrowserSessionCloseResponse>>;
   startBrowserTakeover(sessionId: string, reason?: string): Promise<ControlPlaneCallResult<BrowserTakeoverResponse>>;
+  controlBrowserPanel?(sessionId: string, request: BrowserPanelRequest): Promise<ControlPlaneCallResult<BrowserPanelResponse>>;
   completeBrowserTakeover(sessionId: string, note?: string): Promise<ControlPlaneCallResult<BrowserTakeoverResponse>>;
   updateComputerSettings(payload: UpdateComputerSettingsRequest): Promise<ControlPlaneCallResult<ComputerSettingsDto>>;
   closeComputerSession(sessionId: string): Promise<ControlPlaneCallResult<ComputerSessionCloseResponse>>;
@@ -519,6 +523,7 @@ export const IPC_CHANNELS = {
   updateBrowserSettings: 'codexflow:update-browser-settings',
   closeBrowserSession: 'codexflow:close-browser-session',
   startBrowserTakeover: 'codexflow:start-browser-takeover',
+  controlBrowserPanel: 'codexflow:control-browser-panel',
   completeBrowserTakeover: 'codexflow:complete-browser-takeover',
   updateComputerSettings: 'codexflow:update-computer-settings',
   closeComputerSession: 'codexflow:close-computer-session',

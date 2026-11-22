@@ -21,6 +21,7 @@ internal sealed class BrowserTabRecord
     public required string CdpSessionId { get; init; }
     public string Url { get; set; } = "about:blank";
     public string Title { get; set; } = string.Empty;
+    public long NavigationRevision;
     public int? IsolatedWorldContextId { get; set; }
     public Dictionary<string, CdpSnapshotElement> ElementRefs { get; } = new(StringComparer.OrdinalIgnoreCase);
     public List<BrowserChildFrameRecord> ChildFrames { get; } = [];
@@ -59,6 +60,7 @@ internal sealed class CdpBrowserSessionState : IAsyncDisposable
     private string? _takeoverReason;
     private DateTimeOffset? _takeoverStartedAtUtc;
     private TaskCompletionSource<string?>? _takeoverTcs;
+    private BrowserPanelLease? _panelLease;
 
     public string SessionId { get; }
     public string BrowserContextId { get; }
@@ -71,6 +73,7 @@ internal sealed class CdpBrowserSessionState : IAsyncDisposable
     public string GenerationId { get; } = Guid.NewGuid().ToString("N")[..8];
     public BrowserOutboundProxy? OutboundProxy { get; }
     public SemaphoreSlim ExecutionLock { get; } = new(1, 1);
+    public BrowserPanelLease? PanelLease => Volatile.Read(ref _panelLease);
     public string? ActiveTargetId { get; private set; }
     public DateTimeOffset LastActivityUtc { get; private set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAtUtc { get; private set; } = DateTimeOffset.UtcNow;
@@ -161,16 +164,26 @@ internal sealed class CdpBrowserSessionState : IAsyncDisposable
         }
     }
 
-    public bool CompleteTakeover(string? note)
+    public void BeginPanelTakeover(BrowserPanelLease lease)
+    {
+        lock (_stateLock)
+        {
+            _ = BeginTakeover("用户正在侧栏操作浏览器", manual: true);
+            Volatile.Write(ref _panelLease, lease);
+        }
+    }
+
+    public bool CompleteTakeover(string? note, BrowserPanelLease? panelLease = null)
     {
         TaskCompletionSource<string?>? tcs;
         lock (_stateLock)
         {
-            if (!_takeoverActive && _takeoverTcs is null)
+            if (!ReferenceEquals(_panelLease, panelLease) || (!_takeoverActive && _takeoverTcs is null))
             {
                 return false;
             }
 
+            Volatile.Write(ref _panelLease, null);
             _takeoverActive = false;
             _isManualTakeover = false;
             _takeoverReason = null;
@@ -190,6 +203,7 @@ internal sealed class CdpBrowserSessionState : IAsyncDisposable
         TaskCompletionSource<string?>? tcs;
         lock (_stateLock)
         {
+            if (_panelLease is not null) return;
             _takeoverActive = false;
             _isManualTakeover = false;
             _takeoverReason = null;
@@ -742,7 +756,10 @@ internal sealed class CdpBrowserSessionState : IAsyncDisposable
                 TakeoverActive: _takeoverActive,
                 TakeoverReason: _takeoverReason,
                 TakeoverStartedAtUtc: _takeoverStartedAtUtc,
-                IsRemote: IsRemote);
+                IsRemote: IsRemote)
+            {
+                PanelControlActive = _panelLease is not null
+            };
         }
     }
 
@@ -754,6 +771,7 @@ internal sealed class CdpBrowserSessionState : IAsyncDisposable
         }
 
         _isClosed = true;
+        PanelLease?.Revoke();
         AbortTakeover("session_disposed");
         if (OutboundProxy is not null)
         {

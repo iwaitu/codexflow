@@ -147,6 +147,8 @@ export const AboutModal: React.FC<AboutModalProps> = ({
             </div>
           </div>
 
+          <p className="mt-3 text-center text-xs text-slate-400">版权所有 @codexflow.ai</p>
+
           <div className="mt-4 flex items-center justify-end gap-2">
             <button
               type="button"

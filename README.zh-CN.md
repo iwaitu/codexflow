@@ -376,10 +376,6 @@ python scripts/e2e/devsim run bugfix-python-pager --api http://127.0.0.1:32586 -
 
 - [发布流程](docs/releasing.md)
 - [本地执行威胁模型](docs/local-execution-threat-model.md)
-- [桌面端与本地执行设计](docs/plans/local-execution-and-desktop-client.md)
-- [业务 Skill 构建器设计](docs/plans/embedded-business-skill-builder.md)
 - [开发者模拟指南](scripts/e2e/devsim/README.md)
-
-设计文档可能包含超出某个发行版本的规划，具体可用能力应结合源码、发行说明和实际运行行为确认。
 
 [MPL-2.0](LICENSE)。Copyright © 2026 iwaitu。

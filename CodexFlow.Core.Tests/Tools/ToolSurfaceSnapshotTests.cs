@@ -64,6 +64,7 @@ public class ToolSurfaceSnapshotTests
             "monitor",
             "notebook_edit",
             "push_notification",
+            "read_builtin_skill",
             "read_mcp_resource",
             "remote_trigger",
             "report_task_status",

@@ -536,6 +536,10 @@ export const apiClient = {
     );
   },
 
+  listBuiltInSkills(auth: ApiAuthContext, signal?: AbortSignal): Promise<components['schemas']['BuiltInSkillDto'][]> {
+    return requestJson(auth, 'GET', '/api/skills/built-in', undefined, signal);
+  },
+
   listPublishedSkills(auth: ApiAuthContext): Promise<PublishedSkillDto[]> {
     return requestJson<PublishedSkillDto[]>(auth, 'GET', '/api/skills');
   },

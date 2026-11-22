@@ -288,7 +288,9 @@ public static class SseEventContractSchema
                     ("takeoverActive", Bool()),
                     ("takeoverReason", NullableStr()),
                     ("takeoverStartedAtUtc", NullableStr()),
-                    ("isRemote", OptionalBool())),
+                    ("isRemote", OptionalBool()),
+                    ("panelControlAvailable", OptionalBool()),
+                    ("panelControlActive", OptionalBool())),
                 required: ["sessionId", "status", "headless", "profileMode", "screenshotSeq", "consoleErrorCount"]),
             [GatewaySseEventType.BrowserApprovalRequested] = EventDef(
                 "Interactive control-plane approval request for a sensitive browser action or non-allowlisted dev loopback port.",

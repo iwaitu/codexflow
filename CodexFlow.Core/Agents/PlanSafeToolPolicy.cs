@@ -56,6 +56,7 @@ public static class PlanSafeToolPolicy
         "computer_screenshot",
         "ask_user_question",
         "tool_search",
+        Tools.ReadBuiltInSkillTool.ToolName,
         "user_learn_preference",
         "list_mcp_resources",
         "read_mcp_resource",

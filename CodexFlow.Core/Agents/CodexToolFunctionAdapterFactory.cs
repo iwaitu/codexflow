@@ -117,6 +117,7 @@ public static class CodexToolFunctionAdapterFactory
                 or ComputerToolNames.Act or ComputerToolNames.RequestTakeover
                 => SourceGeneratedToolFunction.Computer(tool, canonicalName, description),
             "skill"                 => CreateForSkill(tool, description),
+            ReadBuiltInSkillTool.ToolName => SourceGeneratedToolFunction.ReadBuiltInSkill(tool, description),
             "list_mcp_resources"    => CreateForListMcpResources(tool, description),
             "read_mcp_resource"     => CreateForReadMcpResource(tool, description),
             "enter_worktree"        => CreateForEnterWorktree(tool, description),
