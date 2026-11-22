@@ -167,6 +167,10 @@ public partial class CodexSession
     public string HistorySummary { get; set; } = string.Empty;
     public DateTime? LastCompressedAt { get; set; }
 
+    /// <summary>Returns the history replay cutoff only when a summary represents earlier messages.</summary>
+    public DateTime? GetHistoryReplayCutoff() =>
+        string.IsNullOrWhiteSpace(HistorySummary) ? null : LastCompressedAt;
+
     /// <summary>
     /// Phase 3: ExecutionSummary — 面向工程执行追踪的独立摘要。
     /// 由 <see cref="IMemoryService.SummarizeExecutionAsync"/> 生成，

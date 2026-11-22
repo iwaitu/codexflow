@@ -41,15 +41,16 @@ internal sealed class SqliteConversationMessageStore : IConversationMessageStore
             {
                 query += " AND Created > $createdAfterUtc";
                 command.Parameters.AddWithValue("$createdAfterUtc", createdAfterUtc.Value);
-                if (hardLimit.HasValue)
-                {
-                    // Match the EF query: cap from the newest end, then return in chronological order.
-                    query = $"SELECT {MessageColumns} FROM ({query} ORDER BY Created DESC LIMIT $limit)";
-                    command.Parameters.AddWithValue("$limit", hardLimit.Value);
-                }
             }
 
-            command.CommandText = query + " ORDER BY Created";
+            if (hardLimit.HasValue)
+            {
+                // Cap from the newest end, then return the selected rows in chronological order.
+                query = $"SELECT {MessageColumns} FROM ({query} ORDER BY Created DESC, Id DESC LIMIT $limit)";
+                command.Parameters.AddWithValue("$limit", Math.Max(0, hardLimit.Value));
+            }
+
+            command.CommandText = query + " ORDER BY Created, Id";
             await using var reader = await command.ExecuteReaderAsync();
             var messages = new List<IvilsonChatMessage>();
             while (await reader.ReadAsync())

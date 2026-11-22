@@ -29,6 +29,7 @@ public class CodexSessionManager
     private const string ContextEstimatedCharsMetadataKey = "ContextWindowEstimatedChars";
     private const string ContextEstimatedTokensMetadataKey = "ContextWindowEstimatedTokens";
     private const string ContextLastReportedTokensMetadataKey = "ContextWindowLastReportedTokens";
+    private const string ContextLastReportedConversationIdMetadataKey = "ContextWindowLastReportedConversationId";
     private const string ContextLastBaselineEstimatedTokensMetadataKey = "ContextWindowLastBaselineEstimatedTokens";
     private const string ContextRecentTurnsMetadataKey = "ContextWindowRecentTurns";
     private const string ContextSummaryCharsMetadataKey = "ContextWindowSummaryChars";
@@ -335,7 +336,7 @@ public class CodexSessionManager
                 EstimatedTokensBefore: tokensBefore,
                 EstimatedTokensAfter: tokensBefore,
                 SummaryChars: existingSummary.Length,
-                LastCompressedAtUtc: session.LastCompressedAt);
+                LastCompressedAtUtc: session.GetHistoryReplayCutoff());
         }
 
         string? candidateSummary = null;
@@ -391,6 +392,7 @@ public class CodexSessionManager
         session.LastCompressedAt = DateTime.UtcNow;
         session.RecentTurns.Clear();
         session.Metadata.Remove(ContextLastReportedTokensMetadataKey);
+        session.Metadata.Remove(ContextLastReportedConversationIdMetadataKey);
         session.Metadata.Remove(ContextLastBaselineEstimatedTokensMetadataKey);
 
         RefreshContextWindowSnapshot(session);
@@ -487,13 +489,23 @@ public class CodexSessionManager
     public Task RecordRuntimeUsageAsync(string sessionId, int promptTokens, int completionTokens, CancellationToken cancellationToken)
         => RecordRuntimeUsageAsync(sessionId, promptTokens, completionTokens, ct: cancellationToken);
 
-    public async Task RecordRuntimeUsageAsync(
+    public Task RecordRuntimeUsageAsync(
         string sessionId,
         int promptTokens,
         int completionTokens,
         int cachedPromptTokens = 0,
         int? lastContextTokens = null,
         CancellationToken ct = default)
+        => RecordRuntimeUsageAsync(sessionId, promptTokens, completionTokens, cachedPromptTokens, lastContextTokens, null, ct);
+
+    public async Task RecordRuntimeUsageAsync(
+        string sessionId,
+        int promptTokens,
+        int completionTokens,
+        int cachedPromptTokens,
+        int? lastContextTokens,
+        string? conversationId,
+        CancellationToken ct)
     {
         var session = await GetOrCreateSessionAsync(sessionId, string.Empty, string.Empty, (Uri?)null).ConfigureAwait(false);
 
@@ -516,6 +528,14 @@ public class CodexSessionManager
                 session.Metadata,
                 ContextLastBaselineEstimatedTokensMetadataKey,
                 baselineEstimated.ToString(CultureInfo.InvariantCulture));
+            if (string.IsNullOrWhiteSpace(conversationId))
+            {
+                changed |= session.Metadata.Remove(ContextLastReportedConversationIdMetadataKey);
+            }
+            else
+            {
+                changed |= SetMetadataValue(session.Metadata, ContextLastReportedConversationIdMetadataKey, conversationId);
+            }
         }
 
         if (changed)
@@ -541,6 +561,23 @@ public class CodexSessionManager
         var baselineEstimated = ParseLongMetadata(session.Metadata, ContextLastBaselineEstimatedTokensMetadataKey);
         var delta = Math.Max(0L, estimatedTokens - baselineEstimated);
         return checked(lastReportedTokens + delta);
+    }
+
+    public static long? TryGetReportedConversationContextTokens(CodexSession session, string conversationId)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+
+        if (session.Metadata.TryGetValue(ContextLastReportedConversationIdMetadataKey, out var reportedConversationId) &&
+            string.Equals(reportedConversationId, conversationId, StringComparison.Ordinal))
+        {
+            var tokens = ParseLongMetadata(session.Metadata, ContextLastReportedTokensMetadataKey);
+            if (tokens > 0)
+            {
+                return tokens;
+            }
+        }
+
+        return null;
     }
 
     private static long ParseLongMetadata(Dictionary<string, string> metadata, string key)
@@ -747,9 +784,11 @@ public class CodexSessionManager
         if (session.RecentTurns.Count > 0)
         {
             StructuredLog.Information(_logger, "Compressing conversation history on stage change. SessionId={SessionId}, TurnCount={Count}", sessionId, session.RecentTurns.Count);
-            var newConversationSummary = await _memoryService.SummarizeHistoryAsync(sessionId, session.HistorySummary, session.RecentTurns).ConfigureAwait(false);
-            session.HistorySummary = newConversationSummary;
-            session.LastCompressedAt = DateTime.UtcNow;
+            if (!await TryUpdateCompressedHistoryAsync(session, session.RecentTurns).ConfigureAwait(false))
+            {
+                return;
+            }
+
             session.RecentTurns.Clear();
             RefreshContextWindowSnapshot(session);
             await PersistCompressionProjectionAsync(session).ConfigureAwait(false);
@@ -920,38 +959,30 @@ public class CodexSessionManager
         long? warnLimitChars = null,
         long? hardLimitChars = null)
     {
-        var changed = false;
-
         var softLimit = _compressionTriggerOptions.ResolveRecentTurnsSoftLimit();
-        while (session.RecentTurns.Count > softLimit)
+        var overflowCount = session.RecentTurns.Count - softLimit;
+        var historyCompressed = false;
+        if (overflowCount > 0)
         {
-            var overflowCount = session.RecentTurns.Count - softLimit;
             var overflowTurns = session.RecentTurns.Take(overflowCount).ToList();
-            if (overflowTurns.Count == 0)
-            {
-                break;
-            }
-
-            session.HistorySummary = await _memoryService
-                .SummarizeHistoryAsync(sessionId, session.HistorySummary, overflowTurns)
-                .ConfigureAwait(false);
-            session.LastCompressedAt = DateTime.UtcNow;
+            historyCompressed = await TryUpdateCompressedHistoryAsync(session, overflowTurns).ConfigureAwait(false);
             RemoveOldestTurns(session.RecentTurns, overflowCount);
-            changed = true;
 
             StructuredLog.Information(
                 _logger,
-                "Context governance light-trim applied. SessionId={SessionId}, OverflowTurns={OverflowTurns}, SoftLimit={SoftLimit}",
+                "Context governance light-trim applied. SessionId={SessionId}, OverflowTurns={OverflowTurns}, SoftLimit={SoftLimit}, HistoryCompressed={HistoryCompressed}",
                 sessionId,
                 overflowCount,
-                softLimit);
+                softLimit,
+                historyCompressed);
         }
 
         var estimatedChars = EstimateConversationContextChars(session);
         var forceFullCompression = ShouldForceFullCompression(session, warnLimitChars, hardLimitChars, estimatedChars, out var governanceReason);
         var autoCompressionTriggered = ShouldAutoCompressConversation(session, out var estimatedTokens, out var thresholdTokens);
 
-        if (forceFullCompression || autoCompressionTriggered)
+        if ((forceFullCompression || autoCompressionTriggered) &&
+            await TryUpdateCompressedHistoryAsync(session, session.RecentTurns.ToList()).ConfigureAwait(false))
         {
             StructuredLog.Information(
                 _logger,
@@ -963,23 +994,35 @@ public class CodexSessionManager
                 thresholdTokens,
                 session.RecentTurns.Count);
 
-            session.HistorySummary = await _memoryService
-                .SummarizeHistoryAsync(sessionId, session.HistorySummary, session.RecentTurns.ToList())
-                .ConfigureAwait(false);
-            session.LastCompressedAt = DateTime.UtcNow;
             session.RecentTurns.Clear();
             // 历史压缩完成后，旧回合的实际模型水位已失效，等待下一轮请求重新上报压缩后的上下文尺寸。
             session.Metadata.Remove(ContextLastReportedTokensMetadataKey);
+            session.Metadata.Remove(ContextLastReportedConversationIdMetadataKey);
             session.Metadata.Remove(ContextLastBaselineEstimatedTokensMetadataKey);
-            changed = true;
+            historyCompressed = true;
         }
 
-        if (changed)
+        if (historyCompressed)
         {
             await PersistCompressionProjectionAsync(session).ConfigureAwait(false);
         }
 
-        return changed;
+        return overflowCount > 0 || historyCompressed;
+    }
+
+    private async Task<bool> TryUpdateCompressedHistoryAsync(CodexSession session, IReadOnlyList<ChatTurn> turns)
+    {
+        var existingSummary = session.HistorySummary ?? string.Empty;
+        var newSummary = await _memoryService.SummarizeHistoryAsync(session.Id, existingSummary, turns).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(newSummary) ||
+            string.Equals(newSummary.Trim(), existingSummary.Trim(), StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        session.HistorySummary = newSummary;
+        session.LastCompressedAt = DateTime.UtcNow;
+        return true;
     }
 
     private bool ShouldForceFullCompression(

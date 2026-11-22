@@ -117,7 +117,7 @@ export const App: React.FC = () => {
     setBrowserState,
     setComputerState,
     setVerificationReceipt,
-    setContextWindow,
+    refreshContextWindow,
     setJobs,
     setSessionPolicyState,
     dismissPlanModeExitRequest,
@@ -172,6 +172,10 @@ export const App: React.FC = () => {
     }
     return null;
   }, [connection]);
+
+  useEffect(() => {
+    void refreshContextWindow();
+  }, [auth, activeSessionId, activeConversationId, refreshContextWindow]);
 
   const prevInstanceKey = useRef<string | null>(null);
   useEffect(() => {
@@ -433,19 +437,7 @@ export const App: React.FC = () => {
     void queryClient.invalidateQueries({ queryKey: ['browser-settings'] });
     void queryClient.invalidateQueries({ queryKey: ['computer-settings'] });
     void queryClient.invalidateQueries({ queryKey: ['sessions'] });
-    if (auth && activeSessionId) {
-      const targetSessionId = activeSessionId;
-      const targetGeneration = useAppStore.getState().sessionGeneration;
-      void apiClient
-        .getContextWindow(auth, targetSessionId)
-        .then((cw) => {
-          const latest = useAppStore.getState();
-          if (latest.activeSessionId === targetSessionId && latest.sessionGeneration === targetGeneration) {
-            latest.setContextWindow(cw);
-          }
-        })
-        .catch(() => undefined);
-    }
+    void refreshContextWindow();
   };
 
   const activeWorkspaceSession = useMemo(() => {
@@ -772,15 +764,20 @@ export const App: React.FC = () => {
       setTurnNotice('当前回合正在执行中，请等待完成或取消后再压缩上下文。');
       return;
     }
+    const { sessionGeneration, connectionGeneration } = useAppStore.getState();
+    const isSameWorkspace = () => {
+      const latest = useAppStore.getState();
+      return latest.sessionGeneration === sessionGeneration && latest.connectionGeneration === connectionGeneration;
+    };
     setTurnNotice('正在压缩当前会话上下文，请稍候…');
     try {
       const res = await apiClient.compactContext(auth, activeSessionId, {
         conversationId: activeConversationId ?? undefined,
         focus: focus?.trim() || undefined,
       });
-      if (res.contextWindow) {
-        setContextWindow(res.contextWindow);
-      }
+      if (!isSameWorkspace()) return;
+      void refreshContextWindow();
+      if (useAppStore.getState().activeConversationId !== activeConversationId) return;
       if (res.compressed) {
         setTurnNotice(
           `上下文已压缩：归档 ${res.compressedTurnCount} 条对话，估算占用 ${res.estimatedTokensBefore.toLocaleString()} → ${res.estimatedTokensAfter.toLocaleString()} tokens。`,
@@ -789,6 +786,7 @@ export const App: React.FC = () => {
         setTurnNotice('当前没有可压缩的新增对话上下文。');
       }
     } catch (error) {
+      if (!isSameWorkspace() || useAppStore.getState().activeConversationId !== activeConversationId) return;
       const msg = error instanceof Error ? error.message : String(error);
       setTurnNotice(`压缩上下文失败：${msg}`);
     }
@@ -892,11 +890,6 @@ export const App: React.FC = () => {
         return;
       }
       useAppStore.setState({ messages: toChatMessages(history), messagesTruncated: false });
-      const cw = await apiClient.getContextWindow(auth, sid).catch(() => null);
-      const afterCw = useAppStore.getState();
-      if (afterCw.activeSessionId === sid && afterCw.sessionGeneration === gen) {
-        setContextWindow(cw);
-      }
     } catch (error) {
       setTurnNotice(`加载历史对话失败：${error instanceof Error ? error.message : String(error)}`);
     }

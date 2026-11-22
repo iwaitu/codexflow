@@ -1398,7 +1398,9 @@ export type paths = {
         };
         get: {
             parameters: {
-                query?: never;
+                query?: {
+                    conversationId?: string;
+                };
                 header?: never;
                 path: {
                     sessionId: string;

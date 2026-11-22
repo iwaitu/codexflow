@@ -228,11 +228,11 @@ public sealed class P3ApiAndWorkspaceAdmissionTests : IDisposable
             Assert.True(estimated > 7048, $"Expected active context tokens > 7048 after new turn, got {estimated}");
         }
 
-        // 当触发强制全量压缩后，旧的实测高水位基线应被清理。
+        // 摘要已成功生成后，旧的实测高水位基线应被清理。
         using (var scope = host.Services.CreateAsyncScope())
         {
             var sessionManager = scope.ServiceProvider.GetRequiredService<CodexSessionManager>();
-            await sessionManager.ApplyContextGovernanceAsync(sessionId, warnLimitChars: 10);
+            Assert.True((await sessionManager.CompressContextAsync(sessionId)).Compressed);
         }
 
         using (var cw3 = System.Text.Json.JsonDocument.Parse(
@@ -241,6 +241,54 @@ public sealed class P3ApiAndWorkspaceAdmissionTests : IDisposable
             var postCompression = cw3.RootElement.GetProperty("estimatedTokens").GetInt64();
             Assert.True(postCompression < 7048, $"Expected context tokens to drop after compression, got {postCompression}");
         }
+    }
+
+    [Fact]
+    public async Task ContextWindowSnapshot_ScopesUsageToTheSelectedConversation()
+    {
+        var globalSettings = Path.Combine(_root, "global-cw-conversation", "appsettings.json");
+        await using var host = await P3TestHost.StartAsync(
+            _root, globalSettings, ExecutionBackend.Local, ExecutionPermissionMode.Ask);
+        using var client = host.CreateNormalClient();
+
+        string sessionId;
+        string measuredConversation;
+        string estimatedConversation;
+        string emptyConversation;
+        string otherWorkspaceConversation;
+        await using (var scope = host.Services.CreateAsyncScope())
+        {
+            var chat = scope.ServiceProvider.GetRequiredService<IChatService>();
+            sessionId = await chat.CreateSession(LocalUser.Id, "Workspace");
+            measuredConversation = await chat.CreateConversationInSession(LocalUser.Id, sessionId, name: "Measured");
+            estimatedConversation = await chat.CreateConversationInSession(LocalUser.Id, sessionId, name: "Estimated");
+            emptyConversation = await chat.CreateConversationInSession(LocalUser.Id, sessionId, name: "Empty");
+            var otherWorkspace = await chat.CreateSession(LocalUser.Id, "Other workspace");
+            otherWorkspaceConversation = await chat.CreateConversationInSession(LocalUser.Id, otherWorkspace);
+
+            await chat.AddMessage(LocalUser.Id, measuredConversation, "hello", "world", 0, "test");
+            await chat.AddMessage(LocalUser.Id, estimatedConversation, new string('x', 400), "response", 0, "test");
+            var sessionManager = scope.ServiceProvider.GetRequiredService<CodexSessionManager>();
+            await sessionManager.RecordRuntimeUsageAsync(sessionId, 7000, 48, 3200, 7048, measuredConversation, default);
+        }
+
+        var path = $"/api/gateway/session/{sessionId}/context-window";
+        var measured = (await client.GetFromJsonAsync<SessionContextWindowResponse>($"{path}?conversationId={measuredConversation}"))!;
+        var estimated = (await client.GetFromJsonAsync<SessionContextWindowResponse>($"{path}?conversationId={estimatedConversation}"))!;
+        var empty = (await client.GetFromJsonAsync<SessionContextWindowResponse>($"{path}?conversationId={emptyConversation}"))!;
+        var workspace = (await client.GetFromJsonAsync<SessionContextWindowResponse>(path))!;
+
+        Assert.Equal(7048, measured.EstimatedTokens);
+        Assert.InRange(estimated.EstimatedTokens, 1, measured.EstimatedTokens - 1);
+        Assert.True(estimated.EstimatedChars > measured.EstimatedChars);
+        Assert.Equal(2, estimated.RecentTurns);
+        Assert.Equal(0, empty.EstimatedTokens);
+        Assert.Equal(0, empty.RecentTurns);
+        Assert.Equal(workspace.TotalSessionTokens, measured.TotalSessionTokens);
+        Assert.Equal(workspace.TotalSessionTokens, estimated.TotalSessionTokens);
+        Assert.Equal(workspace.TotalSessionTokens, empty.TotalSessionTokens);
+        using var refused = await client.GetAsync($"{path}?conversationId={otherWorkspaceConversation}");
+        Assert.Equal(HttpStatusCode.NotFound, refused.StatusCode);
     }
 
     [Fact]

@@ -11,6 +11,7 @@ using CodexFlow.Application.Jobs;
 using CodexFlow.Application.Jobs.Dtos;
 using CodexFlow.Controllers;
 using CodexFlow.Core.Abstractions;
+using CodexFlow.Core.Agents;
 using CodexFlow.Core.ComputerUse;
 using CodexFlow.Core.Execution;
 using CodexFlow.Core.Gateway;
@@ -665,6 +666,92 @@ public sealed class P3FilesSnapshotContractsAndHostingTests : IDisposable
         Assert.NotNull(snap);
         Assert.Contains(snap!.Messages, m => m.Role == "assistant" && m.Content.Contains("[已取消]", StringComparison.Ordinal));
         computer.Verify(x => x.EndTurnAsync(sessionId, CancellationToken.None), Times.Once);
+    }
+
+    [Theory]
+    [InlineData("  ", true)]
+    [InlineData("Archived summary", false)]
+    public async Task DailyGateway_ReplaysSelectedHistoryWhenLegacyCutoffHasNoSummary(string summary, bool recoverHistory)
+    {
+        var captured = new TaskCompletionSource<QueryRuntimeRequest>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var runtime = new Mock<IQueryRuntimeEngine>();
+        runtime.Setup(engine => engine.ExecuteAsync(
+                It.IsAny<QueryRuntimeRequest>(), It.IsAny<IQueryRuntimeEventSink>(), It.IsAny<CancellationToken>()))
+            .Callback<QueryRuntimeRequest, IQueryRuntimeEventSink, CancellationToken>((request, _, _) => captured.TrySetResult(request))
+            .ReturnsAsync(new QueryRuntimeResult
+            {
+                TerminationReason = QueryTerminationReason.NoToolCalls,
+                TotalRounds = 1,
+                TotalToolCalls = 0,
+                ZeroToolCallRounds = 1,
+                EmptyResponseCount = 0,
+                RecoveryCount = 0,
+                MalformedProtocolCount = 0,
+                FinalText = "Follow-up complete",
+                TotalDurationMs = 0
+            });
+        await using var host = await P3TestHost.StartAsync(
+            _root, Path.Combine(_root, "daily-history", "appsettings.json"), ExecutionBackend.Local, ExecutionPermissionMode.Ask,
+            configureServices: (services, cfg) =>
+            {
+                services.AddSingleton(Mock.Of<IChatClient>());
+                services.AddCodexFlowRuntime(cfg);
+                services.RemoveAll<IHostedService>();
+                services.RemoveAll<IQueryRuntimeEngine>();
+                services.AddSingleton(runtime.Object);
+                services.Configure<CodexFlow.Models.ContextCompressionOptions>(options => options.PromptHistoryHardLimit = 2);
+            });
+        using var client = host.CreateNormalClient();
+        using var created = await client.PostAsync("/api/gateway/session?name=ContextRecovery&workMode=daily", null);
+        created.EnsureSuccessStatusCode();
+        var sessionId = (await created.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("sessionId").GetString()!;
+
+        const string outsideLimit = "older than configured prompt limit";
+        const string recovered = "synthetic handoff marker";
+        const string recent = "next selected-chat message";
+        const string otherChat = "different conversation marker";
+        string conversationId;
+        await using (var scope = host.Services.CreateAsyncScope())
+        {
+            var chat = scope.ServiceProvider.GetRequiredService<IChatService>();
+            conversationId = await chat.CreateConversationInSession(LocalUser.Id, sessionId, name: "Selected chat");
+            var otherConversation = await chat.CreateConversationInSession(LocalUser.Id, sessionId, name: "Different chat");
+            await chat.AddMessage(LocalUser.Id, conversationId, outsideLimit, "Old reply", 0, "test");
+            await chat.AddMessage(LocalUser.Id, conversationId, recovered, "First selected reply", 0, "test");
+            await chat.AddMessage(LocalUser.Id, conversationId, recent, "Second selected reply", 0, "test");
+            await chat.AddMessage(LocalUser.Id, otherConversation, otherChat, "Different chat reply", 0, "test");
+
+            var manager = scope.ServiceProvider.GetRequiredService<CodexSessionManager>();
+            var session = await manager.GetOrCreateSessionAsync(sessionId);
+            session.HistorySummary = summary;
+            session.LastCompressedAt = DateTime.UtcNow.AddSeconds(1);
+            await manager.UpdateSessionAsync(session);
+        }
+
+        var usage = await client.GetFromJsonAsync<SessionContextWindowResponse>(
+            $"/api/gateway/session/{sessionId}/context-window?conversationId={conversationId}");
+        Assert.Equal(recoverHistory ? 4 : 0, usage!.RecentTurns);
+        Assert.Equal(recoverHistory ? 0 : summary.Length, usage.SummaryChars);
+
+        using var sent = await client.PostAsJsonAsync("/api/gateway/chat", new GatewayChatRequest
+        {
+            SessionId = sessionId,
+            ConversationId = conversationId,
+            ConversationMode = "continue-current",
+            Message = "Continue the selected conversation"
+        });
+        Assert.Equal(HttpStatusCode.Accepted, sent.StatusCode);
+        var request = await captured.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var historicalMessages = request.InitialMessages.Select(message => message.Text)
+            .Where(text => text is recovered or recent or otherChat or outsideLimit)
+            .ToArray();
+
+        Assert.Equal(recoverHistory ? [recovered, recent] : Array.Empty<string>(), historicalMessages);
+        if (!recoverHistory)
+        {
+            Assert.Contains(request.InitialMessages, message =>
+                message.Role == ChatRole.System && message.Text.Contains(summary, StringComparison.Ordinal));
+        }
     }
 
     private sealed class SimpleStubLlmExecutor : ILLMExecutor

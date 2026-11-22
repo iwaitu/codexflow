@@ -16,6 +16,6 @@ public sealed class ContextCompressionOptions
     /// <summary>Max chars of HistorySummary injected into Gateway prompts.</summary>
     public int GatewaySummaryMaxChars { get; set; } = 2000;
 
-    /// <summary>Defensive hard cap on incremental messages loaded after LastCompressedAt.</summary>
+    /// <summary>Defensive hard cap on the message rows loaded for a gateway prompt.</summary>
     public int PromptHistoryHardLimit { get; set; } = 40;
 }
