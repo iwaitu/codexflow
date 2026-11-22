@@ -965,7 +965,7 @@ internal static unsafe class Win32ComputerNative
         }
     }
 
-    public static int ClickAtCursor(int expectedX, int expectedY, string button, int clickCount)
+    public static ComputerClickReceipt ClickAtCursor(int expectedX, int expectedY, string button, int clickCount)
     {
         if (!TryGetCursorPos(out var x, out var y) || x != expectedX || y != expectedY)
         {
@@ -1002,7 +1002,10 @@ internal static unsafe class Win32ComputerNative
             };
         }
 
-        return SendInputArray(inputs);
+        return SubmitClickBatch(
+            (uint)inputs.Length,
+            () => SubmitInput(inputs),
+            () => SubmitInput([inputs[^1]]).Accepted == 1);
     }
 
     public static void MouseDragAbsolute(int startX, int startY, int endX, int endY, string button, CancellationToken ct)
@@ -1410,21 +1413,49 @@ internal static unsafe class Win32ComputerNative
             _ => (MouseEventfLeftDown, MouseEventfLeftUp)
         };
 
-    private static int SendInputArray(INPUT[] inputs)
+    private static void SendInputArray(INPUT[] inputs)
+    {
+        var (accepted, error) = SubmitInput(inputs);
+        ValidateInputCount(accepted, (uint)inputs.Length, error);
+    }
+
+    private static (uint Accepted, int Error) SubmitInput(ReadOnlySpan<INPUT> inputs)
     {
         fixed (INPUT* ptr = inputs)
         {
-            var sent = SendInput((uint)inputs.Length, ptr, sizeof(INPUT));
-            ValidateInputCount(sent, (uint)inputs.Length, Marshal.GetLastPInvokeError());
-            return (int)sent;
+            var accepted = SendInput((uint)inputs.Length, ptr, sizeof(INPUT));
+            return (accepted, Marshal.GetLastPInvokeError());
         }
     }
 
-    internal static void ValidateInputCount(uint sent, uint requested, int error)
+    internal static ComputerClickReceipt SubmitClickBatch(
+        uint requested,
+        Func<(uint Accepted, int Error)> submit,
+        Func<bool> releaseButton)
+    {
+        var (accepted, error) = submit();
+        if (accepted != requested)
+        {
+            // Click batches contain only alternating down/up events for one button.
+            var releaseFeedback = string.Empty;
+            if (accepted < requested && (accepted & 1) != 0)
+            {
+                releaseFeedback = releaseButton()
+                    ? " 已补发鼠标松开。"
+                    : " 补发鼠标松开失败，请检查鼠标按键状态。";
+            }
+
+            ValidateInputCount(accepted, requested, error, releaseFeedback);
+        }
+
+        return new ComputerClickReceipt((int)requested, (int)accepted);
+    }
+
+    internal static void ValidateInputCount(uint sent, uint requested, int error, string releaseFeedback = "")
     {
         if (sent != requested)
         {
-            throw new Win32Exception(error, $"Windows 仅接收了 {sent}/{requested} 个键鼠事件（SendInput），操作未完整提交。请先截图确认当前状态。");
+            throw new Win32Exception(error, $"Windows 仅接收了 {sent}/{requested} 个键鼠事件（SendInput），操作未完整提交。{releaseFeedback}请先截图确认当前状态。");
         }
     }
 

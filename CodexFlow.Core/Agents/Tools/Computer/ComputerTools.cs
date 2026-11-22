@@ -36,7 +36,8 @@ internal sealed record ComputerScreenshotToolMetadata(
     int? Width,
     int? Height,
     string? CoordinateMode,
-    string? PinnedWindowHandle);
+    string? PinnedWindowHandle,
+    bool ScreenshotAttached = false);
 
 internal sealed record ComputerActToolMetadata(
     string Action,
@@ -45,7 +46,8 @@ internal sealed record ComputerActToolMetadata(
     long? ScreenshotSeq,
     int? Width,
     int? Height,
-    string? CoordinateMode);
+    string? CoordinateMode,
+    bool ScreenshotAttached = false);
 
 internal sealed record ComputerFailureToolMetadata(string? ErrorCode);
 
@@ -83,7 +85,18 @@ internal static class ComputerToolHelpers
         return true;
     }
 
-    public static string? TryAttachScreenshotVisual(
+    public static (string Output, bool ScreenshotAttached) AttachScreenshotFeedback(
+        ComputerOperationResult result,
+        IModelSettingsService? modelSettings,
+        IOptionsMonitor<ComputerOptions>? computerOptions)
+    {
+        var visual = TryAttachScreenshotVisual(result.Screenshot, modelSettings, computerOptions);
+        return visual is not null
+            ? (result.Output + visual, true)
+            : (result.Output + "\n[提示] 本次未向模型附加新截图。继续使用坐标前请重新截图，视觉额度用完时请停止坐标操作。", false);
+    }
+
+    private static string? TryAttachScreenshotVisual(
         ComputerScreenshotData? screenshot,
         IModelSettingsService? modelSettings,
         IOptionsMonitor<ComputerOptions>? computerOptions)
@@ -126,6 +139,7 @@ internal static class ComputerToolHelpers
             return null;
         }
 
+        AmbientComputerCallerContext.SetAttachedScreenshot(screenshot);
         return $"\n[桌面屏幕截图已注入多模态视觉上下文（滑动窗口最近 {retentionCount} 帧）] {TurnVisualAttachmentStore.FormatMarker(registered)}";
     }
 
@@ -199,6 +213,10 @@ public sealed class ComputerScreenInfoTool(
         var pinHandle = arguments.GetValueOrDefault("pin_window_handle")?.ToString();
         var pinProcess = arguments.GetValueOrDefault("pin_process_name")?.ToString();
         var unpin = ComputerToolHelpers.TryGetBool(arguments.GetValueOrDefault("unpin"));
+        if (unpin || !string.IsNullOrWhiteSpace(pinHandle) || !string.IsNullOrWhiteSpace(pinProcess))
+        {
+            AmbientComputerCallerContext.ConsumeAttachedScreenshot();
+        }
 
         var result = await manager
             .GetScreenInfoAsync(caller, pinHandle, pinProcess, unpin, ct)
@@ -266,6 +284,7 @@ public sealed class ComputerScreenshotTool(
             ? ComputerToolHelpers.TryGetBool(arguments.GetValueOrDefault("include_grid"), defaultValue: true)
             : null;
 
+        AmbientComputerCallerContext.ConsumeAttachedScreenshot();
         var result = await manager
             .CaptureScreenshotAsync(caller, fullDesktop, displayIndex, includeGrid, ct)
             .ConfigureAwait(false);
@@ -275,16 +294,7 @@ public sealed class ComputerScreenshotTool(
             return CodexToolResult.Error(result.Output, new ComputerFailureToolMetadata(result.ErrorCode), summary: result.Summary);
         }
 
-        var output = result.Output;
-        var visualSuffix = ComputerToolHelpers.TryAttachScreenshotVisual(result.Screenshot, modelSettings, computerOptions);
-        if (!string.IsNullOrEmpty(visualSuffix))
-        {
-            output += visualSuffix;
-        }
-        else if (result.Screenshot is not null)
-        {
-            output += "\n[提示] 屏幕截图已同步至右侧「桌面」预览面板（本轮视觉额度已达上限）。";
-        }
+        var (output, screenshotAttached) = ComputerToolHelpers.AttachScreenshotFeedback(result, modelSettings, computerOptions);
 
         var state = manager.GetSessionState(caller.SessionId);
         return CodexToolResult.Succeeded(
@@ -294,7 +304,8 @@ public sealed class ComputerScreenshotTool(
                 result.Screenshot?.Width,
                 result.Screenshot?.Height,
                 result.Viewport?.EffectiveMode.ToString(),
-                state.PinnedWindowHandle),
+                state.PinnedWindowHandle,
+                screenshotAttached),
             summary: result.Summary);
     }
 }
@@ -307,7 +318,7 @@ public sealed class ComputerActTool(
     public string Name => ComputerToolNames.Act;
 
     public string Description =>
-        "在宿主机桌面执行基于截图的鼠标或键盘操作。键鼠事件提交后，通常等待 350ms 并返回新截图。红圈标注请求落点，请根据新截图确认目标窗口是否响应。严禁操作 CodexFlow 自身控制台窗口及敏感密码管理软件，高风险与跨应用操作将经控制面人工审批。只读 Plan Mode 下禁用。\n" +
+        "在宿主机桌面执行鼠标或键盘操作。坐标动作需要本轮已附加的最新桌面截图。键鼠事件提交后，通常等待 350ms 并返回新截图。红圈标注请求落点，请根据新截图确认目标窗口是否响应。严禁操作 CodexFlow 自身控制台窗口及敏感密码管理软件，高风险与跨应用操作将经控制面人工审批。只读 Plan Mode 下禁用。\n" +
         "参数（JSON object）：\n" +
         "  - action (string, 必填): click | double_click | right_click | middle_click | move | drag | scroll | type_text | key_combo | wait\n" +
         "  - x (number, 鼠标类动作必填): 目标 X 坐标（遵循最近截图所示坐标体系：图像像素坐标或 [0,1000] 千分比坐标）\n" +
@@ -370,7 +381,11 @@ public sealed class ComputerActTool(
             DeltaX: ComputerToolHelpers.TryGetInt(arguments.GetValueOrDefault("delta_x")),
             DeltaY: ComputerToolHelpers.TryGetInt(arguments.GetValueOrDefault("delta_y")),
             DurationMs: ComputerToolHelpers.TryGetInt(arguments.GetValueOrDefault("duration_ms")),
-            CoordinateSpace: arguments.GetValueOrDefault("coordinate_space")?.ToString());
+            CoordinateSpace: arguments.GetValueOrDefault("coordinate_space")?.ToString())
+        {
+            RequireModelScreenshot = true,
+            ModelScreenshot = AmbientComputerCallerContext.ConsumeAttachedScreenshot()
+        };
 
         var result = await manager.ActAsync(caller, req, ct).ConfigureAwait(false);
         if (!result.Succeeded)
@@ -378,12 +393,7 @@ public sealed class ComputerActTool(
             return CodexToolResult.Error(result.Output, new ComputerFailureToolMetadata(result.ErrorCode), summary: result.Summary);
         }
 
-        var output = result.Output;
-        var visualSuffix = ComputerToolHelpers.TryAttachScreenshotVisual(result.Screenshot, modelSettings, computerOptions);
-        if (!string.IsNullOrEmpty(visualSuffix))
-        {
-            output += visualSuffix;
-        }
+        var (output, screenshotAttached) = ComputerToolHelpers.AttachScreenshotFeedback(result, modelSettings, computerOptions);
 
         return CodexToolResult.Succeeded(
             output,
@@ -392,7 +402,8 @@ public sealed class ComputerActTool(
                 result.Screenshot?.ScreenshotSeq,
                 result.Screenshot?.Width,
                 result.Screenshot?.Height,
-                result.Viewport?.EffectiveMode.ToString()),
+                result.Viewport?.EffectiveMode.ToString(),
+                screenshotAttached),
             summary: result.Summary);
     }
 }
@@ -443,18 +454,14 @@ public sealed class ComputerRequestTakeoverTool(
         var reason = arguments.GetValueOrDefault("reason")?.ToString() ?? string.Empty;
         var timeoutSeconds = ComputerToolHelpers.TryGetInt(arguments.GetValueOrDefault("timeout_seconds")) ?? 300;
 
+        AmbientComputerCallerContext.ConsumeAttachedScreenshot();
         var result = await manager.RequestTakeoverAsync(caller, reason, timeoutSeconds, ct).ConfigureAwait(false);
         if (!result.Succeeded)
         {
             return CodexToolResult.Error(result.Output, new ComputerFailureToolMetadata(result.ErrorCode), summary: result.Summary);
         }
 
-        var output = result.Output;
-        var visualSuffix = ComputerToolHelpers.TryAttachScreenshotVisual(result.Screenshot, modelSettings, computerOptions);
-        if (!string.IsNullOrEmpty(visualSuffix))
-        {
-            output += visualSuffix;
-        }
+        var (output, screenshotAttached) = ComputerToolHelpers.AttachScreenshotFeedback(result, modelSettings, computerOptions);
 
         return CodexToolResult.Succeeded(
             output,
@@ -463,7 +470,8 @@ public sealed class ComputerRequestTakeoverTool(
                 result.Screenshot?.Width,
                 result.Screenshot?.Height,
                 result.Viewport?.EffectiveMode.ToString(),
-                manager.GetSessionState(caller.SessionId).PinnedWindowHandle),
+                manager.GetSessionState(caller.SessionId).PinnedWindowHandle,
+                screenshotAttached),
             summary: result.Summary);
     }
 }

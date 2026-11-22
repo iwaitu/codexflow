@@ -101,11 +101,10 @@ public sealed class MacOsComputerDriver : IComputerDriver
         return ComputerVisualProcessor.EncodePng(bgra, width, height);
     }
 
-    public int? PerformMouseClick(int x, int y, string button, int clickCount)
+    public void PerformMouseClick(int x, int y, string button, int clickCount)
     {
         EnsureAccessibility();
         MacOsComputerNative.ClickMouse(x, y, button, clickCount);
-        return null;
     }
 
     public void PerformMouseMove(int x, int y)

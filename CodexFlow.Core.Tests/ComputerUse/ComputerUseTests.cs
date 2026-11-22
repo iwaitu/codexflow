@@ -3,6 +3,7 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 using System.Buffers.Binary;
+using System.ComponentModel;
 using System.Diagnostics;
 using CodexFlow.Contracts.ComputerUse;
 using CodexFlow.Core.Agents;
@@ -19,6 +20,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Moq;
 using Xunit;
 
 namespace CodexFlow.Core.Tests.ComputerUse;
@@ -63,7 +65,7 @@ public sealed class ComputerUseTests
         public bool HasAnyPendingApproval(string sessionId) => Frozen;
     }
 
-    private sealed class FakeComputerDriver : IComputerDriver
+    private class FakeComputerDriver : IComputerDriver
     {
         public List<ComputerDisplayInfoDto> Displays { get; } =
         [
@@ -175,11 +177,10 @@ public sealed class ComputerUseTests
 
         public bool IsInputBlockedByIntegrity(int targetProcessId) => targetProcessId == BlockedInputProcessId;
 
-        public int? PerformMouseClick(int x, int y, string button, int clickCount)
+        public void PerformMouseClick(int x, int y, string button, int clickCount)
         {
             BeforeMouseClick?.Invoke();
             ExecutedActions.Add($"click:{button}:{clickCount}@{x},{y}");
-            return clickCount * 2;
         }
 
         public void PerformMouseMove(int x, int y)
@@ -569,7 +570,7 @@ public sealed class ComputerUseTests
     public async Task Act_WaitsAfterMovingBeforeClicking()
     {
         var options = new StaticOptionsMonitor<ComputerOptions>(new() { MaxImageLongEdge = 1920 });
-        var driver = new FakeComputerDriver();
+        var driver = new ReceiptComputerDriver();
         var movedAt = 0L;
         var settleTime = TimeSpan.Zero;
         driver.AfterMouseMove = () => movedAt = Stopwatch.GetTimestamp();
@@ -588,6 +589,43 @@ public sealed class ComputerUseTests
         Assert.Contains("确认目标窗口是否响应", result.Output);
         Assert.Equal(["move@250,250", "click:right:1@250,250"], driver.ExecutedActions);
         Assert.True(settleTime.TotalMilliseconds >= 45, $"Only waited {settleTime.TotalMilliseconds}ms.");
+    }
+
+    private sealed class ReceiptComputerDriver : FakeComputerDriver, IComputerDriver
+    {
+        public int? AcceptedClickEvents { get; init; }
+
+        public ComputerClickReceipt? PerformMouseClickWithReceipt(int x, int y, string button, int clickCount)
+        {
+            PerformMouseClick(x, y, button, clickCount);
+            return new ComputerClickReceipt(clickCount * 2, AcceptedClickEvents ?? clickCount * 2);
+        }
+    }
+
+    [Fact]
+    public void ClickReceipt_DefaultImplementationCallsLegacyVoidMethod()
+    {
+        var driver = new FakeComputerDriver();
+        IComputerDriver platform = driver;
+        Assert.Null(platform.PerformMouseClickWithReceipt(250, 250, "left", 1));
+        Assert.Equal("click:left:1@250,250", Assert.Single(driver.ExecutedActions));
+    }
+
+    [Fact]
+    public async Task Act_RejectsIncompleteReceiptFromCustomDriver()
+    {
+        var options = new StaticOptionsMonitor<ComputerOptions>(new() { MaxImageLongEdge = 1920 });
+        var driver = new ReceiptComputerDriver { AcceptedClickEvents = 1 };
+        await using var manager = new ComputerSessionManager(options, driver, new ComputerSecurityGuard(options, driver),
+            NullLogger<ComputerSessionManager>.Instance, controlPlane: new FixedControlPlane(),
+            executionOptions: new StaticOptionsMonitor<ExecutionOptions>(new() { PermissionMode = ExecutionPermissionMode.FullAuto }));
+        var caller = new ComputerTrustedCallerContext("custom-click-receipt", SessionWorkMode.Daily, PlanModeActive: false);
+
+        var result = await manager.ActAsync(caller, new ComputerActRequest("click", X: 250, Y: 250, CoordinateSpace: "pixels"));
+
+        Assert.False(result.Succeeded);
+        Assert.Equal("computer_action_failed", result.ErrorCode);
+        Assert.Contains("1/2", result.Output);
     }
 
     [Theory]
@@ -673,10 +711,10 @@ public sealed class ComputerUseTests
         }
 
         var options = new StaticOptionsMonitor<ComputerOptions>(new());
-        var validateInputCount = Win32ComputerNative.ValidateInputCount;
+        var submitClickBatch = Win32ComputerNative.SubmitClickBatch;
         var driver = new FakeComputerDriver
         {
-            BeforeMouseClick = () => validateInputCount(sent, 2, 0)
+            BeforeMouseClick = () => submitClickBatch(2, () => (sent, 0), () => true)
         };
         var guard = new ComputerSecurityGuard(options, driver);
         await using var manager = new ComputerSessionManager(options, driver, guard,
@@ -691,6 +729,173 @@ public sealed class ComputerUseTests
         Assert.Equal("computer_action_failed", result.ErrorCode);
         Assert.Contains($"{sent}/2", result.Output);
         Assert.Null(result.Screenshot);
+    }
+
+    [Theory]
+    [InlineData(2u, 0u, false)]
+    [InlineData(2u, 1u, true)]
+    [InlineData(2u, 1u, false)]
+    [InlineData(2u, 2u, false)]
+    [InlineData(4u, 2u, false)]
+    [InlineData(4u, 3u, true)]
+    public void WindowsClickBatch_ReleasesOnlyUnmatchedPress(uint requested, uint accepted, bool releaseSucceeds)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var submitClickBatch = Win32ComputerNative.SubmitClickBatch;
+        var submitted = 0;
+        var released = 0;
+        var receipt = default(ComputerClickReceipt);
+        var failure = Record.Exception(() =>
+        {
+            receipt = submitClickBatch(requested, () =>
+            {
+                submitted++;
+                return (accepted, 5);
+            }, () =>
+            {
+                released++;
+                return releaseSucceeds;
+            });
+        });
+
+        Assert.Equal(1, submitted);
+        Assert.Equal(accepted % 2 == 1 ? 1 : 0, released);
+        if (requested == accepted)
+        {
+            Assert.Null(failure);
+            Assert.Equal(new ComputerClickReceipt((int)requested, (int)accepted), receipt);
+        }
+        else
+        {
+            var error = Assert.IsType<Win32Exception>(failure);
+            Assert.Equal(5, error.NativeErrorCode);
+            Assert.Contains($"{accepted}/{requested}", error.Message);
+            if (released > 0)
+            {
+                Assert.Contains(releaseSucceeds ? "已补发鼠标松开" : "补发鼠标松开失败", error.Message);
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData("before-approval", "window_input_integrity_blocked")]
+    [InlineData("during-approval", "window_input_integrity_blocked")]
+    [InlineData("changed-view", "fresh_screenshot_required")]
+    public async Task Act_ChecksPointerIntegrityBeforeApprovalAndRevalidatesBeforeInput(string phase, string expectedError)
+    {
+        var options = new StaticOptionsMonitor<ComputerOptions>(new()
+        {
+            MaxImageLongEdge = 1920,
+            InteractionApprovalPolicy = ComputerInteractionApprovalPolicy.AlwaysAsk
+        });
+        var driver = new FakeComputerDriver { BlockedInputProcessId = phase == "before-approval" ? 7777 : null };
+        driver.Windows.Add(new("0x310", 7777, "notepad", "Notes", 0, 0, 1200, 900, false, true, false));
+        var approval = new Mock<IComputerApprovalCoordinator>();
+        await using var manager = new ComputerSessionManager(options, driver, new ComputerSecurityGuard(options, driver),
+            NullLogger<ComputerSessionManager>.Instance, approvalCoordinator: approval.Object, controlPlane: new FixedControlPlane());
+        var caller = new ComputerTrustedCallerContext("approval-revalidation", SessionWorkMode.Daily, PlanModeActive: false);
+        approval.Setup(x => x.RequestApprovalAsync(It.IsAny<ComputerApprovalPrompt>(), It.IsAny<CancellationToken>()))
+            .Returns(async () =>
+            {
+                if (phase == "changed-view")
+                {
+                    Assert.True((await manager.CaptureScreenshotAsync(caller)).Succeeded);
+                }
+                else
+                {
+                    driver.BlockedInputProcessId = 7777;
+                }
+
+                return new ComputerApprovalOutcome(true, false, false, false);
+            });
+        var screenshot = await manager.CaptureScreenshotAsync(caller);
+        Assert.True(screenshot.Succeeded);
+
+        var result = await manager.ActAsync(caller, new ComputerActRequest("click", X: 250, Y: 250, CoordinateSpace: "pixels")
+        {
+            RequireModelScreenshot = true,
+            ModelScreenshot = screenshot.Screenshot
+        });
+
+        Assert.Equal(expectedError, result.ErrorCode);
+        Assert.Empty(driver.ExecutedActions);
+        approval.Verify(x => x.RequestApprovalAsync(It.IsAny<ComputerApprovalPrompt>(), It.IsAny<CancellationToken>()),
+            phase == "before-approval" ? Times.Never() : Times.Once());
+    }
+
+    [Fact]
+    public async Task Act_CancelsButtonEventsWhenViewChangesAfterMouseMove()
+    {
+        var options = new StaticOptionsMonitor<ComputerOptions>(new() { MaxImageLongEdge = 1920 });
+        var driver = new FakeComputerDriver();
+        await using var manager = new ComputerSessionManager(options, driver, new ComputerSecurityGuard(options, driver),
+            NullLogger<ComputerSessionManager>.Instance, controlPlane: new FixedControlPlane(),
+            executionOptions: new StaticOptionsMonitor<ExecutionOptions>(new() { PermissionMode = ExecutionPermissionMode.FullAuto }));
+        var caller = new ComputerTrustedCallerContext("move-view-change", SessionWorkMode.Daily, PlanModeActive: false);
+        var screenshot = await manager.CaptureScreenshotAsync(caller);
+        Assert.True(screenshot.Succeeded);
+        Task<ComputerOperationResult>? pinChange = null;
+        driver.AfterMouseMove = () => pinChange = manager.GetScreenInfoAsync(caller, unpin: true);
+
+        var result = await manager.ActAsync(caller, new ComputerActRequest("click", X: 250, Y: 250, CoordinateSpace: "pixels")
+        {
+            RequireModelScreenshot = true,
+            ModelScreenshot = screenshot.Screenshot
+        });
+
+        Assert.NotNull(pinChange);
+        Assert.True((await pinChange).Succeeded);
+        Assert.Equal("fresh_screenshot_required", result.ErrorCode);
+        Assert.Equal("move@250,250", Assert.Single(driver.ExecutedActions));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ComputerTools_BlockCoordinatesWhenActionEchoWasNotAttached(bool captureFails)
+    {
+        var options = new StaticOptionsMonitor<ComputerOptions>(new()
+        {
+            MaxImageLongEdge = 1920,
+            MaxScreenshotsPerTurn = captureFails ? 12 : 1
+        });
+        var driver = new FakeComputerDriver();
+        await using var manager = new ComputerSessionManager(options, driver, new ComputerSecurityGuard(options, driver),
+            NullLogger<ComputerSessionManager>.Instance, controlPlane: new FixedControlPlane(),
+            executionOptions: new StaticOptionsMonitor<ExecutionOptions>(new() { PermissionMode = ExecutionPermissionMode.FullAuto }));
+        var caller = new ComputerTrustedCallerContext("tool-echo", SessionWorkMode.Daily, PlanModeActive: false);
+        using var callerScope = AmbientComputerCallerContext.BeginScope(caller);
+        using var visualScope = AmbientTurnVisualAttachmentContext.BeginScope(new TurnVisualAttachmentStore(true));
+        var screenshotTool = new ComputerScreenshotTool(manager, computerOptions: options);
+        var actTool = new ComputerActTool(manager, computerOptions: options);
+        Dictionary<string, object?> click = new() { ["action"] = "click", ["x"] = 250d, ["y"] = 250d, ["coordinate_space"] = "pixels" };
+
+        var noScreenshot = await actTool.ExecuteAsync(click);
+        Assert.Equal("fresh_screenshot_required", Assert.IsType<ComputerFailureToolMetadata>(noScreenshot.Metadata).ErrorCode);
+        var screenshot = await screenshotTool.ExecuteAsync(new());
+        Assert.True(Assert.IsType<ComputerScreenshotToolMetadata>(screenshot.Metadata).ScreenshotAttached);
+        if (captureFails)
+        {
+            driver.BeforeCapture = () => throw new InvalidOperationException("echo unavailable");
+        }
+
+        var first = await actTool.ExecuteAsync(click);
+        Assert.Equal(ToolResultStatus.Success, first.Status);
+        Assert.False(Assert.IsType<ComputerActToolMetadata>(first.Metadata).ScreenshotAttached);
+        Assert.Contains("未向模型附加新截图", first.Output);
+        var stale = await actTool.ExecuteAsync(click);
+        Assert.Equal("fresh_screenshot_required", Assert.IsType<ComputerFailureToolMetadata>(stale.Metadata).ErrorCode);
+        Assert.Equal(["move@250,250", "click:left:1@250,250"], driver.ExecutedActions);
+
+        driver.BeforeCapture = null;
+        options.CurrentValue.MaxScreenshotsPerTurn = 12;
+        Assert.True(Assert.IsType<ComputerScreenshotToolMetadata>((await screenshotTool.ExecuteAsync(new())).Metadata).ScreenshotAttached);
+        Assert.True(Assert.IsType<ComputerActToolMetadata>((await actTool.ExecuteAsync(click)).Metadata).ScreenshotAttached);
+        Assert.Equal(4, driver.ExecutedActions.Count);
     }
 
     [Fact]

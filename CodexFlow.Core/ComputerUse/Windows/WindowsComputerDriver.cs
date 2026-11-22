@@ -80,7 +80,10 @@ public sealed class WindowsComputerDriver : IComputerDriver
     public bool IsInputBlockedByIntegrity(int targetProcessId)
         => Win32ComputerNative.IsInputBlockedByIntegrity(targetProcessId);
 
-    public int? PerformMouseClick(int x, int y, string button, int clickCount)
+    public void PerformMouseClick(int x, int y, string button, int clickCount)
+        => PerformMouseClickWithReceipt(x, y, button, clickCount);
+
+    public ComputerClickReceipt? PerformMouseClickWithReceipt(int x, int y, string button, int clickCount)
         => Win32ComputerNative.ClickAtCursor(x, y, button, clickCount);
 
     public void PerformMouseMove(int x, int y)

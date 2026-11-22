@@ -23,6 +23,13 @@ public static class AmbientComputerCallerContext
     {
         public ComputerTrustedCallerContext Caller { get; } = caller;
         private int _screenshotsInjected;
+        private ComputerScreenshotData? _attachedScreenshot;
+
+        public void SetAttachedScreenshot(ComputerScreenshotData screenshot)
+            => Volatile.Write(ref _attachedScreenshot, screenshot);
+
+        public ComputerScreenshotData? ConsumeAttachedScreenshot()
+            => Interlocked.Exchange(ref _attachedScreenshot, null);
 
         public bool TryConsumeScreenshotBudget(int maxPerTurn)
         {
@@ -44,6 +51,12 @@ public static class AmbientComputerCallerContext
 
     public static bool TryConsumeScreenshotBudget(int maxPerTurn = 12)
         => Slot.Value is { } slot && slot.TryConsumeScreenshotBudget(maxPerTurn);
+
+    internal static void SetAttachedScreenshot(ComputerScreenshotData screenshot)
+        => Slot.Value?.SetAttachedScreenshot(screenshot);
+
+    internal static ComputerScreenshotData? ConsumeAttachedScreenshot()
+        => Slot.Value?.ConsumeAttachedScreenshot();
 
     public static IDisposable BeginScope(ComputerTrustedCallerContext caller)
     {

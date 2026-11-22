@@ -36,7 +36,11 @@ public sealed record ComputerActRequest(
     int? DeltaX = null,
     int? DeltaY = null,
     int? DurationMs = null,
-    string? CoordinateSpace = null);
+    string? CoordinateSpace = null)
+{
+    internal bool RequireModelScreenshot { get; init; }
+    internal ComputerScreenshotData? ModelScreenshot { get; init; }
+}
 
 /// <summary>
 /// Manages desktop Computer Use sessions, exclusive desktop lease, window pinning,

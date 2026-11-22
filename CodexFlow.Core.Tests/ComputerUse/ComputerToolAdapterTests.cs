@@ -55,7 +55,7 @@ public sealed class ComputerToolAdapterTests
             captured = input;
             return CodexToolResult.Succeeded(
                 "clicked",
-                new ComputerActToolMetadata("click", 7, 1280, 720, "ScreenshotPixels"));
+                new ComputerActToolMetadata("click", 7, 1280, 720, "ScreenshotPixels", ScreenshotAttached: true));
         });
 
         var fn = SourceGeneratedToolFunction.Computer(tool, tool.Name, tool.Description);
@@ -80,6 +80,7 @@ public sealed class ComputerToolAdapterTests
         Assert.True(result.GetProperty("__icodex_tool_result").GetBoolean());
         Assert.Equal("clicked", result.GetProperty("output").GetString());
         Assert.Equal(7, result.GetProperty("metadata").GetProperty("screenshotSeq").GetInt32());
+        Assert.True(result.GetProperty("metadata").GetProperty("screenshotAttached").GetBoolean());
     }
 
     [Theory]
