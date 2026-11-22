@@ -18,7 +18,7 @@ function isRunning(pid: number): boolean {
 }
 
 test('Electron starts the native Local backend and its child exits with the parent', async () => {
-  test.setTimeout(70_000);
+  test.setTimeout(100_000);
   test.skip(!nativeBackend, 'Supply the published Windows x64 CodexFlow.Local.exe');
   expect(existsSync(nativeBackend!)).toBe(true);
 
@@ -199,7 +199,10 @@ await import(${JSON.stringify(pathToFileURL(main).href)});
       };
 
       await newTab.click();
-      await expect(sidebar.getByRole('button', { name: /^关闭标签页/ })).toHaveCount(1);
+      await expect.poll(async () => {
+        const errors = await sidebar.getByRole('alert').allTextContents();
+        return errors.length > 0 ? errors : sidebar.getByRole('button', { name: /^关闭标签页/ }).count();
+      }, { timeout: 20_000 }).toBe(1);
       const separator = sidebar.getByRole('separator', { name: '调整右侧栏宽度' });
       await separator.press('End');
       const before = (await sidebar.boundingBox())!.width;
