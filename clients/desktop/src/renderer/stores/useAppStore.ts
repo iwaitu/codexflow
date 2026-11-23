@@ -43,7 +43,7 @@ function dispatchDesktopNotification(titleKey: I18nKey, body: string): void {
 }
 
 export type ConversationMode = 'continue-current' | 'reuse-master' | 'new-thread';
-export type InspectorTab = 'files' | 'changes' | 'jobs' | 'browser' | 'computer';
+export type InspectorTab = 'files' | 'changes' | 'jobs' | 'browser' | 'computer' | 'terminal';
 
 export interface ConversationTitleUpdate {
   conversationId: string;

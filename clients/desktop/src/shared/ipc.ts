@@ -33,6 +33,18 @@ export interface BackendConnectionPublicInfo {
   restartCount: number;
 }
 
+export function isLocalBackendConnection(connection: Pick<BackendConnectionPublicInfo, 'mode' | 'targetBaseUrl'> | null): boolean {
+  if (connection?.mode === 'managed') return true;
+  if (!connection?.targetBaseUrl) return false;
+
+  try {
+    const { hostname } = new URL(connection.targetBaseUrl);
+    return hostname === 'localhost' || hostname === '[::1]' || /^127(?:\.\d{1,3}){3}$/.test(hostname);
+  } catch {
+    return false;
+  }
+}
+
 export interface ControlPlaneCallResult<T> {
   ok: boolean;
   status: number;
@@ -203,6 +215,29 @@ export interface WorkspaceFileActionResult {
   cancelled?: boolean;
   error?: string;
 }
+
+export interface WorkspaceTerminalSize {
+  cols: number;
+  rows: number;
+}
+
+export interface WorkspaceTerminalStartRequest extends WorkspaceTerminalSize {
+  id: string;
+  workspacePath: string;
+}
+
+export type WorkspaceTerminalStartResult = { ok: true; shellName: string } | { ok: false; error: string };
+
+export type WorkspaceTerminalAction =
+  | { id: string; type: 'write'; data: string }
+  | ({ id: string; type: 'resize' } & WorkspaceTerminalSize)
+  | { id: string; type: 'ack'; length: number }
+  | { id: string; type: 'focus'; focused: boolean }
+  | { id: string; type: 'close' };
+
+export type WorkspaceTerminalEvent =
+  | { id: string; type: 'data'; data: string }
+  | { id: string; type: 'exit'; exitCode: number };
 
 export type BusinessPluginDto = components['schemas']['BusinessPluginDto'];
 export type BusinessPluginSourceType = components['schemas']['BusinessPluginSourceType'];
@@ -662,6 +697,10 @@ export interface DesktopBridge {
   showWorkspaceFileContextMenu(
     payload: WorkspaceFileContextMenuPayload,
   ): Promise<WorkspaceFileActionResult>;
+  openWorkspaceTerminal(workspacePath: string): Promise<WorkspaceFileActionResult>;
+  startWorkspaceTerminal(request: WorkspaceTerminalStartRequest): Promise<WorkspaceTerminalStartResult>;
+  actOnWorkspaceTerminal(action: WorkspaceTerminalAction): void;
+  onWorkspaceTerminalEvent(listener: (event: WorkspaceTerminalEvent) => void): () => void;
   showNotification(payload: DesktopNotificationPayload): Promise<void>;
   setDesktopPreferences(payload: DesktopPreferencesPayload): Promise<void>;
   onCommandAction(listener: (action: DesktopCommandAction) => void): () => void;
@@ -729,6 +768,10 @@ export const IPC_CHANNELS = {
   restartBackend: 'codexflow:restart-backend',
   openExternal: 'codexflow:open-external',
   showWorkspaceFileContextMenu: 'codexflow:show-workspace-file-context-menu',
+  openWorkspaceTerminal: 'codexflow:open-workspace-terminal',
+  startWorkspaceTerminal: 'codexflow:start-workspace-terminal',
+  workspaceTerminalAction: 'codexflow:workspace-terminal-action',
+  workspaceTerminalEvent: 'codexflow:workspace-terminal-event',
   showNotification: 'codexflow:show-notification',
   setDesktopPreferences: 'codexflow:set-desktop-preferences',
   commandAction: 'codexflow:command-action',

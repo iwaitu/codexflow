@@ -1,18 +1,19 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Cpu, FileDiff, FolderTree, Globe, Monitor } from 'lucide-react';
+import { PanelRightClose, PanelRightOpen } from 'lucide-react';
 import { BusinessSkillsHub } from './components/business-skills/BusinessSkillsHub';
 import { AboutModal } from './components/AboutModal';
 import { ChatView } from './components/ChatView';
 import { CommandPaletteModal, type CommandPaletteItem } from './components/CommandPaletteModal';
 import { Composer, type WorkspaceAttachmentRequest } from './components/Composer';
+import { ConversationOverview } from './components/ConversationOverview';
 import { SettingsModal, type SettingsTabKind } from './components/SettingsModal';
 import { Sidebar } from './components/Sidebar';
 import { StatusBar } from './components/StatusBar';
 import { UpdateModal } from './components/UpdateModal';
 import { WelcomeWizardModal } from './components/WelcomeWizardModal';
 import { WorkspaceInspector } from './components/WorkspaceInspector';
-import type { AppUpdateState } from '@shared/ipc';
+import { isLocalBackendConnection, type AppUpdateState } from '@shared/ipc';
 import { ApiError, apiClient, type ConversationSummary } from './lib/apiClient';
 import { toChatMessages } from './lib/sessionRecovery';
 import {
@@ -36,6 +37,7 @@ export const App: React.FC = () => {
   const [cancellingTurn, setCancellingTurn] = useState(false);
   const [creatingConversation, setCreatingConversation] = useState(false);
   const [primaryView, setPrimaryView] = useState<'chat' | 'business-skills'>('chat');
+  const [requestedTerminalWorkspace, setRequestedTerminalWorkspace] = useState<string | null>(null);
   const [businessHubMounted, setBusinessHubMounted] = useState(false);
   const [expandedSessionIds, setExpandedSessionIds] = useState<string[]>([]);
   const [externalAttachment, setExternalAttachment] = useState<WorkspaceAttachmentRequest | null>(null);
@@ -445,19 +447,55 @@ export const App: React.FC = () => {
     return sessionsQuery.data.items.find((s) => s.sessionId === activeSessionId) ?? null;
   }, [activeSessionId, sessionsQuery.data]);
 
-  const activeConversationName = useMemo(() => {
+  const activeConversation = useMemo(() => {
     if (!activeConversationId || !activeSessionId) return null;
     const list = conversationsBySession[activeSessionId] ?? conversationsQuery.data?.items ?? [];
-    return list.find((c) => c.conversationId === activeConversationId)?.name ?? null;
+    return list.find((c) => c.conversationId === activeConversationId) ?? null;
   }, [activeConversationId, activeSessionId, conversationsBySession, conversationsQuery.data]);
 
   const activeWorkspacePath = activeWorkspaceSession?.workspacePath ?? null;
+  const terminalWorkspacePath = isLocalBackendConnection(connection) ? activeWorkspacePath : null;
+  const terminalWorkspace = terminalWorkspacePath && activeSessionId
+    ? JSON.stringify([instanceKey, activeSessionId, terminalWorkspacePath])
+    : null;
+
+  useEffect(() => {
+    setRequestedTerminalWorkspace((current) => current === terminalWorkspace ? current : null);
+  }, [terminalWorkspace]);
+
+  const openWorkspaceInspectorTab = (tab: InspectorTab) => {
+    if (tab === 'terminal') setRequestedTerminalWorkspace(terminalWorkspace);
+    openInspectorTab(tab);
+  };
+
+  const browserRunning = browserState?.status === 'running';
+  const computerActive = Boolean(computerState?.active && !computerState.emergencyStopped);
+  const inspectorToggleLabel = t(isInspectorOpen ? 'workspace.hideInspector' : 'workspace.showInspector');
+  const activeToolStatus = [
+    browserRunning ? t('overview.browserRunning') : '',
+    computerActive ? t('overview.computerActive') : '',
+  ].filter(Boolean).join(' · ');
+  const overview = {
+    conversation: activeConversation,
+    hasConversation: Boolean(activeConversationId),
+    workspaceName: activeWorkspaceSession?.name ?? null,
+    workMode: activeWorkMode,
+    planModeActive,
+    contextWindow,
+    changedFileCount: changesQuery.data?.hasGitRepository ? changesQuery.data.files.length : null,
+    jobCount: jobs.length,
+    activeInspectorTab: isInspectorOpen ? inspectorTab : null,
+    browserRunning,
+    computerActive,
+    terminalAvailable: Boolean(terminalWorkspace),
+    onOpenInspector: openWorkspaceInspectorTab,
+  };
 
   const toggleInspectorTab = (tab: InspectorTab) => {
     if (isInspectorOpen && inspectorTab === tab) {
       setInspectorOpen(false);
     } else {
-      openInspectorTab(tab);
+      openWorkspaceInspectorTab(tab);
     }
   };
 
@@ -1038,6 +1076,7 @@ export const App: React.FC = () => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.isComposing || event.keyCode === 229) return;
       const mod = event.ctrlKey || event.metaKey;
+      const terminalFocused = event.target instanceof HTMLElement && event.target.closest('[data-workspace-terminal]');
 
       if (
         isTurnRunning &&
@@ -1045,6 +1084,7 @@ export const App: React.FC = () => {
         !event.altKey &&
         ((mod && event.key === '.') ||
           (event.key === 'Escape' &&
+            !terminalFocused &&
             !isSettingsOpen &&
             !isCommandPaletteOpen &&
             !isAboutOpen &&
@@ -1062,7 +1102,7 @@ export const App: React.FC = () => {
         return;
       }
 
-      if (!mod) return;
+      if (terminalFocused || !mod) return;
       const key = event.key.toLowerCase();
       const actions = commandActionsRef.current;
       if (!actions) return;
@@ -1374,7 +1414,7 @@ export const App: React.FC = () => {
           workspaceError={workspaceError}
         />
 
-        <main className="flex min-w-0 flex-1 flex-col bg-slate-900/40">
+        <main className="@container flex min-w-0 flex-1 flex-col bg-slate-900/40">
           {(primaryView === 'business-skills' || businessHubMounted) && (
             <div className={primaryView === 'business-skills' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
               <BusinessSkillsHub
@@ -1389,14 +1429,14 @@ export const App: React.FC = () => {
             </div>
           )}
           <div className={primaryView === 'business-skills' ? 'hidden' : 'flex min-h-0 flex-1 flex-col'}>
-              <div className="flex h-11 shrink-0 items-center justify-between border-b border-slate-800/80 bg-slate-950/60 px-4 text-xs">
+              <div className="flex h-11 shrink-0 items-center justify-between gap-3 border-b border-slate-800/80 bg-slate-950/60 px-4 text-xs">
                 <div className="flex min-w-0 items-center gap-2">
                   <span className="truncate font-medium text-slate-200">
                     {activeWorkspaceSession?.name || t('workspace.unselected')}
                   </span>
-                  {activeConversationName && (
-                    <span className="truncate text-slate-400" title={activeConversationName}>
-                      / {activeConversationName}
+                  {activeConversation?.name && (
+                    <span className="truncate text-slate-400" title={activeConversation.name}>
+                      / {activeConversation.name}
                     </span>
                   )}
                   <span
@@ -1414,176 +1454,108 @@ export const App: React.FC = () => {
                     </span>
                   )}
                   {activeWorkspacePath && !(activeWorkMode === 'Daily' && !activeWorkspaceSession?.isExternalWorkspace) && (
-                    <span className="hidden truncate font-mono text-[11px] text-slate-500 md:inline" title={activeWorkspacePath}>
+                    <span className="hidden truncate font-mono text-[11px] text-slate-500 @min-[54rem]:inline" title={activeWorkspacePath}>
                       {activeWorkspacePath}
                     </span>
                   )}
                 </div>
-                <div className="flex shrink-0 items-center gap-1.5">
-                  <button
-                    type="button"
-                    disabled={!activeSessionId}
-                    onClick={() => toggleInspectorTab('files')}
-                    aria-label={t('workspace.filesAria')}
-                    className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium disabled:opacity-40 ${
-                      isInspectorOpen && inspectorTab === 'files'
-                        ? 'border-indigo-500/60 bg-indigo-500/20 text-indigo-200'
-                        : 'border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800'
-                    }`}
-                  >
-                    <FolderTree className="h-3.5 w-3.5" />
-                    <span>{t('workspace.files')}</span>
-                  </button>
-                  {activeWorkMode !== 'Daily' && (
-                    <>
-                      <button
-                        type="button"
-                        disabled={!activeSessionId}
-                        onClick={() => toggleInspectorTab('changes')}
-                        aria-label={t('workspace.changesAria')}
-                        className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium disabled:opacity-40 ${
-                          isInspectorOpen && inspectorTab === 'changes'
-                            ? 'border-indigo-500/60 bg-indigo-500/20 text-indigo-200'
-                            : 'border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800'
-                        }`}
-                      >
-                        <FileDiff className="h-3.5 w-3.5" />
-                        <span>
-                          {t('workspace.changes')}
-                          {changesQuery.data?.files?.length ? ` (${changesQuery.data.files.length})` : ''}
-                        </span>
-                      </button>
-                      <button
-                        type="button"
-                        disabled={!activeSessionId}
-                        onClick={() => toggleInspectorTab('jobs')}
-                        aria-label={t('workspace.jobsAria')}
-                        className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium disabled:opacity-40 ${
-                          isInspectorOpen && inspectorTab === 'jobs'
-                            ? 'border-indigo-500/60 bg-indigo-500/20 text-indigo-200'
-                            : 'border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800'
-                        }`}
-                      >
-                        <Cpu className="h-3.5 w-3.5" />
-                        <span>
-                          {t('workspace.jobs')}
-                          {jobs.length > 0 ? ` (${jobs.length})` : ''}
-                        </span>
-                      </button>
-                    </>
-                  )}
-                  <button
-                    type="button"
-                    data-testid="toolbar-browser-btn"
-                    disabled={!activeSessionId}
-                    onClick={() => toggleInspectorTab('browser')}
-                    aria-label="打开或收起浏览器面板"
-                    className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium disabled:opacity-40 ${
-                      isInspectorOpen && inspectorTab === 'browser'
-                        ? 'border-indigo-500/60 bg-indigo-500/20 text-indigo-200'
-                        : 'border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800'
-                    }`}
-                  >
-                    <Globe className="h-3.5 w-3.5" />
-                    <span>浏览器</span>
-                    {browserState?.status === 'running' && (
-                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                    )}
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="toolbar-computer-btn"
-                    disabled={!activeSessionId}
-                    onClick={() => toggleInspectorTab('computer')}
-                    aria-label={t('workspace.computerAria')}
-                    className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium disabled:opacity-40 ${
-                      isInspectorOpen && inspectorTab === 'computer'
-                        ? 'border-indigo-500/60 bg-indigo-500/20 text-indigo-200'
-                        : 'border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800'
-                    }`}
-                  >
-                    <Monitor className="h-3.5 w-3.5" />
-                    <span>{t('workspace.computer')}</span>
-                    {computerState?.active && !computerState.emergencyStopped && (
-                      <span className="h-1.5 w-1.5 rounded-full bg-rose-400 animate-pulse" />
-                    )}
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => setInspectorOpen(!isInspectorOpen)}
+                  aria-label={inspectorToggleLabel}
+                  aria-expanded={isInspectorOpen}
+                  aria-controls={isInspectorOpen ? 'workspace-inspector' : undefined}
+                  aria-describedby={activeToolStatus ? 'workspace-control-status' : undefined}
+                  title={inspectorToggleLabel}
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-slate-800 bg-slate-900 p-1.5 text-slate-300 hover:bg-slate-800 hover:text-slate-100"
+                >
+                  {isInspectorOpen
+                    ? <PanelRightClose className="h-4 w-4" aria-hidden="true" />
+                    : <PanelRightOpen className="h-4 w-4" aria-hidden="true" />}
+                  {browserRunning && <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" aria-hidden="true" />}
+                  {computerActive && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-rose-400" aria-hidden="true" />}
+                </button>
+                {activeToolStatus && <span id="workspace-control-status" className="sr-only">{activeToolStatus}</span>}
               </div>
 
-              <ChatView
-                sessionId={activeSessionId}
-                conversationId={activeConversationId}
-                messages={messages}
-                messagesTruncated={messagesTruncated}
-                streamingContent={streamingContent}
-                streamingThinking={streamingThinking}
-                isThinkingStreaming={isThinkingStreaming}
-                isTurnRunning={isTurnRunning}
-                toolCalls={toolCalls}
-                pendingApprovals={pendingApprovals}
-                pendingBusinessApprovals={pendingBusinessApprovals}
-                pendingBrowserApprovals={pendingBrowserApprovals}
-                pendingComputerApprovals={pendingComputerApprovals}
-                currentPlan={currentPlan}
-                jobs={jobs}
-                verificationReceipts={verificationReceipts}
-                workerBar={workerBar}
-                executionBackend={systemStatusQuery.data?.executionBackend ?? executionSettingsQuery.data?.backend ?? null}
-                controlPlaneAvailable={controlPlaneAvailable}
-                workMode={activeWorkMode}
-                planModeActive={planModeActive}
-                planModeExitRequest={planModeExitRequest}
-                bootstrapState={bootstrapState}
-                bootstrapError={bootstrapError}
-                sseState={sseState}
-                onRetryBootstrap={() => setRetryBootstrapTick((n) => n + 1)}
-                onOpenDailyAssistant={handleOpenDailyAssistant}
-                onCreateDailySession={() => handleCreateSession('daily')}
-                onOpenFolder={handleOpenFolder}
-                onApprovalResolved={() => void reconcileApprovals()}
-                onBusinessApprovalResolved={(approvalId) => removeBusinessApproval(approvalId)}
-                onBrowserApprovalResolved={(approvalId) => removeBrowserApproval(approvalId)}
-                onComputerApprovalResolved={(approvalId) => removeComputerApproval(approvalId)}
-                onPlanActionSubmitted={() =>
-                  void reconcileSession('plan_action', {
-                    onCursorSynced: (eid, epoch) => sseRef.current?.updateCursor(eid, epoch),
-                  })
-                }
-                onConfirmExitPlanMode={handleExitPlanMode}
-                onDismissPlanModeExitRequest={dismissPlanModeExitRequest}
-                onVerifyJob={handleVerifyJob}
-                onSwitchManaged={() => void window.codexflow.switchToManaged()}
-                searchOpen={chatSearchOpen}
-                searchFocusNonce={chatSearchFocusNonce}
-                onCloseSearch={() => setChatSearchOpen(false)}
-              />
+              <div className="conversation-layout grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)]">
+                <div className="@container flex min-h-0 min-w-0 flex-col">
+                  <ChatView
+                    sessionId={activeSessionId}
+                    conversationId={activeConversationId}
+                    messages={messages}
+                    messagesTruncated={messagesTruncated}
+                    streamingContent={streamingContent}
+                    streamingThinking={streamingThinking}
+                    isThinkingStreaming={isThinkingStreaming}
+                    isTurnRunning={isTurnRunning}
+                    toolCalls={toolCalls}
+                    pendingApprovals={pendingApprovals}
+                    pendingBusinessApprovals={pendingBusinessApprovals}
+                    pendingBrowserApprovals={pendingBrowserApprovals}
+                    pendingComputerApprovals={pendingComputerApprovals}
+                    currentPlan={currentPlan}
+                    jobs={jobs}
+                    verificationReceipts={verificationReceipts}
+                    workerBar={workerBar}
+                    executionBackend={systemStatusQuery.data?.executionBackend ?? executionSettingsQuery.data?.backend ?? null}
+                    controlPlaneAvailable={controlPlaneAvailable}
+                    workMode={activeWorkMode}
+                    planModeActive={planModeActive}
+                    planModeExitRequest={planModeExitRequest}
+                    bootstrapState={bootstrapState}
+                    bootstrapError={bootstrapError}
+                    sseState={sseState}
+                    onRetryBootstrap={() => setRetryBootstrapTick((n) => n + 1)}
+                    onOpenDailyAssistant={handleOpenDailyAssistant}
+                    onCreateDailySession={() => handleCreateSession('daily')}
+                    onOpenFolder={handleOpenFolder}
+                    onApprovalResolved={() => void reconcileApprovals()}
+                    onBusinessApprovalResolved={(approvalId) => removeBusinessApproval(approvalId)}
+                    onBrowserApprovalResolved={(approvalId) => removeBrowserApproval(approvalId)}
+                    onComputerApprovalResolved={(approvalId) => removeComputerApproval(approvalId)}
+                    onPlanActionSubmitted={() =>
+                      void reconcileSession('plan_action', {
+                        onCursorSynced: (eid, epoch) => sseRef.current?.updateCursor(eid, epoch),
+                      })
+                    }
+                    onConfirmExitPlanMode={handleExitPlanMode}
+                    onDismissPlanModeExitRequest={dismissPlanModeExitRequest}
+                    onVerifyJob={handleVerifyJob}
+                    onSwitchManaged={() => void window.codexflow.switchToManaged()}
+                    searchOpen={chatSearchOpen}
+                    searchFocusNonce={chatSearchFocusNonce}
+                    onCloseSearch={() => setChatSearchOpen(false)}
+                  />
 
-              <Composer
-                disabled={!auth || !activeSessionId}
-                disabledReason={
-                  !auth
-                    ? '后端服务连接中或未就绪，请等待连接恢复...'
-                    : !activeSessionId
-                      ? '请先在左侧选择工作区，或点击「日常助手」「打开本地目录」开始对话...'
-                      : undefined
-                }
-                isTurnRunning={isTurnRunning}
-                cancelling={cancellingTurn}
-                turnNotice={turnNotice}
-                workspacePath={activeWorkspacePath}
-                supportsMultimodal={Boolean(modelSettingsQuery.data?.supportsMultimodal)}
-                externalAttachment={externalAttachment}
-                workMode={activeWorkMode}
-                planModeActive={planModeActive}
-                controlPlaneAvailable={controlPlaneAvailable}
-                isComputerActive={Boolean(computerState?.active && !computerState.emergencyStopped)}
-                onSend={handleSend}
-                onCancel={handleCancel}
-                onEmergencyStop={() => handleEmergencyStopComputer('composer_shortcut')}
-                onSlashCommand={handleSlashCommand}
-                onOpenDailyAssistant={handleOpenDailyAssistant}
-              />
+                  <Composer
+                    disabled={!auth || !activeSessionId}
+                    disabledReason={
+                      !auth
+                        ? '后端服务连接中或未就绪，请等待连接恢复...'
+                        : !activeSessionId
+                          ? '请先在左侧选择工作区，或点击「日常助手」「打开本地目录」开始对话...'
+                          : undefined
+                    }
+                    isTurnRunning={isTurnRunning}
+                    cancelling={cancellingTurn}
+                    turnNotice={turnNotice}
+                    workspacePath={activeWorkspacePath}
+                    supportsMultimodal={Boolean(modelSettingsQuery.data?.supportsMultimodal)}
+                    externalAttachment={externalAttachment}
+                    workMode={activeWorkMode}
+                    planModeActive={planModeActive}
+                    controlPlaneAvailable={controlPlaneAvailable}
+                    isComputerActive={computerActive}
+                    onSend={handleSend}
+                    onCancel={handleCancel}
+                    onEmergencyStop={() => handleEmergencyStopComputer('composer_shortcut')}
+                    onSlashCommand={handleSlashCommand}
+                    onOpenDailyAssistant={handleOpenDailyAssistant}
+                  />
+                </div>
+                {primaryView === 'chat' && <ConversationOverview {...overview} />}
+              </div>
           </div>
         </main>
 
@@ -1594,6 +1566,8 @@ export const App: React.FC = () => {
           auth={auth}
           sessionId={activeSessionId}
           workspacePath={activeWorkspacePath}
+          terminalWorkspacePath={terminalWorkspacePath}
+          terminalWorkspaceKey={requestedTerminalWorkspace === terminalWorkspace ? terminalWorkspace : null}
           workspaceRevision={workspaceRevision}
           changes={changesQuery.data}
           changesLoading={changesQuery.isLoading}
@@ -1608,7 +1582,7 @@ export const App: React.FC = () => {
           onBrowserStateUpdated={setBrowserState}
           onComputerStateUpdated={setComputerState}
           onComputerEmergencyStopped={() => void handleCancel()}
-          onSelectTab={setInspectorTab}
+          onSelectTab={openWorkspaceInspectorTab}
           onClose={() => setInspectorOpen(false)}
           onRefreshChanges={() => void changesQuery.refetch()}
           onAttachWorkspaceFile={(file) =>

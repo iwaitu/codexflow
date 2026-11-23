@@ -8,6 +8,8 @@ import {
   FolderOpen,
   FolderPlus,
   MessageSquare,
+  PanelLeftClose,
+  PanelLeftOpen,
   Pencil,
   Plus,
   Settings,
@@ -73,6 +75,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   workspaceError,
 }) => {
   const { t } = useI18n();
+  const [collapsed, setCollapsed] = useState(false);
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
   const [editingConvId, setEditingConvId] = useState<string | null>(null);
@@ -175,10 +178,25 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
   };
 
+  const toggleLabel = t(collapsed ? 'sidebar.expand' : 'sidebar.collapse');
+  const ToggleIcon = collapsed ? PanelLeftOpen : PanelLeftClose;
+
   return (
-    <aside className="flex h-full w-72 shrink-0 flex-col border-r border-slate-800 bg-slate-950">
-      <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
-        <CodexFlowBrand subtitle="Desktop" iconClassName="h-8 w-8" />
+    <aside className={`flex h-full shrink-0 flex-col border-r border-slate-800 bg-slate-950 ${collapsed ? 'w-11' : 'w-60 xl:w-72'}`}>
+      <div className={`flex shrink-0 items-center gap-2 border-b border-slate-800 py-3 ${collapsed ? 'flex-col' : 'px-3'}`}>
+        <div className="mr-auto min-w-0" hidden={collapsed}>
+          <CodexFlowBrand subtitle="Desktop" iconClassName="h-8 w-8" />
+        </div>
+        <button
+          type="button"
+          onClick={() => setCollapsed((wasCollapsed) => !wasCollapsed)}
+          aria-expanded={!collapsed}
+          aria-label={toggleLabel}
+          title={toggleLabel}
+          className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+        >
+          <ToggleIcon className="h-4 w-4" />
+        </button>
         <button
           type="button"
           onClick={onOpenSettings}
@@ -191,7 +209,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </div>
 
       {onSelectPrimaryView && (
-        <div className="grid grid-cols-2 gap-1.5 border-b border-slate-800 px-3 py-2">
+        <div hidden={collapsed} className="grid grid-cols-2 gap-1.5 border-b border-slate-800 px-3 py-2">
           <button
             type="button"
             onClick={() => onSelectPrimaryView('chat')}
@@ -219,7 +237,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       )}
 
-      <div className="space-y-2 border-b border-slate-800 p-3">
+      <div hidden={collapsed} className="space-y-2 border-b border-slate-800 p-3">
         {onOpenDailyAssistant && (
           <button
             type="button"
@@ -254,12 +272,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </div>
 
       {workspaceError && (
-        <div className="mx-3 mt-2 rounded-lg border border-rose-500/40 bg-rose-950/30 p-2 text-[11px] text-rose-200">
+        <div hidden={collapsed} className="mx-3 mt-2 rounded-lg border border-rose-500/40 bg-rose-950/30 p-2 text-[11px] text-rose-200">
           {workspaceError}
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto p-3">
+      <div hidden={collapsed} className="min-h-0 flex-1 overflow-y-auto p-3">
         <div className="mb-2 flex items-center justify-between text-[11px] font-medium uppercase tracking-wider text-slate-500">
           <span>工作区与会话 ({sessions.length})</span>
         </div>

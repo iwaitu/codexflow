@@ -1,9 +1,10 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, powerMonitor, session, shell, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, powerMonitor, screen, session, shell, type IpcMainInvokeEvent } from 'electron';
 import { existsSync, lstatSync, realpathSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 import {
   APP_METADATA,
   IPC_CHANNELS,
+  isLocalBackendConnection,
   type AppUpdateState,
   type ClassifiedDroppedFile,
   type ComputerControlOverlayState,
@@ -41,6 +42,9 @@ import {
   type UpdatePluginConnectionRequest,
   type WorkspaceFileActionResult,
   type WorkspaceFileContextMenuPayload,
+  type WorkspaceTerminalAction,
+  type WorkspaceTerminalStartRequest,
+  type WorkspaceTerminalStartResult,
 } from '../../src/shared/ipc';
 import {
   buildApplicationMenuTemplate,
@@ -71,14 +75,17 @@ import { TrayManager } from './trayManager';
 import { UpdaterManager } from './updaterManager';
 import {
   openWorkspaceFileWithDefaultApp,
+  openWorkspaceTerminal,
   openWorkspaceTargetInFileManager,
   resolveSafeWorkspaceTarget,
 } from './workspaceFiles';
+import { WorkspaceTerminals } from './workspaceTerminals';
 
 registerAppSchemePrivileges();
 
 const isDev = Boolean(process.env.ELECTRON_RENDERER_URL);
 let mainWindow: BrowserWindow | null = null;
+const workspaceTerminals = new WorkspaceTerminals();
 let backendManager: BackendManager | null = null;
 let gatewayProxy: LocalBackendProxy | null = null;
 let trayManager: TrayManager | null = null;
@@ -373,11 +380,12 @@ function broadcastConnectionChange(): void {
 
 function createMainWindow(): BrowserWindow {
   const windowIconPath = resolveAppIconPath();
+  const { width, height } = screen.getPrimaryDisplay().workAreaSize;
   const win = new BrowserWindow({
-    width: 1380,
-    height: 900,
-    minWidth: 1024,
-    minHeight: 680,
+    width: Math.min(1380, width),
+    height: Math.min(900, height),
+    minWidth: Math.min(960, width),
+    minHeight: Math.min(540, height),
     show: false,
     title: 'CodexFlow Desktop',
     ...(windowIconPath ? { icon: windowIconPath } : {}),
@@ -397,6 +405,13 @@ function createMainWindow(): BrowserWindow {
     void openSafeExternalUrl(url);
     return { action: 'deny' };
   });
+
+  const terminalOwnerId = win.webContents.id;
+  win.webContents.on('did-start-navigation', ({ isMainFrame, isSameDocument }) => {
+    if (isMainFrame && !isSameDocument) workspaceTerminals.closeOwner(terminalOwnerId);
+  });
+  win.webContents.on('render-process-gone', () => workspaceTerminals.closeOwner(terminalOwnerId));
+  win.webContents.once('destroyed', () => workspaceTerminals.closeOwner(terminalOwnerId));
 
   win.webContents.on('will-navigate', (event, navigationUrl) => {
     if (isTrustedOrigin(navigationUrl)) {
@@ -1289,6 +1304,39 @@ function registerIpcHandlers(manager: BackendManager): void {
     return openSafeExternalUrl(rawUrl);
   });
 
+  ipcMain.handle(IPC_CHANNELS.openWorkspaceTerminal, async (event, workspacePath: string): Promise<WorkspaceFileActionResult> => {
+    assertTrustedIpcSender(event);
+    const language = desktopPreferences.language;
+    if (!isLocalBackendConnection(manager.getPublicInfo())) {
+      return {
+        ok: false,
+        error: language === 'en-US' ? 'Opening a terminal requires a local workspace.' : '打开终端需要本地工作区。',
+      };
+    }
+    return openWorkspaceTerminal(workspacePath, language);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.startWorkspaceTerminal, (event, request: WorkspaceTerminalStartRequest): WorkspaceTerminalStartResult => {
+    assertTrustedIpcSender(event);
+    const language = desktopPreferences.language;
+    if (!isLocalBackendConnection(manager.getPublicInfo())) {
+      return {
+        ok: false,
+        error: language === 'en-US' ? 'Opening a terminal requires a local workspace.' : '打开终端需要本地工作区。',
+      };
+    }
+    return workspaceTerminals.start(event.sender, request, language);
+  });
+
+  ipcMain.on(IPC_CHANNELS.workspaceTerminalAction, (event, action: WorkspaceTerminalAction) => {
+    try {
+      assertTrustedIpcSender(event);
+      workspaceTerminals.act(event.sender.id, action);
+    } catch {
+      // Terminal input can race with renderer reload or process exit.
+    }
+  });
+
   ipcMain.handle(
     IPC_CHANNELS.showWorkspaceFileContextMenu,
     async (event, payload: WorkspaceFileContextMenuPayload): Promise<WorkspaceFileActionResult> => {
@@ -1779,6 +1827,7 @@ if (!singleInstanceLock) {
   app.on('before-quit', (event) => {
     isQuitting = true;
     remoteTunnelManager?.stop();
+    workspaceTerminals.dispose();
     computerOverlayManager?.dispose();
     environmentManager?.dispose();
     updaterManager?.dispose();

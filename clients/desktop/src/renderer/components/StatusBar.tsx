@@ -49,7 +49,7 @@ export const StatusBar: React.FC<StatusBarProps> = ({
   const controlAvailable = connection?.controlPlaneAvailable ?? systemStatus?.controlPlaneAvailable ?? true;
 
   return (
-    <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-800 bg-slate-950 px-4 py-1.5 text-[11px] text-slate-400">
+    <footer className="flex flex-wrap items-center justify-between gap-2 bg-slate-950 px-4 py-1.5 text-[11px] text-slate-400">
       <div className="flex flex-wrap items-center gap-3">
         <span className="inline-flex items-center gap-1.5">
           <span
