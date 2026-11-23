@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { AlertTriangle, ArrowDown, Bot, CheckCircle2, ChevronDown, ChevronUp, Cpu, FolderPlus, Loader2, Plus, RefreshCw, Search, ShieldCheck, X } from 'lucide-react';
 import type { BrowserApprovalRequestDto, BusinessApprovalRequestDto, ComputerApprovalRequestDto } from '@shared/ipc';
@@ -7,6 +7,7 @@ import { applyCssHighlightsForSearch, clearCssHighlightsForSearch, findSessionSe
 import type { UiMessage, UiPendingApproval, UiToolCall, WorkerBarState } from '../lib/sessionRecovery';
 import { BrowserApprovalCard } from './BrowserApprovalCard';
 import { BusinessSkillApprovalCard } from './BusinessSkillApprovalCard';
+import { ChatTurnNavigation, collectChatTurns } from './ChatTurnNavigation';
 import { ComputerApprovalCard } from './ComputerApprovalCard';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { MessageItem } from './MessageItem';
@@ -115,6 +116,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
     estimateSize: () => 110,
     overscan: 6,
   });
+  const turns = useMemo(() => collectChatTurns(messages), [messages]);
+  const navigateToTurn = useCallback((messageIndex: number) => {
+    isNearBottomRef.current = false;
+    virtualizer.scrollToIndex(messageIndex, { align: 'start' });
+  }, [virtualizer]);
 
   const effectiveQuery = searchOpen ? searchQuery : '';
   const searchMatches = useMemo(
@@ -158,6 +164,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
   }, [searchOpen, activeMatch, virtualizer]);
 
   const virtualItems = virtualizer.getVirtualItems();
+  const firstVisibleMessage = virtualItems.find((item) => item.start + item.size > (virtualizer.scrollOffset ?? 0));
+  const nextTurnIndex = turns.findIndex((turn) => turn.messageIndex > (firstVisibleMessage?.index ?? 0));
+  const activeTurnIndex = !isNearBottomRef.current && nextTurnIndex >= 0 ? Math.max(0, nextTurnIndex - 1) : turns.length - 1;
   const visibleWindowKey = virtualItems.map((item) => item.index).join(',');
 
   useEffect(() => {
@@ -237,13 +246,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const activeToolCalls = toolCalls.filter((tool) => tool.status === 'called' || tool.status === 'running');
 
   return (
-    <div className="relative flex-1 overflow-hidden">
+    <div className="relative min-h-0 flex-1">
       {searchOpen && (
         <div
           data-testid="chat-search-bar"
           role="search"
           aria-label="会话内搜索"
-          className="absolute right-6 top-3 z-20 flex items-center gap-1.5 rounded-xl border border-slate-700/90 bg-slate-950/95 px-2.5 py-1.5 text-xs text-slate-200 shadow-2xl backdrop-blur"
+          className="absolute inset-x-6 top-3 z-20 flex items-center gap-1.5 rounded-xl border border-slate-700/90 bg-slate-950/95 px-2.5 py-1.5 text-xs text-slate-200 shadow-2xl backdrop-blur @min-[36rem]:left-auto"
         >
           <Search className="h-3.5 w-3.5 shrink-0 text-slate-400" />
           <input
@@ -264,7 +273,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             }}
             placeholder="搜索当前会话..."
             aria-label="在当前会话中搜索"
-            className="w-52 bg-transparent text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none"
+            className="w-52 min-w-0 bg-transparent text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none"
           />
           {searchQuery.trim().length > 0 && (
             <span
@@ -312,7 +321,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
       <div
         ref={scrollContainerRef}
         onScroll={handleScroll}
-        className="h-full overflow-y-auto px-6 py-4"
+        data-turn-navigation={turns.length > 0 ? '' : undefined}
+        className="conversation-scroll chat-gutter h-full overflow-y-auto py-4"
       >
         {sseState === 'reconnecting' && (
           <div className="mb-3 flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-200">
@@ -691,6 +701,15 @@ export const ChatView: React.FC<ChatViewProps> = ({
         </div>
       )}
       </div>
+
+      {turns.length > 0 && (
+        <ChatTurnNavigation
+          key={`${sessionId}:${conversationId}`}
+          turns={turns}
+          activeIndex={activeTurnIndex}
+          onNavigate={navigateToTurn}
+        />
+      )}
 
       {showScrollBottom && (
         <button
