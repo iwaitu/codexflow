@@ -4,6 +4,7 @@
 
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Models;
+using CodexFlow.Core.Skills;
 using Microsoft.Extensions.Logging;
 using System.Text.Json;
 
@@ -314,6 +315,14 @@ public class ToolSearchMetaTool : ICodexTool
                 [
                     "Search the web for current technical context.",
                     "Find candidate pages before fetch_webpage."
+                ]),
+            ReadBuiltInSkillTool.ToolName => new(
+                ["skill", BuiltInSkills.FrontendBrowserDebug, BuiltInSkills.DesktopControl, "frontend", "browser", "debug", "desktop", "computer use", "前端调试", "浏览器联调", "桌面控制"],
+                ["main"],
+                "low",
+                [
+                    "Load the built-in browser debugging workflow before reproducing or verifying a web UI issue.",
+                    "Load desktop-control before interacting with a native desktop application."
                 ]),
             "browser_navigate" => new(
                 ["browser", "web", "url", "navigate", "spa", "localhost"],

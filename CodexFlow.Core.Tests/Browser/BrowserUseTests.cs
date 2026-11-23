@@ -900,6 +900,9 @@ public sealed class BrowserUseTests
   <div id="fileStatus">No file</div>
   <iframe id="childFrame" srcdoc="&lt;button id='frameBtn' onclick=&quot;window.parent.document.getElementById('frameStatus').textContent='FrameClicked';&quot;&gt;ChildFrameBtn&lt;/button&gt;"></iframe>
   <div id="frameStatus">Wait</div>
+  <input id="panelInput" style="position:fixed;left:900px;top:35px;width:170px;height:32px"
+    oninput="document.getElementById('panelResult').textContent = 'Panel:' + this.value" />
+  <button id="panelResult" style="position:fixed;left:900px;top:80px">Panel:ready</button>
 </body>
 </html>
 """;
@@ -1181,7 +1184,61 @@ public sealed class BrowserUseTests
             Assert.Equal(ToolResultStatus.Success, evalRes2.Status);
             Assert.Contains("3", evalRes2.Output, StringComparison.Ordinal);
 
-            // 6. Close browser session cleanly
+            // 6. Control the same page through the panel, then return it to the agent.
+            var deniedPanel = await manager.ControlPanelAsync(caller with { PlanModeActive = true }, new("start"));
+            Assert.Equal("plan_mode_active", deniedPanel.ErrorCode);
+            var startedPanel = await manager.ControlPanelAsync(caller, new("start"));
+            Assert.NotNull(startedPanel.Response?.LeaseId);
+            Assert.True(startedPanel.Response!.ResponsiveViewport);
+            var leaseId = startedPanel.Response!.LeaseId!;
+            Assert.True(manager.GetSessionState(caller.SessionId).PanelControlActive == true);
+            Assert.Equal("takeover_active", (await manager.NavigateAsync(caller, "reload", null)).ErrorCode);
+
+            var frameResult = await manager.ControlPanelAsync(caller, new("frame", leaseId));
+            Assert.True(frameResult.Response?.Frame is not null, frameResult.Message);
+            var frame = frameResult.Response!.Frame!;
+            Assert.True(frame.CssWidth > 1060);
+            Assert.StartsWith("http://127.0.0.1:", frame.Url, StringComparison.Ordinal);
+            Assert.NotEmpty(Convert.FromBase64String(frame.JpegBase64));
+
+            Assert.Equal("browser_panel_lease_invalid",
+                (await manager.ControlPanelAsync(caller, new("key", new string('f', 32), frame.ViewId, Key: "Enter"))).ErrorCode);
+            Assert.Equal("browser_panel_stale_view",
+                (await manager.ControlPanelAsync(caller, new("click", leaseId, "wrong-view", X: 935, Y: 53))).ErrorCode);
+            await Task.Delay(90);
+            Assert.NotNull((await manager.ControlPanelAsync(caller, new("click", leaseId, frame.ViewId, X: 935, Y: 53))).Response);
+            await Task.Delay(90);
+            Assert.NotNull((await manager.ControlPanelAsync(caller, new("text", leaseId, frame.ViewId, Text: "侧栏输入"))).Response);
+
+            Assert.Equal("browser_panel_invalid_input",
+                (await manager.ControlPanelAsync(caller, new("frame", leaseId, ViewportWidth: 720))).ErrorCode);
+            Assert.Equal("browser_panel_lease_invalid",
+                (await manager.ControlPanelAsync(caller, new("tab_new", new string('f', 32)))).ErrorCode);
+            Assert.Equal("plan_mode_active",
+                (await manager.ControlPanelAsync(caller with { PlanModeActive = true }, new("tab_new", leaseId))).ErrorCode);
+            await Task.Delay(340);
+            var resized = await manager.ControlPanelAsync(caller, new("frame", leaseId, ViewportWidth: 720, ViewportHeight: 510));
+            Assert.True(resized.Response?.Frame is not null, resized.Message);
+            Assert.InRange(resized.Response!.Frame!.CssWidth, 695, 720);
+            Assert.InRange(resized.Response.Frame.CssHeight, 485, 510);
+            Assert.NotEqual(frame.ViewId, resized.Response.Frame.ViewId);
+            Assert.Equal("browser_panel_stale_view",
+                (await manager.ControlPanelAsync(caller, new("click", leaseId, frame.ViewId, X: 50, Y: 50))).ErrorCode);
+
+            Assert.NotNull((await manager.ControlPanelAsync(caller, new("end", leaseId))).Response);
+            for (var attempt = 0; attempt < 60 && manager.GetSessionState(caller.SessionId).PanelControlActive == true; attempt++)
+                await Task.Delay(20);
+            Assert.False(manager.GetSessionState(caller.SessionId).PanelControlActive == true);
+            var panelSnapshot = await manager.SnapshotAsync(caller);
+            Assert.Contains("Panel:侧栏输入", panelSnapshot.Output, StringComparison.Ordinal);
+            var restartPanel = await manager.ControlPanelAsync(caller, new("start"));
+            Assert.NotNull(restartPanel.Response?.LeaseId);
+            var restoredFrame = await manager.ControlPanelAsync(caller, new("frame", restartPanel.Response!.LeaseId));
+            Assert.Equal(frame.CssWidth, restoredFrame.Response?.Frame?.CssWidth);
+            Assert.Equal(frame.CssHeight, restoredFrame.Response?.Frame?.CssHeight);
+            await manager.ControlPanelAsync(caller, new("end", restartPanel.Response.LeaseId));
+
+            // 7. Close browser session cleanly.
             var closeRes = await tabsTool.ExecuteAsync(new Dictionary<string, object?> { ["action"] = "close_browser" });
             Assert.Equal(ToolResultStatus.Success, closeRes.Status);
             Assert.Equal("idle", manager.GetSessionState("e2e-session-1").Status);

@@ -756,6 +756,67 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/gateway/session/{sessionId}/browser/panel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    sessionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/*+json": components["schemas"]["BrowserPanelRequest"];
+                    "application/json": components["schemas"]["BrowserPanelRequest"];
+                    "text/json": components["schemas"]["BrowserPanelRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BrowserPanelResponse"];
+                    };
+                };
+                /** @description Bad Request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BrowserApiErrorDto"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BrowserApiErrorDto"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/gateway/session/{sessionId}/browser/screenshot": {
         parameters: {
             query?: never;
@@ -4783,6 +4844,41 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/skills/built-in": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BuiltInSkillDto"][];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/system/status": {
         parameters: {
             query?: never;
@@ -4946,6 +5042,44 @@ export type components = {
             source: null | string;
             version: null | string;
         };
+        BrowserPanelFrame: {
+            /** Format: double */
+            cssHeight: number | string;
+            /** Format: double */
+            cssWidth: number | string;
+            jpegBase64: string;
+            title: null | string;
+            url: null | string;
+            viewId: string;
+        };
+        BrowserPanelRequest: {
+            action: string;
+            /** Format: double */
+            deltaX?: null | number | string;
+            /** Format: double */
+            deltaY?: null | number | string;
+            direction?: null | string;
+            key?: null | string;
+            leaseId?: null | string;
+            tabId?: null | string;
+            text?: null | string;
+            url?: null | string;
+            viewId?: null | string;
+            /** Format: int32 */
+            viewportHeight?: null | number | string;
+            /** Format: int32 */
+            viewportWidth?: null | number | string;
+            /** Format: double */
+            x?: null | number | string;
+            /** Format: double */
+            y?: null | number | string;
+        };
+        BrowserPanelResponse: {
+            active: boolean;
+            frame?: null | components["schemas"]["BrowserPanelFrame"];
+            leaseId?: null | string;
+            responsiveViewport?: null | boolean;
+        };
         BrowserSessionCloseResponse: {
             closed: boolean;
             sessionId: string;
@@ -4956,6 +5090,8 @@ export type components = {
             headless: boolean;
             /** @default false */
             isRemote: boolean;
+            panelControlActive?: null | boolean;
+            panelControlAvailable?: null | boolean;
             profileMode: string;
             recentActions: components["schemas"]["BrowserActionRecordDto"][];
             recentConsole: components["schemas"]["BrowserConsoleEntryDto"][];
@@ -5011,6 +5147,12 @@ export type components = {
         };
         BrowserTakeoverStartRequest: {
             reason?: null | string;
+        };
+        BuiltInSkillDto: {
+            description: string;
+            examplePrompt: string;
+            id: string;
+            title: string;
         };
         BusinessApprovalRequestDto: {
             allowedDecisions?: string[];

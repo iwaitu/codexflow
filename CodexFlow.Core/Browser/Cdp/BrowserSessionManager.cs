@@ -24,7 +24,7 @@ namespace CodexFlow.Core.Browser.Cdp;
 /// instances, per-session outbound SSRF proxies, isolated-world DOM inspection, live password/clickjacking/TOCTOU
 /// defenses, throttled SSE state emission, and idle timeout reclamation.
 /// </summary>
-public sealed class BrowserSessionManager : IBrowserSessionManager
+public sealed partial class BrowserSessionManager : IBrowserSessionManager
 {
     private const string IsolatedWorldName = "__codexflow_isolated__";
     private const long MaxUploadFileSizeBytes = 50L * 1024 * 1024;
@@ -89,11 +89,19 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         _optionsChangeSubscription = _options.OnChange(OnOptionsChanged);
     }
 
-    public async Task<BrowserOperationResult> NavigateAsync(
+    public Task<BrowserOperationResult> NavigateAsync(
         BrowserTrustedCallerContext caller,
         string action,
         string? navigationAddress,
         CancellationToken ct = default)
+        => NavigateCoreAsync(caller, action, navigationAddress, null, ct);
+
+    private async Task<BrowserOperationResult> NavigateCoreAsync(
+        BrowserTrustedCallerContext caller,
+        string action,
+        string? navigationAddress,
+        BrowserPanelLease? panelLease,
+        CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(caller);
         var normalizedAction = string.IsNullOrWhiteSpace(action) ? "goto" : action.Trim().ToLowerInvariant();
@@ -125,12 +133,16 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
 
             if (session.TakeoverActive)
             {
-                return Fail("takeover_active", "当前浏览器会话正处于人工接管状态，请等待用户点击「完成并交回 Agent」后再执行操作。");
+                if (panelLease is null || !ReferenceEquals(panelLease, session.PanelLease) || panelLease.Token.IsCancellationRequested)
+                    return Fail("takeover_active", "当前浏览器会话正处于人工接管状态。");
             }
+            else if (panelLease is not null)
+                return Fail("browser_panel_lease_invalid", "侧栏接管已结束。");
 
             session.Touch();
             var proc = await EnsureRuntimeAsync(ct).ConfigureAwait(false);
             var tab = await EnsureActiveTabAsync(proc, session, ct).ConfigureAwait(false);
+            Interlocked.Increment(ref tab.NavigationRevision);
 
             if (normalizedAction == "goto")
             {
@@ -1131,12 +1143,17 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         }
     }
 
-    public async Task<BrowserOperationResult> TabsAsync(
+    public Task<BrowserOperationResult> TabsAsync(
         BrowserTrustedCallerContext caller,
         string action,
         string? tabId = null,
         string? navigationAddress = null,
         CancellationToken ct = default)
+        => TabsCoreAsync(caller, action, tabId, navigationAddress, null, ct);
+
+    private async Task<BrowserOperationResult> TabsCoreAsync(
+        BrowserTrustedCallerContext caller, string action, string? tabId, string? navigationAddress,
+        BrowserPanelLease? panelLease, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(caller);
         var normalized = string.IsNullOrWhiteSpace(action) ? "list" : action.Trim().ToLowerInvariant();
@@ -1151,25 +1168,32 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             return new BrowserOperationResult(true, "当前会话尚未启动浏览器（0 个标签页）。", Summary: "无活跃浏览器标签页");
         }
 
-        var (session, err) = await AcquireSessionAsync(caller, ct).ConfigureAwait(false);
+        var (session, err) = panelLease is null
+            ? await AcquireSessionAsync(caller, ct).ConfigureAwait(false)
+            : (_sessions.GetValueOrDefault(caller.SessionId), null);
         if (err is not null || session is null)
         {
-            return err!;
+            return err ?? Fail("browser_panel_lease_invalid", "侧栏接管已结束。");
         }
 
         await session.ExecutionLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            if (panelLease is not null && (!ReferenceEquals(session.PanelLease, panelLease) || panelLease.Token.IsCancellationRequested))
+                return Fail("browser_panel_lease_invalid", "侧栏接管已结束。");
+
             if (session.IsClosed)
             {
                 return Fail("session_closed", "当前浏览器会话已关闭。");
             }
 
-            if (session.TakeoverActive && normalized is not ("list" or "close_browser"))
+            if (panelLease is null && session.TakeoverActive && normalized is not ("list" or "close_browser"))
             {
                 return Fail("takeover_active", "当前浏览器会话正处于人工接管状态，请等待用户点击「完成并交回 Agent」后再执行操作。");
             }
 
+            if (panelLease is not null)
+                panelLease.Viewport = null;
             session.Touch();
             var proc = await EnsureRuntimeAsync(ct).ConfigureAwait(false);
 
@@ -1270,13 +1294,23 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                         return Fail("missing_tab_id", "切换标签页必须提供 tab_id。");
                     }
 
+                    var previousTarget = session.ActiveTargetId;
                     if (!session.TrySetActiveTab(tabId.Trim(), out var targetTab) || targetTab is null)
                     {
                         return Fail("tab_not_found", $"未找到标签页 '{tabId}'。");
                     }
 
-                    await proc.Connection.SendJsonAsync("Target.activateTarget", new JsonObject { ["targetId"] = targetTab.TargetId }.ToJsonString(), ct: ct).ConfigureAwait(false);
-                    _ = await TryCaptureViewportJpegAsync(proc.Connection, session, targetTab, ct).ConfigureAwait(false);
+                    try
+                    {
+                        await proc.Connection.SendJsonAsync("Target.activateTarget", new JsonObject { ["targetId"] = targetTab.TargetId }.ToJsonString(), ct: ct).ConfigureAwait(false);
+                    }
+                    catch when (panelLease is not null && previousTarget is not null)
+                    {
+                        session.TrySetActiveTab(previousTarget, out _);
+                        throw;
+                    }
+                    if (panelLease is null)
+                        _ = await TryCaptureViewportJpegAsync(proc.Connection, session, targetTab, ct).ConfigureAwait(false);
                     session.RecordAction("browser_tabs", "switch", targetTab.TargetId, targetTab.Url, true, $"切换至 {targetTab.TargetId}", 0);
                     await PublishStateAsync(session, force: true, ct: ct).ConfigureAwait(false);
                     return new BrowserOperationResult(true, $"已切换到标签页 [{targetTab.TargetId}] ({targetTab.Url})。", Summary: $"切换标签页 {targetTab.TargetId}", PageLocation: targetTab.Url, Title: targetTab.Title);
@@ -1284,6 +1318,8 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 case "close":
                 {
                     var closeTargetId = string.IsNullOrWhiteSpace(tabId) ? session.ActiveTargetId : tabId.Trim();
+                    if (panelLease is not null)
+                        return await ClosePanelTabAsync(proc, session, panelLease, closeTargetId!, ct).ConfigureAwait(false);
                     if (string.IsNullOrWhiteSpace(closeTargetId) || !session.RemoveTab(closeTargetId, out var removed) || removed is null)
                     {
                         return Fail("tab_not_found", $"未找到要关闭的标签页 '{tabId ?? "(active)"}'。");
@@ -1578,6 +1614,11 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             return Fail("session_not_found", "当前会话没有活跃的受管浏览器。");
         }
 
+        if (session.PanelLease is not null)
+        {
+            return Fail("browser_panel_active", "请通过侧栏面板交回控制权。");
+        }
+
         if (!session.TakeoverActive)
         {
             return new BrowserOperationResult(true, "当前会话未处于人工接管状态。", Summary: "无需结束接管");
@@ -1631,6 +1672,11 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
     {
         if (!string.IsNullOrWhiteSpace(sessionId) && _sessions.TryGetValue(sessionId, out var session))
         {
+            if (session.PanelLease is { } lease)
+            {
+                lease.Revoke();
+                return;
+            }
             session.CancelTakeover(reason);
             _ = TryHideSessionWindowAsync(session, _sharedRuntime, session.GetActiveTab());
         }
@@ -1640,14 +1686,19 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
     {
         if (!string.IsNullOrWhiteSpace(sessionId) && _sessions.TryGetValue(sessionId, out var session) && !session.IsClosed)
         {
-            return session.ToDto("running");
+            return GetPublishedBrowserState(session, _options.CurrentValue);
         }
 
+        return CreateInactiveBrowserState(sessionId, "idle");
+    }
+
+    private BrowserSessionStateDto CreateInactiveBrowserState(string? sessionId, string status, DateTimeOffset? updatedAtUtc = null)
+    {
         var currentOpts = _options.CurrentValue;
         var isRemoteConfigured = !string.IsNullOrWhiteSpace(currentOpts.RemoteCdpAddress);
         return new BrowserSessionStateDto(
             SessionId: sessionId ?? string.Empty,
-            Status: "idle",
+            Status: status,
             Headless: isRemoteConfigured || currentOpts.Headless,
             ProfileMode: isRemoteConfigured ? nameof(BrowserProfileMode.Ephemeral) : currentOpts.ProfileMode.ToString(),
             Url: null,
@@ -1657,8 +1708,11 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             Tabs: [],
             RecentActions: [],
             RecentConsole: [],
-            UpdatedAtUtc: null,
-            IsRemote: isRemoteConfigured);
+            UpdatedAtUtc: updatedAtUtc,
+            IsRemote: isRemoteConfigured)
+        {
+            PanelControlAvailable = !isRemoteConfigured && currentOpts.Enabled && currentOpts.EnablePanelControl
+        };
     }
 
     public string? GetSessionGenerationId(string sessionId)
@@ -1693,6 +1747,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         }
 
         session.MarkClosed();
+        session.PanelLease?.Revoke();
         session.AbortTakeover(reason);
 
         if (string.Equals(_persistentOwnerSessionId, sessionId, StringComparison.Ordinal))
@@ -1825,20 +1880,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
 
         if (_eventPublisher is not null)
         {
-            var closedDto = new BrowserSessionStateDto(
-                SessionId: sessionId,
-                Status: "closed",
-                Headless: _options.CurrentValue.Headless,
-                ProfileMode: _options.CurrentValue.ProfileMode.ToString(),
-                Url: null,
-                Title: null,
-                ScreenshotSeq: 0,
-                ConsoleErrorCount: 0,
-                Tabs: [],
-                RecentActions: [],
-                RecentConsole: [],
-                UpdatedAtUtc: DateTimeOffset.UtcNow,
-                IsRemote: session.IsRemote);
+            var closedDto = CreateInactiveBrowserState(sessionId, "closed", DateTimeOffset.UtcNow);
             try
             {
                 await _eventPublisher.PublishStateUpdatedAsync(sessionId, closedDto, CancellationToken.None).ConfigureAwait(false);
@@ -1859,6 +1901,10 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         foreach (var kvp in _sessions)
         {
             var state = kvp.Value;
+            if (state.PanelLease is not null)
+            {
+                continue;
+            }
             if (state.TakeoverActive)
             {
                 // Auto-expire manual takeover if human exceeded 15m hard ceiling so persistent profiles never stay wedged forever.
@@ -2309,51 +2355,49 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         bool makeActive,
         CancellationToken ct)
     {
-        var opts = _options.CurrentValue;
         // Always start on about:blank so Fetch.enable and auto-attach are active before any remote URL loads.
-        var createParams = session.UsesDefaultContext
-            ? new JsonObject
-            {
-                ["url"] = "about:blank",
-                ["width"] = Math.Clamp(opts.DefaultViewportWidth, 640, 1920),
-                ["height"] = Math.Clamp(opts.DefaultViewportHeight, 480, 1440)
-            }.ToJsonString()
-            : new JsonObject
-            {
-                ["url"] = "about:blank",
-                ["width"] = Math.Clamp(opts.DefaultViewportWidth, 640, 1920),
-                ["height"] = Math.Clamp(opts.DefaultViewportHeight, 480, 1440),
-                ["browserContextId"] = session.BrowserContextId
-            }.ToJsonString();
+        // Chromium accepts window geometry only for new windows. Set the tab viewport after attaching.
+        var createParams = new JsonObject { ["url"] = "about:blank" };
+        if (!session.UsesDefaultContext) createParams["browserContextId"] = session.BrowserContextId;
 
-        var createRes = await proc.Connection.SendJsonAsync("Target.createTarget", createParams, ct: ct).ConfigureAwait(false);
+        var createRes = await proc.Connection.SendJsonAsync("Target.createTarget", createParams.ToJsonString(), ct: ct).ConfigureAwait(false);
         var targetId = createRes.GetProperty("targetId").GetString()
             ?? throw new InvalidOperationException("Target.createTarget 未返回 targetId。");
 
         _trackedTargets[targetId] = session.SessionId;
-        var attachParams = new JsonObject { ["targetId"] = targetId, ["flatten"] = true }.ToJsonString();
-        var attachRes = await proc.Connection.SendJsonAsync("Target.attachToTarget", attachParams, ct: ct).ConfigureAwait(false);
-        var cdpSessionId = attachRes.GetProperty("sessionId").GetString()
-            ?? throw new InvalidOperationException("Target.attachToTarget 未返回 sessionId。");
-
-        var tab = new BrowserTabRecord
+        var cdpSessionId = string.Empty;
+        try
         {
-            TargetId = targetId,
-            CdpSessionId = cdpSessionId,
-            Url = "about:blank",
-            Title = string.Empty
-        };
+            var attachParams = new JsonObject { ["targetId"] = targetId, ["flatten"] = true }.ToJsonString();
+            var attachRes = await proc.Connection.SendJsonAsync("Target.attachToTarget", attachParams, ct: ct).ConfigureAwait(false);
+            cdpSessionId = attachRes.GetProperty("sessionId").GetString()
+                ?? throw new InvalidOperationException("Target.attachToTarget 未返回 sessionId。");
 
-        _cdpSessionToAppSession[cdpSessionId] = session.SessionId;
-        session.AddOrUpdateTab(tab, makeActive);
+            var tab = new BrowserTabRecord { TargetId = targetId, CdpSessionId = cdpSessionId };
+            _cdpSessionToAppSession[cdpSessionId] = session.SessionId;
+            await InitializeTabDomainsAsync(proc.Connection, cdpSessionId, session.IsRemote, ct).ConfigureAwait(false);
+            if (!session.IsRemote && !session.Headless && (!session.TakeoverActive || session.PanelLease is not null))
+                await SetWindowVisibleAsync(proc.Connection, tab, visible: false, ct).ConfigureAwait(false);
 
-        await InitializeTabDomainsAsync(proc.Connection, cdpSessionId, session.IsRemote, ct).ConfigureAwait(false);
-        if (!session.IsRemote && !session.Headless && !session.TakeoverActive)
-        {
-            await SetWindowVisibleAsync(proc.Connection, tab, visible: false, ct).ConfigureAwait(false);
+            session.AddOrUpdateTab(tab, makeActive);
+            return tab;
         }
-
-        return tab;
+        catch
+        {
+            _trackedTargets.TryRemove(targetId, out _);
+            _cdpSessionToAppSession.TryRemove(cdpSessionId, out _);
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+            try
+            {
+                await proc.Connection.SendJsonAsync("Target.closeTarget", new JsonObject { ["targetId"] = targetId }.ToJsonString(),
+                    ct: timeout.Token).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Closing a partially initialized browser tab failed.");
+            }
+            throw;
+        }
     }
 
     private async Task InitializeTabDomainsAsync(CdpConnection connection, string cdpSessionId, bool isRemote, CancellationToken ct)
@@ -2376,14 +2420,8 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             _logger.LogDebug(ex, "Target.setAutoAttach failed for CDP session {CdpSessionId}", cdpSessionId);
         }
 
-        var metricsParams = new JsonObject
-        {
-            ["width"] = Math.Clamp(opts.DefaultViewportWidth, 640, 1920),
-            ["height"] = Math.Clamp(opts.DefaultViewportHeight, 480, 1440),
-            ["deviceScaleFactor"] = 1,
-            ["mobile"] = false
-        }.ToJsonString();
-        await connection.SendJsonAsync("Emulation.setDeviceMetricsOverride", metricsParams, cdpSessionId, ct: ct).ConfigureAwait(false);
+        await SetTabViewportAsync(connection, cdpSessionId, Math.Clamp(opts.DefaultViewportWidth, 640, MaxPanelWidth),
+            Math.Clamp(opts.DefaultViewportHeight, 480, MaxPanelHeight), ct).ConfigureAwait(false);
 
         var fetchParams = isRemote
             ? new JsonObject { ["patterns"] = new JsonArray(new JsonObject { ["urlPattern"] = "*" }) }.ToJsonString()
@@ -2901,6 +2939,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         var tab = session.FindTabByCdpSessionId(cdpSessionId);
         if (tab is not null)
         {
+            Interlocked.Increment(ref tab.NavigationRevision);
             if (!string.IsNullOrWhiteSpace(url))
             {
                 session.UpdateTabMetadata(tab.TargetId, url, title: null, invalidateIsolatedWorld: true);
@@ -3095,6 +3134,12 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
 
     private void OnOptionsChanged(BrowserOptions updated)
     {
+        if (!updated.Enabled || !updated.EnablePanelControl || !string.IsNullOrWhiteSpace(updated.RemoteCdpAddress))
+        {
+            foreach (var session in _sessions.Values)
+                session.PanelLease?.Revoke();
+        }
+
         if (updated.AllowControlledDownloads)
         {
             return;
@@ -3767,14 +3812,15 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         CancellationToken ct,
         bool annotate = false,
         IReadOnlyList<CdpSnapshotElement>? elementsForAnnotation = null,
-        IReadOnlyList<CdpBoundingBox>? cachedSecretRects = null)
+        IReadOnlyList<CdpBoundingBox>? cachedSecretRects = null,
+        bool panelFrame = false)
     {
         var overlayInstalled = false;
         try
         {
             var secretRects = cachedSecretRects is not null
                 ? new List<CdpBoundingBox>(cachedSecretRects)
-                : await CollectLiveMainSecretRectsAsync(connection, tab, ct).ConfigureAwait(false);
+                : await CollectLiveMainSecretRectsAsync(connection, tab, ct, requireSuccess: panelFrame).ConfigureAwait(false);
 
             var annotations = new List<CdpAnnotationItem>();
             if (annotate && elementsForAnnotation is { Count: > 0 })
@@ -3820,6 +3866,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
+                    if (panelFrame) return null;
                     _logger.LogDebug(ex, "Installing visual overlay before screenshot failed; proceeding cleanly.");
                 }
             }
@@ -3834,7 +3881,9 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
             if (result.TryGetProperty("data", out var dataProp) && dataProp.GetString() is { Length: > 0 } base64)
             {
                 var bytes = Convert.FromBase64String(base64);
-                return session.RecordScreenshot(bytes);
+                return panelFrame
+                    ? new BrowserScreenshotData(0, "image/jpeg", bytes, DateTimeOffset.UtcNow)
+                    : session.RecordScreenshot(bytes);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -3866,7 +3915,8 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
     private static async Task<List<CdpBoundingBox>> CollectLiveMainSecretRectsAsync(
         CdpConnection connection,
         BrowserTabRecord tab,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool requireSuccess = false)
     {
         try
         {
@@ -3880,10 +3930,11 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
                 return JsonSerializer.Deserialize(raw, CdpJsonContext.Default.ListCdpBoundingBox) ?? [];
             }
         }
-        catch (Exception)
+        catch (Exception) when (!requireSuccess)
         {
         }
 
+        if (requireSuccess) throw new InvalidOperationException("Unable to inspect the browser frame for masking.");
         return [];
     }
 
@@ -4018,7 +4069,7 @@ public sealed class BrowserSessionManager : IBrowserSessionManager
         try
         {
             await _eventPublisher
-                .PublishStateUpdatedAsync(session.SessionId, session.ToDto("running"), ct)
+                .PublishStateUpdatedAsync(session.SessionId, GetPublishedBrowserState(session, _options.CurrentValue), ct)
                 .ConfigureAwait(false);
         }
         catch (Exception ex)

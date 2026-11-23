@@ -512,6 +512,28 @@
         }
       }
     },
+    "/api/skills/built-in": {
+      "get": {
+        "tags": [
+          "Skills"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/BuiltInSkillDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/settings/execution": {
       "get": {
         "tags": [
@@ -5619,6 +5641,75 @@
         }
       }
     },
+    "/api/gateway/session/{sessionId}/browser/panel": {
+      "post": {
+        "tags": [
+          "BrowserSession"
+        ],
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BrowserPanelRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BrowserPanelRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/BrowserPanelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserPanelResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserApiErrorDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserApiErrorDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/gateway/session/{sessionId}/browser/close": {
       "post": {
         "tags": [
@@ -7245,6 +7336,193 @@
           }
         }
       },
+      "BrowserPanelFrame": {
+        "required": [
+          "viewId",
+          "cssWidth",
+          "cssHeight",
+          "jpegBase64",
+          "url",
+          "title"
+        ],
+        "type": "object",
+        "properties": {
+          "viewId": {
+            "type": "string"
+          },
+          "cssWidth": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "number",
+              "string"
+            ],
+            "format": "double"
+          },
+          "cssHeight": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "number",
+              "string"
+            ],
+            "format": "double"
+          },
+          "jpegBase64": {
+            "type": "string"
+          },
+          "url": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "title": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
+      "BrowserPanelRequest": {
+        "required": [
+          "action"
+        ],
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "leaseId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "viewId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "direction": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "url": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "x": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "null",
+              "number",
+              "string"
+            ],
+            "format": "double"
+          },
+          "y": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "null",
+              "number",
+              "string"
+            ],
+            "format": "double"
+          },
+          "deltaX": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "null",
+              "number",
+              "string"
+            ],
+            "format": "double"
+          },
+          "deltaY": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "null",
+              "number",
+              "string"
+            ],
+            "format": "double"
+          },
+          "key": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "text": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "viewportWidth": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "viewportHeight": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "tabId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
+      "BrowserPanelResponse": {
+        "required": [
+          "active"
+        ],
+        "type": "object",
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "leaseId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "frame": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/BrowserPanelFrame"
+              }
+            ]
+          },
+          "responsiveViewport": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          }
+        }
+      },
       "BrowserSessionCloseResponse": {
         "required": [
           "closed",
@@ -7361,6 +7639,18 @@
           "isRemote": {
             "type": "boolean",
             "default": false
+          },
+          "panelControlAvailable": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          },
+          "panelControlActive": {
+            "type": [
+              "null",
+              "boolean"
+            ]
           }
         }
       },
@@ -7523,6 +7813,29 @@
               "null",
               "string"
             ]
+          }
+        }
+      },
+      "BuiltInSkillDto": {
+        "required": [
+          "id",
+          "title",
+          "description",
+          "examplePrompt"
+        ],
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "examplePrompt": {
+            "type": "string"
           }
         }
       },
@@ -13462,6 +13775,9 @@
     },
     {
       "name": "GatewayArtifact"
+    },
+    {
+      "name": "Skills"
     },
     {
       "name": "ExecutionSettings"

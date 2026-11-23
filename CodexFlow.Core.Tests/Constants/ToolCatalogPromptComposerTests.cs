@@ -3,6 +3,7 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 using CodexFlow.Core.Abstractions;
+using CodexFlow.Core.Agents.Tools;
 using CodexFlow.Core.Constants;
 using CodexFlow.Core.Models;
 using CodexFlow.Core.Protocols;
@@ -63,6 +64,20 @@ public class ToolCatalogPromptComposerTests
         Assert.Contains("允许工具分类：Read、Analysis、Sentry", prompt);
         Assert.Contains("只读/分析优先 surface", prompt);
         Assert.Contains("验证型输出契约", prompt);
+    }
+
+    [Theory]
+    [InlineData(ComputerToolNames.Act, ReadBuiltInSkillTool.ToolName, true)]
+    [InlineData(ComputerToolNames.Screenshot, ReadBuiltInSkillTool.ToolName, false)]
+    [InlineData(ComputerToolNames.Act, ComputerToolNames.Screenshot, false)]
+    public void AppendRuntimeToolGuidance_AdvertisesDesktopSkillOnlyWhenCallable(
+        string firstTool, string secondTool, bool shouldAdvertise)
+    {
+        string[] toolNames = [firstTool, secondTool];
+        var prompt = ToolCatalogPromptComposer.AppendRuntimeToolGuidance("base prompt", toolNames);
+
+        Assert.Equal(shouldAdvertise, prompt.Contains("read_builtin_skill({\"name\":\"desktop-control\"})", StringComparison.Ordinal));
+        Assert.Equal(prompt, ToolCatalogPromptComposer.AppendRuntimeToolGuidance(prompt, toolNames));
     }
 
     private sealed class TestTool : ICodexTool

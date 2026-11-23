@@ -376,10 +376,6 @@ Adjust the token path to the active host's actual data directory. See the [devsi
 
 - [Release process](docs/releasing.md)
 - [Local execution threat model](docs/local-execution-threat-model.md)
-- [Desktop and local execution design](docs/plans/local-execution-and-desktop-client.md)
-- [Business Skill builder design](docs/plans/embedded-business-skill-builder.md)
 - [Developer simulation guide](scripts/e2e/devsim/README.md)
-
-Design documents describe design intent and may include work beyond a particular release. Use source, release notes, and runtime behavior to establish what is available.
 
 [MPL-2.0](LICENSE). Copyright © 2026 iwaitu.

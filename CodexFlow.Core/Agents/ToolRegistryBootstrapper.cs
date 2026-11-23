@@ -199,6 +199,7 @@ public sealed class ToolRegistryBootstrapper
         // 元工具:tool_search 用于按需加载 deferred 工具
         toolRegistry.RegisterTool(new ToolSearchMetaTool(toolRegistry, _loggerFactory.CreateLogger<ToolSearchMetaTool>()), ToolLoading.AlwaysOn);
         toolRegistry.RegisterTool(new SkillTool(_loggerFactory.CreateLogger<SkillTool>(), _skillScriptRunner, isolationGate: _isolationGate), ToolLoading.AlwaysOn);
+        toolRegistry.RegisterTool(new ReadBuiltInSkillTool(), ToolLoading.AlwaysOn);
         toolRegistry.RegisterTool(new ListMcpResourcesTool(_loggerFactory.CreateLogger<ListMcpResourcesTool>()), ToolLoading.AlwaysOn);
         toolRegistry.RegisterTool(new ReadMcpResourceTool(_loggerFactory.CreateLogger<ReadMcpResourceTool>()), ToolLoading.AlwaysOn);
         toolRegistry.RegisterTool(new EnterWorktreeTool(_sessionManager, _loggerFactory.CreateLogger<EnterWorktreeTool>()), ToolLoading.AlwaysOn);

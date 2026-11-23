@@ -17,6 +17,8 @@ public sealed record RawCapturedFrame(
     int VirtualWidth,
     int VirtualHeight);
 
+public readonly record struct ComputerClickReceipt(int Requested, int Accepted);
+
 /// <summary>
 /// Platform abstraction for desktop display/window inspection, screen pixel capture,
 /// input injection, and physical interrupt hooks (Windows x64 &amp; macOS).
@@ -53,8 +55,18 @@ public interface IComputerDriver
 
     byte[] EncodeScreenshot(ReadOnlySpan<byte> bgra, int width, int height, out string mimeType);
 
-    /// <summary>Sends button events after the caller has moved the pointer to the specified point.</summary>
+    /// <summary>Checks whether the platform can determine that input to this process would be blocked.</summary>
+    bool IsInputBlockedByIntegrity(int targetProcessId) => false;
+
+    /// <summary>Sends button events at the confirmed pointer position.</summary>
     void PerformMouseClick(int x, int y, string button, int clickCount);
+
+    /// <summary>Returns the input receipt on platforms that report event counts.</summary>
+    ComputerClickReceipt? PerformMouseClickWithReceipt(int x, int y, string button, int clickCount)
+    {
+        PerformMouseClick(x, y, button, clickCount);
+        return null;
+    }
 
     void PerformMouseMove(int x, int y);
 

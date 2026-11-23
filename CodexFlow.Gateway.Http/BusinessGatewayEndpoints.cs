@@ -554,6 +554,23 @@ internal static class BusinessGatewayEndpoints
             .Produces<BrowserApiErrorDto>(StatusCodes.Status404NotFound, "application/json", "text/json", "text/plain");
 
         browser.MapPost(
+            "/api/gateway/session/{sessionId}/browser/panel",
+            static (
+                [FromServices] BrowserSessionController handler,
+                HttpContext httpContext,
+                [FromRoute] string sessionId,
+                [FromBody] BrowserPanelRequest request,
+                CancellationToken ct) =>
+            {
+                handler.Bind(httpContext);
+                return handler.ControlBrowserPanel(sessionId, request, ct);
+            })
+            .RequireAuthorization(ControlPlaneAuthConstants.ControlPlanePolicy)
+            .Produces<BrowserPanelResponse>()
+            .Produces<BrowserApiErrorDto>(StatusCodes.Status400BadRequest)
+            .Produces<BrowserApiErrorDto>(StatusCodes.Status404NotFound);
+
+        browser.MapPost(
             "/api/gateway/session/{sessionId}/browser/close",
             static (
                 [FromServices] BrowserSessionController handler,

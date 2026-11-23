@@ -35,6 +35,12 @@ internal sealed partial class SourceGeneratedToolFunction(
         """);
     private static readonly JsonElement FallbackSchema = ParseElement(
         """{"type":"object","properties":{"parameters":{"type":"object"}},"required":["parameters"]}""");
+    private static readonly JsonElement BuiltInSkillSchema = ParseElement(
+        """{"type":"object","properties":{"name":{"type":"string","description":"内置 Skill ID"}},"required":["name"],"additionalProperties":false}""");
+
+    internal static AIFunction ReadBuiltInSkill(ICodexTool tool, string description)
+        => new SourceGeneratedToolFunction(tool, ReadBuiltInSkillTool.ToolName, description, BuiltInSkillSchema,
+            static input => new Dictionary<string, object?> { ["name"] = RequireString(input, "name") });
 
     internal static AIFunction AnalyzeCode(ICodexTool tool, string description)
         => new SourceGeneratedToolFunction(tool, "analyze_code", description, AnalyzeSchema, BindAnalyzeCode);

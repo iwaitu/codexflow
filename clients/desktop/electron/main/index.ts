@@ -667,6 +667,25 @@ function registerIpcHandlers(manager: BackendManager): void {
     );
   });
 
+  ipcMain.handle(IPC_CHANNELS.controlBrowserPanel, async (event, sessionId: unknown, request: unknown) => {
+    assertTrustedIpcSender(event);
+    if (!isValidBrowserSessionId(sessionId) || !request || typeof request !== 'object' || Array.isArray(request)) {
+      return { ok: false, status: 400, errorCode: 'browser_panel_invalid_input', errorMessage: '浏览器操作参数无效。' };
+    }
+    const input = request as Record<string, unknown>;
+    const textFields = ['action', 'leaseId', 'viewId', 'direction', 'url', 'key', 'text', 'tabId'];
+    const numberFields = ['x', 'y', 'deltaX', 'deltaY', 'viewportWidth', 'viewportHeight'];
+    const valid = Object.entries(input).every(([key, value]) =>
+      (textFields.includes(key) && typeof value === 'string' && value.length <= 2048) ||
+      (numberFields.includes(key) && typeof value === 'number' && Number.isFinite(value))
+    );
+    if (!valid || typeof input.action !== 'string') {
+      return { ok: false, status: 400, errorCode: 'browser_panel_invalid_input', errorMessage: '浏览器操作参数无效。' };
+    }
+    return callControlPlane(manager.getControlPlaneCredentials(), 'POST',
+      `/api/gateway/session/${encodeURIComponent(sessionId.trim())}/browser/panel`, input);
+  });
+
   ipcMain.handle(IPC_CHANNELS.startBrowserTakeover, async (event, sessionId: unknown, reason: unknown) => {
     assertTrustedIpcSender(event);
     if (!isValidBrowserSessionId(sessionId)) {

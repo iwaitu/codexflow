@@ -10,6 +10,7 @@ using CodexFlow.Contracts.ComputerUse;
 using CodexFlow.Controllers;
 using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Core.Models.Jobs;
+using CodexFlow.Core.Skills;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
@@ -33,6 +34,11 @@ internal static class SimpleGatewayEndpoints
         MapApprovals(endpoints);
         MapArtifactVerification(endpoints);
         MapSettings(endpoints);
+        endpoints.MapGet("/api/skills/built-in", static () =>
+                Results.Json(BuiltInSkills.All, SimpleGatewayJsonContext.Default.IReadOnlyListBuiltInSkillDto))
+            .WithTags("Skills")
+            .RequireAuthorization(Bearer(ActiveUser))
+            .Produces<IReadOnlyList<BuiltInSkillDto>>();
     }
 
     private static void MapJobs(IEndpointRouteBuilder endpoints)
@@ -266,4 +272,5 @@ internal static class SimpleGatewayEndpoints
 [JsonSerializable(typeof(UpdateModelSettingsRequest))]
 [JsonSerializable(typeof(SettingsErrorDto))]
 [JsonSerializable(typeof(SystemStatusSummaryDto))]
+[JsonSerializable(typeof(IReadOnlyList<BuiltInSkillDto>))]
 internal partial class SimpleGatewayJsonContext : JsonSerializerContext;

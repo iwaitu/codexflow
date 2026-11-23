@@ -1785,6 +1785,18 @@
             "boolean",
             "null"
           ]
+        },
+        "panelControlAvailable": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "panelControlActive": {
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "required": [

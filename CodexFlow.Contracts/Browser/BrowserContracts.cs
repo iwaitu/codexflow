@@ -84,7 +84,33 @@ public sealed record BrowserSessionStateDto(
     bool TakeoverActive = false,
     string? TakeoverReason = null,
     DateTimeOffset? TakeoverStartedAtUtc = null,
-    bool IsRemote = false);
+    bool IsRemote = false)
+{
+    public bool? PanelControlAvailable { get; init; }
+    public bool? PanelControlActive { get; init; }
+}
+
+public sealed record BrowserPanelRequest(
+    string Action,
+    string? LeaseId = null,
+    string? ViewId = null,
+    string? Direction = null,
+    string? Url = null,
+    double? X = null,
+    double? Y = null,
+    double? DeltaX = null,
+    double? DeltaY = null,
+    string? Key = null,
+    string? Text = null,
+    int? ViewportWidth = null,
+    int? ViewportHeight = null,
+    string? TabId = null);
+
+public sealed record BrowserPanelFrame(
+    string ViewId, double CssWidth, double CssHeight, string JpegBase64, string? Url, string? Title);
+
+public sealed record BrowserPanelResponse(
+    bool Active, string? LeaseId = null, BrowserPanelFrame? Frame = null, bool? ResponsiveViewport = null);
 
 public sealed record BrowserTakeoverStartRequest(
     string? Reason = null);

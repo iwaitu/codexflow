@@ -2896,6 +2896,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             : BuildGatewayToolLookup(message, session, includeDeferred: true, emit);
         AddGatewayToolsByName(tools, defaultDailyLookup, GatewayDefaultDailyToolNames);
         AddGatewayToolsByName(tools, stageOneTools, GatewayDeferredToolNames);
+        AddGatewayToolsByName(tools, defaultDailyLookup, [ReadBuiltInSkillTool.ToolName]);
 
         if (policy.PlanModeActive)
         {
@@ -3467,6 +3468,8 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             tools.Add(CodexToolFunctionAdapterFactory.CreateAIFunction(runShellTool));
         }
 
+        AddGatewayToolsByName(tools, wrappedLookup, [ReadBuiltInSkillTool.ToolName]);
+
         if (policy.PlanModeActive)
         {
             tools = tools
@@ -3538,6 +3541,11 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                 tools.Add(runShellTool);
             }
 
+            if (wrappedFull.TryGetValue(ReadBuiltInSkillTool.ToolName, out var builtInSkill))
+            {
+                tools.Add(builtInSkill);
+            }
+
             if (policy.PlanModeActive)
             {
                 tools = tools
@@ -3584,6 +3592,11 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             {
                 tools.Add(tool);
             }
+        }
+
+        if (defaultDailyLookup.TryGetValue(ReadBuiltInSkillTool.ToolName, out var developmentBuiltInSkill))
+        {
+            tools.Add(developmentBuiltInSkill);
         }
 
         if (policy.PlanModeActive)
@@ -6634,6 +6647,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                 string.Equals(key, "enter_plan_mode", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(key, "exit_plan_mode", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(key, "tool_search", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(key, ReadBuiltInSkillTool.ToolName, StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(key, "web_search", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(key, "fetch_webpage", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(key, "browser_navigate", StringComparison.OrdinalIgnoreCase) ||

@@ -9,6 +9,7 @@ using System.Text.Json;
 using CodexFlow.Application;
 using CodexFlow.Application.Jobs;
 using CodexFlow.Application.Jobs.Dtos;
+using CodexFlow.Contracts.Browser;
 using CodexFlow.Controllers;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Agents;
@@ -265,6 +266,68 @@ public sealed class P3FilesSnapshotContractsAndHostingTests : IDisposable
         Assert.Equal("2", snapshot.CurrentPlan.Version);
         var job = Assert.Single(snapshot.Jobs);
         Assert.Equal("job-1", job.JobId);
+    }
+
+    [Fact]
+    public async Task BrowserSse_PublishesPreviewAndApprovalWithDesktopFieldNames()
+    {
+        await using var host = await P3TestHost.StartAsync(
+            _root, Path.Combine(_root, "global", "appsettings.json"),
+            ExecutionBackend.Local, ExecutionPermissionMode.Ask);
+        using var client = host.CreateNormalClient();
+        using var sessionResponse = await client.PostAsync("/api/gateway/session?name=BrowserSse", null);
+        sessionResponse.EnsureSuccessStatusCode();
+        var sessionId = (await sessionResponse.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["sessionId"];
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var response = await client.GetAsync($"/api/gateway/sse?sessionId={sessionId}",
+            HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+        response.EnsureSuccessStatusCode();
+        using var reader = new StreamReader(await response.Content.ReadAsStreamAsync(timeout.Token));
+
+        const string url = "https://example.com/";
+        var now = DateTimeOffset.UtcNow;
+        await host.Gateway.PublishEventAsync(sessionId, new GatewaySseEvent
+        {
+            Type = GatewaySseEventType.BrowserStateUpdated,
+            Payload = new BrowserSessionStateDto(sessionId, "running", true, "Ephemeral", url,
+                "Example", 7, 0, [], [new(1, "browser_navigate", "goto", url, url, true, null, 10, now)], [])
+        }, timeout.Token);
+        await host.Gateway.PublishEventAsync(sessionId, new GatewaySseEvent
+        {
+            Type = GatewaySseEventType.BrowserApprovalRequested,
+            Payload = new BrowserApprovalRequestDto("approval-1", "digest", sessionId, "browser_act",
+                "click", url, "https://example.com", "Submit", "Sensitive submission", null,
+                now.AddMinutes(1), ["allow_once", "deny"], true, true)
+        }, timeout.Token);
+
+        using var state = await ReadEventAsync(GatewaySseEventType.BrowserStateUpdated);
+        Assert.Equal(sessionId, state.RootElement.GetProperty("sessionId").GetString());
+        Assert.Equal("running", state.RootElement.GetProperty("status").GetString());
+        Assert.Equal(url, state.RootElement.GetProperty("url").GetString());
+        Assert.Equal(7, state.RootElement.GetProperty("screenshotSeq").GetInt64());
+        var action = Assert.Single(state.RootElement.GetProperty("recentActions").EnumerateArray());
+        Assert.Equal("browser_navigate", action.GetProperty("tool").GetString());
+        Assert.True(action.GetProperty("succeeded").GetBoolean());
+
+        using var approval = await ReadEventAsync(GatewaySseEventType.BrowserApprovalRequested);
+        Assert.Equal(sessionId, approval.RootElement.GetProperty("sessionId").GetString());
+        Assert.Equal("approval-1", approval.RootElement.GetProperty("approvalId").GetString());
+        Assert.Equal("deny", approval.RootElement.GetProperty("allowedDecisions")[1].GetString());
+
+        async Task<JsonDocument> ReadEventAsync(string eventType)
+        {
+            while (await reader.ReadLineAsync(timeout.Token) is { } line)
+            {
+                if (line == $"event: {eventType}")
+                {
+                    var data = await reader.ReadLineAsync(timeout.Token);
+                    Assert.StartsWith("data: ", data, StringComparison.Ordinal);
+                    return JsonDocument.Parse(data!["data: ".Length..]);
+                }
+            }
+            throw new InvalidOperationException($"Missing SSE event {eventType}.");
+        }
     }
 
     [Fact]

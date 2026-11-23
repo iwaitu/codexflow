@@ -7,16 +7,19 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using CodexFlow.Contracts;
 using CodexFlow.Contracts.BusinessSkills;
 using CodexFlow.Controllers;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Agents;
+using CodexFlow.Core.Agents.Tools;
 using CodexFlow.Core.BusinessSkills;
 using CodexFlow.Core.Execution;
 using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Core.Gateway;
 using CodexFlow.Core.Models;
 using CodexFlow.Core.Runtime;
+using CodexFlow.Core.Skills;
 using CodexFlow.Core.Telemetry;
 using CodexFlow.Core.Tests.Gateway;
 using CodexFlow.Domain.BusinessSkills;
@@ -89,6 +92,75 @@ public sealed class DailyBusinessSkillsIntegrationTests : IDisposable
         var toolNames = ExtractToolNames(captured!);
         Assert.DoesNotContain("list_business_skills", toolNames, StringComparer.OrdinalIgnoreCase);
         Assert.DoesNotContain("run_business_skill", toolNames, StringComparer.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("daily", BuiltInSkills.FrontendBrowserDebug, "用内置浏览器调试前端页面", "确认入口和预期", "browser_snapshot")]
+    [InlineData("development", BuiltInSkills.FrontendBrowserDebug, "用内置浏览器调试前端页面", "确认入口和预期", "browser_snapshot")]
+    [InlineData("daily", BuiltInSkills.DesktopControl, "用桌面控制点击记事本的目标按钮", "以界面变化验收", "computer_request_takeover")]
+    [InlineData("development", BuiltInSkills.DesktopControl, "用桌面控制点击记事本的目标按钮", "以界面变化验收", "computer_request_takeover")]
+    public async Task BuiltInSkill_IsDiscoverableAndLoadsOnDemand(
+        string mode, string skillId, string userRequest, string bodyMarker, string workflowTool)
+    {
+        const string callId = "read-built-in-skill";
+        var requests = new List<LLMExecutionRequest>();
+        var fakeExecutor = new FakeStreamingLlmExecutor((request, _) =>
+        {
+            requests.Add(request);
+            if (requests.Count == 2)
+            {
+                return [new ChatResponseUpdate(ChatRole.Assistant,
+                [
+                    new FunctionCallContent(callId, ReadBuiltInSkillTool.ToolName,
+                        new Dictionary<string, object?> { ["name"] = skillId })
+                ])];
+            }
+
+            return [new ChatResponseUpdate(ChatRole.Assistant, "ok")];
+        });
+
+        await using var host = await StartHostAsync(fakeExecutor, businessSkillsEnabled: false);
+        var sessionId = await CreateSessionAsync(host, "BuiltInSkill", workMode: mode);
+        using var client = host.CreateNormalClient();
+        var catalog = await client.GetFromJsonAsync<BuiltInSkillDto[]>("/api/skills/built-in");
+        Assert.Contains(catalog!, skill => skill.Id == skillId);
+
+        await SendDailyMessageAsync(host, sessionId, "你好");
+        Assert.Single(requests);
+        await SendDailyMessageAsync(host, sessionId, userRequest);
+        Assert.Equal(3, requests.Count);
+
+        Assert.Equal(SerializeToolDeclarations(requests[0]), SerializeToolDeclarations(requests[1]));
+        if (skillId == BuiltInSkills.DesktopControl)
+        {
+            Assert.Contains("read_builtin_skill({\"name\":\"desktop-control\"})", ExtractSystemPrompt(requests[1]), StringComparison.Ordinal);
+        }
+
+        Assert.All(requests, request =>
+        {
+            Assert.Single(ExtractToolNames(request), name => name == ReadBuiltInSkillTool.ToolName);
+            Assert.DoesNotContain(bodyMarker, ExtractSystemPrompt(request), StringComparison.Ordinal);
+            Assert.DoesNotContain(bodyMarker, SerializeToolDeclarations(request), StringComparison.Ordinal);
+        });
+        Assert.DoesNotContain(requests.Take(2).SelectMany(request => request.Messages), message =>
+            message.Role == ChatRole.Tool);
+
+        var toolOutput = Assert.Single(requests[2].Messages.SelectMany(message => message.Contents)
+            .OfType<FunctionResultContent>(), result => result.CallId == callId);
+        var body = UnwrapToolEnvelopeOutput(toolOutput.Result!.ToString()!);
+        Assert.Contains(bodyMarker, body, StringComparison.Ordinal);
+        Assert.Contains(workflowTool, body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task BuiltInSkillReader_RejectsNamesThatReferToFiles()
+    {
+        var result = await new ReadBuiltInSkillTool().ExecuteAsync(new Dictionary<string, object?>
+        {
+            ["name"] = "../frontend-browser-debug/SKILL.md"
+        });
+
+        Assert.Equal(ToolResultStatus.Failed, result.Status);
     }
 
     [Fact]

@@ -150,8 +150,14 @@ describe('Built-in Enterprise Plugin & Skill Builder UI', () => {
     vi.restoreAllMocks();
   });
 
-  it('shows feature disabled banner on HTTP 503 BusinessSkills:Enabled=false', async () => {
+  it('keeps built-in skills visible when enterprise skills are disabled', async () => {
     installMockBridge();
+    vi.spyOn(apiClient, 'listBuiltInSkills').mockResolvedValue([{
+      id: 'frontend-browser-debug',
+      title: '前端浏览器调试',
+      description: '用内置浏览器复现页面问题。',
+      examplePrompt: '用内置浏览器打开这个前端项目的页面。',
+    }]);
     vi.spyOn(apiClient, 'listBusinessPlugins').mockRejectedValue(
       new ApiError(503, 'FeatureDisabled', 'BusinessSkills:Enabled=false 未开启'),
     );
@@ -169,10 +175,13 @@ describe('Built-in Enterprise Plugin & Skill Builder UI', () => {
 
     expect(await screen.findByTestId('business-skills-disabled-banner')).toBeInTheDocument();
     expect(screen.getAllByText(/BusinessSkills:Enabled/).length).toBeGreaterThan(0);
+    expect(await screen.findByRole('heading', { name: '内置 Skill' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: '前端浏览器调试' })).toBeVisible();
   });
 
   it('shows read-only banner and disables write buttons when controlPlaneAvailable=false', async () => {
     installMockBridge();
+    vi.spyOn(apiClient, 'listBuiltInSkills').mockResolvedValue([]);
     vi.spyOn(apiClient, 'listBusinessPlugins').mockResolvedValue([SAMPLE_PLUGIN]);
     vi.spyOn(apiClient, 'listPublishedSkills').mockResolvedValue([]);
     vi.spyOn(apiClient, 'queryPluginCapabilities').mockResolvedValue({
