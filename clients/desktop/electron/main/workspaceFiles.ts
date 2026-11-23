@@ -1,5 +1,6 @@
-import { lstatSync, realpathSync } from 'node:fs';
-import { isAbsolute, posix, resolve } from 'node:path';
+import { spawn } from 'node:child_process';
+import { existsSync, lstatSync, realpathSync } from 'node:fs';
+import { delimiter, isAbsolute, join, posix, resolve } from 'node:path';
 import type { DesktopLanguage, WorkspaceFileActionResult } from '../../src/shared/ipc';
 import { isPathStrictlyInsideRoot } from './securityUtils';
 
@@ -22,6 +23,84 @@ export interface WorkspaceShellApi {
 
 function localizedError(language: DesktopLanguage, zh: string, en: string): string {
   return language === 'en-US' ? en : zh;
+}
+
+function terminalCommands(cwd: string): Array<{ executable: string; args: string[]; windowsHide?: boolean }> {
+  if (process.platform === 'win32') {
+    return [
+      {
+        executable: join(process.env.LOCALAPPDATA ?? '', 'Microsoft', 'WindowsApps', 'wt.exe'),
+        args: ['-w', 'new', '-d', '.'],
+      },
+      {
+        executable: join(process.env.SystemRoot ?? '', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+        windowsHide: true,
+        args: [
+          '-NoProfile', '-NonInteractive', '-Command',
+          "Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -WorkingDirectory (Get-Location).ProviderPath -WindowStyle Normal -ErrorAction Stop",
+        ],
+      },
+    ];
+  }
+
+  if (process.platform === 'darwin') {
+    return [{ executable: '/usr/bin/open', args: ['-b', 'com.apple.Terminal', cwd] }];
+  }
+
+  const searchDirectories = (process.env.PATH ?? '').split(delimiter).filter(isAbsolute);
+  const applications = [
+    { name: 'xdg-terminal-exec', args: [`--dir=${cwd}`] },
+    { name: 'gnome-terminal', args: [`--working-directory=${cwd}`] },
+    { name: 'konsole', args: ['--workdir', cwd] },
+    { name: 'xfce4-terminal', args: [`--working-directory=${cwd}`] },
+    { name: 'x-terminal-emulator', args: [] },
+    { name: 'xterm', args: [] },
+  ];
+
+  return applications.flatMap(({ name, args }) => {
+    const executable = searchDirectories.map((directory) => join(directory, name)).find(existsSync);
+    return executable ? [{ executable, args }] : [];
+  });
+}
+
+export async function openWorkspaceTerminal(
+  workspacePath: string,
+  language: DesktopLanguage,
+): Promise<WorkspaceFileActionResult> {
+  const resolved = resolveSafeWorkspaceTarget(
+    typeof workspacePath === 'string' && isAbsolute(workspacePath) ? workspacePath : '',
+    '',
+    language,
+  );
+  if (!resolved.ok) return { ok: false, error: resolved.error };
+
+  const cwd = resolved.target.realPath;
+  for (const { executable, args, windowsHide } of terminalCommands(cwd)) {
+    if (!isAbsolute(executable)) continue;
+
+    const opened = await new Promise<boolean>((complete) => {
+      const child = spawn(executable, args, { cwd, detached: true, stdio: 'ignore', windowsHide });
+      // Launchers can exit immediately after handing off to an existing terminal process.
+      const timeout = setTimeout(() => {
+        child.unref();
+        complete(true);
+      }, 500);
+      child.once('exit', (code) => {
+        clearTimeout(timeout);
+        complete(code === 0);
+      });
+      child.once('error', () => {
+        clearTimeout(timeout);
+        complete(false);
+      });
+    });
+    if (opened) return { ok: true };
+  }
+
+  return {
+    ok: false,
+    error: localizedError(language, '无法打开系统终端。', 'Unable to open the system terminal.'),
+  };
 }
 
 /**

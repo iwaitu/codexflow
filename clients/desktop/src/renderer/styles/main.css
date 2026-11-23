@@ -1,5 +1,46 @@
 @import "tailwindcss";
 
+@layer components {
+  .chat-gutter {
+    --chat-gutter-size: clamp(
+      0.75rem,
+      min(calc((100cqi - 690px) / 2), calc((100vw - 960px) / 2)),
+      20%
+    );
+    padding-inline: var(--chat-gutter-size);
+  }
+
+  /* Extend the native scrollbar across the overview's reserved space. */
+  .conversation-scroll {
+    width: calc(100% + var(--conversation-overview-width, 0px));
+    padding-inline-end: calc(var(--chat-gutter-size) + var(--conversation-overview-width, 0px));
+  }
+
+  .conversation-scroll[data-turn-navigation] {
+    padding-inline-end: calc(max(2.25rem, var(--chat-gutter-size)) + var(--conversation-overview-width, 0px));
+  }
+}
+
+.conversation-layout {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.conversation-overview-rail {
+  display: none;
+}
+
+/* Use the available conversation width after both sidebars are laid out. */
+@container (min-width: 72rem) {
+  .conversation-layout {
+    --conversation-overview-width: 14.25rem;
+    grid-template-columns: minmax(0, 1fr) var(--conversation-overview-width);
+  }
+
+  .conversation-overview-rail {
+    display: block;
+  }
+}
+
 @layer base {
   html,
   body,

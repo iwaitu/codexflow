@@ -32,6 +32,7 @@ import {
   type UpdateModelSettingsPayload,
   type UpdatePluginConnectionRequest,
   type WorkspaceFileContextMenuPayload,
+  type WorkspaceTerminalEvent,
 } from '../../src/shared/ipc';
 
 const api: DesktopBridge = {
@@ -149,6 +150,15 @@ const api: DesktopBridge = {
   openExternal: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.openExternal, url),
   showWorkspaceFileContextMenu: (payload: WorkspaceFileContextMenuPayload) =>
     ipcRenderer.invoke(IPC_CHANNELS.showWorkspaceFileContextMenu, payload),
+  openWorkspaceTerminal: (workspacePath: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.openWorkspaceTerminal, workspacePath),
+  startWorkspaceTerminal: (request) => ipcRenderer.invoke(IPC_CHANNELS.startWorkspaceTerminal, request),
+  actOnWorkspaceTerminal: (action) => ipcRenderer.send(IPC_CHANNELS.workspaceTerminalAction, action),
+  onWorkspaceTerminalEvent: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, event: WorkspaceTerminalEvent) => listener(event);
+    ipcRenderer.on(IPC_CHANNELS.workspaceTerminalEvent, handler);
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.workspaceTerminalEvent, handler);
+  },
   showNotification: (payload: DesktopNotificationPayload) =>
     ipcRenderer.invoke(IPC_CHANNELS.showNotification, payload),
   setDesktopPreferences: (payload: DesktopPreferencesPayload) =>

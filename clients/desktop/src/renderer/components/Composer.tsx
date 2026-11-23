@@ -460,7 +460,7 @@ export const Composer: React.FC<ComposerProps> = ({
   const canSend = !disabled && !sending && (Boolean(text.trim()) || attachments.length > 0);
 
   return (
-    <div className="border-t border-slate-800 bg-slate-950/90 px-4 py-3">
+    <div className="chat-gutter py-3">
       {turnNotice && (
         <div className="mb-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-200">
           {turnNotice}

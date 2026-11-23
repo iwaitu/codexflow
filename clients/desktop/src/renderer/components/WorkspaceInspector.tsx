@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Cpu, FileDiff, FolderTree, Globe, Monitor, X } from 'lucide-react';
+import React, { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { Cpu, FileDiff, FolderTree, Globe, Monitor, Terminal, X } from 'lucide-react';
 import type { BrowserSessionStateDto, ComputerSessionStateDto } from '@shared/ipc';
 import type {
   ApiAuthContext,
@@ -9,6 +9,7 @@ import type {
   WorkspaceChanges,
 } from '../lib/apiClient';
 import type { InspectorTab } from '../stores/useAppStore';
+import { useI18n } from '../lib/i18n';
 import { BrowserPanel } from './BrowserPanel';
 import { ComputerPanel } from './ComputerPanel';
 import { JobsPanel } from './JobsPanel';
@@ -22,6 +23,8 @@ interface WorkspaceInspectorProps {
   auth: ApiAuthContext | null;
   sessionId: string | null;
   workspacePath?: string | null;
+  terminalWorkspacePath?: string | null;
+  terminalWorkspaceKey?: string | null;
   workspaceRevision: number;
   changes: WorkspaceChanges | null | undefined;
   changesLoading: boolean;
@@ -47,6 +50,7 @@ interface WorkspaceInspectorProps {
 const MIN_INSPECTOR_WIDTH = 320;
 const INITIAL_INSPECTOR_WIDTH = 420;
 const INSPECTOR_WIDTH_KEY = 'codexflow.workspaceInspectorWidth';
+const TerminalPanel = lazy(() => import('./TerminalPanel'));
 
 export const WorkspaceInspector: React.FC<WorkspaceInspectorProps> = ({
   open,
@@ -55,6 +59,8 @@ export const WorkspaceInspector: React.FC<WorkspaceInspectorProps> = ({
   auth,
   sessionId,
   workspacePath,
+  terminalWorkspacePath,
+  terminalWorkspaceKey,
   workspaceRevision,
   changes,
   changesLoading,
@@ -76,6 +82,7 @@ export const WorkspaceInspector: React.FC<WorkspaceInspectorProps> = ({
   onVerifyJob,
   onJobsMutated,
 }) => {
+  const { t } = useI18n();
   const panelRef = useRef<HTMLElement>(null);
   const drag = useRef<{ pointerId: number; x: number; width: number } | null>(null);
   const [width, setWidth] = useState(() => {
@@ -111,7 +118,8 @@ export const WorkspaceInspector: React.FC<WorkspaceInspectorProps> = ({
     if (width >= MIN_INSPECTOR_WIDTH) localStorage.setItem(INSPECTOR_WIDTH_KEY, String(width));
   }, [width]);
 
-  if (!open) {
+  const keepTerminal = Boolean(terminalWorkspaceKey && terminalWorkspacePath);
+  if (!open && !keepTerminal) {
     return null;
   }
 
@@ -123,8 +131,10 @@ export const WorkspaceInspector: React.FC<WorkspaceInspectorProps> = ({
   return (
     <aside
       ref={panelRef}
+      id="workspace-inspector"
       data-testid="workspace-inspector"
-      className="relative flex h-full min-w-0 shrink-0 flex-col border-l border-slate-800 bg-slate-950/95"
+      hidden={!open}
+      className="@container relative flex h-full min-w-0 shrink-0 flex-col border-l border-slate-800 bg-slate-950/95"
       style={{ width: displayedWidth }}
     >
       <div
@@ -160,7 +170,7 @@ export const WorkspaceInspector: React.FC<WorkspaceInspectorProps> = ({
         }}
       />
       <div className="flex items-center justify-between border-b border-slate-800 px-2.5 py-2">
-        <div className="flex items-center gap-1">
+        <div className="flex min-w-0 flex-wrap items-center gap-1">
           <button
             type="button"
             onClick={() => onSelectTab('files')}
@@ -171,7 +181,7 @@ export const WorkspaceInspector: React.FC<WorkspaceInspectorProps> = ({
             }`}
           >
             <FolderTree className="h-3.5 w-3.5" />
-            <span>文件</span>
+            <span className="@max-[24rem]:sr-only">文件</span>
           </button>
           {showEngineeringTabs && (
             <>
@@ -185,7 +195,7 @@ export const WorkspaceInspector: React.FC<WorkspaceInspectorProps> = ({
                 }`}
               >
                 <FileDiff className="h-3.5 w-3.5" />
-                <span>变更{changedCount > 0 ? ` (${changedCount})` : ''}</span>
+                <span className="@max-[24rem]:sr-only">变更{changedCount > 0 ? ` (${changedCount})` : ''}</span>
               </button>
               <button
                 type="button"
@@ -197,7 +207,7 @@ export const WorkspaceInspector: React.FC<WorkspaceInspectorProps> = ({
                 }`}
               >
                 <Cpu className="h-3.5 w-3.5" />
-                <span>作业{jobs.length > 0 ? ` (${jobs.length})` : ''}</span>
+                <span className="@max-[24rem]:sr-only">作业{jobs.length > 0 ? ` (${jobs.length})` : ''}</span>
               </button>
             </>
           )}
@@ -212,7 +222,7 @@ export const WorkspaceInspector: React.FC<WorkspaceInspectorProps> = ({
             }`}
           >
             <Globe className="h-3.5 w-3.5" />
-            <span>浏览器</span>
+            <span className="@max-[24rem]:sr-only">浏览器</span>
             {isBrowserRunning && <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />}
           </button>
           <button
@@ -226,8 +236,22 @@ export const WorkspaceInspector: React.FC<WorkspaceInspectorProps> = ({
             }`}
           >
             <Monitor className="h-3.5 w-3.5" />
-            <span>桌面</span>
+            <span className="@max-[24rem]:sr-only">桌面</span>
             {isComputerRunning && <span className="h-1.5 w-1.5 rounded-full bg-rose-400 animate-pulse" />}
+          </button>
+          <button
+            type="button"
+            disabled={!terminalWorkspacePath}
+            onClick={() => onSelectTab('terminal')}
+            aria-label={t('overview.terminal')}
+            aria-pressed={activeTab === 'terminal'}
+            title={terminalWorkspacePath ? t('overview.terminal') : t('overview.terminalLocalOnly')}
+            className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium disabled:opacity-40 ${
+              activeTab === 'terminal' ? 'bg-slate-800 text-slate-100' : 'text-slate-400 hover:bg-slate-900 hover:text-slate-200'
+            }`}
+          >
+            <Terminal className="h-3.5 w-3.5" aria-hidden="true" />
+            <span className="@max-[24rem]:sr-only">{t('overview.terminal')}</span>
           </button>
         </div>
 
@@ -236,14 +260,14 @@ export const WorkspaceInspector: React.FC<WorkspaceInspectorProps> = ({
           onClick={onClose}
           title="收起工作台"
           aria-label="收起工作台"
-          className="rounded-md p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+          className="shrink-0 rounded-md p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
         >
           <X className="h-4 w-4" />
         </button>
       </div>
 
       <div className="min-h-0 flex-1 overflow-hidden">
-        {activeTab === 'files' && (
+        {open && activeTab === 'files' && (
           <WorkspaceFilesPanel
             auth={auth}
             sessionId={sessionId}
@@ -252,7 +276,7 @@ export const WorkspaceInspector: React.FC<WorkspaceInspectorProps> = ({
             onAttachWorkspaceFile={onAttachWorkspaceFile}
           />
         )}
-        {activeTab === 'changes' && showEngineeringTabs && (
+        {open && activeTab === 'changes' && showEngineeringTabs && (
           <WorkspaceChangesPanel
             sessionId={sessionId}
             changes={changes}
@@ -262,7 +286,7 @@ export const WorkspaceInspector: React.FC<WorkspaceInspectorProps> = ({
             onRefresh={onRefreshChanges}
           />
         )}
-        {activeTab === 'jobs' && showEngineeringTabs && (
+        {open && activeTab === 'jobs' && showEngineeringTabs && (
           <JobsPanel
             auth={auth}
             sessionId={sessionId}
@@ -273,7 +297,7 @@ export const WorkspaceInspector: React.FC<WorkspaceInspectorProps> = ({
             onJobsMutated={onJobsMutated}
           />
         )}
-        {activeTab === 'browser' && (
+        {open && activeTab === 'browser' && (
           <BrowserPanel
             auth={auth}
             sessionId={sessionId}
@@ -282,7 +306,7 @@ export const WorkspaceInspector: React.FC<WorkspaceInspectorProps> = ({
             onStateUpdated={(next) => onBrowserStateUpdated?.(next)}
           />
         )}
-        {activeTab === 'computer' && (
+        {open && activeTab === 'computer' && (
           <ComputerPanel
             auth={auth}
             sessionId={sessionId}
@@ -291,6 +315,26 @@ export const WorkspaceInspector: React.FC<WorkspaceInspectorProps> = ({
             onStateUpdated={(next) => onComputerStateUpdated?.(next)}
             onEmergencyStopped={onComputerEmergencyStopped}
           />
+        )}
+        {terminalWorkspaceKey && terminalWorkspacePath && (
+          <div className="h-full" hidden={!open || activeTab !== 'terminal'}>
+            <Suspense fallback={<p role="status" className="px-3 pt-2 text-xs text-slate-400">{t('terminal.starting')}</p>}>
+              <TerminalPanel key={terminalWorkspaceKey} workspacePath={terminalWorkspacePath} visible={open && activeTab === 'terminal'} />
+            </Suspense>
+          </div>
+        )}
+        {open && activeTab === 'terminal' && !keepTerminal && (
+          <div className="p-3 text-xs text-slate-400">
+            {terminalWorkspacePath ? (
+              <button
+                type="button"
+                onClick={() => onSelectTab('terminal')}
+                className="rounded-md border border-slate-800 bg-slate-900 px-2.5 py-1.5 text-slate-200 hover:bg-slate-800"
+              >
+                {t('terminal.start')}
+              </button>
+            ) : t('overview.terminalLocalOnly')}
+          </div>
         )}
       </div>
     </aside>
