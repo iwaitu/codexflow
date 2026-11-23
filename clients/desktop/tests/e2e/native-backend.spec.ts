@@ -165,12 +165,11 @@ await import(${JSON.stringify(pathToFileURL(main).href)});
     });
 
     await test.step('Fill the sidebar and reflow the managed page when the sidebar resizes', async () => {
-      const browserToggle = page.getByRole('button', { name: '打开或收起浏览器面板' });
-      if (!(await browserToggle.isVisible())) {
-        await page.getByRole('button', { name: '新建日常对话', exact: true }).click();
-      }
-      await browserToggle.click();
+      await page.getByRole('complementary').getByRole('button', { name: '新建日常对话', exact: true }).click();
+      await expect(page.getByTestId('composer-work-mode-badge')).toHaveText('日常模式');
+      await page.getByRole('button', { name: '打开右侧栏' }).click();
       const sidebar = page.getByTestId('workspace-inspector');
+      await sidebar.getByTestId('inspector-tab-browser').click();
       const area = sidebar.getByTestId('browser-page-area');
       const viewport = sidebar.getByTestId('browser-live-viewport');
       const bar = sidebar.getByRole('textbox', { name: '浏览器地址栏' });

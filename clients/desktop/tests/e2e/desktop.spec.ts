@@ -161,30 +161,32 @@ test('Electron MVP cold start, security isolation, permission rule revoke, appro
 
     // 6. Click "新建会话", verify thread appears as "新会话", send message, and verify SSE auto-title update
     await page.getByRole('button', { name: '新建会话' }).click();
-    await expect(page.locator('aside').getByText('新会话')).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible({ timeout: 5_000 });
     await textarea.fill('验证重启后新端口通信');
     await page.getByRole('button', { name: '发送' }).click();
     await expect(page.getByText('收到重启后请求: 验证重启后新端口通信').first()).toBeVisible({ timeout: 10_000 });
-    await expect(page.locator('aside').getByText('会话标题已总结')).toBeVisible({ timeout: 10_000 });
+    const renamedConversation = page.getByRole('button', { name: '会话标题已总结', exact: true });
+    await expect(renamedConversation).toBeVisible({ timeout: 10_000 });
 
     // 7. P5 Workspace Inspector: toggle Files & Changes tabs
-    await page.getByRole('button', { name: '工作区文件' }).click();
-    await expect(page.getByTestId('workspace-inspector')).toBeVisible({ timeout: 5_000 });
-    await expect(page.getByText('README.md').first()).toBeVisible({ timeout: 5_000 });
-    await page.getByRole('button', { name: '代码变更' }).click();
-    await expect(page.getByText('+# CodexFlow')).toBeVisible({ timeout: 5_000 });
+    await page.getByRole('button', { name: '打开右侧栏' }).click();
+    const inspector = page.getByTestId('workspace-inspector');
+    await expect(inspector).toBeVisible({ timeout: 5_000 });
+    await inspector.getByRole('button', { name: '文件', exact: true }).click();
+    await expect(inspector.getByText('README.md').first()).toBeVisible({ timeout: 5_000 });
+    await inspector.getByRole('button', { name: /^变更(?: \(\d+\))?$/ }).click();
+    await expect(inspector.getByText('+# CodexFlow')).toBeVisible({ timeout: 5_000 });
 
     // 8. Switch to "插件与 Skill" hub & verify tree collapse/expand on sidebar
     await page.getByRole('button', { name: '插件与 Skill' }).click();
     await expect(page.getByTestId('business-skills-hub')).toBeVisible({ timeout: 5_000 });
     await expect(page.getByRole('button', { name: /接入新插件/ })).toBeEnabled();
     await page.getByRole('button', { name: '工作区对话' }).click();
-    const sidebar = page.locator('aside');
-    await expect(sidebar.getByText('会话标题已总结').first()).toBeVisible({ timeout: 5_000 });
+    await expect(renamedConversation).toBeVisible({ timeout: 5_000 });
     await page.getByRole('button', { name: '折叠 默认工作区' }).click();
-    await expect(sidebar.getByText('会话标题已总结')).toHaveCount(0);
+    await expect(renamedConversation).toHaveCount(0);
     await page.getByRole('button', { name: '展开 默认工作区' }).click();
-    await expect(sidebar.getByText('会话标题已总结').first()).toBeVisible({ timeout: 5_000 });
+    await expect(renamedConversation).toBeVisible({ timeout: 5_000 });
 
     // 9. P5 Enhancements: Command Palette (Ctrl+K), Theme Toggle, and Language Switch
     await page.keyboard.press('Control+k');
