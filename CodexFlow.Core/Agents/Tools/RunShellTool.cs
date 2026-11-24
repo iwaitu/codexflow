@@ -273,9 +273,15 @@ public sealed class RunShellTool(
             sb.AppendLine(FormatOutput(run));
 
             var text = sb.ToString().TrimEnd();
+            var metadata = new Dictionary<string, object?>
+            {
+                ["shell"] = resolvedShell.ShellKind,
+                ["exitCode"] = run.ExitCode,
+                ["exportedCount"] = export.Applied.Count
+            };
             return run.ExitCode == 0
-                ? CodexToolResult.Succeeded(text, new { shell = resolvedShell.ShellKind, exitCode = run.ExitCode, exportedCount = export.Applied.Count })
-                : CodexToolResult.Error(text, new { shell = resolvedShell.ShellKind, exitCode = run.ExitCode, exportedCount = export.Applied.Count });
+                ? CodexToolResult.Succeeded(text, metadata)
+                : CodexToolResult.Error(text, metadata);
         }
         finally
         {

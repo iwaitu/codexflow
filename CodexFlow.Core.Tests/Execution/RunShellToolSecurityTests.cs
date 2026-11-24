@@ -5,6 +5,7 @@
 using System.Globalization;
 using System.Text.Json;
 using CodexFlow.Core.Abstractions;
+using CodexFlow.Core.Agents;
 using CodexFlow.Core.Agents.Tools;
 using CodexFlow.Core.Execution;
 using CodexFlow.Core.Execution.Approval;
@@ -55,6 +56,11 @@ public sealed class RunShellToolSecurityTests : IDisposable
         var noCtx = await tool.ExecuteAsync(new Dictionary<string, object?> { ["script"] = "echo hi" });
         Assert.NotEqual(ToolResultStatus.Success, noCtx.Status);
         Assert.Contains(ExecutionReasonCodes.MissingTrustedContext, noCtx.Output, StringComparison.Ordinal);
+        var refusalMetadata = JsonSerializer.SerializeToElement(noCtx, SourceGeneratedToolJsonContext.Default.CodexToolResult)
+            .GetProperty("metadata");
+        Assert.Equal((int)ExecutionDecisionKind.Denied, refusalMetadata.GetProperty("kind").GetInt32());
+        Assert.Equal(ExecutionReasonCodes.MissingTrustedContext, refusalMetadata.GetProperty("reasonCode").GetString());
+        Assert.Equal(noCtx.Output!.Split("] ", 2)[1], refusalMetadata.GetProperty("message").GetString());
 
         // 2. Wrong origin (DevWorker) -> rejected
         var workerCtx = TrustedExecutionContextFactory.ForJob("u1", "s1", "job-1", "t1", 1, ws, baseCommit: null, taskScope: null);
@@ -84,6 +90,41 @@ public sealed class RunShellToolSecurityTests : IDisposable
             Assert.NotEqual(ToolResultStatus.Success, rNoBroker.Status);
             Assert.Contains(ExecutionReasonCodes.ApprovalUnavailable, rNoBroker.Output, StringComparison.Ordinal);
         }
+    }
+
+    [Theory]
+    [InlineData(0, ToolResultStatus.Success)]
+    [InlineData(7, ToolResultStatus.Failed)]
+    public async Task RunShellTool_ShouldSerializeExitCodeAndExportCount(int exitCode, ToolResultStatus status)
+    {
+        var workspace = Path.Combine(_root, "ws-result");
+        Directory.CreateDirectory(workspace);
+        using var permStore = new ExecutionPermissionStore(Path.Combine(_root, "perms-result.json"));
+        var monitor = new ExecutionApprovalAndPermissionTests.MutableOptionsMonitor<ExecutionOptions>(new ExecutionOptions
+        {
+            Backend = ExecutionBackend.Local,
+            PermissionMode = ExecutionPermissionMode.FullAuto
+        });
+        var isoOptions = new IsolationOptions { StagingRoot = Path.Combine(_root, "stg-result") };
+        var local = new LocalExecutionService(Options.Create(isoOptions), NullLogger<LocalExecutionService>.Instance);
+        var accessor = new TrustedExecutionContextAccessor();
+        var broker = new ExecutionApprovalBroker(monitor, permStore, NullLogger<ExecutionApprovalBroker>.Instance);
+        var tool = new RunShellTool(NullLogger<RunShellTool>.Instance, new ToolIsolationGate(local, accessor, isoOptions, broker, monitor));
+        var shell = OperatingSystem.IsWindows() ? "powershell" : "sh";
+        var script = OperatingSystem.IsWindows()
+            ? $"New-Item -ItemType Directory -Path outputs -Force | Out-Null; Set-Content -LiteralPath outputs/proof.txt -Value shell-proof; exit {exitCode}"
+            : $"mkdir -p outputs; printf 'shell-proof\\n' > outputs/proof.txt; exit {exitCode}";
+
+        using var invocation = accessor.Begin(CreateDailyContext(workspace, "inv-result"));
+        var result = await tool.ExecuteAsync(new Dictionary<string, object?> { ["script"] = script, ["shell"] = shell });
+
+        Assert.Equal(status, result.Status);
+        Assert.Equal("shell-proof", (await File.ReadAllTextAsync(Path.Combine(workspace, "outputs", "proof.txt"))).TrimEnd());
+        var metadata = JsonSerializer.SerializeToElement(result, SourceGeneratedToolJsonContext.Default.CodexToolResult)
+            .GetProperty("metadata");
+        Assert.Equal(shell, metadata.GetProperty("shell").GetString());
+        Assert.Equal(exitCode, metadata.GetProperty("exitCode").GetInt32());
+        Assert.Equal(1, metadata.GetProperty("exportedCount").GetInt32());
     }
 
     [Fact]
