@@ -87,6 +87,13 @@ public class CodexToolResult
 
     public override string ToString() => string.IsNullOrWhiteSpace(Display) ? Output : Display;
 
+    internal CodexToolResult WithMetadata(object? metadata)
+    {
+        var copy = (CodexToolResult)MemberwiseClone();
+        copy.Metadata = metadata;
+        return copy;
+    }
+
     private static ToolSystemHint? CreateSystemHintDetail(
         string? message,
         string? requiredToolName,

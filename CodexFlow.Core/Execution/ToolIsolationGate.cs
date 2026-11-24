@@ -387,6 +387,11 @@ public sealed class ToolIsolationGate(
         var verb = decision.Kind == ExecutionDecisionKind.Unavailable ? "unavailable" : "denied";
         return CodexToolResult.Error(
             $"{toolName} {verb}: [{decision.ReasonCode}] {decision.Message}",
-            new { decision.Kind, decision.ReasonCode, decision.Message });
+            new Dictionary<string, object?>
+            {
+                ["kind"] = (int)decision.Kind,
+                ["reasonCode"] = decision.ReasonCode,
+                ["message"] = decision.Message
+            });
     }
 }
