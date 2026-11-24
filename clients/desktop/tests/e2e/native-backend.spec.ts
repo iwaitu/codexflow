@@ -315,7 +315,7 @@ await import(${JSON.stringify(pathToFileURL(main).href)});
         await expect(page.getByRole('heading', { name: '前端浏览器调试' })).toBeVisible();
       };
 
-      await page.locator('aside').getByRole('button', { name: '新建日常对话', exact: true }).click();
+      // Reuse the daily session created above so a pending session switch cannot hide the catalog.
       await expect(modeBadge).toHaveText('日常模式');
       await openCatalog();
 
