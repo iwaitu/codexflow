@@ -102,7 +102,7 @@ public sealed class AnalyzeCodeAifunctionTests
         using var cancellation = new CancellationTokenSource();
         var result = CodexToolResult.Succeeded(
             "Diagnostic output",
-            metadata: new List<CodeDiagnostic> { new("CS0029", "Type mismatch", "Error", 7, 11) },
+            metadata: ToolResultMetadata.From(new List<CodeDiagnostic> { new("CS0029", "Type mismatch", "Error", 7, 11) }, SourceGeneratedToolJsonContext.Default.ListCodeDiagnostic),
             summary: "Diagnostic summary",
             display: "Diagnostic display",
             systemHint: "Inspect the reported line.",

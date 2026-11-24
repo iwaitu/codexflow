@@ -35,8 +35,8 @@ public class WorkerDelegationLintTests
         Assert.Equal(ToolResultStatus.Success, result.Status);
         Assert.Contains("[委派预检提醒]", result.Display);
         Assert.NotNull(result.SystemHint);
-        var metadata = Assert.IsType<Dictionary<string, object?>>(result.Metadata);
-        var warnings = Assert.IsType<string[]>(metadata["lintWarnings"]);
+        var metadata = Assert.IsType<System.Text.Json.JsonElement>(result.Metadata);
+        var warnings = metadata.GetProperty("lintWarnings").EnumerateArray().Select(static warning => warning.GetString()).ToArray();
         Assert.NotEmpty(warnings);
     }
 

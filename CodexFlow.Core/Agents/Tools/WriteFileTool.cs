@@ -6,6 +6,7 @@ using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.LanguageServices;
 using CodexFlow.Core.Models;
 using Microsoft.Extensions.Logging;
+using System.Text.Json.Nodes;
 
 namespace CodexFlow.Core.Agents.Tools;
 
@@ -123,7 +124,7 @@ public class WriteFileTool : ICodexTool
             StructuredLog.Information(_logger, "write_file: {Action} {Path}", action, normalizedPath);
             return CodexToolResult.Succeeded(
                 $"✅ 文件已{action}: {normalizedPath} ({content.Length} chars)",
-                new { Action = action, FilePath = normalizedPath, Size = content.Length });
+                ToolResultMetadata.FromJson(new JsonObject { ["action"] = action, ["filePath"] = normalizedPath, ["size"] = content.Length }));
         }
         catch (IOException ex)
         {

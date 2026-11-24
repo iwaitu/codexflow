@@ -6,6 +6,7 @@ using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Models;
 using Microsoft.Extensions.Logging;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace CodexFlow.Core.Agents.Tools;
 
@@ -78,9 +79,9 @@ public sealed class CronCreateTool(
         try
         {
             var stored = await scheduler.CreateAsync(schedule, ct).ConfigureAwait(false);
-            var output = JsonSerializer.Serialize(new CronCreateToolResponse(true, stored),
+            var metadata = ToolResultMetadata.From(new CronCreateToolResponse(true, stored),
                 BuiltInToolJsonContext.Web.CronCreateToolResponse);
-            return CodexToolResult.Succeeded(output, new { created = true, schedule = stored }, summary: $"created cron: {stored.Id}");
+            return CodexToolResult.Succeeded(metadata.GetRawText(), metadata, summary: $"created cron: {stored.Id}");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -155,7 +156,7 @@ public sealed class CronDeleteTool(ICronSchedulerService scheduler) : ICodexTool
 
         return CodexToolResult.Succeeded(
             $"CRON_DELETED\ncron_id: {cronId}",
-            new { deleted = true, cronId },
+            ToolResultMetadata.FromJson(new JsonObject { ["deleted"] = true, ["cronId"] = cronId }),
             summary: $"deleted cron: {cronId}");
     }
 }
@@ -183,9 +184,9 @@ public sealed class CronListTool(ICronSchedulerService scheduler) : ICodexTool
         ToolArgumentNormalizer.NormalizeInPlace(arguments);
         var sessionId = arguments.GetValueOrDefault("session_id")?.ToString();
         var schedules = await scheduler.ListAsync(sessionId, ct).ConfigureAwait(false);
-        var output = JsonSerializer.Serialize(new CronListToolResponse(schedules.Count, schedules),
+        var metadata = ToolResultMetadata.From(new CronListToolResponse(schedules.Count, schedules),
             BuiltInToolJsonContext.Web.CronListToolResponse);
-        return CodexToolResult.Succeeded(output, new { count = schedules.Count, schedules }, summary: $"cron schedules: {schedules.Count}");
+        return CodexToolResult.Succeeded(metadata.GetRawText(), metadata, summary: $"cron schedules: {schedules.Count}");
     }
 }
 

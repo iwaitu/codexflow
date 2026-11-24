@@ -6,6 +6,7 @@ using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Models;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace CodexFlow.Core.Agents.Tools;
 
@@ -87,14 +88,14 @@ public sealed class MonitorTool(
             workers = await listWorkersFunc(sessionId, ct).ConfigureAwait(false);
         }
 
-        var metadata = new
+        var metadata = ToolResultMetadata.FromJson(new JsonObject
         {
-            kind = "monitor_snapshot",
-            session = session == null ? null : BuildSessionSnapshot(session),
-            job,
-            workers,
-            generated_at_utc = DateTime.UtcNow
-        };
+            ["kind"] = "monitor_snapshot",
+            ["session"] = session == null ? null : BuildSessionSnapshot(session),
+            ["job"] = job == null ? null : ToolResultMetadata.ToNode(job, SourceGeneratedToolJsonContext.Default.WorkerOutputResult),
+            ["workers"] = ToolResultMetadata.ToNode(workers, SourceGeneratedToolJsonContext.Default.IReadOnlyListWorkerJobSummary),
+            ["generated_at_utc"] = DateTime.UtcNow
+        });
         var output = FormatOutput(session, job, workers, includeEvents);
 
         return CodexToolResult.Succeeded(
@@ -103,20 +104,20 @@ public sealed class MonitorTool(
             summary: BuildSummary(session, job, workers));
     }
 
-    private static object BuildSessionSnapshot(CodexSession session)
+    private static JsonObject BuildSessionSnapshot(CodexSession session)
     {
-        return new
+        return new JsonObject
         {
-            session_id = session.Id,
-            user_id = session.UserId,
-            workspace_path = session.WorkspacePath,
-            current_stage = session.CurrentStage,
-            active_task_id = session.ActiveTaskId,
-            plan_count = session.Plan.Count,
-            plan_status = session.Plan
-                .GroupBy(task => task.Status.ToString())
-                .ToDictionary(group => group.Key, group => group.Count(), StringComparer.OrdinalIgnoreCase),
-            metadata = session.Metadata
+            ["session_id"] = session.Id,
+            ["user_id"] = session.UserId,
+            ["workspace_path"] = session.WorkspacePath,
+            ["current_stage"] = session.CurrentStage,
+            ["active_task_id"] = session.ActiveTaskId,
+            ["plan_count"] = session.Plan.Count,
+            ["plan_status"] = new JsonObject(session.Plan.GroupBy(task => task.Status.ToString())
+                .Select(group => KeyValuePair.Create<string, JsonNode?>(group.Key, group.Count()))),
+            ["metadata"] = new JsonObject(session.Metadata
+                .Select(pair => KeyValuePair.Create<string, JsonNode?>(pair.Key, pair.Value)))
         };
     }
 

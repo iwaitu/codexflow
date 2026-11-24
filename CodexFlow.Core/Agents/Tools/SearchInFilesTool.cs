@@ -172,7 +172,7 @@ public class SearchInFilesTool(ILogger<SearchInFilesTool> logger) : ICodexTool
 
             return CodexToolResult.Succeeded(
                 fallbackHeader + header + sb.ToString() + followUpHint,
-                new SearchInFilesMetadata(matchCount, pattern, requestedSubPath, normalizedSubPath, fellBackToRoot),
+                ToolResultMetadata.From(new SearchInFilesMetadata(matchCount, pattern, requestedSubPath, normalizedSubPath, fellBackToRoot), SourceGeneratedToolJsonContext.Default.SearchInFilesMetadata),
                 summary: BuildMatchSummary(pattern, matchedFiles, requestedSubPath, normalizedSubPath, fellBackToRoot),
                 systemHint: fallbackHint);
         }

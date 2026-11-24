@@ -875,9 +875,9 @@ public sealed class ComputerUseTests
         Dictionary<string, object?> click = new() { ["action"] = "click", ["x"] = 250d, ["y"] = 250d, ["coordinate_space"] = "pixels" };
 
         var noScreenshot = await actTool.ExecuteAsync(click);
-        Assert.Equal("fresh_screenshot_required", Assert.IsType<ComputerFailureToolMetadata>(noScreenshot.Metadata).ErrorCode);
+        Assert.Equal("fresh_screenshot_required", Assert.IsType<System.Text.Json.JsonElement>(noScreenshot.Metadata).GetProperty("errorCode").GetString());
         var screenshot = await screenshotTool.ExecuteAsync(new());
-        Assert.True(Assert.IsType<ComputerScreenshotToolMetadata>(screenshot.Metadata).ScreenshotAttached);
+        Assert.True(Assert.IsType<System.Text.Json.JsonElement>(screenshot.Metadata).GetProperty("screenshotAttached").GetBoolean());
         if (captureFails)
         {
             driver.BeforeCapture = () => throw new InvalidOperationException("echo unavailable");
@@ -885,16 +885,16 @@ public sealed class ComputerUseTests
 
         var first = await actTool.ExecuteAsync(click);
         Assert.Equal(ToolResultStatus.Success, first.Status);
-        Assert.False(Assert.IsType<ComputerActToolMetadata>(first.Metadata).ScreenshotAttached);
+        Assert.False(Assert.IsType<System.Text.Json.JsonElement>(first.Metadata).GetProperty("screenshotAttached").GetBoolean());
         Assert.Contains("未向模型附加新截图", first.Output);
         var stale = await actTool.ExecuteAsync(click);
-        Assert.Equal("fresh_screenshot_required", Assert.IsType<ComputerFailureToolMetadata>(stale.Metadata).ErrorCode);
+        Assert.Equal("fresh_screenshot_required", Assert.IsType<System.Text.Json.JsonElement>(stale.Metadata).GetProperty("errorCode").GetString());
         Assert.Equal(["move@250,250", "click:left:1@250,250"], driver.ExecutedActions);
 
         driver.BeforeCapture = null;
         options.CurrentValue.MaxScreenshotsPerTurn = 12;
-        Assert.True(Assert.IsType<ComputerScreenshotToolMetadata>((await screenshotTool.ExecuteAsync(new())).Metadata).ScreenshotAttached);
-        Assert.True(Assert.IsType<ComputerActToolMetadata>((await actTool.ExecuteAsync(click)).Metadata).ScreenshotAttached);
+        Assert.True(Assert.IsType<System.Text.Json.JsonElement>((await screenshotTool.ExecuteAsync(new())).Metadata).GetProperty("screenshotAttached").GetBoolean());
+        Assert.True(Assert.IsType<System.Text.Json.JsonElement>((await actTool.ExecuteAsync(click)).Metadata).GetProperty("screenshotAttached").GetBoolean());
         Assert.Equal(4, driver.ExecutedActions.Count);
     }
 

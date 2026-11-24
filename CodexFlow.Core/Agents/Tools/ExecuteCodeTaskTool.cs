@@ -8,6 +8,7 @@ using CodexFlow.Core.Models;
 using CodexFlow.Core.Planning.Artifacts;
 using Microsoft.Extensions.Logging;
 using System.IO;
+using System.Text.Json.Nodes;
 
 namespace CodexFlow.Core.Agents.Tools;
 
@@ -55,20 +56,20 @@ public class ExecuteCodeTaskTool(CodexOrchestrator orchestrator, ILogger<Execute
                 if (IsPlanFullyCompleted(session.Plan))
                 {
                     var summary = BuildPlanSummary(session.Plan);
-                    return CodexToolResult.Succeeded($"任务 {taskId} 已处于完成态，且全计划已完成。{summary} 请输出最终执行总结，不要重复执行任务。", new Dictionary<string, object?>
+                    return CodexToolResult.Succeeded($"任务 {taskId} 已处于完成态，且全计划已完成。{summary} 请输出最终执行总结，不要重复执行任务。", ToolResultMetadata.FromJson(new JsonObject
                     {
                         ["taskId"] = taskId,
                         ["alreadyCompleted"] = true,
                         ["planCompleted"] = true
-                    });
+                    }));
                 }
 
-                return CodexToolResult.Succeeded($"任务 {taskId} 已处于完成态，无需重复执行。请继续执行其他未完成任务。", new Dictionary<string, object?>
+                return CodexToolResult.Succeeded($"任务 {taskId} 已处于完成态，无需重复执行。请继续执行其他未完成任务。", ToolResultMetadata.FromJson(new JsonObject
                 {
                     ["taskId"] = taskId,
                     ["alreadyCompleted"] = true,
                     ["planCompleted"] = false
-                });
+                }));
             }
 
             var result = await orchestrator.ExecuteCodeTaskAsync(sessionId, taskId, workspacePath: effectiveWorkspace, ct: ct).ConfigureAwait(false);

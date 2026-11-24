@@ -13,6 +13,8 @@ using Microsoft.Extensions.Logging;
 
 namespace CodexFlow.Core.Agents.Tools;
 
+internal sealed record RunShellResultMetadata(string Shell, int? ExitCode, int ExportedCount);
+
 /// <summary>
 /// Daily-mode general shell execution tool (PowerShell on Windows, Bash/sh on Unix and containers).
 /// Enforces DailyChat origin, single-use Ask approval under Ask/AutoInWorkspace (or auto-allow under FullAuto),
@@ -273,12 +275,9 @@ public sealed class RunShellTool(
             sb.AppendLine(FormatOutput(run));
 
             var text = sb.ToString().TrimEnd();
-            var metadata = new Dictionary<string, object?>
-            {
-                ["shell"] = resolvedShell.ShellKind,
-                ["exitCode"] = run.ExitCode,
-                ["exportedCount"] = export.Applied.Count
-            };
+            var metadata = ToolResultMetadata.From(
+                new RunShellResultMetadata(resolvedShell.ShellKind, run.ExitCode, export.Applied.Count),
+                SourceGeneratedToolJsonContext.Default.RunShellResultMetadata);
             return run.ExitCode == 0
                 ? CodexToolResult.Succeeded(text, metadata)
                 : CodexToolResult.Error(text, metadata);

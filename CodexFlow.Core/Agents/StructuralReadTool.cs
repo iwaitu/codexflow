@@ -128,7 +128,7 @@ public class StructuralReadTool : ICodexTool
                 outputSb.AppendLine(FormattableString.Invariant($"\n[NOTE] Content truncated. Total lines: {totalLines}. Use 'start_line' and 'end_line' to read more."));
             }
 
-            return CodexToolResult.Succeeded(outputSb.ToString(), metadata);
+            return CodexToolResult.Succeeded(outputSb.ToString(), ToolResultMetadata.From(metadata, SourceGeneratedToolJsonContext.Default.FileReadMetadata));
         }
         catch (IOException ex)
         {
@@ -152,7 +152,7 @@ public class StructuralReadTool : ICodexTool
         }
     }
 
-    private sealed class FileReadMetadata
+    internal sealed class FileReadMetadata
     {
         public string FilePath { get; set; } = string.Empty;
         public int TotalLines { get; set; }

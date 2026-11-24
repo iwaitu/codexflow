@@ -200,7 +200,7 @@ public class StructuralLsTool : ICodexTool
             outputSb.AppendLine(FormattableString.Invariant($"{typeStr} {info.Name,-30} | Size: {sizeStr,-10} | Modified: {modified}"));
         }
 
-        return CodexToolResult.Succeeded(outputSb.ToString(), resultList);
+        return CodexToolResult.Succeeded(outputSb.ToString(), ToolResultMetadata.From(resultList, SourceGeneratedToolJsonContext.Default.ListFileEntryMetadata));
     }
 
     /// <summary>
@@ -298,7 +298,7 @@ public class StructuralLsTool : ICodexTool
         return $"{dblSise:F2} {units[i]}";
     }
 
-    private sealed class FileEntryMetadata
+    internal sealed class FileEntryMetadata
     {
         public string Name { get; set; } = string.Empty;
         public bool IsDirectory { get; set; }

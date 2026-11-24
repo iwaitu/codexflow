@@ -8,6 +8,7 @@ using CodexFlow.Core.Models;
 using CodexFlow.Core.Planning.Artifacts;
 using CodexFlow.Core.Runtime;
 using CodexFlow.Services.ArtifactAudit;
+using System.Text.Json.Nodes;
 
 namespace CodexFlow.Gateway;
 
@@ -128,13 +129,13 @@ public sealed class GatewayGuardedPlanTool : ICodexTool
         {
             return CodexToolResult.Succeeded(
                 "PLAN_ALREADY_APPROVED",
-                metadata: new
+                metadata: ToolResultMetadata.FromJson(new JsonObject
                 {
-                    plan_artifact_id = gate.Identity?.PlanArtifactId,
-                    plan_version = gate.Identity?.PlanVersion,
-                    markdown_hash = gate.Identity?.PlanHash,
-                    idempotent = true
-                },
+                    ["plan_artifact_id"] = gate.Identity?.PlanArtifactId,
+                    ["plan_version"] = gate.Identity?.PlanVersion,
+                    ["markdown_hash"] = gate.Identity?.PlanHash,
+                    ["idempotent"] = true
+                }),
                 summary: gate.Message);
         }
 
@@ -205,11 +206,11 @@ public sealed class GatewayGuardedPlanTool : ICodexTool
     private static CodexToolResult Denied(GatewayGateResult gate)
         => CodexToolResult.Error(
             $"[{gate.ReasonCode}] {gate.Message}",
-            metadata: new Dictionary<string, object?>
+            metadata: ToolResultMetadata.FromJson(new JsonObject
             {
                 ["reason_code"] = gate.ReasonCode,
                 ["gateway_gate_denial"] = true
-            });
+            }));
 
     /// <summary>True when the result is a refusal produced by this gate (structured marker, not output text).</summary>
     public static bool IsGateDenial(CodexToolResult result)

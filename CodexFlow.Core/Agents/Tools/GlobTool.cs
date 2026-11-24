@@ -7,6 +7,7 @@ using System.Text.RegularExpressions;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Models;
 using Microsoft.Extensions.Logging;
+using System.Text.Json.Nodes;
 
 namespace CodexFlow.Core.Agents.Tools;
 
@@ -113,12 +114,12 @@ public sealed class GlobTool(ILogger<GlobTool> logger) : ICodexTool
             {
                 return Task.FromResult(CodexToolResult.Succeeded(
                     $"No paths matched glob `{pattern}` in {normalizedSubPath}.",
-                    new
+                    ToolResultMetadata.FromJson(new JsonObject
                     {
-                        Pattern = pattern,
-                        EffectivePath = normalizedSubPath,
-                        MatchCount = 0
-                    },
+                        ["pattern"] = pattern,
+                        ["effectivePath"] = normalizedSubPath,
+                        ["matchCount"] = 0
+                    }),
                     summary: $"No glob matches for {pattern}."));
             }
 
@@ -135,14 +136,14 @@ public sealed class GlobTool(ILogger<GlobTool> logger) : ICodexTool
 
             return Task.FromResult(CodexToolResult.Succeeded(
                 sb.ToString(),
-                new
+                ToolResultMetadata.FromJson(new JsonObject
                 {
-                    Pattern = pattern,
-                    EffectivePath = normalizedSubPath,
-                    MatchCount = matches.Count,
-                    ReturnedCount = orderedMatches.Length,
-                    Truncated = truncated
-                },
+                    ["pattern"] = pattern,
+                    ["effectivePath"] = normalizedSubPath,
+                    ["matchCount"] = matches.Count,
+                    ["returnedCount"] = orderedMatches.Length,
+                    ["truncated"] = truncated
+                }),
                 summary: BuildSummary(pattern, orderedMatches, truncated)));
         }
         catch (IOException ex)

@@ -3,6 +3,8 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 using System.Text.RegularExpressions;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using CodexFlow.Core.Models;
 
 namespace CodexFlow.Core.Agents.Tools;
@@ -99,20 +101,12 @@ internal static partial class WorkerDelegationLint
         return result;
     }
 
-    private static Dictionary<string, object?> MergeMetadata(object? existingMetadata, IReadOnlyList<string> warnings)
+    private static JsonElement MergeMetadata(JsonElement? existingMetadata, IReadOnlyList<string> warnings)
     {
-        var metadata = existingMetadata as Dictionary<string, object?>;
-        if (metadata != null)
-        {
-            metadata["lintWarnings"] = warnings.ToArray();
-            return metadata;
-        }
-
-        return new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["lintWarnings"] = warnings.ToArray(),
-            ["payload"] = existingMetadata
-        };
+        var existing = existingMetadata is { } json ? JsonNode.Parse(json.GetRawText()) : null;
+        var metadata = existing as JsonObject ?? new JsonObject { ["payload"] = existing };
+        metadata["lintWarnings"] = ToolResultMetadata.StringArray(warnings);
+        return ToolResultMetadata.FromJson(metadata);
     }
 
     private static string Normalize(string? value)

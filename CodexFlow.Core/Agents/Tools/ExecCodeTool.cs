@@ -8,6 +8,8 @@ using CodexFlow.Core.Execution.Approval;
 using CodexFlow.Core.Models;
 using Microsoft.Extensions.Logging;
 
+using System.Text.Json.Nodes;
+
 namespace CodexFlow.Core.Agents.Tools;
 
 /// <summary>
@@ -173,17 +175,22 @@ public class ExecCodeTool(ILogger<ExecCodeTool> logger, ToolIsolationGate? isola
                     return ToolIsolationGate.Refuse(Name, run.Decision);
             }
 
-            var result = new { Stdout = run.Stdout, Stderr = run.Stderr, ExitCode = run.ExitCode };
+            var metadata = ToolResultMetadata.FromJson(new JsonObject
+            {
+                ["stdout"] = run.Stdout,
+                ["stderr"] = run.Stderr,
+                ["exitCode"] = run.ExitCode
+            });
             if (run.ExitCode != 0)
             {
                 return CodexToolResult.Error(
-                    $"⚠️ 代码执行失败（exit code {run.ExitCode}）\n[stdout]\n{result.Stdout}\n[stderr]\n{result.Stderr}",
-                    result);
+                    $"⚠️ 代码执行失败（exit code {run.ExitCode}）\n[stdout]\n{run.Stdout}\n[stderr]\n{run.Stderr}",
+                    metadata);
             }
 
             return CodexToolResult.Succeeded(
-                string.IsNullOrWhiteSpace(result.Stdout) ? "✅ 代码执行成功（无输出）" : $"✅ 执行结果:\n{result.Stdout}",
-                result);
+                string.IsNullOrWhiteSpace(run.Stdout) ? "✅ 代码执行成功（无输出）" : $"✅ 执行结果:\n{run.Stdout}",
+                metadata);
         }
         finally
         {

@@ -5,6 +5,7 @@
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Models;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace CodexFlow.Core.Agents.Tools;
 
@@ -104,11 +105,11 @@ public sealed class WorkflowTool(
             return failed
                 ? CodexToolResult.Error(
                     json,
-                    payload,
+                    ToolResultMetadata.From(payload, BuiltInToolJsonContext.Web.WorkflowRunToolResponse),
                     summary: $"workflow failed: {started.Id}")
                 : CodexToolResult.Succeeded(
                     json,
-                    payload,
+                    ToolResultMetadata.From(payload, BuiltInToolJsonContext.Web.WorkflowRunToolResponse),
                     summary: $"workflow completed: {started.Id}");
         }
         catch (OperationCanceledException)
@@ -124,7 +125,7 @@ public sealed class WorkflowTool(
             var payload = new WorkflowErrorToolResponse(started.Id, false, completed ?? started, ex.Message);
             return CodexToolResult.Error(
                 JsonSerializer.Serialize(payload, JsonContext.WorkflowErrorToolResponse),
-                payload,
+                ToolResultMetadata.From(payload, BuiltInToolJsonContext.Web.WorkflowErrorToolResponse),
                 summary: $"workflow failed: {started.Id}");
         }
     }
@@ -146,7 +147,7 @@ public sealed class WorkflowTool(
 
         return CodexToolResult.Succeeded(
             JsonSerializer.Serialize(run, JsonContext.WorkflowRunRecord),
-            run,
+            ToolResultMetadata.From(run, BuiltInToolJsonContext.Web.WorkflowRunRecord),
             summary: $"workflow read: {run.Id}");
     }
 
@@ -159,7 +160,7 @@ public sealed class WorkflowTool(
 
         return CodexToolResult.Succeeded(
             JsonSerializer.Serialize(payload, JsonContext.WorkflowListToolResponse),
-            payload,
+            ToolResultMetadata.From(payload, BuiltInToolJsonContext.Web.WorkflowListToolResponse),
             summary: $"workflows: {runs.Count}");
     }
 

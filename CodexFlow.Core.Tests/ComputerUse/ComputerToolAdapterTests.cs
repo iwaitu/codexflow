@@ -55,7 +55,7 @@ public sealed class ComputerToolAdapterTests
             captured = input;
             return CodexToolResult.Succeeded(
                 "clicked",
-                new ComputerActToolMetadata("click", 7, 1280, 720, "ScreenshotPixels", ScreenshotAttached: true));
+                ToolResultMetadata.From(new ComputerActToolMetadata("click", 7, 1280, 720, "ScreenshotPixels", ScreenshotAttached: true), SourceGeneratedToolJsonContext.Default.ComputerActToolMetadata));
         });
 
         var fn = SourceGeneratedToolFunction.Computer(tool, tool.Name, tool.Description);

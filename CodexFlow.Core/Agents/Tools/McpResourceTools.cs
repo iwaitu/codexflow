@@ -5,6 +5,7 @@
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Models;
 using Microsoft.Extensions.Logging;
+using System.Text.Json.Nodes;
 
 namespace CodexFlow.Core.Agents.Tools;
 
@@ -49,7 +50,7 @@ public sealed class ListMcpResourcesTool(
 
             return Task.FromResult(CodexToolResult.Succeeded(
                 output,
-                new { Root = root, Resources = resources },
+                ToolResultMetadata.FromJson(new JsonObject { ["root"] = root, ["resources"] = ToolResultMetadata.ToNode(resources, SourceGeneratedToolJsonContext.Default.McpResourceDescriptorArray) }),
                 summary: $"mcp resources listed: {resources.Length}"));
         }
         catch (IOException ex)
@@ -115,7 +116,7 @@ public sealed class ReadMcpResourceTool(
             var relative = Path.GetRelativePath(root, fullPath).Replace('\\', '/');
             return CodexToolResult.Succeeded(
                 text,
-                new { Uri = uri, Path = relative, IsTruncated = truncated },
+                ToolResultMetadata.FromJson(new JsonObject { ["uri"] = uri, ["path"] = relative, ["isTruncated"] = truncated }),
                 summary: $"mcp resource read: {relative}",
                 isOutputTruncated: truncated);
         }

@@ -47,10 +47,10 @@ public sealed class GenericToolAdapterTests
     }
 
     [Fact]
-    public async Task CustomFallbackPreservesNestedSchemaAndManagedMetadata()
+    public async Task CustomFallbackPreservesNestedSchemaAndJsonMetadata()
     {
         var tool = CreateTool("fixture_read", arguments =>
-            CodexToolResult.Succeeded(arguments["path"] as string ?? "", new { ResultLabel = "fixture", Count = 3 }));
+            CodexToolResult.Succeeded(arguments["path"] as string ?? "", ToolResultMetadata.FromJson(new JsonObject { ["resultLabel"] = "fixture", ["count"] = 3 })));
         var managed = CodexToolFunctionAdapterFactory.CreateAIFunction(tool);
         var generated = SourceGeneratedToolFunction.Fallback(tool, tool.Name, tool.Description);
 
@@ -70,7 +70,7 @@ public sealed class GenericToolAdapterTests
     {
         var tool = CreateTool("fixture_json", arguments =>
             CodexToolResult.Succeeded(arguments.Count.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                new Dictionary<string, object?> { ["details"] = new JsonArray("fixture", 3) }));
+                ToolResultMetadata.FromJson(new JsonObject { ["details"] = new JsonArray("fixture", 3) })));
         var generated = SourceGeneratedToolFunction.Fallback(tool, tool.Name, tool.Description);
         var result = Assert.IsType<JsonElement>(await generated.InvokeAsync(new AIFunctionArguments
         {

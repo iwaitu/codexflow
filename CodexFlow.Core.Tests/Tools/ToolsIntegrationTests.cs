@@ -517,12 +517,8 @@ src"));
         _output.WriteLine($"Tool output:\n{result.Output}");
         Assert.Equal(ToolResultStatus.Success, result.Status);
         
-        Assert.NotNull(result.Metadata);
-        if (result.Metadata is Dictionary<string, object?> metadata)
-        {
-            Assert.True(metadata.ContainsKey("Data"));
-            Assert.Contains(expectedContent, metadata["Data"]?.ToString());
-        }
+        var metadata = Assert.IsType<System.Text.Json.JsonElement>(result.Metadata);
+        Assert.Contains(expectedContent, metadata.GetProperty("data").GetString());
     }
 
     #endregion
@@ -918,10 +914,8 @@ src"));
         Assert.Contains("README.md", result.Output);
         
         // Check metadata
-        if (result.Metadata is IEnumerable<object> metadata)
-        {
-            Assert.NotEmpty(metadata);
-        }
+        var metadata = Assert.IsType<System.Text.Json.JsonElement>(result.Metadata);
+        Assert.NotEmpty(metadata.EnumerateArray());
     }
 
     [Fact]

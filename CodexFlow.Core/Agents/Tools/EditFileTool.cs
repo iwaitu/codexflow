@@ -7,6 +7,7 @@ using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.LanguageServices;
 using CodexFlow.Core.Models;
 using Microsoft.Extensions.Logging;
+using System.Text.Json.Nodes;
 
 namespace CodexFlow.Core.Agents.Tools;
 
@@ -119,13 +120,13 @@ public sealed class EditFileTool(
             {
                 return CodexToolResult.Succeeded(
                     $"DRY RUN: edit_file would replace {ReplacementCount(matchCount, replaceAll)} occurrence(s) in {normalizedPath}.\n{preview}",
-                    new
+                    ToolResultMetadata.FromJson(new JsonObject
                     {
-                        FilePath = normalizedPath,
-                        MatchCount = matchCount,
-                        ReplacementCount = ReplacementCount(matchCount, replaceAll),
-                        DryRun = true
-                    },
+                        ["filePath"] = normalizedPath,
+                        ["matchCount"] = matchCount,
+                        ["replacementCount"] = ReplacementCount(matchCount, replaceAll),
+                        ["dryRun"] = true
+                    }),
                     summary: $"Dry run edit_file {normalizedPath}: {ReplacementCount(matchCount, replaceAll)} replacement(s).");
             }
 
@@ -135,13 +136,13 @@ public sealed class EditFileTool(
             StructuredLog.Information(logger, "edit_file: updated {Path} with {Count} replacement(s)", normalizedPath, ReplacementCount(matchCount, replaceAll));
             return CodexToolResult.Succeeded(
                 $"✅ edit_file updated {normalizedPath}: {ReplacementCount(matchCount, replaceAll)} replacement(s).\n{preview}",
-                new
+                ToolResultMetadata.FromJson(new JsonObject
                 {
-                    FilePath = normalizedPath,
-                    MatchCount = matchCount,
-                    ReplacementCount = ReplacementCount(matchCount, replaceAll),
-                    DryRun = false
-                },
+                    ["filePath"] = normalizedPath,
+                    ["matchCount"] = matchCount,
+                    ["replacementCount"] = ReplacementCount(matchCount, replaceAll),
+                    ["dryRun"] = false
+                }),
                 summary: $"edit_file {normalizedPath}: {ReplacementCount(matchCount, replaceAll)} replacement(s).");
         }
         catch (IOException ex)

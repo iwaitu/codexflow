@@ -14,6 +14,7 @@ using Microsoft.Extensions.Logging;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace CodexFlow.Core.Agents.Tools;
 
@@ -285,10 +286,10 @@ public class ReadFileTool : ICodexTool
 
         return CodexToolResult.Succeeded(
             outputBuilder.ToString(),
-            new DocumentReadMetadata(
+            ToolResultMetadata.From(new DocumentReadMetadata(
                 normalizedPath, docResult.Format.ToString(), docResult.TotalPages, docResult.StartPage, docResult.EndPage,
                 totalLines, info.Length, selStart, selEnd, isTruncated || docResult.Truncated || selEnd < totalLines,
-                docResult.HasImages, docResult.IsLikelyScanned, attachedVisualCount));
+                docResult.HasImages, docResult.IsLikelyScanned, attachedVisualCount), SourceGeneratedToolJsonContext.Default.DocumentReadMetadata));
     }
 
     private async Task<CodexToolResult> ExecuteImageReadAsync(
@@ -329,7 +330,7 @@ public class ReadFileTool : ICodexTool
 
         var output = $"--- Image: {normalizedPath} ({mime}, {FormatSize(info.Length)}) ---\n" +
                      $"图片已加载并将在下一步送入多模态模型：{TurnVisualAttachmentStore.FormatMarker(registered)}";
-        return CodexToolResult.Succeeded(output, new ImageReadMetadata(normalizedPath, mime, info.Length, registered.Id));
+        return CodexToolResult.Succeeded(output, ToolResultMetadata.From(new ImageReadMetadata(normalizedPath, mime, info.Length, registered.Id), SourceGeneratedToolJsonContext.Default.ImageReadMetadata));
     }
 
     private bool ResolveIsMultimodalEnabled()
@@ -353,7 +354,7 @@ public class ReadFileTool : ICodexTool
 
         return CodexToolResult.Succeeded(
             output,
-            new TextReadMetadata(normalizedPath, totalLines, fileSizeBytes, selStart, selEnd, isTruncated || selEnd < totalLines));
+            ToolResultMetadata.From(new TextReadMetadata(normalizedPath, totalLines, fileSizeBytes, selStart, selEnd, isTruncated || selEnd < totalLines), SourceGeneratedToolJsonContext.Default.TextReadMetadata));
     }
 
     private static (string Content, int StartLine, int EndLine, int TotalLines, bool IsAutoTruncated) SliceLines(
@@ -403,10 +404,10 @@ public class ReadFileTool : ICodexTool
                 $"\n" +
                 $"{snapshot.RenderedText}";
 
-            return CodexToolResult.Succeeded(resultContent, new HashlineReadMetadata(
+            return CodexToolResult.Succeeded(resultContent, ToolResultMetadata.From(new HashlineReadMetadata(
                 normalizedPath, snapshot.SnapshotId, snapshot.FileFingerprint, snapshot.Lines.Count, snapshot.TotalLineCount,
                 snapshot.WindowStartLine, snapshot.WindowEndLine, snapshot.IsPartialWindow, snapshot.EncodingName,
-                snapshot.HasBom, snapshot.NewLineStyle, snapshot.RenderedText));
+                snapshot.HasBom, snapshot.NewLineStyle, snapshot.RenderedText), SourceGeneratedToolJsonContext.Default.HashlineReadMetadata));
         }
         catch (HashlineException ex)
         {
