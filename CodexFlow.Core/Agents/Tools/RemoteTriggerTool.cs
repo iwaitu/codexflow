@@ -153,7 +153,7 @@ public sealed class RemoteTriggerTool(
 
         return CodexToolResult.Succeeded(
             output,
-            result,
+            ToolResultMetadata.From(result, AutomationToolJsonContext.Default.RemoteTriggerRecordedPayload),
             summary: workerJobId == null
                 ? $"remote trigger recorded: {stored.Id}"
                 : $"remote trigger recorded: {stored.Id}, worker={workerJobId}");
@@ -169,7 +169,7 @@ public sealed class RemoteTriggerTool(
         var result = new RemoteTriggerListPayload(events.Count, events);
         return CodexToolResult.Succeeded(
             JsonSerializer.Serialize(result, AutomationToolJsonContext.Default.RemoteTriggerListPayload),
-            result,
+            ToolResultMetadata.From(result, AutomationToolJsonContext.Default.RemoteTriggerListPayload),
             summary: $"remote triggers: {events.Count}");
     }
 

@@ -7,6 +7,7 @@ using CodexFlow.Core.Models;
 using CodexFlow.Core.Skills;
 using Microsoft.Extensions.Logging;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace CodexFlow.Core.Agents.Tools;
 
@@ -103,7 +104,7 @@ public class ToolSearchMetaTool : ICodexTool
             {
                 Status = ToolResultStatus.Success,
                 Output = "tool_search 在本次运行里已用完，不要再调用它，也不要换关键词再试。用文字回答用户：说明你已经做了什么、因为缺少哪项能力没有做成什么，以及建议用户下一步怎么做。",
-                Metadata = new { closed = true }
+                Metadata = ToolResultMetadata.FromJson(new JsonObject { ["closed"] = true })
             });
         }
 
@@ -116,7 +117,7 @@ public class ToolSearchMetaTool : ICodexTool
             {
                 Status = ToolResultStatus.Success,
                 Output = $"未找到匹配 \"{query}\" 的工具。尝试更宽泛的关键词。",
-                Metadata = new { found = 0, tools = Array.Empty<object>(), message = $"No tools matched '{query}'" }
+                Metadata = ToolResultMetadata.FromJson(new JsonObject { ["found"] = 0, ["tools"] = new JsonArray(), ["message"] = $"No tools matched '{query}'" })
             });
         }
 
@@ -158,7 +159,7 @@ public class ToolSearchMetaTool : ICodexTool
         {
             Status = ToolResultStatus.Success,
             Output = json,
-            Metadata = result
+            Metadata = ToolResultMetadata.From(result, BuiltInToolJsonContext.Web.ToolSearchResponse)
         });
     }
 
@@ -195,7 +196,7 @@ public class ToolSearchMetaTool : ICodexTool
         {
             Status = ToolResultStatus.Success,
             Output = JsonSerializer.Serialize(payload, BuiltInToolJsonContext.Relaxed.ScopedToolSearchResponse),
-            Metadata = new { found = matches.Count, shown = rows.Count, query }
+            Metadata = ToolResultMetadata.FromJson(new JsonObject { ["found"] = matches.Count, ["shown"] = rows.Count, ["query"] = query })
         };
     }
 

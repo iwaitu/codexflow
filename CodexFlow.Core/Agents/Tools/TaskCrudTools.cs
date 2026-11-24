@@ -10,6 +10,7 @@ using CodexFlow.Core.Planning.Patching;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json.Linq;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace CodexFlow.Core.Agents.Tools;
 
@@ -233,7 +234,7 @@ public sealed class TaskCreateTool(
             var snapshot = await TaskCrudToolSupport.SaveTaskListSnapshotAsync(taskListService, session, ct).ConfigureAwait(false);
             return CodexToolResult.Succeeded(
                 $"TASK_CREATED\n{TaskCrudToolSupport.Serialize(task)}",
-                new { Task = task, SnapshotJson = snapshot },
+                ToolResultMetadata.FromJson(new JsonObject { ["task"] = ToolResultMetadata.ToNode(task, SourceGeneratedToolJsonContext.Default.CodexTask), ["snapshotJson"] = snapshot }),
                 summary: $"task created: {task.Id}");
         }
         catch (InvalidOperationException ex)
@@ -276,7 +277,7 @@ public sealed class TaskGetTool(CodexSessionManager sessionManager) : ICodexTool
         var task = session.Plan.FirstOrDefault(item => string.Equals(item.Id, taskId, StringComparison.OrdinalIgnoreCase));
         return task == null
             ? CodexToolResult.Error($"Task not found: {taskId}")
-            : CodexToolResult.Succeeded(TaskCrudToolSupport.Serialize(task), task, summary: $"task read: {task.Id}");
+            : CodexToolResult.Succeeded(TaskCrudToolSupport.Serialize(task), ToolResultMetadata.From(task, SourceGeneratedToolJsonContext.Default.CodexTask), summary: $"task read: {task.Id}");
     }
 }
 
@@ -307,7 +308,7 @@ public sealed class TaskListTool(CodexSessionManager sessionManager, ITaskListSe
 
         return CodexToolResult.Succeeded(
             TaskCrudToolSupport.Serialize(payload),
-            payload,
+            ToolResultMetadata.From(payload, SourceGeneratedToolJsonContext.Default.PlanTaskListPayload),
             summary: $"tasks listed: {session.Plan.Count}");
     }
 }
@@ -353,7 +354,7 @@ public sealed class TaskUpdateTool(
             var snapshot = await SaveSnapshotOrStatusAsync(session, task, arguments, ct).ConfigureAwait(false);
             return CodexToolResult.Succeeded(
                 $"TASK_UPDATED\n{TaskCrudToolSupport.Serialize(task)}",
-                new { Task = task, SnapshotJson = snapshot },
+                ToolResultMetadata.FromJson(new JsonObject { ["task"] = ToolResultMetadata.ToNode(task, SourceGeneratedToolJsonContext.Default.CodexTask), ["snapshotJson"] = snapshot }),
                 summary: $"task updated: {task.Id}");
         }
         catch (InvalidOperationException ex)
@@ -514,7 +515,7 @@ public sealed class PlanPatchResolveTool(
 
             return CodexToolResult.Succeeded(
                 $"PLAN_PATCH_RESOLVED\n{TaskCrudToolSupport.Serialize(new PlanPatchResolutionPayload(result, cleanupWarnings, snapshot, session.Metadata))}",
-                new { Result = result, CleanupWarnings = cleanupWarnings, SnapshotJson = snapshot },
+                ToolResultMetadata.FromJson(new JsonObject { ["result"] = ToolResultMetadata.ToNode(result, SourceGeneratedToolJsonContext.Default.PlanPatchResult), ["cleanupWarnings"] = ToolResultMetadata.StringArray(cleanupWarnings), ["snapshotJson"] = snapshot }),
                 summary: result.Summary);
         }
         catch (InvalidOperationException ex)

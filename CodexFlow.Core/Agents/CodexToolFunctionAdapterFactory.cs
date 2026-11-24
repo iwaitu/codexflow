@@ -6,7 +6,6 @@ using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Agents.Tools;
 using CodexFlow.Core.Constants;
 using Microsoft.Extensions.AI;
-using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
@@ -178,36 +177,11 @@ public static class CodexToolFunctionAdapterFactory
     /// <c>__icodex_tool_result</c> marker so downstream consumers can recognise a typed tool envelope
     /// without guessing from arbitrary JSON.
     /// </summary>
-    private static readonly JsonSerializerOptions MarkedResultJsonOptions = new(JsonSerializerDefaults.Web);
-
     internal static JsonNode MarkResult(CodexToolResult result)
     {
         ArgumentNullException.ThrowIfNull(result);
-        return MarkEnvelope(TrySerializeManagedResult(result) ?? SourceGeneratedToolFunction.SerializeResult(result));
+        return SourceGeneratedToolFunction.MarkSourceGeneratedResult(result);
     }
-
-    [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Open tool metadata uses reflection only when the runtime supports dynamic code and STJ default reflection is enabled.")]
-    [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "The reflection branch requires runtime dynamic code support, which Native AOT disables.")]
-    internal static JsonObject? TrySerializeManagedResult(CodexToolResult result)
-    {
-        if (!SupportsManagedToolReflection)
-        {
-            return null;
-        }
-
-        try
-        {
-            // Web defaults preserve the legacy JSON for managed plug-ins.
-            return (JsonObject)JsonSerializer.SerializeToNode(result, MarkedResultJsonOptions)!;
-        }
-        catch (Exception error) when (IsMetadataSerializationError(result, error))
-        {
-            return null;
-        }
-    }
-
-    internal static bool IsMetadataSerializationError(CodexToolResult result, Exception error)
-        => result.Metadata is not null && error is NotSupportedException or JsonException or ArgumentException or InvalidOperationException;
 
     internal static JsonNode MarkEnvelope(JsonObject node)
     {

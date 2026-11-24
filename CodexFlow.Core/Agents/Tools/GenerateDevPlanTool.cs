@@ -11,6 +11,7 @@ using Microsoft.Extensions.Logging;
 using System.IO;
 using System.Net.Http;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace CodexFlow.Core.Agents.Tools;
 
@@ -131,13 +132,13 @@ public class GenerateDevPlanTool(
                 {
                     return CodexToolResult.Succeeded(
                         $"PLAN_ARTIFACT_READY_FOR_APPROVAL\n{artifact.Markdown}",
-                        metadata: new
+                        metadata: ToolResultMetadata.FromJson(new JsonObject
                         {
-                            plan_artifact_id = artifact.Id,
-                            status = artifact.Status.ToString(),
-                            plan_file_path = artifact.PlanFilePath,
-                            task_count = artifact.Tasks.Count
-                        },
+                            ["plan_artifact_id"] = artifact.Id,
+                            ["status"] = artifact.Status.ToString(),
+                            ["plan_file_path"] = artifact.PlanFilePath,
+                            ["task_count"] = artifact.Tasks.Count
+                        }),
                         summary: "plan artifact ready for approval");
                 }
             }

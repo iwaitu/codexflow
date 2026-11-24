@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 using System.Globalization;
 using System.Text;
+using System.Text.Json.Nodes;
 
 namespace CodexFlow.Core.Agents.Tools;
 
@@ -154,12 +155,12 @@ public class SearchFileIndexTool(
 
         return CodexToolResult.Succeeded(
             sb.ToString(),
-            metadata: new
+            metadata: ToolResultMetadata.FromJson(new JsonObject
             {
-                MatchCount = matches.Count,
-                Query = query,
-                Source = sourceLabel
-            },
+                ["matchCount"] = matches.Count,
+                ["query"] = query,
+                ["source"] = sourceLabel
+            }),
             summary: BuildMatchSummary(query, matches),
             systemHint: string.IsNullOrWhiteSpace(systemHint)
                 ? "已经拿到真实文件路径。下一步优先直接读取这些文件，不要继续猜测目录名或未确认的类型命名。"

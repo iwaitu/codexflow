@@ -18,6 +18,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Text.Json.Nodes;
 
 namespace CodexFlow.Core.Agents;
 
@@ -239,12 +240,12 @@ public class SmartPatchTool : ICodexTool
             if (success)
             {
                 await NotifyRefreshAsync(baseRoot, arguments, ExtractChangedPathsFromPatch(cleanedPatch), ct).ConfigureAwait(false);
-                return CodexToolResult.Succeeded("✅ 补丁应用成功。修改已注入影子工作区，准备进行后续验证。", new
+                return CodexToolResult.Succeeded("✅ 补丁应用成功。修改已注入影子工作区，准备进行后续验证。", ToolResultMetadata.FromJson(new JsonObject
                 {
-                    Action = "SmartPatch",
-                    Status = "Applied",
-                    Checkpoint = "Created"
-                });
+                    ["action"] = "SmartPatch",
+                    ["status"] = "Applied",
+                    ["checkpoint"] = "Created"
+                }));
             }
             else
             {
@@ -342,15 +343,15 @@ public class SmartPatchTool : ICodexTool
                     message += $"\n\nDiff:\n{result.UnifiedDiff}";
                 }
 
-                return CodexToolResult.Succeeded(message, new
+                return CodexToolResult.Succeeded(message, ToolResultMetadata.FromJson(new JsonObject
                 {
-                    Action = "SmartPatch",
-                    Mode = "Hashline",
-                    Status = "Applied",
-                    Checkpoint = "Created",
-                    OldFingerprint = result.OldFingerprint,
-                    NewFingerprint = result.NewFingerprint
-                });
+                    ["action"] = "SmartPatch",
+                    ["mode"] = "Hashline",
+                    ["status"] = "Applied",
+                    ["checkpoint"] = "Created",
+                    ["oldFingerprint"] = result.OldFingerprint,
+                    ["newFingerprint"] = result.NewFingerprint
+                }));
             }
             else
             {

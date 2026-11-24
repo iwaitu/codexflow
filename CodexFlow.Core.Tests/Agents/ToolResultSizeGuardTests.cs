@@ -2,6 +2,7 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using CodexFlow.Core.Agents;
 using CodexFlow.Core.Models;
@@ -22,7 +23,7 @@ public class ToolResultSizeGuardTests
     [Fact]
     public void ASmallResult_IsLeftAsItIs()
     {
-        var node = CodexToolFunctionAdapterFactory.MarkResult(CodexToolResult.Succeeded("ok", metadata: new { found = 1 }, summary: "s", display: "ok!"));
+        var node = CodexToolFunctionAdapterFactory.MarkResult(CodexToolResult.Succeeded("ok", metadata: ToolResultMetadata.FromJson(new JsonObject { ["found"] = 1 }), summary: "s", display: "ok!"));
 
         Assert.Equal("ok", Text(node, "output"));
         Assert.Equal("ok!", Text(node, "display"));
@@ -62,7 +63,11 @@ public class ToolResultSizeGuardTests
     [Fact]
     public void HugeMetadata_IsReplacedByANote_WhileTheOutputIsKept()
     {
-        var metadata = new { tools = Enumerable.Range(0, 400).Select(i => new { name = "tool_" + i, description = new string('d', 200) }).ToArray() };
+        var metadata = ToolResultMetadata.FromJson(new JsonObject
+        {
+            ["tools"] = new JsonArray(Enumerable.Range(0, 400).Select(i =>
+                (JsonNode?)new JsonObject { ["name"] = "tool_" + i, ["description"] = new string('d', 200) }).ToArray())
+        });
 
         var node = CodexToolFunctionAdapterFactory.MarkResult(CodexToolResult.Succeeded("short answer", metadata: metadata));
 
@@ -85,15 +90,17 @@ public class ToolResultSizeGuardTests
     }
 
     [Theory]
-    [InlineData(ToolResultStatus.Success, false)]
-    [InlineData(ToolResultStatus.Failed, true)]
-    [InlineData(ToolResultStatus.BlockedByGuardrail, true)]
-    public void SourceGeneratedSerialization_PreservesTheResultWhenMetadataIsUnknown(ToolResultStatus status, bool nested)
+    [InlineData(ToolResultStatus.Success)]
+    [InlineData(ToolResultStatus.Failed)]
+    [InlineData(ToolResultStatus.BlockedByGuardrail)]
+    public void DisposedMetadataDoesNotChangeTheToolResult(ToolResultStatus status)
     {
-        var unknown = new { ProcessName = "sample" };
-        object metadata = nested
-            ? new Dictionary<string, object?> { ["items"] = new List<object?> { "registered", unknown } }
-            : unknown;
+        JsonElement borrowed;
+        using (var document = JsonDocument.Parse("""{"items":["value",{"other":1}]}"""))
+        {
+            borrowed = document.RootElement;
+        }
+
         var result = new CodexToolResult
         {
             Status = status,
@@ -103,10 +110,10 @@ public class ToolResultSizeGuardTests
             IsOutputTruncated = true,
             SystemHint = "inspect the file",
             SystemHintDetail = new ToolSystemHint("inspect the file", "ivilson_read", true),
-            Metadata = metadata
+            Metadata = borrowed
         };
 
-        var envelope = SourceGeneratedToolFunction.SerializeResult(result);
+        var envelope = CodexToolFunctionAdapterFactory.MarkResult(result);
 
         Assert.Equal((int)status, envelope["status"]!.GetValue<int>());
         Assert.Equal(result.Output, Text(envelope, "output"));
@@ -117,26 +124,36 @@ public class ToolResultSizeGuardTests
         Assert.Equal("ivilson_read", Text(envelope["systemHintDetail"]!, "requiredToolName"));
         Assert.True(envelope["systemHintDetail"]!["toolCallRequired"]!.GetValue<bool>());
         Assert.True(envelope["metadata"]!["omitted"]!.GetValue<bool>());
-        Assert.Equal("serialization_failed", Text(envelope["metadata"]!, "reason"));
-        Assert.Same(metadata, result.Metadata);
+        Assert.Equal("metadata_document_disposed", Text(envelope["metadata"]!, "reason"));
     }
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void ManagedSerialization_PreservesTheResultWhenMetadataCannotBeSerialized(bool cyclic)
+    [Fact]
+    public void MetadataOwnsBorrowedJsonAndTreatsUndefinedAsAbsent()
     {
-        var metadata = new Dictionary<string, object?>();
-        metadata["value"] = cyclic ? metadata : new Action(static () => { });
-        var result = CodexToolResult.Succeeded("the command completed", metadata);
+        CodexToolResult result;
+        using (var document = JsonDocument.Parse("""{"items":[null,{"arbitrary-Key":7}]}"""))
+        {
+            result = CodexToolResult.Succeeded("done", document.RootElement);
+        }
 
         var envelope = CodexToolFunctionAdapterFactory.MarkResult(result);
+        Assert.Equal(7, envelope["metadata"]!["items"]![1]!["arbitrary-Key"]!.GetValue<int>());
+        Assert.Null(envelope["metadata"]!["items"]![0]);
+
+        result.Metadata = default(JsonElement);
+        Assert.Null(CodexToolFunctionAdapterFactory.MarkResult(result)["metadata"]);
+    }
+
+    [Fact]
+    public void InvalidJsonNodeMetadataIsOmittedWithoutChangingTheOutcome()
+    {
+        var metadata = ToolResultMetadata.FromJson(new JsonObject { ["number"] = double.NaN });
+        var envelope = CodexToolFunctionAdapterFactory.MarkResult(CodexToolResult.Succeeded("done", metadata));
 
         Assert.Equal((int)ToolResultStatus.Success, envelope["status"]!.GetValue<int>());
-        Assert.Equal(result.Output, Text(envelope, "output"));
+        Assert.Equal("done", Text(envelope, "output"));
         Assert.True(envelope["metadata"]!["omitted"]!.GetValue<bool>());
-        Assert.True(envelope["__icodex_tool_result"]!.GetValue<bool>());
-        Assert.Same(metadata, result.Metadata);
+        Assert.Equal("serialization_failed", Text(envelope["metadata"]!, "reason"));
     }
 
     // The gateway wraps its tools' results with BuildWrappedPayload (a string envelope with the output and a display copy of it), not with

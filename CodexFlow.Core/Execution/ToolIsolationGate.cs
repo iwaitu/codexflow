@@ -8,8 +8,11 @@ using CodexFlow.Core.Gateway;
 using CodexFlow.Core.Models;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using CodexFlow.Core.Agents;
 
 namespace CodexFlow.Core.Execution;
+
+internal sealed record ToolIsolationRefusalMetadata(int Kind, string ReasonCode, string Message);
 
 public static class AmbientSessionPolicyContext
 {
@@ -387,11 +390,8 @@ public sealed class ToolIsolationGate(
         var verb = decision.Kind == ExecutionDecisionKind.Unavailable ? "unavailable" : "denied";
         return CodexToolResult.Error(
             $"{toolName} {verb}: [{decision.ReasonCode}] {decision.Message}",
-            new Dictionary<string, object?>
-            {
-                ["kind"] = (int)decision.Kind,
-                ["reasonCode"] = decision.ReasonCode,
-                ["message"] = decision.Message
-            });
+            ToolResultMetadata.From(
+                new ToolIsolationRefusalMetadata((int)decision.Kind, decision.ReasonCode, decision.Message),
+                SourceGeneratedToolJsonContext.Default.ToolIsolationRefusalMetadata));
     }
 }

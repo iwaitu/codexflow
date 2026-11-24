@@ -6,6 +6,7 @@ using System.Text;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Models;
 using Microsoft.Extensions.Logging;
+using System.Text.Json.Nodes;
 
 namespace CodexFlow.Core.Agents.Tools;
 
@@ -51,7 +52,7 @@ public sealed class WorkerOutputTool(
         {
             return CodexToolResult.Succeeded(
                 FormatCommandOutput(commandSnapshot),
-                metadata: commandSnapshot,
+                metadata: ToolResultMetadata.From(commandSnapshot, SourceGeneratedToolJsonContext.Default.CommandTaskSnapshot),
                 summary: BuildCommandSummary(commandSnapshot));
         }
 
@@ -74,7 +75,7 @@ public sealed class WorkerOutputTool(
 
             return CodexToolResult.Succeeded(
                 FormatOutput(result),
-                metadata: result,
+                metadata: ToolResultMetadata.From(result, SourceGeneratedToolJsonContext.Default.WorkerOutputResult),
                 summary: BuildSummary(result));
         }
         catch (Exception ex)
@@ -268,17 +269,17 @@ public sealed class AskUserQuestionTool : ICodexTool
         var header = arguments.GetValueOrDefault("header")?.ToString();
         var preview = arguments.GetValueOrDefault("preview")?.ToString();
         var options = ReadStringArray(arguments.GetValueOrDefault("options"));
-        var metadata = new
+        var metadata = ToolResultMetadata.FromJson(new JsonObject
         {
-            kind = "ask_user_question",
-            ui_event = "ask_user_question",
-            contract_version = 1,
-            requires_user_response = true,
-            header,
-            question,
-            options,
-            preview
-        };
+            ["kind"] = "ask_user_question",
+            ["ui_event"] = "ask_user_question",
+            ["contract_version"] = 1,
+            ["requires_user_response"] = true,
+            ["header"] = header,
+            ["question"] = question,
+            ["options"] = ToolResultMetadata.StringArray(options),
+            ["preview"] = preview
+        });
 
         var builder = new StringBuilder();
         builder.AppendLine("USER_QUESTION_REQUEST");
@@ -454,7 +455,7 @@ public sealed class EnterPlanModeTool(
 
         return CodexToolResult.Succeeded(
             "PLAN_MODE_ENTERED",
-            metadata: new Dictionary<string, object?>
+            metadata: ToolResultMetadata.FromJson(new JsonObject
             {
                 ["kind"] = "plan_mode",
                 ["ui_event"] = "plan_mode_changed",
@@ -465,7 +466,7 @@ public sealed class EnterPlanModeTool(
                 ["reason"] = reason,
                 ["objective"] = objective,
                 ["entered_at_utc"] = enteredAtUtc
-            },
+            }),
             summary: string.IsNullOrWhiteSpace(objective) ? "entered plan mode" : $"entered plan mode: {objective}");
     }
 }
@@ -530,7 +531,7 @@ public sealed class ExitPlanModeTool(
 
         return CodexToolResult.Succeeded(
             output,
-            metadata: new Dictionary<string, object?>
+            metadata: ToolResultMetadata.FromJson(new JsonObject
             {
                 ["kind"] = "plan_mode_exit_requested",
                 ["ui_event"] = "plan_mode_exit_requested",
@@ -542,7 +543,7 @@ public sealed class ExitPlanModeTool(
                 ["planSummary"] = planSummary.Trim(),
                 ["reason"] = reason,
                 ["requested_at_utc"] = requestedAtUtc
-            },
+            }),
             summary: "plan mode exit requested (awaiting user confirmation)");
     }
 }
@@ -566,7 +567,7 @@ public sealed class SyntheticOutputTool : ICodexTool
         var summary = arguments.GetValueOrDefault("summary")?.ToString();
         return Task.FromResult(CodexToolResult.Succeeded(
             content.Trim(),
-            metadata: new { kind = "synthetic_output", summary },
+            metadata: ToolResultMetadata.FromJson(new JsonObject { ["kind"] = "synthetic_output", ["summary"] = summary }),
             summary: string.IsNullOrWhiteSpace(summary) ? "synthetic output" : summary.Trim()));
     }
 }

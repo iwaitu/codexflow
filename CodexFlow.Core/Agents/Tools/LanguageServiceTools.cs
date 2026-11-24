@@ -3,6 +3,8 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.LanguageServices;
 using CodexFlow.Core.Models;
@@ -63,19 +65,19 @@ internal static class LanguageServiceToolSupport
         return sb.ToString();
     }
 
-    public static object BuildMetadata(
+    public static JsonElement BuildMetadata(
         LanguageServiceProviderDescriptor descriptor,
         int diagnosticsCount = 0)
-        => new
+        => ToolResultMetadata.FromJson(new JsonObject
         {
-            language = descriptor.Language.ToString().ToLowerInvariant(),
-            provider = descriptor.ProviderName,
-            diagnosticsCount,
-            initializationLatencyMs = descriptor.InitializationLatencyMs,
-            degradedReason = descriptor.DegradedReason == LanguageServiceDegradedReason.None
+            ["language"] = descriptor.Language.ToString().ToLowerInvariant(),
+            ["provider"] = descriptor.ProviderName,
+            ["diagnosticsCount"] = diagnosticsCount,
+            ["initializationLatencyMs"] = descriptor.InitializationLatencyMs,
+            ["degradedReason"] = descriptor.DegradedReason == LanguageServiceDegradedReason.None
                 ? null
                 : ToToken(descriptor.DegradedReason)
-        };
+        });
 
     public static string ToToken(LanguageServiceDegradedReason reason)
         => reason switch

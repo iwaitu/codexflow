@@ -42,6 +42,7 @@ using System.Text.Json;
 using CodexFlow.Orchestration.Persistence;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
+using System.Text.Json.Nodes;
 
 namespace CodexFlow.Gateway;
 
@@ -3046,20 +3047,20 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
 
                     return WrapCodexToolResult(CodexToolResult.Succeeded(
                         approvalResult.Output + "\n\n" + dispatch.Message,
-                        metadata: new
+                        metadata: ToolResultMetadata.FromJson(new JsonObject
                         {
-                            approval = approvalResult.Metadata,
-                            autoDispatch = new
+                            ["approval"] = approvalResult.Metadata is { } approval ? JsonNode.Parse(approval.GetRawText()) : null,
+                            ["autoDispatch"] = new JsonObject
                             {
-                                dispatch.Status,
-                                dispatch.TaskId,
-                                dispatch.Title,
-                                dispatch.JobId,
-                                dispatch.JobType,
-                                workerType = dispatch.WorkerType?.ToString().ToLowerInvariant(),
-                                dispatch.StateKind
+                                ["status"] = (int)dispatch.Status,
+                                ["taskId"] = dispatch.TaskId,
+                                ["title"] = dispatch.Title,
+                                ["jobId"] = dispatch.JobId,
+                                ["jobType"] = dispatch.JobType,
+                                ["workerType"] = dispatch.WorkerType?.ToString().ToLowerInvariant(),
+                                ["stateKind"] = dispatch.StateKind
                             }
-                        },
+                        }),
                         summary: dispatch.Dispatched
                             ? $"计划已批准，并已自动派发任务 {dispatch.TaskId}。"
                             : $"计划已批准，自动派发结果：{dispatch.Status}。",
@@ -3652,7 +3653,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                 session.ProjectUrl = repoUri;
             }
 
-            var clonedPath = GatewayPayloadFields.Text(result.Metadata, "Path");
+            var clonedPath = GatewayPayloadFields.Text(result.Metadata, "path");
             if (!string.IsNullOrWhiteSpace(clonedPath) && Directory.Exists(clonedPath))
             {
                 session.Metadata[ToolPathResolver.PreferredProjectRootMetadataKey] = clonedPath;

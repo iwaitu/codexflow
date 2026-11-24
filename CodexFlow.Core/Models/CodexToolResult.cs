@@ -2,6 +2,8 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+using System.Text.Json;
+
 namespace CodexFlow.Core.Models;
 
 public sealed record ToolSystemHint(
@@ -20,6 +22,8 @@ public enum ToolResultStatus
 
 public class CodexToolResult
 {
+    private JsonElement? _metadata;
+
     public ToolResultStatus Status { get; set; } = ToolResultStatus.Success;
 
     // 供 Agent 阅读的主要输出字符串
@@ -35,7 +39,11 @@ public class CodexToolResult
     public bool IsOutputTruncated { get; set; }
 
     // 结构化元数据 (例如: 修改的文件列表, 编译报错详情, 搜索结果)
-    public object? Metadata { get; set; }
+    public JsonElement? Metadata
+    {
+        get => _metadata;
+        set => _metadata = ToolResultMetadata.Own(value);
+    }
 
     // 系统级警告或建议
     public string? SystemHint { get; set; }
@@ -45,7 +53,7 @@ public class CodexToolResult
 
     public static CodexToolResult Succeeded(
         string output,
-        object? metadata = null,
+        JsonElement? metadata = null,
         string? summary = null,
         string? display = null,
         bool isOutputTruncated = false,
@@ -66,7 +74,7 @@ public class CodexToolResult
 
     public static CodexToolResult Error(
         string message,
-        object? metadata = null,
+        JsonElement? metadata = null,
         string? summary = null,
         string? display = null,
         bool isOutputTruncated = false,
@@ -86,13 +94,6 @@ public class CodexToolResult
         };
 
     public override string ToString() => string.IsNullOrWhiteSpace(Display) ? Output : Display;
-
-    internal CodexToolResult WithMetadata(object? metadata)
-    {
-        var copy = (CodexToolResult)MemberwiseClone();
-        copy.Metadata = metadata;
-        return copy;
-    }
 
     private static ToolSystemHint? CreateSystemHintDetail(
         string? message,

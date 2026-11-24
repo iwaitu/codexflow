@@ -10,6 +10,7 @@ using CodexFlow.Core.Execution;
 using CodexFlow.Core.Models;
 using CodexFlow.Core.Services;
 using Microsoft.Extensions.Configuration;
+using System.Text.Json.Nodes;
 
 namespace CodexFlow.Core.Agents.Tools;
 
@@ -154,7 +155,7 @@ public sealed class ListAuthorizedDirectoryTool(
 
             return Task.FromResult(CodexToolResult.Succeeded(
                 payload,
-                metadata: new { totalMatched, returned = page.Count, nextCursor },
+                metadata: ToolResultMetadata.FromJson(new JsonObject { ["totalMatched"] = totalMatched, ["returned"] = page.Count, ["nextCursor"] = nextCursor }),
                 summary: $"已列举目录 `{rawPath}`（共 {totalMatched} 项，本次返回 {page.Count} 项）"));
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)

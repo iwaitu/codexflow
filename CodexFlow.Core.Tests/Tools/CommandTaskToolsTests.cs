@@ -192,16 +192,14 @@ public sealed class CommandTaskToolsTests
 
             Assert.Equal(ToolResultStatus.Success, result.Status);
             Assert.Contains("exit code 17", result.Output, StringComparison.Ordinal);
-            var metadata = Assert.IsType<RunCommandCompletionMetadata>(result.Metadata);
-            var json = JsonSerializer.SerializeToElement(result.Metadata);
-            Assert.Equal(["CommandTaskId", "ExitCode", "Status", "Stdout", "Stderr"],
+            var json = Assert.IsType<JsonElement>(result.Metadata);
+            Assert.Equal(["commandTaskId", "exitCode", "status", "stdout", "stderr"],
                 json.EnumerateObject().Select(property => property.Name).ToArray());
-            Assert.Equal(ExtractCommandTaskId(result.Output), json.GetProperty("CommandTaskId").GetString());
-            Assert.Equal(17, metadata.ExitCode);
-            Assert.Equal(17, json.GetProperty("ExitCode").GetInt32());
-            Assert.Equal("Failed", json.GetProperty("Status").GetString());
-            Assert.Equal("build started", json.GetProperty("Stdout").GetString());
-            Assert.Equal("build failed", json.GetProperty("Stderr").GetString());
+            Assert.Equal(ExtractCommandTaskId(result.Output), json.GetProperty("commandTaskId").GetString());
+            Assert.Equal(17, json.GetProperty("exitCode").GetInt32());
+            Assert.Equal("Failed", json.GetProperty("status").GetString());
+            Assert.Equal("build started", json.GetProperty("stdout").GetString());
+            Assert.Equal("build failed", json.GetProperty("stderr").GetString());
         }
         finally
         {

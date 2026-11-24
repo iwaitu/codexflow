@@ -12,6 +12,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace CodexFlow.Core.Agents.Tools;
 
@@ -215,15 +216,15 @@ public class RunCommandTool(
         {
             return CodexToolResult.Succeeded(
                 $"COMMAND_TASK_STARTED\ncommand_task_id: {commandTaskId}\n$ {displayCommand}\nUse task_output({{\"job_id\":\"{commandTaskId}\"}}) to read stdout/stderr, and task_stop({{\"job_id\":\"{commandTaskId}\"}}) to stop it.",
-                new
+                ToolResultMetadata.FromJson(new JsonObject
                 {
-                    CommandTaskId = commandTaskId,
-                    Command = displayCommand,
-                    WorkingDirectory = guestCwd ?? ".",
-                    Background = true,
-                    TimeoutSeconds = timeoutSeconds,
-                    Isolated = true
-                },
+                    ["commandTaskId"] = commandTaskId,
+                    ["command"] = displayCommand,
+                    ["workingDirectory"] = guestCwd ?? ".",
+                    ["background"] = true,
+                    ["timeoutSeconds"] = timeoutSeconds,
+                    ["isolated"] = true
+                }),
                 summary: $"command task started: {commandTaskId}");
         }
 
@@ -249,7 +250,7 @@ public class RunCommandTool(
         {
             return CodexToolResult.Error(
                 $"{Name} refused by the isolation backend: {backendRefusal.Text}\ncommand_task_id: {commandTaskId}",
-                new { CommandTaskId = commandTaskId, ExitCode = (int?)null, Status = snapshot.Status.ToString(), Refusal = backendRefusal.Text });
+                ToolResultMetadata.FromJson(new JsonObject { ["commandTaskId"] = commandTaskId, ["exitCode"] = (int?)null, ["status"] = snapshot.Status.ToString(), ["refusal"] = backendRefusal.Text }));
         }
 
         var output = BuildStreamText(snapshot, "stdout");
@@ -270,14 +271,14 @@ public class RunCommandTool(
         {
             return CodexToolResult.Succeeded(
                 $"⚠️ 命令执行完成（status {snapshot.Status}, exit code {snapshot.ExitCode?.ToString() ?? "n/a"}）\ncommand_task_id: {commandTaskId}\n$ {displayCommand}\n[stdout]\n{output}\n[stderr]\n{errors}{environmentNote}",
-                result,
+                ToolResultMetadata.From(result, SourceGeneratedToolJsonContext.Default.RunCommandCompletionMetadata),
                 summary: $"command {commandTaskId}: status={snapshot.Status}, exit={snapshot.ExitCode?.ToString() ?? "n/a"}");
         }
 
         return CodexToolResult.Succeeded(
             $"✅ command_task_id: {commandTaskId}\n$ {displayCommand}\n{output}" + (string.IsNullOrWhiteSpace(errors) ? "" : $"\n[stderr]\n{errors}") +
             (system.Contains("exported:", StringComparison.Ordinal) ? $"\n[export]\n{system}" : "") + environmentNote,
-            result,
+            ToolResultMetadata.From(result, SourceGeneratedToolJsonContext.Default.RunCommandCompletionMetadata),
             summary: $"command {commandTaskId}: exit=0");
     }
 

@@ -16,6 +16,7 @@ using CodexFlow.Core.Gateway;
 using CodexFlow.Core.Models;
 using CodexFlow.Core.Runtime;
 using Microsoft.Extensions.DependencyInjection;
+using System.Text.Json.Nodes;
 
 namespace CodexFlow.Orchestration.BusinessSkills;
 
@@ -90,28 +91,10 @@ internal static class BusinessSkillToolFormatting
         IReadOnlyList<BusinessSkillFieldError>? fieldErrors = null,
         SkillInputSchemaDto? inputsSchema = null)
     {
-        var payload = new Dictionary<string, object?>(StringComparer.Ordinal)
-        {
-            ["ok"] = false,
-            ["code"] = code,
-            ["message"] = message,
-            ["retryable"] = retryable,
-            ["userAction"] = userAction
-        };
-        if (fieldErrors is { Count: > 0 })
-        {
-            payload["fieldErrors"] = fieldErrors;
-        }
-
-        if (inputsSchema is not null)
-        {
-            payload["inputsSchema"] = inputsSchema;
-        }
-
         var envelope = new BusinessSkillStructuredErrorPayload(false, code, message, retryable, userAction,
             fieldErrors is { Count: > 0 } ? fieldErrors : null, inputsSchema);
-        var json = JsonSerializer.Serialize(envelope, BusinessSkillJsonContext.Wire.BusinessSkillStructuredErrorPayload);
-        return CodexToolResult.Succeeded(json, payload, summary: $"business_skill_error:{code}");
+        var metadata = ToolResultMetadata.From(envelope, BusinessSkillJsonContext.Wire.BusinessSkillStructuredErrorPayload);
+        return CodexToolResult.Succeeded(metadata.GetRawText(), metadata, summary: $"business_skill_error:{code}");
     }
 
     public static bool TryParseInputsJson(
@@ -241,7 +224,7 @@ public sealed class BusinessSkillListTool(IServiceScopeFactory scopeFactory) : I
                 BusinessSkillJsonContext.Wire.BusinessSkillRunSummaryPayload);
             return CodexToolResult.Succeeded(
                 BusinessSkillToolFormatting.WrapUntrustedPayload(runJson),
-                new { runId, status = runRes.Value.Status.ToString() },
+                ToolResultMetadata.FromJson(new JsonObject { ["runId"] = runId, ["status"] = runRes.Value.Status.ToString() }),
                 summary: $"business_skill_run:{runId}:{runRes.Value.Status}");
         }
 
@@ -294,7 +277,7 @@ public sealed class BusinessSkillListTool(IServiceScopeFactory scopeFactory) : I
         var json = JsonSerializer.Serialize(detail, BusinessSkillJsonContext.Wire.BusinessSkillDetailPayload);
         return CodexToolResult.Succeeded(
             BusinessSkillToolFormatting.WrapUntrustedPayload(json),
-            new { skillId = skill.Id, activeVersion = skill.ActiveVersion, hasWriteSteps },
+            ToolResultMetadata.FromJson(new JsonObject { ["skillId"] = skill.Id, ["activeVersion"] = skill.ActiveVersion, ["hasWriteSteps"] = hasWriteSteps }),
             summary: $"business_skill_detail:{skill.Id}@v{skill.ActiveVersion}");
     }
 
@@ -350,7 +333,7 @@ public sealed class BusinessSkillListTool(IServiceScopeFactory scopeFactory) : I
         var json = JsonSerializer.Serialize(payload, BusinessSkillJsonContext.Wire.BusinessSkillListPayload);
         return CodexToolResult.Succeeded(
             BusinessSkillToolFormatting.WrapUntrustedPayload(json),
-            new { count = items.Count },
+            ToolResultMetadata.FromJson(new JsonObject { ["count"] = items.Count }),
             summary: $"business_skills_listed:{items.Count}");
     }
 }
@@ -609,7 +592,7 @@ public sealed class BusinessSkillRunTool(
                         var pendingJson = JsonSerializer.Serialize(pendingPayload, BusinessSkillJsonContext.Wire.BusinessSkillPendingPayload);
                         return CodexToolResult.Succeeded(
                             BusinessSkillToolFormatting.WrapUntrustedPayload(pendingJson),
-                            new { currentRun.RunId, status = currentRun.Status.ToString(), pending = true },
+                            ToolResultMetadata.FromJson(new JsonObject { ["runId"] = currentRun.RunId, ["status"] = currentRun.Status.ToString(), ["pending"] = true }),
                             summary: $"business_skill_pending:{currentRun.RunId}");
                     }
                 }
@@ -651,7 +634,7 @@ public sealed class BusinessSkillRunTool(
         var resultJson = JsonSerializer.Serialize(resultObj, BusinessSkillJsonContext.Wire.BusinessSkillRunSummaryPayload);
         return CodexToolResult.Succeeded(
             BusinessSkillToolFormatting.WrapUntrustedPayload(resultJson),
-            new { currentRun.RunId, status = currentRun.Status.ToString(), catalogFreshnessChecked = catalogFreshnessWillRun },
+            ToolResultMetadata.FromJson(new JsonObject { ["runId"] = currentRun.RunId, ["status"] = currentRun.Status.ToString(), ["catalogFreshnessChecked"] = catalogFreshnessWillRun }),
             summary: $"business_skill_run:{currentRun.RunId}:{currentRun.Status}");
     }
 

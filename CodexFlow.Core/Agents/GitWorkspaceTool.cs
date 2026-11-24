@@ -10,6 +10,7 @@ using System.IO;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Text.Json.Nodes;
 
 namespace CodexFlow.Core.Agents;
 
@@ -78,7 +79,7 @@ public class GitWorkspaceTool : ICodexTool
 
                     var revSuccess = await _gitService.RevertToLastCommitAsync(revertTarget).ConfigureAwait(false);
                     return revSuccess
-                        ? CodexToolResult.Succeeded($"✅ 撤销成功：仓库 [{Path.GetFileName(revertTarget)}] 已恢复到最近一个健康提交。", new { Action = "Revert", RepoPath = revertTarget })
+                        ? CodexToolResult.Succeeded($"✅ 撤销成功：仓库 [{Path.GetFileName(revertTarget)}] 已恢复到最近一个健康提交。", ToolResultMetadata.FromJson(new JsonObject { ["action"] = "Revert", ["repoPath"] = revertTarget }))
                         : CodexToolResult.Error("❌ 撤销失败：无法执行回滚操作，请检查 Git 仓库状态。");
 
                 case "openspec_create_checkpoint":
@@ -89,7 +90,7 @@ public class GitWorkspaceTool : ICodexTool
 
                     var cpSuccess = await _gitService.CommitAsync(checkpointTarget, $"[CHECKPOINT] {message}").ConfigureAwait(false);
                     return cpSuccess
-                        ? CodexToolResult.Succeeded($"✅ 快照创建成功：仓库 [{Path.GetFileName(checkpointTarget)}] 已记录当前状态。备注：{message}", new { Action = "Checkpoint", Message = message, RepoPath = checkpointTarget })
+                        ? CodexToolResult.Succeeded($"✅ 快照创建成功：仓库 [{Path.GetFileName(checkpointTarget)}] 已记录当前状态。备注：{message}", ToolResultMetadata.FromJson(new JsonObject { ["action"] = "Checkpoint", ["message"] = message, ["repoPath"] = checkpointTarget }))
                         : CodexToolResult.Error("❌ 快照创建失败：可能是没有检测到任何文件变动。");
 
                 case "git_clone":
@@ -191,7 +192,7 @@ public class GitWorkspaceTool : ICodexTool
                         $"- 目录数: {dirCount}\n" +
                         $"- 仓库 URL: {repoUrl}\n" +
                         $"请使用 ivilson_ls 工具查看项目结构。",
-                        new GitCloneMetadata("Clone", repoUrl, targetPath, Path.GetFileName(targetPath), fileCount, dirCount));
+                        ToolResultMetadata.From(new GitCloneMetadata("Clone", repoUrl, targetPath, Path.GetFileName(targetPath), fileCount, dirCount), SourceGeneratedToolJsonContext.Default.GitCloneMetadata));
 
                 default:
                     return CodexToolResult.Error($"Unknown tool {Name}");

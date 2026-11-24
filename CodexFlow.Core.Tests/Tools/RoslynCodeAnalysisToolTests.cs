@@ -108,10 +108,10 @@ public sealed class RoslynCodeAnalysisToolTests
 
         Assert.Equal(ToolResultStatus.Success, result.Status);
         Assert.Contains(id, result.Output, StringComparison.Ordinal);
-        var diagnostics = Assert.IsAssignableFrom<IReadOnlyList<CodeDiagnostic>>(result.Metadata);
-        var diagnostic = Assert.Single(diagnostics, diagnostic => diagnostic.Id == id);
-        Assert.Equal("Error", diagnostic.Severity);
-        Assert.Equal(line, diagnostic.Line);
-        Assert.Equal(column, diagnostic.Column);
+        var diagnostics = Assert.IsType<System.Text.Json.JsonElement>(result.Metadata).EnumerateArray();
+        var diagnostic = Assert.Single(diagnostics, diagnostic => diagnostic.GetProperty("id").GetString() == id);
+        Assert.Equal("Error", diagnostic.GetProperty("severity").GetString());
+        Assert.Equal(line, diagnostic.GetProperty("line").GetInt32());
+        Assert.Equal(column, diagnostic.GetProperty("column").GetInt32());
     }
 }

@@ -108,12 +108,12 @@ public class ToolWorkspaceDiagnosticTests : IDisposable
         _output.WriteLine($"Tool Status: {result.Status}");
         _output.WriteLine($"Tool Output:\n{result.Output}\n");
         
-        if (result.Metadata != null && result.Metadata is Dictionary<string, object?> metadata)
+        if (result.Metadata is { ValueKind: System.Text.Json.JsonValueKind.Object } metadata)
         {
             _output.WriteLine("Tool Metadata:");
-            foreach (var kv in metadata)
+            foreach (var property in metadata.EnumerateObject())
             {
-                _output.WriteLine($"  {kv.Key}: {kv.Value}");
+                _output.WriteLine($"  {property.Name}: {property.Value}");
             }
             _output.WriteLine("");
         }

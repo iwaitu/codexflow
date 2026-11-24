@@ -47,7 +47,7 @@ public sealed class TaskStopTool(
         {
             return CodexToolResult.Succeeded(
                 $"✅ command task {jobId} stop requested. status={snapshot!.Status}",
-                metadata: snapshot,
+                metadata: ToolResultMetadata.From(snapshot, SourceGeneratedToolJsonContext.Default.CommandTaskSnapshot),
                 summary: $"command task stopped: {jobId}");
         }
 
@@ -60,8 +60,8 @@ public sealed class TaskStopTool(
         {
             var result = await stopWorkerFunc(jobId, ct).ConfigureAwait(false);
             return result.Success
-                ? CodexToolResult.Succeeded($"✅ worker {result.JobId} 已停止。", metadata: result, summary: $"worker stopped: {result.JobId}")
-                : CodexToolResult.Error(result.Message ?? $"worker {jobId} 无法停止。", metadata: result);
+                ? CodexToolResult.Succeeded($"✅ worker {result.JobId} 已停止。", metadata: ToolResultMetadata.From(result, SourceGeneratedToolJsonContext.Default.StopWorkerResult), summary: $"worker stopped: {result.JobId}")
+                : CodexToolResult.Error(result.Message ?? $"worker {jobId} 无法停止。", metadata: ToolResultMetadata.From(result, SourceGeneratedToolJsonContext.Default.StopWorkerResult));
         }
         catch (Exception ex)
         {
