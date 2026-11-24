@@ -84,6 +84,61 @@ public class ToolResultSizeGuardTests
         Assert.True(node["__icodex_tool_result"]!.GetValue<bool>());
     }
 
+    [Theory]
+    [InlineData(ToolResultStatus.Success, false)]
+    [InlineData(ToolResultStatus.Failed, true)]
+    [InlineData(ToolResultStatus.BlockedByGuardrail, true)]
+    public void SourceGeneratedSerialization_PreservesTheResultWhenMetadataIsUnknown(ToolResultStatus status, bool nested)
+    {
+        var unknown = new { ProcessName = "sample" };
+        object metadata = nested
+            ? new Dictionary<string, object?> { ["items"] = new List<object?> { "registered", unknown } }
+            : unknown;
+        var result = new CodexToolResult
+        {
+            Status = status,
+            Output = "actual output",
+            Summary = "short summary",
+            Display = "display text",
+            IsOutputTruncated = true,
+            SystemHint = "inspect the file",
+            SystemHintDetail = new ToolSystemHint("inspect the file", "ivilson_read", true),
+            Metadata = metadata
+        };
+
+        var envelope = SourceGeneratedToolFunction.SerializeResult(result);
+
+        Assert.Equal((int)status, envelope["status"]!.GetValue<int>());
+        Assert.Equal(result.Output, Text(envelope, "output"));
+        Assert.Equal(result.Summary, Text(envelope, "summary"));
+        Assert.Equal(result.Display, Text(envelope, "display"));
+        Assert.True(envelope["isOutputTruncated"]!.GetValue<bool>());
+        Assert.Equal(result.SystemHint, Text(envelope, "systemHint"));
+        Assert.Equal("ivilson_read", Text(envelope["systemHintDetail"]!, "requiredToolName"));
+        Assert.True(envelope["systemHintDetail"]!["toolCallRequired"]!.GetValue<bool>());
+        Assert.True(envelope["metadata"]!["omitted"]!.GetValue<bool>());
+        Assert.Equal("serialization_failed", Text(envelope["metadata"]!, "reason"));
+        Assert.Same(metadata, result.Metadata);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ManagedSerialization_PreservesTheResultWhenMetadataCannotBeSerialized(bool cyclic)
+    {
+        var metadata = new Dictionary<string, object?>();
+        metadata["value"] = cyclic ? metadata : new Action(static () => { });
+        var result = CodexToolResult.Succeeded("the command completed", metadata);
+
+        var envelope = CodexToolFunctionAdapterFactory.MarkResult(result);
+
+        Assert.Equal((int)ToolResultStatus.Success, envelope["status"]!.GetValue<int>());
+        Assert.Equal(result.Output, Text(envelope, "output"));
+        Assert.True(envelope["metadata"]!["omitted"]!.GetValue<bool>());
+        Assert.True(envelope["__icodex_tool_result"]!.GetValue<bool>());
+        Assert.Same(metadata, result.Metadata);
+    }
+
     // The gateway wraps its tools' results with BuildWrappedPayload (a string envelope with the output and a display copy of it), not with
     // MarkResult. The audited tool_search results of the failed run had this shape.
     [Fact]

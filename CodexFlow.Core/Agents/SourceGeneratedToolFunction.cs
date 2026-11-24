@@ -86,37 +86,29 @@ internal sealed partial class SourceGeneratedToolFunction(
         => ParseElement(MarkSourceGeneratedResult(result).ToJsonString());
 
     internal static JsonNode MarkSourceGeneratedResult(CodexToolResult result)
-    {
-        if (result.Metadata is { } metadata && JsonContext.GetTypeInfo(metadata.GetType()) is null)
-        {
-            return MarkUnregisteredMetadata(result);
-        }
+        => CodexToolFunctionAdapterFactory.MarkEnvelope(SerializeResult(result, allowManagedFallback: true));
 
-        JsonObject envelope;
+    internal static JsonObject SerializeResult(CodexToolResult result, bool allowManagedFallback = false)
+    {
         try
         {
-            envelope = (JsonObject)JsonSerializer.SerializeToNode(result, JsonContext.CodexToolResult)!;
+            return (JsonObject)JsonSerializer.SerializeToNode(result, JsonContext.CodexToolResult)!;
         }
-        catch (NotSupportedException)
+        catch (Exception error) when (CodexToolFunctionAdapterFactory.IsMetadataSerializationError(result, error))
         {
-            // A registered dictionary or list can still contain an unregistered metadata value.
-            return MarkUnregisteredMetadata(result);
+            if (allowManagedFallback && CodexToolFunctionAdapterFactory.TrySerializeManagedResult(result) is { } managed)
+            {
+                return managed;
+            }
+
+            // Metadata can be omitted without changing the tool's outcome, output, or control hints.
+            var safeResult = result.WithMetadata(new JsonObject
+            {
+                ["omitted"] = true,
+                ["reason"] = "serialization_failed"
+            });
+            return (JsonObject)JsonSerializer.SerializeToNode(safeResult, JsonContext.CodexToolResult)!;
         }
-
-        return CodexToolFunctionAdapterFactory.MarkEnvelope(envelope);
-    }
-
-    private static JsonNode MarkUnregisteredMetadata(CodexToolResult result)
-    {
-        // Preserve existing managed plug-in metadata outside the generated contracts.
-        if (CodexToolFunctionAdapterFactory.SupportsManagedToolReflection)
-        {
-            return CodexToolFunctionAdapterFactory.MarkResult(result);
-        }
-
-        var failure = CodexToolResult.Error("工具返回了未注册的结果元数据类型。");
-        var envelope = (JsonObject)JsonSerializer.SerializeToNode(failure, JsonContext.CodexToolResult)!;
-        return CodexToolFunctionAdapterFactory.MarkEnvelope(envelope);
     }
 
     private static Dictionary<string, object?> BindAnalyzeCode(AIFunctionArguments input)

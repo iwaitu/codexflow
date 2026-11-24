@@ -183,23 +183,31 @@ public static class CodexToolFunctionAdapterFactory
     internal static JsonNode MarkResult(CodexToolResult result)
     {
         ArgumentNullException.ThrowIfNull(result);
-        return TryMarkManagedResult(result) is { } managed
-            ? MarkEnvelope(managed)
-            : SourceGeneratedToolFunction.MarkSourceGeneratedResult(result);
+        return MarkEnvelope(TrySerializeManagedResult(result) ?? SourceGeneratedToolFunction.SerializeResult(result));
     }
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Open tool metadata uses reflection only when the runtime supports dynamic code and STJ default reflection is enabled.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "The reflection branch requires runtime dynamic code support, which Native AOT disables.")]
-    private static JsonObject? TryMarkManagedResult(CodexToolResult result)
+    internal static JsonObject? TrySerializeManagedResult(CodexToolResult result)
     {
         if (!SupportsManagedToolReflection)
         {
             return null;
         }
 
-        // Web defaults preserve the legacy JSON for managed plug-ins.
-        return JsonSerializer.SerializeToNode(result, MarkedResultJsonOptions) as JsonObject ?? new JsonObject();
+        try
+        {
+            // Web defaults preserve the legacy JSON for managed plug-ins.
+            return (JsonObject)JsonSerializer.SerializeToNode(result, MarkedResultJsonOptions)!;
+        }
+        catch (Exception error) when (IsMetadataSerializationError(result, error))
+        {
+            return null;
+        }
     }
+
+    internal static bool IsMetadataSerializationError(CodexToolResult result, Exception error)
+        => result.Metadata is not null && error is NotSupportedException or JsonException or ArgumentException or InvalidOperationException;
 
     internal static JsonNode MarkEnvelope(JsonObject node)
     {
