@@ -56,6 +56,6 @@ public class RoslynCodeAnalysisTool : ICodexTool
             sb.AppendLine(FormattableString.Invariant($"- [{diag.Severity}] {diag.Id}: {diag.Message} (行: {diag.Line}, 列: {diag.Column})"));
         }
 
-        return CodexToolResult.Succeeded(sb.ToString(), diagnostics);
+        return CodexToolResult.Succeeded(sb.ToString(), ToolResultMetadata.From(diagnostics, SourceGeneratedToolJsonContext.Default.ListCodeDiagnostic));
     }
 }

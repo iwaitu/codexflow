@@ -322,9 +322,9 @@ public sealed class P3TurnCancelPlanAndToolsTests : IDisposable
                     Payload = new
                     {
                         type = "plan_approval_requested",
-                        planArtifactId = meta?.GetType().GetProperty("plan_artifact_id")?.GetValue(meta)?.ToString(),
-                        version = meta?.GetType().GetProperty("plan_version")?.GetValue(meta)?.ToString(),
-                        markdownHash = meta?.GetType().GetProperty("markdown_hash")?.GetValue(meta)?.ToString()
+                        planArtifactId = meta?.GetProperty("plan_artifact_id").GetString(),
+                        version = meta?.GetProperty("plan_version").GetString(),
+                        markdownHash = meta?.GetProperty("markdown_hash").GetString()
                     }
                 };
                 await ValueTask.CompletedTask;

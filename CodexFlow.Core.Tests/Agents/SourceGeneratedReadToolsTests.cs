@@ -262,11 +262,11 @@ public sealed class SourceGeneratedReadToolsTests
     [Theory]
     [InlineData(Read, "path")]
     [InlineData(Search, "pattern")]
-    public async Task JitCustomMetadataKeepsTheLegacyResultShape(string toolName, string requiredField)
+    public async Task SourceGeneratedToolKeepsNestedJsonMetadata(string toolName, string requiredField)
     {
         var result = CodexToolResult.Succeeded(
             "custom output",
-            metadata: new { FilePath = "fixture.txt", MatchDetails = new[] { new { Line = 2, Text = "needle" } } });
+            metadata: ToolResultMetadata.FromJson(new JsonObject { ["filePath"] = "fixture.txt", ["matchDetails"] = new JsonArray(new JsonObject { ["line"] = 2, ["text"] = "needle" }) }));
         var function = CreateFunction(toolName, (_, _) => result);
 
         var legacy = JsonSerializer.SerializeToElement(CodexToolFunctionAdapterFactory.MarkResult(result));

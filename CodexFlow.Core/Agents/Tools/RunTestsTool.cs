@@ -9,6 +9,7 @@ using CodexFlow.Core.Planning.Artifacts;
 using CodexFlow.Core.TDD;
 using Microsoft.Extensions.Logging;
 using System.Globalization;
+using System.Text.Json.Nodes;
 
 namespace CodexFlow.Core.Agents.Tools;
 
@@ -144,7 +145,7 @@ public class RunTestsTool : ICodexTool
             return CodexToolResult.Succeeded(
                 PlanToolJson.Write(new RunTestsPayload(
                     result.Success, result.PassedCount, result.FailedCount, result.FailureDetails, result.OutputSummary)),
-                new Dictionary<string, object?> { ["testResult"] = result }
+                ToolResultMetadata.FromJson(new JsonObject { ["testResult"] = ToolResultMetadata.ToNode(result, SourceGeneratedToolJsonContext.Default.TestExecutionResult) })
             );
         }
         catch (IOException ex)

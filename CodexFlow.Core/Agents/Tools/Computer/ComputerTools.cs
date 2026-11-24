@@ -65,7 +65,7 @@ internal static class ComputerToolHelpers
         caller = default!;
         error = CodexToolResult.Error(
             "[missing_trusted_computer_context] Computer Use 工具仅可在受信任的主会话对话上下文中执行（Worker 与无人值守后台任务不可用）。",
-            new ComputerFailureToolMetadata("missing_trusted_computer_context"));
+            ToolResultMetadata.From(new ComputerFailureToolMetadata("missing_trusted_computer_context"), SourceGeneratedToolJsonContext.Default.ComputerFailureToolMetadata));
         return false;
     }
 
@@ -77,7 +77,7 @@ internal static class ComputerToolHelpers
         {
             error = CodexToolResult.Error(
                 "[multimodal_required_for_computer_use] 当前模型未启用多模态视觉能力（SupportsMultimodal=false）。一期纯视觉 Computer Use 已被安全门禁禁用，请先在设置中切换支持视觉的多模态模型。",
-                new ComputerFailureToolMetadata("multimodal_required_for_computer_use"));
+                ToolResultMetadata.From(new ComputerFailureToolMetadata("multimodal_required_for_computer_use"), SourceGeneratedToolJsonContext.Default.ComputerFailureToolMetadata));
             return false;
         }
 
@@ -224,13 +224,13 @@ public sealed class ComputerScreenInfoTool(
 
         if (!result.Succeeded)
         {
-            return CodexToolResult.Error(result.Output, new ComputerFailureToolMetadata(result.ErrorCode), summary: result.Summary);
+            return CodexToolResult.Error(result.Output, ToolResultMetadata.From(new ComputerFailureToolMetadata(result.ErrorCode), SourceGeneratedToolJsonContext.Default.ComputerFailureToolMetadata), summary: result.Summary);
         }
 
         var state = manager.GetSessionState(caller.SessionId);
         return CodexToolResult.Succeeded(
             result.Output,
-            new ComputerScreenToolMetadata(result.Displays?.Count ?? 0, result.Windows?.Count ?? 0, state.PinnedProcessName),
+            ToolResultMetadata.From(new ComputerScreenToolMetadata(result.Displays?.Count ?? 0, result.Windows?.Count ?? 0, state.PinnedProcessName), SourceGeneratedToolJsonContext.Default.ComputerScreenToolMetadata),
             summary: result.Summary);
     }
 }
@@ -291,7 +291,7 @@ public sealed class ComputerScreenshotTool(
 
         if (!result.Succeeded)
         {
-            return CodexToolResult.Error(result.Output, new ComputerFailureToolMetadata(result.ErrorCode), summary: result.Summary);
+            return CodexToolResult.Error(result.Output, ToolResultMetadata.From(new ComputerFailureToolMetadata(result.ErrorCode), SourceGeneratedToolJsonContext.Default.ComputerFailureToolMetadata), summary: result.Summary);
         }
 
         var (output, screenshotAttached) = ComputerToolHelpers.AttachScreenshotFeedback(result, modelSettings, computerOptions);
@@ -299,13 +299,13 @@ public sealed class ComputerScreenshotTool(
         var state = manager.GetSessionState(caller.SessionId);
         return CodexToolResult.Succeeded(
             output,
-            new ComputerScreenshotToolMetadata(
+            ToolResultMetadata.From(new ComputerScreenshotToolMetadata(
                 result.Screenshot?.ScreenshotSeq,
                 result.Screenshot?.Width,
                 result.Screenshot?.Height,
                 result.Viewport?.EffectiveMode.ToString(),
                 state.PinnedWindowHandle,
-                screenshotAttached),
+                screenshotAttached), SourceGeneratedToolJsonContext.Default.ComputerScreenshotToolMetadata),
             summary: result.Summary);
     }
 }
@@ -360,7 +360,7 @@ public sealed class ComputerActTool(
         {
             return CodexToolResult.Error(
                 "[plan_mode_active] 当前处于只读 Plan Mode，禁止执行 computer_act 桌面交互。",
-                new ComputerFailureToolMetadata(ExecutionReasonCodes.PlanModeActive));
+                ToolResultMetadata.From(new ComputerFailureToolMetadata(ExecutionReasonCodes.PlanModeActive), SourceGeneratedToolJsonContext.Default.ComputerFailureToolMetadata));
         }
 
         if (!ComputerToolHelpers.EnsureMultimodalEnabled(modelSettings, out var multimodalErr))
@@ -390,20 +390,20 @@ public sealed class ComputerActTool(
         var result = await manager.ActAsync(caller, req, ct).ConfigureAwait(false);
         if (!result.Succeeded)
         {
-            return CodexToolResult.Error(result.Output, new ComputerFailureToolMetadata(result.ErrorCode), summary: result.Summary);
+            return CodexToolResult.Error(result.Output, ToolResultMetadata.From(new ComputerFailureToolMetadata(result.ErrorCode), SourceGeneratedToolJsonContext.Default.ComputerFailureToolMetadata), summary: result.Summary);
         }
 
         var (output, screenshotAttached) = ComputerToolHelpers.AttachScreenshotFeedback(result, modelSettings, computerOptions);
 
         return CodexToolResult.Succeeded(
             output,
-            new ComputerActToolMetadata(
+            ToolResultMetadata.From(new ComputerActToolMetadata(
                 action,
                 result.Screenshot?.ScreenshotSeq,
                 result.Screenshot?.Width,
                 result.Screenshot?.Height,
                 result.Viewport?.EffectiveMode.ToString(),
-                screenshotAttached),
+                screenshotAttached), SourceGeneratedToolJsonContext.Default.ComputerActToolMetadata),
             summary: result.Summary);
     }
 }
@@ -448,7 +448,7 @@ public sealed class ComputerRequestTakeoverTool(
         {
             return CodexToolResult.Error(
                 "[plan_mode_active] 当前处于只读 Plan Mode，禁止发起桌面人工接管。",
-                new ComputerFailureToolMetadata(ExecutionReasonCodes.PlanModeActive));
+                ToolResultMetadata.From(new ComputerFailureToolMetadata(ExecutionReasonCodes.PlanModeActive), SourceGeneratedToolJsonContext.Default.ComputerFailureToolMetadata));
         }
 
         var reason = arguments.GetValueOrDefault("reason")?.ToString() ?? string.Empty;
@@ -458,20 +458,20 @@ public sealed class ComputerRequestTakeoverTool(
         var result = await manager.RequestTakeoverAsync(caller, reason, timeoutSeconds, ct).ConfigureAwait(false);
         if (!result.Succeeded)
         {
-            return CodexToolResult.Error(result.Output, new ComputerFailureToolMetadata(result.ErrorCode), summary: result.Summary);
+            return CodexToolResult.Error(result.Output, ToolResultMetadata.From(new ComputerFailureToolMetadata(result.ErrorCode), SourceGeneratedToolJsonContext.Default.ComputerFailureToolMetadata), summary: result.Summary);
         }
 
         var (output, screenshotAttached) = ComputerToolHelpers.AttachScreenshotFeedback(result, modelSettings, computerOptions);
 
         return CodexToolResult.Succeeded(
             output,
-            new ComputerScreenshotToolMetadata(
+            ToolResultMetadata.From(new ComputerScreenshotToolMetadata(
                 result.Screenshot?.ScreenshotSeq,
                 result.Screenshot?.Width,
                 result.Screenshot?.Height,
                 result.Viewport?.EffectiveMode.ToString(),
                 manager.GetSessionState(caller.SessionId).PinnedWindowHandle,
-                screenshotAttached),
+                screenshotAttached), SourceGeneratedToolJsonContext.Default.ComputerScreenshotToolMetadata),
             summary: result.Summary);
     }
 }

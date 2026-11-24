@@ -10,6 +10,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Text.Json.Nodes;
 
 namespace CodexFlow.Core.Agents;
 
@@ -56,7 +57,7 @@ public class UserMemoryTool : ICodexTool
             if (string.IsNullOrEmpty(session.UserId)) return CodexToolResult.Error("Cannot learn user preference without a valid UserId in session.");
 
             await _sessionManager.LearnUserFactAsync(session.UserId, key, value).ConfigureAwait(false);
-            return CodexToolResult.Succeeded($"✅ 已记录用户全局偏好：[{key}] = {value}。该偏好将在您的所有项目中生效。", new { Key = key, Value = value });
+            return CodexToolResult.Succeeded($"✅ 已记录用户全局偏好：[{key}] = {value}。该偏好将在您的所有项目中生效。", ToolResultMetadata.FromJson(new JsonObject { ["key"] = key, ["value"] = value }));
         }
         catch (IOException ex)
         {

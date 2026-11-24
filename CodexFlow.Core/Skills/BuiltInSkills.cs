@@ -10,8 +10,10 @@ public static class BuiltInSkills
 {
     public const string FrontendBrowserDebug = "frontend-browser-debug";
     public const string DesktopControl = "desktop-control";
+    public const string SkillCreator = "skill-creator";
     private const string FrontendBrowserDebugResource = "CodexFlow.Skills.frontend-browser-debug.SKILL.md";
     private const string DesktopControlResource = "CodexFlow.Skills.desktop-control.SKILL.md";
+    private const string SkillCreatorResource = "CodexFlow.Skills.skill-creator.SKILL.md";
 
     public static IReadOnlyList<BuiltInSkillDto> All { get; } = Array.AsReadOnly<BuiltInSkillDto>(
     [
@@ -20,7 +22,10 @@ public static class BuiltInSkills
             "用内置浏览器打开这个前端项目的页面，复现问题并检查控制台报错。"),
         new(DesktopControl, "桌面控制",
             "锁定桌面窗口，执行键鼠操作，并根据新截图确认结果。需要时请求用户接管。",
-            "用桌面控制在指定应用中点击目标按钮，再截图确认窗口是否响应。")
+            "用桌面控制在指定应用中点击目标按钮，再截图确认窗口是否响应。"),
+        new(SkillCreator, "Skill 创建助手",
+            "把可复用的流程写成 Skill，生成或更新 SKILL.md，并检查触发条件和示例。",
+            "用 skill-creator 创建一个 Skill，把我接下来描述的流程写成可下载的 SKILL.md。")
     ]);
 
     internal static async Task<string?> ReadAsync(string? name, CancellationToken cancellationToken)
@@ -29,6 +34,7 @@ public static class BuiltInSkills
         {
             FrontendBrowserDebug => FrontendBrowserDebugResource,
             DesktopControl => DesktopControlResource,
+            SkillCreator => SkillCreatorResource,
             _ => null
         };
         if (resourceName is null)

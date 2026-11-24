@@ -86,38 +86,8 @@ internal sealed partial class SourceGeneratedToolFunction(
         => ParseElement(MarkSourceGeneratedResult(result).ToJsonString());
 
     internal static JsonNode MarkSourceGeneratedResult(CodexToolResult result)
-    {
-        if (result.Metadata is { } metadata && JsonContext.GetTypeInfo(metadata.GetType()) is null)
-        {
-            return MarkUnregisteredMetadata(result);
-        }
-
-        JsonObject envelope;
-        try
-        {
-            envelope = (JsonObject)JsonSerializer.SerializeToNode(result, JsonContext.CodexToolResult)!;
-        }
-        catch (NotSupportedException)
-        {
-            // A registered dictionary or list can still contain an unregistered metadata value.
-            return MarkUnregisteredMetadata(result);
-        }
-
-        return CodexToolFunctionAdapterFactory.MarkEnvelope(envelope);
-    }
-
-    private static JsonNode MarkUnregisteredMetadata(CodexToolResult result)
-    {
-        // Preserve existing managed plug-in metadata outside the generated contracts.
-        if (CodexToolFunctionAdapterFactory.SupportsManagedToolReflection)
-        {
-            return CodexToolFunctionAdapterFactory.MarkResult(result);
-        }
-
-        var failure = CodexToolResult.Error("工具返回了未注册的结果元数据类型。");
-        var envelope = (JsonObject)JsonSerializer.SerializeToNode(failure, JsonContext.CodexToolResult)!;
-        return CodexToolFunctionAdapterFactory.MarkEnvelope(envelope);
-    }
+        => CodexToolFunctionAdapterFactory.MarkEnvelope(
+            (JsonObject)JsonSerializer.SerializeToNode(result, JsonContext.CodexToolResult)!);
 
     private static Dictionary<string, object?> BindAnalyzeCode(AIFunctionArguments input)
         => new(StringComparer.OrdinalIgnoreCase) { ["code"] = RequireString(input, "code") };
@@ -255,6 +225,7 @@ internal sealed partial class SourceGeneratedToolFunction(
 [JsonSerializable(typeof(ComputerActToolMetadata))]
 [JsonSerializable(typeof(ComputerFailureToolMetadata))]
 [JsonSerializable(typeof(JsonElement))]
+[JsonSerializable(typeof(JsonNode))]
 [JsonSerializable(typeof(JsonObject))]
 [JsonSerializable(typeof(JsonArray))]
 [JsonSerializable(typeof(Dictionary<string, object>))]
@@ -273,4 +244,19 @@ internal sealed partial class SourceGeneratedToolFunction(
 [JsonSerializable(typeof(double))]
 [JsonSerializable(typeof(float))]
 [JsonSerializable(typeof(decimal))]
+[JsonSerializable(typeof(RunCommandCompletionMetadata))]
+[JsonSerializable(typeof(CommandTaskSnapshot))]
+[JsonSerializable(typeof(WorkerOutputResult))]
+[JsonSerializable(typeof(StopWorkerResult))]
+[JsonSerializable(typeof(List<StructuralLsTool.FileEntryMetadata>))]
+[JsonSerializable(typeof(StructuralReadTool.FileReadMetadata))]
+[JsonSerializable(typeof(CodexTask))]
+[JsonSerializable(typeof(CodexFlow.Core.Planning.Artifacts.PlanTaskListPayload))]
+[JsonSerializable(typeof(CodexFlow.Core.Planning.Patching.PlanPatchResult))]
+[JsonSerializable(typeof(CodexFlow.Core.TDD.TestExecutionResult))]
+[JsonSerializable(typeof(string[]))]
+[JsonSerializable(typeof(RunShellResultMetadata))]
+[JsonSerializable(typeof(CodexFlow.Core.Execution.ToolIsolationRefusalMetadata))]
+[JsonSerializable(typeof(McpResourceDescriptor[]))]
+[JsonSerializable(typeof(IReadOnlyList<WorkerJobSummary>))]
 internal sealed partial class SourceGeneratedToolJsonContext : JsonSerializerContext;

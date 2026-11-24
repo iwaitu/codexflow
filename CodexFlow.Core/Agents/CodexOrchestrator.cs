@@ -10,6 +10,7 @@ using CodexFlow.Core.Models;
 using CodexFlow.Core.Planning.Committee;
 using CodexFlow.Core.Planning.Deviation;
 using CodexFlow.Core.Planning.Patching;
+using CodexFlow.Core.Runtime;
 using CodexFlow.Core.Services;
 using CodexFlow.Core.TDD;
 using Microsoft.Extensions.Configuration;
@@ -2639,9 +2640,13 @@ public class CodexOrchestrator
     }
 
     private static (int ExitCode, string Stdout, string Stderr) ExtractRunCommandResult(CodexToolResult toolResult)
-        => toolResult.Metadata is RunCommandCompletionMetadata metadata
-            ? (metadata.ExitCode ?? -1, metadata.Stdout, metadata.Stderr)
-            : (-1, string.Empty, string.Empty);
+    {
+        var metadata = ToolObservationMetadata.From(toolResult.Metadata);
+        return (
+            metadata.GetInt("exitCode") ?? -1,
+            metadata.GetString("stdout") ?? string.Empty,
+            metadata.GetString("stderr") ?? string.Empty);
+    }
 
     private static string SummarizeCommandOutput(string stdout, string stderr, string fallbackOutput)
     {

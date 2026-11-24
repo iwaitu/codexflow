@@ -1493,6 +1493,34 @@ public sealed class QreV2BackedQueryRuntimeEngineTests
     }
 
     [Fact]
+    public async Task ToolRoundTrip_PreservesProviderSignatureOutsideArguments()
+    {
+        const string signature = "provider-signature/+==";
+        var call = new FunctionCallContent("signed-call", "inspect_state", new Dictionary<string, object?>())
+        {
+            AdditionalProperties = new AdditionalPropertiesDictionary { ["thoughtSignature"] = signature }
+        };
+        var llm = new ScriptedLlmExecutor(
+            new ChatResponseUpdate(ChatRole.Assistant, [call]),
+            InspectingStep(request =>
+            {
+                var content = request.Messages.SelectMany(message => message.Contents).ToArray();
+                var replayed = Assert.Single(content.OfType<FunctionCallContent>());
+                Assert.Equal(call.CallId, replayed.CallId);
+                Assert.Equal(signature, replayed.AdditionalProperties!["thoughtSignature"]);
+                Assert.Empty(replayed.Arguments!);
+                Assert.Equal(call.CallId, Assert.Single(content.OfType<FunctionResultContent>()).CallId);
+            }, TextStep("tool result confirmed")));
+        var events = new RecordingEventSink();
+        var result = await CreateEngine(llm).ExecuteAsync(
+            CreateRequest() with { AvailableTools = [ContractTool("inspect_state")] }, events);
+
+        Assert.Equal("tool result confirmed", result.FinalText);
+        Assert.Equal(1, result.TotalToolCalls);
+        Assert.Empty(Assert.Single(events.Events.OfType<ToolCallRequestedEvent>()).Arguments!);
+    }
+
+    [Fact]
     public async Task RequiredContract_SingleToolContract_KeepsLegacyInitialRequirement()
     {
         var llm = new ScriptedLlmExecutor(

@@ -24,6 +24,8 @@ namespace CodexFlow.Core.Runtime;
 /// </summary>
 public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
 {
+    private const string ThoughtSignatureKey = "thoughtSignature";
+
     private readonly ILLMExecutor _llmExecutor;
     private readonly IContextWindowManager? _contextWindowManager;
     private readonly IQueryLoopTelemetry? _telemetry;
@@ -1608,10 +1610,7 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
             {
                 ProtectedData = reasoning.ProtectedData
             },
-            QreProtocol.RuntimeToolCallItem call => new FunctionCallContent(
-                call.Call.InvocationId.Value,
-                call.Call.Name,
-                ToObjectDictionary(call.Call.Arguments)),
+            QreProtocol.RuntimeToolCallItem call => ToMeaiToolCall(call.Call),
             QreProtocol.RuntimeToolResultItem result => new FunctionResultContent(
                 result.Result.InvocationId.Value,
                 ToolResultModelText(result.Result)),
@@ -1670,11 +1669,28 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
     }
 
     private static QreProtocol.RuntimeToolCall ToProtocolToolCall(FunctionCallContent call)
-        => new(
+        => new QreProtocol.RuntimeToolCall(
             new QreProtocol.RuntimeInvocationId(call.CallId),
             call.Name,
             ToJsonElement(call.Arguments),
-            call.InformationalOnly);
+            call.InformationalOnly)
+        {
+            ProtectedData = call.AdditionalProperties?.TryGetValue(ThoughtSignatureKey, out var signature) == true &&
+                signature is string value && !string.IsNullOrWhiteSpace(value)
+                ? value
+                : null
+        };
+
+    private static FunctionCallContent ToMeaiToolCall(QreProtocol.RuntimeToolCall call)
+    {
+        var content = new FunctionCallContent(call.InvocationId.Value, call.Name, ToObjectDictionary(call.Arguments));
+        if (!string.IsNullOrWhiteSpace(call.ProtectedData))
+        {
+            content.AdditionalProperties = new AdditionalPropertiesDictionary { [ThoughtSignatureKey] = call.ProtectedData };
+        }
+
+        return content;
+    }
 
     private static QreProtocol.RuntimeUsage ToProtocolUsage(UsageDetails usage)
     {

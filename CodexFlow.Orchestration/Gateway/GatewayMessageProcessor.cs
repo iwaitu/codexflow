@@ -24,6 +24,7 @@ using CodexFlow.Core.Models;
 using CodexFlow.Core.Protocols;
 using CodexFlow.Core.Remote;
 using CodexFlow.Core.Runtime;
+using CodexFlow.Core.Skills;
 using CodexFlow.Core.Workers;
 using CodexFlow.Orchestration.BusinessSkills;
 using CodexFlow.Orchestration.Services;
@@ -42,6 +43,7 @@ using System.Text.Json;
 using CodexFlow.Orchestration.Persistence;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
+using System.Text.Json.Nodes;
 
 namespace CodexFlow.Gateway;
 
@@ -2157,6 +2159,9 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
     {
         var sb = new System.Text.StringBuilder();
         sb.AppendLine("你是 CodexFlow 的日常助手（Daily 模式），帮助用户处理日常办公文档、数据整理、信息检索与受控自动化脚本执行。");
+        sb.AppendLine($$"""
+            - 用户想创建、修改 Skill 或询问 Skill 创建能力时，先调用 `{{ReadBuiltInSkillTool.ToolName}}({"name":"{{BuiltInSkills.SkillCreator}}"})`，再按指引处理。
+            """);
         // 将静态企业业务 Skill 指引置于最前部公共前缀（位于 Plan Mode / WorkspacePath / fullContext 之前），
         // 不注入任何动态 Skill 列表，最大化跨会话与多轮 Prefix/KV Cache 复用。
         if (CanExposeBusinessSkillList(policy))
@@ -3097,20 +3102,20 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
 
                     return WrapCodexToolResult(CodexToolResult.Succeeded(
                         approvalResult.Output + "\n\n" + dispatch.Message,
-                        metadata: new
+                        metadata: ToolResultMetadata.FromJson(new JsonObject
                         {
-                            approval = approvalResult.Metadata,
-                            autoDispatch = new
+                            ["approval"] = approvalResult.Metadata is { } approval ? JsonNode.Parse(approval.GetRawText()) : null,
+                            ["autoDispatch"] = new JsonObject
                             {
-                                dispatch.Status,
-                                dispatch.TaskId,
-                                dispatch.Title,
-                                dispatch.JobId,
-                                dispatch.JobType,
-                                workerType = dispatch.WorkerType?.ToString().ToLowerInvariant(),
-                                dispatch.StateKind
+                                ["status"] = (int)dispatch.Status,
+                                ["taskId"] = dispatch.TaskId,
+                                ["title"] = dispatch.Title,
+                                ["jobId"] = dispatch.JobId,
+                                ["jobType"] = dispatch.JobType,
+                                ["workerType"] = dispatch.WorkerType?.ToString().ToLowerInvariant(),
+                                ["stateKind"] = dispatch.StateKind
                             }
-                        },
+                        }),
                         summary: dispatch.Dispatched
                             ? $"计划已批准，并已自动派发任务 {dispatch.TaskId}。"
                             : $"计划已批准，自动派发结果：{dispatch.Status}。",
@@ -3723,7 +3728,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                 session.ProjectUrl = repoUri;
             }
 
-            var clonedPath = GatewayPayloadFields.Text(result.Metadata, "Path");
+            var clonedPath = GatewayPayloadFields.Text(result.Metadata, "path");
             if (!string.IsNullOrWhiteSpace(clonedPath) && Directory.Exists(clonedPath))
             {
                 session.Metadata[ToolPathResolver.PreferredProjectRootMetadataKey] = clonedPath;

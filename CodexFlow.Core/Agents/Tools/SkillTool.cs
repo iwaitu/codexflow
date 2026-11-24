@@ -8,6 +8,7 @@ using CodexFlow.Core.Models;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json.Linq;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace CodexFlow.Core.Agents.Tools;
 
@@ -81,7 +82,7 @@ public sealed class SkillTool(
             ? "No skills found."
             : $"Found {skills.Length} skill(s):\n- " + string.Join("\n- ", skills.Select(item => $"{item.Name} ({item.RelativePath})"));
 
-        return CodexToolResult.Succeeded(output, new { Root = root, Skills = skills }, summary: $"skills listed: {skills.Length}");
+        return CodexToolResult.Succeeded(output, ToolResultMetadata.FromJson(new JsonObject { ["root"] = root, ["skills"] = new JsonArray(skills.Select(static skill => (JsonNode?)new JsonObject { ["name"] = skill.Name, ["relativePath"] = skill.RelativePath }).ToArray()) }), summary: $"skills listed: {skills.Length}");
     }
 
     private static async Task<CodexToolResult> ReadSkillAsync(string root, Dictionary<string, object?> arguments, CancellationToken ct)
@@ -101,7 +102,7 @@ public sealed class SkillTool(
         var content = await File.ReadAllTextAsync(skillFile, ct).ConfigureAwait(false);
         return CodexToolResult.Succeeded(
             content,
-            new { Skill = name, Path = skillFile },
+            ToolResultMetadata.FromJson(new JsonObject { ["skill"] = name, ["path"] = skillFile }),
             summary: $"skill read: {name}");
     }
 
@@ -337,7 +338,7 @@ public sealed class SkillTool(
 
             return CodexToolResult.Succeeded(
                 run.Stdout,
-                new { Skill = name, ScriptPath = normalizedScriptPath, Args = args, Isolated = session.Layout.Backend == ExecutionBackend.Docker },
+                ToolResultMetadata.FromJson(new JsonObject { ["skill"] = name, ["scriptPath"] = normalizedScriptPath, ["args"] = ToolResultMetadata.StringArray(args), ["isolated"] = session.Layout.Backend == ExecutionBackend.Docker }),
                 summary: $"skill script ran: {name}/{normalizedScriptPath}");
         }
         catch (WorkspaceSnapshotException ex)

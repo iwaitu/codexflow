@@ -73,7 +73,7 @@ public sealed class PushNotificationTool(IPushNotificationService notificationSe
 
         return CodexToolResult.Succeeded(
             JsonSerializer.Serialize(payload, AutomationToolJsonContext.Default.PushNotificationPayload),
-            payload,
+            ToolResultMetadata.From(payload, AutomationToolJsonContext.Default.PushNotificationPayload),
             summary: $"notification pushed to {userId}: {string.Join(",", result.DeliveredChannels)}");
     }
 

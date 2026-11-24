@@ -5,6 +5,7 @@
 using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Models;
 using Microsoft.Extensions.Logging;
+using System.Text.Json.Nodes;
 
 namespace CodexFlow.Core.Agents.Tools;
 
@@ -87,13 +88,13 @@ public sealed class EnterWorktreeTool(
             await sessionManager.UpdateSessionAsync(session).ConfigureAwait(false);
             return CodexToolResult.Succeeded(
                 $"WORKTREE_ENTERED\nworkspace_path: {target}\noriginal_workspace_path: {originalWorkspace}",
-                new
+                ToolResultMetadata.FromJson(new JsonObject
                 {
-                    SessionId = session.Id,
-                    WorkspacePath = target,
-                    OriginalWorkspacePath = originalWorkspace,
-                    External = !insideCurrentWorkspace
-                },
+                    ["sessionId"] = session.Id,
+                    ["workspacePath"] = target,
+                    ["originalWorkspacePath"] = originalWorkspace,
+                    ["external"] = !insideCurrentWorkspace
+                }),
                 summary: $"entered worktree: {target}");
         }
         catch (InvalidOperationException ex)
@@ -164,12 +165,12 @@ public sealed class ExitWorktreeTool(
             await sessionManager.UpdateSessionAsync(session).ConfigureAwait(false);
             return CodexToolResult.Succeeded(
                 $"WORKTREE_EXITED\nworkspace_path: {originalWorkspace}\nprevious_workspace_path: {previousWorkspace}",
-                new
+                ToolResultMetadata.FromJson(new JsonObject
                 {
-                    SessionId = session.Id,
-                    WorkspacePath = originalWorkspace,
-                    PreviousWorkspacePath = previousWorkspace
-                },
+                    ["sessionId"] = session.Id,
+                    ["workspacePath"] = originalWorkspace,
+                    ["previousWorkspacePath"] = previousWorkspace
+                }),
                 summary: $"exited worktree: {originalWorkspace}");
         }
         catch (InvalidOperationException ex)

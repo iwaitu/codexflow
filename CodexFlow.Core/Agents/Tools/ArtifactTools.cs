@@ -7,6 +7,7 @@ using CodexFlow.Core.Models;
 using Microsoft.Extensions.Logging;
 using System.Globalization;
 using System.IO.Compression;
+using System.Text.Json.Nodes;
 
 namespace CodexFlow.Core.Agents.Tools;
 
@@ -84,7 +85,7 @@ public class ZipDirectoryTool(ILogger<ZipDirectoryTool> logger) : ICodexTool
             StructuredLog.Information(logger, "zip_directory: created {ZipPath} ({Size} bytes)", zipPath, info.Length);
             return CodexToolResult.Succeeded(
                 FormattableString.Invariant($"✅ 已打包：{zipPath} ({info.Length / 1024.0:F1} KB)"),
-                new { ZipPath = zipPath, Size = info.Length });
+                ToolResultMetadata.FromJson(new JsonObject { ["zipPath"] = zipPath, ["size"] = info.Length }));
         }
         catch (IOException ex)
         {
@@ -155,26 +156,26 @@ public class DownloadArtifactTool(ILogger<DownloadArtifactTool> logger) : ICodex
             if (asText || IsTextFile(filePath))
             {
                 var content = await File.ReadAllTextAsync(filePath, ct).ConfigureAwait(false);
-                return CodexToolResult.Succeeded(content, new
+                return CodexToolResult.Succeeded(content, ToolResultMetadata.FromJson(new JsonObject
                 {
-                    Filename = filename,
-                    ContentType = "text/plain",
-                    Encoding = "utf-8",
-                    Data = content
-                });
+                    ["filename"] = filename,
+                    ["contentType"] = "text/plain",
+                    ["encoding"] = "utf-8",
+                    ["data"] = content
+                }));
             }
             else
             {
                 var bytes = await File.ReadAllBytesAsync(filePath, ct).ConfigureAwait(false);
                 var base64 = Convert.ToBase64String(bytes);
                 var contentType = GetContentType(filePath);
-                return CodexToolResult.Succeeded($"[Binary file: {filename}, {bytes.Length} bytes]", new
+                return CodexToolResult.Succeeded($"[Binary file: {filename}, {bytes.Length} bytes]", ToolResultMetadata.FromJson(new JsonObject
                 {
-                    Filename = filename,
-                    ContentType = contentType,
-                    Encoding = "base64",
-                    Data = base64
-                });
+                    ["filename"] = filename,
+                    ["contentType"] = contentType,
+                    ["encoding"] = "base64",
+                    ["data"] = base64
+                }));
             }
         }
         catch (IOException ex)

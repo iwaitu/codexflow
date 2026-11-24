@@ -16,6 +16,7 @@ using System.Collections;
 using System.IO;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace CodexFlow.Core.Agents.Tools;
 
@@ -338,13 +339,13 @@ public class ApplyPatchTool : ICodexTool
                     message += $"\n\nDiff:\n{result.UnifiedDiff}";
                 }
 
-                return CodexToolResult.Succeeded(message, new
+                return CodexToolResult.Succeeded(message, ToolResultMetadata.FromJson(new JsonObject
                 {
-                    Success = true,
-                    OldFingerprint = result.OldFingerprint,
-                    NewFingerprint = result.NewFingerprint,
-                    Hunks = result.Hunks.Count
-                });
+                    ["success"] = true,
+                    ["oldFingerprint"] = result.OldFingerprint,
+                    ["newFingerprint"] = result.NewFingerprint,
+                    ["hunks"] = result.Hunks.Count
+                }));
             }
             else
             {

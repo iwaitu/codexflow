@@ -2,7 +2,7 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-using System.Collections;
+using System.Text.Json;
 using System.Text;
 using CodexFlow.Core.Models;
 
@@ -223,100 +223,63 @@ public static class ToolResultTextFormatter
         return string.Join(Environment.NewLine, lines.Distinct(StringComparer.Ordinal));
     }
 
-    private static string? FormatMetadataDetails(object? metadata)
+    private static string? FormatMetadataDetails(JsonElement? metadata)
     {
-        if (metadata == null)
+        if (metadata is not { } json)
         {
             return null;
         }
 
-        if (metadata is string text)
+        if (json.ValueKind == JsonValueKind.Array)
         {
-            return NormalizeMultiline(text);
-        }
-
-        if (metadata is IEnumerable<string> strings)
-        {
-            var items = strings
+            var items = json.EnumerateArray()
+                .Select(static value => NormalizeInline(value.ToString()))
                 .Where(static value => !string.IsNullOrWhiteSpace(value))
                 .Take(4)
-                .Select(static value => $"- {NormalizeInline(value)}")
+                .Select(static value => $"- {value}")
                 .ToArray();
             return items.Length == 0 ? null : string.Join(Environment.NewLine, items);
         }
 
-        if (metadata is IDictionary dictionary)
+        if (json.ValueKind != JsonValueKind.Object)
         {
-            var lines = new List<string>();
-            foreach (DictionaryEntry entry in dictionary)
-            {
-                var key = entry.Key?.ToString();
-                if (string.IsNullOrWhiteSpace(key) ||
-                    string.Equals(key, "payload", StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                var value = FormatMetadataValue(entry.Value);
-                if (string.IsNullOrWhiteSpace(value))
-                {
-                    continue;
-                }
-
-                lines.Add($"- {key}: {value}");
-                if (lines.Count >= 4)
-                {
-                    break;
-                }
-            }
-
-            return lines.Count == 0 ? null : string.Join(Environment.NewLine, lines);
+            return NormalizeMultiline(json.ToString());
         }
 
-        return NormalizeInline(metadata.ToString());
+        var lines = new List<string>();
+        foreach (var property in json.EnumerateObject())
+        {
+            if (string.IsNullOrWhiteSpace(property.Name) ||
+                string.Equals(property.Name, "payload", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var value = FormatMetadataValue(property.Value);
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                continue;
+            }
+
+            lines.Add($"- {property.Name}: {value}");
+            if (lines.Count >= 4)
+            {
+                break;
+            }
+        }
+
+        return lines.Count == 0 ? null : string.Join(Environment.NewLine, lines);
     }
 
-    private static string? FormatMetadataValue(object? value)
+    private static string? FormatMetadataValue(JsonElement value)
     {
-        if (value == null)
+        if (value.ValueKind == JsonValueKind.Array)
         {
-            return null;
-        }
-
-        if (value is string text)
-        {
-            return NormalizeInline(text);
-        }
-
-        if (value is IEnumerable<string> strings)
-        {
-            var items = strings
+            var items = value.EnumerateArray()
+                .Select(static item => NormalizeInline(item.ToString()))
                 .Where(static item => !string.IsNullOrWhiteSpace(item))
-                .Take(3)
-                .Select(static item => NormalizeInline(item))
-                .ToArray();
-            return items.Length == 0 ? null : string.Join("; ", items);
-        }
-
-        if (value is IEnumerable enumerable and not string)
-        {
-            var items = new List<string>();
-            foreach (var item in enumerable)
-            {
-                var rendered = NormalizeInline(item?.ToString());
-                if (string.IsNullOrWhiteSpace(rendered))
-                {
-                    continue;
-                }
-
-                items.Add(rendered);
-                if (items.Count >= 3)
-                {
-                    break;
-                }
-            }
-
-            return items.Count == 0 ? null : string.Join("; ", items);
+                .Take(3);
+            return string.Join("; ", items);
         }
 
         return NormalizeInline(value.ToString());

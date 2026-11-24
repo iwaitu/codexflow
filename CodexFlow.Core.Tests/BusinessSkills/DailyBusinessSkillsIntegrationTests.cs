@@ -99,6 +99,7 @@ public sealed class DailyBusinessSkillsIntegrationTests : IDisposable
     [InlineData("development", BuiltInSkills.FrontendBrowserDebug, "用内置浏览器调试前端页面", "确认入口和预期", "browser_snapshot")]
     [InlineData("daily", BuiltInSkills.DesktopControl, "用桌面控制点击记事本的目标按钮", "以界面变化验收", "computer_request_takeover")]
     [InlineData("development", BuiltInSkills.DesktopControl, "用桌面控制点击记事本的目标按钮", "以界面变化验收", "computer_request_takeover")]
+    [InlineData("daily", BuiltInSkills.SkillCreator, "用 skill-creator 创建一个检查表格列名的 Skill", "校验触发条件", "run_shell")]
     public async Task BuiltInSkill_IsDiscoverableAndLoadsOnDemand(
         string mode, string skillId, string userRequest, string bodyMarker, string workflowTool)
     {
@@ -131,9 +132,9 @@ public sealed class DailyBusinessSkillsIntegrationTests : IDisposable
         Assert.Equal(3, requests.Count);
 
         Assert.Equal(SerializeToolDeclarations(requests[0]), SerializeToolDeclarations(requests[1]));
-        if (skillId == BuiltInSkills.DesktopControl)
+        if (skillId is BuiltInSkills.DesktopControl or BuiltInSkills.SkillCreator)
         {
-            Assert.Contains("read_builtin_skill({\"name\":\"desktop-control\"})", ExtractSystemPrompt(requests[1]), StringComparison.Ordinal);
+            Assert.Contains($$"""read_builtin_skill({"name":"{{skillId}}"})""", ExtractSystemPrompt(requests[1]), StringComparison.Ordinal);
         }
 
         Assert.All(requests, request =>

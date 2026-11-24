@@ -1593,35 +1593,14 @@ public class HashlineToolIntegrationTests : IDisposable
         int WindowEndLine,
         bool IsPartialWindow) ParseHashlineReadMetadata(CodexToolResult result)
     {
-        // 从 Metadata 提取结构化数据
-        var metadata = result.Metadata;
-        Assert.NotNull(metadata);
-
-        // 使用反射或 dynamic 访问匿名类型的属性
-        var type = metadata.GetType();
-        var snapshotIdProp = type.GetProperty("SnapshotId");
-        var fileFingerprintProp = type.GetProperty("FileFingerprint");
-        var renderedTextProp = type.GetProperty("RenderedText");
-        var totalLineCountProp = type.GetProperty("TotalLineCount");
-        var windowStartLineProp = type.GetProperty("WindowStartLine");
-        var windowEndLineProp = type.GetProperty("WindowEndLine");
-        var isPartialWindowProp = type.GetProperty("IsPartialWindow");
-
-        Assert.NotNull(snapshotIdProp);
-        Assert.NotNull(fileFingerprintProp);
-        Assert.NotNull(renderedTextProp);
-        Assert.NotNull(totalLineCountProp);
-        Assert.NotNull(windowStartLineProp);
-        Assert.NotNull(windowEndLineProp);
-        Assert.NotNull(isPartialWindowProp);
-
-        var snapshotId = snapshotIdProp!.GetValue(metadata)?.ToString() ?? string.Empty;
-        var fileFingerprint = fileFingerprintProp!.GetValue(metadata)?.ToString() ?? string.Empty;
-        var renderedText = renderedTextProp!.GetValue(metadata)?.ToString() ?? string.Empty;
-        var totalLineCount = (int)(totalLineCountProp!.GetValue(metadata) ?? 0);
-        var windowStartLine = (int)(windowStartLineProp!.GetValue(metadata) ?? 0);
-        var windowEndLine = (int)(windowEndLineProp!.GetValue(metadata) ?? 0);
-        var isPartialWindow = (bool)(isPartialWindowProp!.GetValue(metadata) ?? false);
+        var metadata = Assert.IsType<System.Text.Json.JsonElement>(result.Metadata);
+        var snapshotId = metadata.GetProperty("snapshotId").GetString() ?? string.Empty;
+        var fileFingerprint = metadata.GetProperty("fileFingerprint").GetString() ?? string.Empty;
+        var renderedText = metadata.GetProperty("renderedText").GetString() ?? string.Empty;
+        var totalLineCount = metadata.GetProperty("totalLineCount").GetInt32();
+        var windowStartLine = metadata.GetProperty("windowStartLine").GetInt32();
+        var windowEndLine = metadata.GetProperty("windowEndLine").GetInt32();
+        var isPartialWindow = metadata.GetProperty("isPartialWindow").GetBoolean();
 
         // 从 renderedText 解析第一行的锚点 ID
         // 格式: LineNumber#AnchorId|LineContent

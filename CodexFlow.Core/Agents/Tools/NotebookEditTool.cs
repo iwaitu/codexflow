@@ -148,14 +148,14 @@ public sealed class NotebookEditTool(
             StructuredLog.Information(logger, "notebook_edit: {Operation} {Path} cell {CellIndex} dryRun={DryRun}", normalizedOperation, normalizedPath, cellIndex, dryRun);
             return CodexToolResult.Succeeded(
                 $"{(dryRun ? "DRY RUN: " : "✅ ")}notebook_edit {normalizedOperation} {normalizedPath} cell {cellIndex}\n{preview}",
-                new
+                ToolResultMetadata.FromJson(new JsonObject
                 {
-                    FilePath = normalizedPath,
-                    Operation = normalizedOperation,
-                    CellIndex = cellIndex,
-                    CellCount = cells.Count,
-                    DryRun = dryRun
-                },
+                    ["filePath"] = normalizedPath,
+                    ["operation"] = normalizedOperation,
+                    ["cellIndex"] = cellIndex,
+                    ["cellCount"] = cells.Count,
+                    ["dryRun"] = dryRun
+                }),
                 summary: $"notebook_edit {normalizedPath}: {normalizedOperation} cell {cellIndex}{(dryRun ? " dry-run" : "")}");
         }
         catch (JsonException ex)

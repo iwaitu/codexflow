@@ -6,7 +6,6 @@ using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Agents.Tools;
 using CodexFlow.Core.Constants;
 using Microsoft.Extensions.AI;
-using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
@@ -178,27 +177,10 @@ public static class CodexToolFunctionAdapterFactory
     /// <c>__icodex_tool_result</c> marker so downstream consumers can recognise a typed tool envelope
     /// without guessing from arbitrary JSON.
     /// </summary>
-    private static readonly JsonSerializerOptions MarkedResultJsonOptions = new(JsonSerializerDefaults.Web);
-
     internal static JsonNode MarkResult(CodexToolResult result)
     {
         ArgumentNullException.ThrowIfNull(result);
-        return TryMarkManagedResult(result) is { } managed
-            ? MarkEnvelope(managed)
-            : SourceGeneratedToolFunction.MarkSourceGeneratedResult(result);
-    }
-
-    [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Open tool metadata uses reflection only when the runtime supports dynamic code and STJ default reflection is enabled.")]
-    [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "The reflection branch requires runtime dynamic code support, which Native AOT disables.")]
-    private static JsonObject? TryMarkManagedResult(CodexToolResult result)
-    {
-        if (!SupportsManagedToolReflection)
-        {
-            return null;
-        }
-
-        // Web defaults preserve the legacy JSON for managed plug-ins.
-        return JsonSerializer.SerializeToNode(result, MarkedResultJsonOptions) as JsonObject ?? new JsonObject();
+        return SourceGeneratedToolFunction.MarkSourceGeneratedResult(result);
     }
 
     internal static JsonNode MarkEnvelope(JsonObject node)

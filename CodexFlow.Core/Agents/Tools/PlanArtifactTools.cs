@@ -7,6 +7,7 @@ using CodexFlow.Core.Models;
 using CodexFlow.Core.Planning.Artifacts;
 using Microsoft.Extensions.Logging;
 using System.Text.RegularExpressions;
+using System.Text.Json.Nodes;
 
 namespace CodexFlow.Core.Agents.Tools;
 
@@ -319,7 +320,7 @@ public sealed class WritePlanFileTool(
 
             return CodexToolResult.Succeeded(
                 $"PLAN_FILE_WRITTEN\n{artifact.PlanFilePath}",
-                metadata: new { plan_artifact_id = artifact.Id, status = artifact.Status.ToString(), plan_file_path = artifact.PlanFilePath });
+                metadata: ToolResultMetadata.FromJson(new JsonObject { ["plan_artifact_id"] = artifact.Id, ["status"] = artifact.Status.ToString(), ["plan_file_path"] = artifact.PlanFilePath }));
         }
         catch (InvalidOperationException ex)
         {
@@ -413,7 +414,7 @@ public sealed class ReadPlanFileTool(
             var markdown = await planFileService.ReadAsync(session, artifact, ct).ConfigureAwait(false) ?? artifact.Markdown;
             return CodexToolResult.Succeeded(
                 markdown,
-                metadata: new { plan_artifact_id = artifact.Id, status = artifact.Status.ToString(), plan_file_path = artifact.PlanFilePath });
+                metadata: ToolResultMetadata.FromJson(new JsonObject { ["plan_artifact_id"] = artifact.Id, ["status"] = artifact.Status.ToString(), ["plan_file_path"] = artifact.PlanFilePath }));
         }
         catch (InvalidOperationException ex)
         {
@@ -441,14 +442,14 @@ public sealed class RequestPlanApprovalTool(
             artifact = await approvalService.RequestApprovalAsync(artifact.Id, ct).ConfigureAwait(false);
             return CodexToolResult.Succeeded(
                 "PLAN_APPROVAL_REQUESTED",
-                metadata: new PlanApprovalRequestMetadata(
+                metadata: ToolResultMetadata.From(new PlanApprovalRequestMetadata(
                     artifact.Id,
                     artifact.Version,
                     PlanArtifactSupport.ComputeMarkdownHash(artifact.Markdown),
                     artifact.Goal,
                     artifact.Tasks.Count,
                     artifact.Status.ToString(),
-                    artifact.Markdown));
+                    artifact.Markdown), SourceGeneratedToolJsonContext.Default.PlanApprovalRequestMetadata));
         }
         catch (InvalidOperationException ex)
         {
@@ -495,14 +496,14 @@ public sealed class ApprovePlanTool(
 
                 return CodexToolResult.Succeeded(
                     "PLAN_APPROVED_AND_PROJECTED",
-                    metadata: new
+                    metadata: ToolResultMetadata.FromJson(new JsonObject
                     {
-                        plan_artifact_id = projection.Artifact.Id,
-                        status = projection.Artifact.Status.ToString(),
-                        markdown_hash = projection.Artifact.Approval?.ApprovedMarkdownHash,
-                        task_count = projection.Tasks.Count,
-                        accepts_existing_dependency_debt = acceptDebt
-                    },
+                        ["plan_artifact_id"] = projection.Artifact.Id,
+                        ["status"] = projection.Artifact.Status.ToString(),
+                        ["markdown_hash"] = projection.Artifact.Approval?.ApprovedMarkdownHash,
+                        ["task_count"] = projection.Tasks.Count,
+                        ["accepts_existing_dependency_debt"] = acceptDebt
+                    }),
                     summary: acceptDebt ? ExistingDebtAcceptedNote : null,
                     systemHint: "计划已批准并投影为待执行任务。下一步必须调用 start_next_task，不要在主会话中直接读取、搜索或修改代码。",
                     requiredToolName: "start_next_task",
@@ -511,14 +512,14 @@ public sealed class ApprovePlanTool(
 
             return CodexToolResult.Succeeded(
                 "PLAN_APPROVED",
-                metadata: new
+                metadata: ToolResultMetadata.FromJson(new JsonObject
                 {
-                    plan_artifact_id = projection.Artifact.Id,
-                    status = projection.Artifact.Status.ToString(),
-                    markdown_hash = projection.Artifact.Approval?.ApprovedMarkdownHash,
-                    projection_errors = projection.Errors,
-                    accepts_existing_dependency_debt = acceptDebt
-                },
+                    ["plan_artifact_id"] = projection.Artifact.Id,
+                    ["status"] = projection.Artifact.Status.ToString(),
+                    ["markdown_hash"] = projection.Artifact.Approval?.ApprovedMarkdownHash,
+                    ["projection_errors"] = ToolResultMetadata.StringArray(projection.Errors),
+                    ["accepts_existing_dependency_debt"] = acceptDebt
+                }),
                 summary: acceptDebt ? ExistingDebtAcceptedNote : null);
         }
         catch (InvalidOperationException ex)
@@ -557,7 +558,7 @@ public sealed class RejectPlanTool(
 
             return CodexToolResult.Succeeded(
                 "PLAN_REJECTED",
-                metadata: new { plan_artifact_id = artifact.Id, status = artifact.Status.ToString(), feedback });
+                metadata: ToolResultMetadata.FromJson(new JsonObject { ["plan_artifact_id"] = artifact.Id, ["status"] = artifact.Status.ToString(), ["feedback"] = feedback }));
         }
         catch (InvalidOperationException ex)
         {
@@ -605,7 +606,7 @@ public sealed class ProjectPlanToTasksTool(
 
             return CodexToolResult.Succeeded(
                 PlanToolJson.Write(result.Tasks, indented: true),
-                metadata: new { plan_artifact_id = result.Artifact.Id, status = result.Artifact.Status.ToString(), task_count = result.Tasks.Count },
+                metadata: ToolResultMetadata.FromJson(new JsonObject { ["plan_artifact_id"] = result.Artifact.Id, ["status"] = result.Artifact.Status.ToString(), ["task_count"] = result.Tasks.Count }),
                 systemHint: "计划已投影为待执行任务。下一步必须调用 start_next_task，不要在主会话中直接读取、搜索或修改代码。",
                 requiredToolName: "start_next_task",
                 toolCallRequired: true);
