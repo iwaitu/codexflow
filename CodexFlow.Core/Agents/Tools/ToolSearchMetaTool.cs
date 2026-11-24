@@ -317,12 +317,14 @@ public class ToolSearchMetaTool : ICodexTool
                     "Find candidate pages before fetch_webpage."
                 ]),
             ReadBuiltInSkillTool.ToolName => new(
-                ["skill", BuiltInSkills.FrontendBrowserDebug, BuiltInSkills.DesktopControl, "frontend", "browser", "debug", "desktop", "computer use", "前端调试", "浏览器联调", "桌面控制"],
+                ["skill", BuiltInSkills.FrontendBrowserDebug, BuiltInSkills.DesktopControl, BuiltInSkills.SkillCreator,
+                    "frontend", "browser", "debug", "desktop", "computer use", "前端调试", "浏览器联调", "桌面控制", "创建技能"],
                 ["main"],
                 "low",
                 [
                     "Load the built-in browser debugging workflow before reproducing or verifying a web UI issue.",
-                    "Load desktop-control before interacting with a native desktop application."
+                    "Load desktop-control before interacting with a native desktop application.",
+                    "Load skill-creator before creating or updating a reusable SKILL.md."
                 ]),
             "browser_navigate" => new(
                 ["browser", "web", "url", "navigate", "spa", "localhost"],

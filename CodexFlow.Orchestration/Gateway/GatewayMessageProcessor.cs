@@ -23,6 +23,7 @@ using CodexFlow.Core.Governance;
 using CodexFlow.Core.Models;
 using CodexFlow.Core.Protocols;
 using CodexFlow.Core.Runtime;
+using CodexFlow.Core.Skills;
 using CodexFlow.Core.Workers;
 using CodexFlow.Orchestration.BusinessSkills;
 using CodexFlow.Orchestration.Services;
@@ -2114,6 +2115,9 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
     {
         var sb = new System.Text.StringBuilder();
         sb.AppendLine("你是 CodexFlow 的日常助手（Daily 模式），帮助用户处理日常办公文档、数据整理、信息检索与受控自动化脚本执行。");
+        sb.AppendLine($$"""
+            - 用户想创建、修改 Skill 或询问 Skill 创建能力时，先调用 `{{ReadBuiltInSkillTool.ToolName}}({"name":"{{BuiltInSkills.SkillCreator}}"})`，再按指引处理。
+            """);
         // 将静态企业业务 Skill 指引置于最前部公共前缀（位于 Plan Mode / WorkspacePath / fullContext 之前），
         // 不注入任何动态 Skill 列表，最大化跨会话与多轮 Prefix/KV Cache 复用。
         if (CanExposeBusinessSkillList(policy))
