@@ -13,6 +13,7 @@ using System.IO;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 
 namespace CodexFlow.Core.Agents.Tools;
 
@@ -22,8 +23,8 @@ internal sealed record RunCommandCompletionMetadata(
     string Status,
     string Stdout,
     string Stderr,
-    bool DependencyPreparationFailed = false,
-    bool ScopedExportRejected = false);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool DependencyPreparationFailed = false,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool ScopedExportRejected = false);
 
 /// <summary>
 /// 在工作区执行白名单命令（替代 MCP run_command）。
