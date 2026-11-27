@@ -8,7 +8,9 @@ using CodexFlow.Core.Agents;
 using CodexFlow.Core.Agents.Tools;
 using CodexFlow.Core.Execution;
 using CodexFlow.Core.Models;
+using CodexFlow.Core.Planning.Artifacts;
 using CodexFlow.Core.Runtime;
+using CodexFlow.Core.TDD.Adapters;
 using CodexFlow.Core.Tests.Tools;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
@@ -260,6 +262,89 @@ public class IsolatedToolRoutingTests
         Assert.Equal(
             ["dotnet", "test", "my proj/x.csproj", "--filter", "FullyQualifiedName~A"],
             RunTestsTool.SplitCommandLine("dotnet", "test \"my proj/x.csproj\" --filter \"FullyQualifiedName~A\""));
+    }
+
+    [Theory]
+    [InlineData("javascript", "tests/sample test.js", "tests/sample test.js", true)]
+    [InlineData("JS", "tests/sample.test.cjs", "tests/sample.test.cjs", false)]
+    [InlineData(null, "tests/sample.test.mjs", "tests/sample.test.mjs", false)]
+    [InlineData("javascript", "tests", "tests/**/*.{test,spec}.{js,mjs,cjs}", false)]
+    public async Task RunTests_JavaScriptUsesNodeInsideTheTrustedWorkspace(
+        string? language, string testPath, string expectedTarget, bool lockedProject)
+    {
+        var workspace = IsolationTestSupport.NewTempDir();
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(workspace, "tests"));
+            if (lockedProject) await File.WriteAllTextAsync(Path.Combine(workspace, "package-lock.json"), "{}");
+            var fake = new FakeIsolationService
+            {
+                OnRun = (_, _) => Task.FromResult(new IsolatedCommandResult(ExecutionDecision.Allow(),
+                    IsolatedCommandStatus.Completed, 0, "TAP version 13\n# pass 3\n# fail 0\n", "", false, TimeSpan.Zero, "fake"))
+            };
+            var tool = new RunTestsTool([new NodeJestAdapter(), new NodeTestAdapter()], NullLogger<RunTestsTool>.Instance, Gate(fake));
+            using var scope = new TrustedExecutionContextAccessor().Begin(Ctx(workspace));
+
+            var result = await tool.ExecuteAsync(new() { ["test_file_path"] = testPath, ["language"] = language });
+
+            Assert.Equal(ToolResultStatus.Success, result.Status);
+            var payload = Assert.IsType<RunTestsPayload>(PlanToolJson.Read<RunTestsPayload>(result.Output));
+            Assert.True(payload.Success);
+            Assert.Equal(3, payload.PassedCount);
+            Assert.Equal(0, payload.FailedCount);
+            Assert.Equal(lockedProject ? 2 : 1, fake.Requests.Count);
+            if (lockedProject)
+            {
+                Assert.Equal(["sh", "-c", OfflineToolchainPreparation.NodeScript], fake.Requests[0].Argv);
+            }
+            Assert.Equal(["node", "--test", "--test-reporter=tap", "--", expectedTarget], fake.Requests[^1].Argv);
+            Assert.Equal(0, fake.ExportCalls);
+        }
+        finally
+        {
+            IsolationTestSupport.Cleanup(workspace);
+        }
+    }
+
+    [Theory]
+    [InlineData("typescript", "tests/sample.test.ts")]
+    [InlineData(null, "tests/sample.test.js")]
+    public async Task RunTests_PreservesExistingJestRouting(string? language, string testPath)
+    {
+        var fake = new FakeIsolationService();
+        var tool = new RunTestsTool([new NodeJestAdapter(), new NodeTestAdapter()], NullLogger<RunTestsTool>.Instance, Gate(fake));
+        using var scope = new TrustedExecutionContextAccessor().Begin(Ctx());
+
+        await tool.ExecuteAsync(new() { ["test_file_path"] = testPath, ["language"] = language });
+
+        Assert.Equal(["npx", "jest", testPath.Replace('/', Path.DirectorySeparatorChar), "--json"], Assert.Single(fake.Requests).Argv);
+    }
+
+    [Fact]
+    public async Task RunTests_JavaScriptRejectsPathsOutsideTheTrustedWorkspace()
+    {
+        var fake = new FakeIsolationService();
+        var tool = new RunTestsTool([new NodeTestAdapter()], NullLogger<RunTestsTool>.Instance, Gate(fake));
+        using var scope = new TrustedExecutionContextAccessor().Begin(Ctx());
+
+        var result = await tool.ExecuteAsync(new() { ["test_file_path"] = "../foreign.test.mjs", ["language"] = "javascript" });
+
+        Assert.Equal(ToolResultStatus.Failed, result.Status);
+        Assert.Empty(fake.Requests);
+    }
+
+    [Theory]
+    [InlineData(1, "not ok 2 - assertion failed\r\n# pass 1\r\n# fail 1\r\n", 1, 1)]
+    [InlineData(1, "Cannot find test file\n", 0, 0)]
+    [InlineData(0, "# pass 0\n# fail 0\n", 0, 0)]
+    public void NodeTests_ReportFailureForFailedOrMissingTests(int exitCode, string output, int passed, int failed)
+    {
+        var result = new NodeTestAdapter().ParseOutput(output, exitCode);
+
+        Assert.False(result.Success);
+        Assert.Equal(passed, result.PassedCount);
+        Assert.Equal(failed, result.FailedCount);
+        Assert.NotEmpty(result.FailureDetails);
     }
 
     private static async Task WaitUntil(Func<bool> condition)

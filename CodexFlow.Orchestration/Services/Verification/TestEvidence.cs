@@ -2,7 +2,10 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+using System.Globalization;
+using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Xml.Linq;
 
 namespace CodexFlow.Services.Verification;
@@ -42,6 +45,37 @@ public static class TestEvidence
         {
             return false;
         }
+    }
+
+    private static readonly Regex NodeTapCount = new(
+        @"^# (tests|pass|fail|cancelled|skipped|todo) ([0-9]+)\r?$",
+        RegexOptions.Multiline | RegexOptions.CultureInvariant);
+
+    /// <summary>Node.js TAP totals. A passing process must also report a complete suite without skipped cases.</summary>
+    public static bool TryAcceptNodeTap(ReadOnlySpan<byte> report, out int testCount)
+    {
+        testCount = 0;
+        var text = Encoding.UTF8.GetString(report);
+        if (!text.StartsWith("TAP version 13", StringComparison.Ordinal)) return false;
+
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (Match match in NodeTapCount.Matches(text))
+        {
+            if (!int.TryParse(match.Groups[2].ValueSpan, NumberStyles.None, CultureInfo.InvariantCulture, out var value) ||
+                !counts.TryAdd(match.Groups[1].Value, value))
+            {
+                return false;
+            }
+        }
+
+        if (counts.Count != 6 || counts["tests"] <= 0 || counts["pass"] != counts["tests"] ||
+            counts["fail"] != 0 || counts["cancelled"] != 0 || counts["skipped"] != 0 || counts["todo"] != 0)
+        {
+            return false;
+        }
+
+        testCount = counts["tests"];
+        return true;
     }
 
     /// <summary>pytest's <c>--junitxml</c> report.</summary>

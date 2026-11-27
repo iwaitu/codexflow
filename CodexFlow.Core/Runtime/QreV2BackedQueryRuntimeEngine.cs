@@ -195,6 +195,7 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
             var result = BuildResult(request, runtimeResult, queryId, stopwatch.ElapsedMilliseconds, modelClient) with
             {
                 WorkerReport = evidence.WorkerReport,
+                VerificationReceipts = evidence.VerificationReceipts,
                 VerifiedWithoutChange = VerifiedNoChangeCompletion.IsStated(evidence.SnapshotForStopHook())
             };
             _logger.LogInformation(
@@ -962,6 +963,7 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
         private readonly QueryRuntimeState _state = new();
         private readonly Dictionary<string, RuntimeVerificationEvidence> _failed = new(StringComparer.Ordinal);
         private readonly List<UnappliedPreviewEvidence> _previews = [];
+        private readonly Queue<RuntimeVerificationReceipt> _receipts = new();
         private int _callsSinceWrite;
         private int _forcedWriteRounds;
         private WorkerStatusReport? _workerReport;
@@ -970,6 +972,11 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
         public WorkerStatusReport? WorkerReport
         {
             get { lock (_gate) { return _workerReport; } }
+        }
+
+        public IReadOnlyList<RuntimeVerificationReceipt> VerificationReceipts
+        {
+            get { lock (_gate) { return _receipts.ToArray(); } }
         }
 
         public int ForcedWriteRounds
@@ -1039,7 +1046,15 @@ public sealed class QreV2BackedQueryRuntimeEngine : IQueryRuntimeEngine
                     }
                 }
 
-                if (ToolCommandObservation.Read(result) is not { Verification: { } run } observation)
+                var command = ToolCommandObservation.Read(result);
+                if (RuntimeVerificationReceipt.Read(result, command) is { } receipt)
+                {
+                    const int receiptLimit = 12;
+                    if (_receipts.Count == receiptLimit) _receipts.Dequeue();
+                    _receipts.Enqueue(receipt);
+                }
+
+                if (command is not { Verification: { } run } observation)
                 {
                     return;
                 }

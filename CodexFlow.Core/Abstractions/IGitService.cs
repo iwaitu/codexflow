@@ -87,3 +87,18 @@ public interface IGitService
     Task<string?> CreateShadowWorktreeAsync(string mainPath, string taskId, string baseBranch);
     Task<bool> RemoveShadowWorktreeAsync(string mainPath, string taskId);
 }
+
+internal interface IShadowWorktreeCreationDiagnostics
+{
+    Task<ShadowWorktreeCreationResult> CreateShadowWorktreeWithDiagnosticsAsync(
+        string mainPath, string taskId, string baseBranch);
+}
+
+internal enum ShadowWorktreeCreationFailure
+{
+    None,
+    RepositoryOwnership,
+    GitError
+}
+
+internal readonly record struct ShadowWorktreeCreationResult(string? Path, ShadowWorktreeCreationFailure Failure);

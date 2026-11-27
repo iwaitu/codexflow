@@ -203,6 +203,23 @@ public sealed class WorkerCoordinatorService
             };
         }
 
+        // A failed plan task must use the retry CAS and budget shared with the job card.
+        // A parallel follow-up would otherwise create another runnable Forge for the same task.
+        if (workerType == WorkerType.Forge &&
+            (job.Status is BackgroundJobStatus.Failed or BackgroundJobStatus.Cancelled ||
+             job.Status == BackgroundJobStatus.Completed && BackgroundJobService.HasUncommittedCompletion(job.ResultPayloadJson)) &&
+            !string.IsNullOrWhiteSpace(payload["planArtifactId"]?.Value<string>()))
+        {
+            var retry = await _backgroundJobService.RetryJobDetailedAsync(job.JobId, request.Prompt).ConfigureAwait(false);
+            return new ContinueWorkerResult
+            {
+                Success = retry.Result == BackgroundJobCommandResult.Success,
+                Mode = ContinueWorkerMode.Resumed,
+                JobId = job.JobId,
+                Message = retry.Reason
+            };
+        }
+
         payload["prompt"] = BuildContinuationPrompt(payload, job.ResultPayloadJson, request.Prompt, workerType, job.Status == BackgroundJobStatus.Failed ? job.ErrorMessage ?? string.Empty : null);
         payload["continuedFromJobId"] = job.JobId;
         payload["continuedAtUtc"] = DateTime.UtcNow;
@@ -459,14 +476,8 @@ public sealed class WorkerCoordinatorService
             };
         }
 
-        if (pathExists)
-        {
-            payload["lastShadowWorktreePath"] = shadowWorktreePath;
-        }
-        payload.Remove("shadowWorktreePath");
-        payload["worktreeRetained"] = false;
         var updatedAtUtc = DateTime.UtcNow;
-        payload["worktreeCleanedAtUtc"] = updatedAtUtc;
+        WorkerExecutionPreflight.RecordCleanedShadow(payload, mainWorkspacePath, shadowWorktreePath, updatedAtUtc);
         var saved = await _workerJobs.TryUpdateWorktreePayloadAsync(
             job, payload.ToString(Formatting.None), updatedAtUtc, ct).ConfigureAwait(false);
 

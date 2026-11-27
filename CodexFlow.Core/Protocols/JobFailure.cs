@@ -64,6 +64,13 @@ public sealed record JobFailure(
     /// <summary>True when running the job again, as it was or with guidance, can give a different result.</summary>
     public bool Retryable => Remedy is JobFailureRemedy.RetryAsIs or JobFailureRemedy.RetryWithGuidance;
 
+    internal bool CanRecheckRepositoryOwnership =>
+        string.Equals(Code, JobFailureClassifier.RepositoryOwnershipCode, StringComparison.OrdinalIgnoreCase);
+
+    internal bool CanRecheckWorkspace =>
+        Code.Equals("WorkspaceUnavailable", StringComparison.OrdinalIgnoreCase) ||
+        Code.StartsWith("WorkspaceUnavailable:", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>The failure as a block of text for a model or a person: code, reason, evidence, and what would change the outcome.</summary>
     public string ToPromptText()
     {
@@ -115,6 +122,9 @@ public static class JobFailureClassifier
 {
     /// <summary>The longest message kept.</summary>
     public const int MaxMessageChars = 600;
+
+    internal const string RepositoryOwnershipCode = "WorkspaceUnavailable.RepositoryOwnership";
+    internal const string ShadowWorktreeCreationCode = "shadow_worktree_creation_failed";
 
     private const int MaxListItems = 20;
 
@@ -188,6 +198,11 @@ public static class JobFailureClassifier
             return (JobFailureKind.HostDecision, JobFailureRemedy.AskUser);
         }
 
+        if (string.Equals(code, ShadowWorktreeCreationCode, StringComparison.OrdinalIgnoreCase))
+        {
+            return (JobFailureKind.Infrastructure, JobFailureRemedy.RetryWithGuidance);
+        }
+
         if (Infrastructure.Contains(code) || code.StartsWith("WorkspaceUnavailable", StringComparison.OrdinalIgnoreCase) || LooksLikeException(code))
         {
             return (JobFailureKind.Infrastructure, JobFailureRemedy.FixEnvironment);
@@ -247,6 +262,11 @@ public static class JobFailureClassifier
     private static List<string> EvidenceOf(JObject? payload)
     {
         var evidence = new List<string>();
+        if (payload?["failureContext"] is JObject context && context["version"] is JValue { Value: 1L })
+        {
+            AddAttemptEvidence(evidence, context);
+        }
+
         if (payload?["unmetPackages"] is JArray unmet)
         {
             foreach (var item in unmet.OfType<JObject>().Take(MaxListItems))
@@ -277,6 +297,68 @@ public static class JobFailureClassifier
         }
 
         return evidence;
+    }
+
+    private static void AddAttemptEvidence(List<string> evidence, JObject context)
+    {
+        var phase = Text(context, "phase") switch
+        {
+            "preflight" => "工作区预检",
+            "prepare_verification" => "准备验收环境",
+            "verify" => "验证",
+            "execute" => "执行",
+            _ => null
+        };
+        if (phase is not null) evidence.Add("宿主记录的失败阶段：" + phase);
+
+        var artifact = Text(context, "artifact") switch
+        {
+            "cleaned" => "隔离工作树已清理。如需继续修改，从授权的主工作区重跑。",
+            "retained_unverified" => "隔离工作树已留存，候选内容仍需宿主核验。",
+            "unverified" => "宿主观察到改动，候选内容仍待核验。",
+            "none" => "没有可验收的候选产物。",
+            _ => null
+        };
+        if (artifact is not null) evidence.Add(artifact);
+
+        if (context["checks"] is not JArray checks) return;
+
+        foreach (var check in checks.OfType<JObject>().Reverse().Take(6))
+        {
+            var label = Text(check, "kind") switch
+            {
+                "run_tests" => "run_tests 指定范围",
+                "node_test" => "Node 测试命令",
+                "node_build" => "Node 构建命令",
+                "python_test" => "Python 测试命令",
+                "dotnet_test" => "dotnet test",
+                "dotnet_build" => "dotnet build",
+                "dotnet_restore" => "dotnet restore",
+                _ => null
+            };
+            var outcome = Text(check, "outcome") switch
+            {
+                "passed" => "本次调用通过",
+                "failed" => "失败",
+                "not_run" => "未获得有效检查结果",
+                _ => null
+            };
+            if (label is null || outcome is null) continue;
+
+            var reason = Text(check, "reason") switch
+            {
+                "dependency_preparation_failed" => "，离线依赖准备失败",
+                "scoped_export_rejected" => "，宿主拒绝隔离环境的改动导出",
+                "no_assertions_observed" => "，未记录到断言执行",
+                "assertions_failed" => "，存在失败断言",
+                _ => string.Empty
+            };
+            var exit = check["exitCode"] is JValue { Value: long code } ? $"，退出码 {code}" : string.Empty;
+            var counts = check["passed"] is JValue { Value: long passed } && check["failed"] is JValue { Value: long failed }
+                ? $"，{passed} 通过 / {failed} 失败"
+                : string.Empty;
+            evidence.Add($"检查回执（仅本次执行）：{label} {outcome}{reason}{exit}{counts}。");
+        }
     }
 
     private static string? CodeFromMessage(string? message)

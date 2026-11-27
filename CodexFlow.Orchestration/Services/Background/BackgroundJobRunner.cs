@@ -224,6 +224,24 @@ namespace CodexFlow.Services.Background
                     job,
                     execScope.ServiceProvider.GetService<Microsoft.Extensions.Configuration.IConfiguration>(),
                     ct).ConfigureAwait(false);
+                if (preflight.Allowed &&
+                    WorkerJobTypes.TryResolveWorkerType(job.JobType, out var workerType) && workerType == WorkerType.Forge)
+                {
+                    var payload = preflight.Payload ?? TryParsePayload(job.PayloadJson);
+                    if (payload?["failureHistory"] is JArray { Count: > 0 } &&
+                        payload["planArtifactId"]?.Value<string>() is { Length: > 0 } &&
+                        job.SessionId is { Length: > 0 } retrySessionId && job.TaskId is { Length: > 0 } retryTaskId)
+                    {
+                        var plans = execScope.ServiceProvider.GetService<IPlanArtifactStore>();
+                        var currentPlan = plans is null ? null : await plans.GetCurrentAsync(retrySessionId, ct).ConfigureAwait(false);
+                        if (currentPlan is null || currentPlan.SessionId != retrySessionId ||
+                            !PlanTaskRetryBinding.CanRetry(payload, currentPlan, retryTaskId))
+                        {
+                            preflight = WorkerPreflightOutcome.Deny("plan_changed", "The retry no longer matches the approved plan.");
+                        }
+                    }
+                }
+
                 string? preflightDeniedPayload = null;
                 if (!preflight.Allowed)
                 {
@@ -361,7 +379,7 @@ namespace CodexFlow.Services.Background
                         resultPayload,
                         ct,
                         adjustPayload: retryPayload => ForgeQualityRetry.Apply(retryPayload, resultObj!),
-                        reason: "forge_attempt_changed_nothing").ConfigureAwait(false);
+                        reason: ForgeQualityRetry.Reason(resultObj!)).ConfigureAwait(false);
                     return;
                 }
 
@@ -768,8 +786,9 @@ namespace CodexFlow.Services.Background
             var checkpoint = CreateCheckpoint(
                 job,
                 latestCheckpoint,
-                "TransientRetryQueued",
+                reason == "transient_provider_failure" ? "TransientRetryQueued" : "ForgeQualityRetryQueued",
                 checkpointData: OrchestrationPayloadJson.Write(
+                    ("reason", reason),
                     ("retryQueuedAtUtc", DateTime.UtcNow),
                     ("retryAvailableAtUtc", retryAvailableAtUtc),
                     ("retryDelaySeconds", (int)retryDelay.TotalSeconds),
@@ -778,7 +797,8 @@ namespace CodexFlow.Services.Background
 
             job.Status = BackgroundJobStatus.Queued;
             job.Attempt = nextAttempt;
-            job.ErrorMessage = $"Transient provider failure; retry queued after {(int)retryDelay.TotalSeconds}s. {TrimForLog(detailCode, 500)}";
+            var retryLabel = reason == "transient_provider_failure" ? "Transient provider failure" : "Forge delivery check failed";
+            job.ErrorMessage = $"{retryLabel}; retry queued after {(int)retryDelay.TotalSeconds}s. {TrimForLog(detailCode, 500)}";
             job.RunnerId = null;
             job.ClaimToken = null;
             job.LeaseExpiresAtUtc = null;
@@ -812,7 +832,8 @@ namespace CodexFlow.Services.Background
             _outboxSignal.Pulse();
 
             _logger.LogWarning(
-                "Transient worker failure detected; job requeued. job={JobId} task={TaskId} attempt={Attempt}/{MaxAttempts} retryDelaySeconds={RetryDelaySeconds} retryAvailableAtUtc={RetryAvailableAtUtc:O} detail={Detail}",
+                "Worker job requeued. reason={Reason} job={JobId} task={TaskId} attempt={Attempt}/{MaxAttempts} retryDelaySeconds={RetryDelaySeconds} retryAvailableAtUtc={RetryAvailableAtUtc:O} detail={Detail}",
+                reason,
                 job.JobId,
                 job.TaskId ?? string.Empty,
                 nextAttempt,
@@ -870,7 +891,8 @@ namespace CodexFlow.Services.Background
 
         private static bool ShouldRetryTransientWorkerFailure(JObject? payload)
         {
-            if (payload == null)
+            if (payload == null ||
+                payload["failureContext"]?["phase"]?.Value<string>() is "preflight" or "prepare_verification" or "verify")
             {
                 return false;
             }
@@ -975,12 +997,12 @@ namespace CodexFlow.Services.Background
 
             if (outcome.Kind == WorkerPreflightKind.WorkspaceUnavailable)
             {
-                // Same shape the Forge worker itself reports for a missing workspace, so the existing transient-requeue handling applies.
                 return OrchestrationPayloadJson.Write(
                     ("success", false),
-                    ("message", $"Worker workspace is unavailable: {outcome.Path}"),
+                    ("failureContext", ForgeFailureContext.Preflight(job.Attempt)),
+                    ("message", "Worker workspace is unavailable."),
                     ("workerType", ResolveWorkerTypeName(job.JobType)),
-                    ("detailCode", $"WorkspaceUnavailable: {outcome.Path}"),
+                    ("detailCode", "WorkspaceUnavailable"),
                     ("worktreePath", (string?)null),
                     ("workspacePath", outcome.Path),
                     ("worktreeRetained", false),
@@ -995,6 +1017,7 @@ namespace CodexFlow.Services.Background
 
             return OrchestrationPayloadJson.Write(
                 ("success", false),
+                ("failureContext", ForgeFailureContext.Preflight(job.Attempt)),
                 ("message", $"Worker execution is not authorized: {outcome.Message}"),
                 ("workerType", ResolveWorkerTypeName(job.JobType)),
                 ("detailCode", $"WorkerExecutionNotAuthorized:{outcome.Code}"),
@@ -2338,20 +2361,38 @@ namespace CodexFlow.Services.Background
 
                 if (enableShadowWorkspace)
                 {
+                    var shadowCreationFailure = ShadowWorktreeCreationFailure.None;
                     retainedShadowWorktreeAvailable = !string.IsNullOrWhiteSpace(shadowWorkspacePath) &&
                                                       Directory.Exists(shadowWorkspacePath);
-                    if (string.IsNullOrWhiteSpace(shadowWorkspacePath) || !Directory.Exists(shadowWorkspacePath))
+                    if (!retainedShadowWorktreeAvailable)
                     {
-                        shadowWorkspacePath = await gitService
-                            .CreateShadowWorktreeAsync(mainWorkspacePath, worktreeKey, shadowBaseRef)
-                            .ConfigureAwait(false);
+                        if (gitService is IShadowWorktreeCreationDiagnostics diagnostics)
+                        {
+                            var creation = await diagnostics
+                                .CreateShadowWorktreeWithDiagnosticsAsync(mainWorkspacePath, worktreeKey, shadowBaseRef)
+                                .ConfigureAwait(false);
+                            shadowWorkspacePath = creation.Path;
+                            shadowCreationFailure = creation.Failure;
+                        }
+                        else
+                        {
+                            shadowWorkspacePath = await gitService
+                                .CreateShadowWorktreeAsync(mainWorkspacePath, worktreeKey, shadowBaseRef)
+                                .ConfigureAwait(false);
+                        }
                     }
 
                     if (string.IsNullOrWhiteSpace(shadowWorkspacePath))
                     {
+                        var ownershipRejected = shadowCreationFailure == ShadowWorktreeCreationFailure.RepositoryOwnership;
                         return OrchestrationPayloadJson.Write(
                             ("success", false),
-                            ("message", "forge worker 无法创建 shadow worktree。"),
+                            ("message", ownershipRejected
+                                ? "Git 拒绝访问工作区仓库，因为其所有者与运行 CodexFlow 的账户不一致。请修正工作区及 Git 元数据的所有权后重试，或用当前账户克隆到新工作区。"
+                                : "Forge 无法创建隔离工作树。请检查工作区的 Git 状态和后台日志。"),
+                            ("detailCode", ownershipRejected
+                                ? JobFailureClassifier.RepositoryOwnershipCode
+                                : JobFailureClassifier.ShadowWorktreeCreationCode),
                             ("workerType", WorkerType.Forge.ToString().ToLowerInvariant()),
                             ("durationMs", started.ElapsedMilliseconds),
                             ("serviceDiagnostics", serviceDiagnostics));
@@ -2648,16 +2689,29 @@ namespace CodexFlow.Services.Background
                         }
                     }
 
+                    var commitFailed = false;
                     if (changedFiles.Count > 0)
                     {
-                        await gitService.CommitAsync(activeWorkspacePath, $"feat: forge worker {job.JobId}").ConfigureAwait(false);
-                        commitHash = await gitService.GetHeadHashAsync(activeWorkspacePath).ConfigureAwait(false);
+                        var committed = await gitService.CommitAsync(activeWorkspacePath, $"feat: forge worker {job.JobId}").ConfigureAwait(false);
+                        if (committed)
+                        {
+                            commitHash = await gitService.GetHeadHashAsync(activeWorkspacePath).ConfigureAwait(false);
+                        }
+
+                        commitFailed = !CodexFlow.Core.Execution.PinnedCommitSnapshotBuilder.IsFullCommitId(commitHash) ||
+                            string.Equals(commitHash, baseHead, StringComparison.OrdinalIgnoreCase);
+                        if (commitFailed)
+                        {
+                            commitHash = null;
+                            serviceDiagnostics["artifactCommitFailed"] = true;
+                        }
                     }
 
                     var usedPriorCommittedChanges = false;
                     var effectiveChangedFilePaths = changedFilePaths;
                     var effectiveCommitHash = commitHash;
-                    if (CanReusePriorForgeArtifacts(
+                    if (!ForgeArtifactManifestFactory.HasUncommittedResult(priorResultPayload) &&
+                        CanReusePriorForgeArtifacts(
                             continuedFromJobId,
                             priorCommitHash,
                             priorChangedFilePaths,
@@ -2686,7 +2740,7 @@ namespace CodexFlow.Services.Background
                         payload.Remove("shadowWorktreePath");
                     }
 
-                    if (ShouldMarkForgeRecoveryNeeded(result, changedFiles.Count))
+                    if (!commitFailed && ShouldMarkForgeRecoveryNeeded(result, changedFiles.Count))
                     {
                         var recoveryReason = ResolveRecoveryReason(result);
                         _logger.LogWarning(
@@ -2718,6 +2772,7 @@ namespace CodexFlow.Services.Background
                                 ["changedFiles"] = OrchestrationPayloadJson.Array(effectiveChangedFilePaths),
                                 ["commitHash"] = effectiveCommitHash,
                                 ["worktreeRetained"] = usingShadowWorktree,
+                                ["failureContext"] = ForgeFailureContext.FromAttempt(job.Attempt, result, changedFiles.Count, usingShadowWorktree, usingShadowWorktree),
                                 ["updatedPayloadJson"] = payload.ToString(Formatting.None)
                             });
                     }
@@ -2728,7 +2783,7 @@ namespace CodexFlow.Services.Background
                         serviceDiagnostics["incompleteFinalText"] = true;
                     }
 
-                    var success = IsSuccessfulForgeCompletion(
+                    var success = !commitFailed && IsSuccessfulForgeCompletion(
                         result,
                         effectiveChangedFilePaths.Length,
                         usedPriorCommittedChanges);
@@ -2797,7 +2852,8 @@ namespace CodexFlow.Services.Background
                         worktreeKey,
                         shadowWorkspacePath,
                         usingShadowWorktree,
-                        retainShadow: success || keepShadowOnFailure || retainShadowForTransientRetry || workerBlocked,
+                        retainShadow: success || keepShadowOnFailure || retainShadowForTransientRetry || workerBlocked ||
+                            (commitFailed && enableTaskFileScopeGuard && taskFileScope is { HasConstraints: true }),
                         payload,
                         serviceDiagnostics,
                         success ? "worker_success" : "worker_failed").ConfigureAwait(false);
@@ -2811,6 +2867,11 @@ namespace CodexFlow.Services.Background
                         summary = "ForgeWorker 只留下了说明类文件，没有对项目文件的改动：" +
                                   string.Join(", ", ForgeChangeRelevance.NoteOnlyPaths(changedFiles).Take(8)) +
                                   "。任务要求的修改没有写入项目。";
+                    }
+
+                    if (commitFailed)
+                    {
+                        summary = "宿主无法把已检查范围内的改动写入新提交，任务仍需恢复。";
                     }
 
                     if (verifiedNoChange)
@@ -2840,6 +2901,18 @@ namespace CodexFlow.Services.Background
                             taskFileScope, gitService, ct).ConfigureAwait(false)
                         : null;
 
+                    var artifactIncomplete = success && usingShadowWorktree &&
+                        payload["planArtifactId"]?.Value<string>() is { Length: > 0 } &&
+                        (artifactManifest is null ||
+                         effectiveChangedFilePaths.Except(artifactManifest.ChangedPaths, StringComparer.Ordinal).Any());
+                    if (artifactIncomplete)
+                    {
+                        success = false;
+                        artifactManifest = null;
+                        summary = "宿主产物未包含本任务报告的全部改动，任务仍需恢复。";
+                        serviceDiagnostics["artifactManifestIncomplete"] = true;
+                    }
+
                     // A dependency change that the network-less verification cannot restore fails HERE, on the task that made it, instead of
                     // after every later task has run. The worker's own sandbox reaches the network, so its restore proves nothing about that.
                     var restorePreflightFailure = artifactManifest is null
@@ -2852,8 +2925,11 @@ namespace CodexFlow.Services.Background
                         serviceDiagnostics["restorePreflightFailed"] = true;
                     }
 
+                    var failureContext = success ? null : ForgeFailureContext.FromAttempt(
+                        job.Attempt, result, changedFiles.Count, usingShadowWorktree, worktreeRetained, restorePreflightFailure is not null);
                     return OrchestrationPayloadJson.Write(
                         ("success", success),
+                        ("failureContext", failureContext),
                         ("message", summary),
                         ("summary", summary),
                         ("result", result.FinalText),
@@ -2863,7 +2939,8 @@ namespace CodexFlow.Services.Background
                         ("totalToolCalls", result.TotalToolCalls),
                         ("writeToolCalls", result.WriteToolCalls),
                         ("terminationReason", result.TerminationReason.ToString()),
-                        ("detailCode", ForgeDetailCode.Resolve(
+                        ("detailCode", commitFailed ? "artifact_commit_failed" :
+                            artifactIncomplete ? "artifact_manifest_incomplete" : ForgeDetailCode.Resolve(
                             restorePreflightFailure is not null, workerBlocked, noRelevantChange, unmetPackages.Count,
                             success, effectiveChangedFilePaths.Length, result.TotalToolCalls, result.TerminalDetailCode)),
                         ("workerReport", workerReport is null ? null : OrchestrationPayloadJson.Object(("status", workerReport.Status), ("reason", workerReport.Reason), ("unfinished", workerReport.Unfinished), ("unverified", workerReport.Unverified))),
@@ -2968,10 +3045,7 @@ namespace CodexFlow.Services.Background
 
                 if (removed)
                 {
-                    payload["lastShadowWorktreePath"] = shadowWorkspacePath;
-                    payload.Remove("shadowWorktreePath");
-                    payload["worktreeRetained"] = false;
-                    payload["worktreeCleanedAtUtc"] = DateTime.UtcNow;
+                    WorkerExecutionPreflight.RecordCleanedShadow(payload, mainWorkspacePath, shadowWorkspacePath, DateTime.UtcNow);
                     return false;
                 }
             }

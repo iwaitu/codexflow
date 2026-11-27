@@ -20,13 +20,15 @@ public static class OfflineToolchainPreparation
     private static readonly HashSet<string> NodeExecutables = new(StringComparer.OrdinalIgnoreCase) { "node", "npm", "npx" };
     private static readonly HashSet<string> PythonExecutables = new(StringComparer.OrdinalIgnoreCase) { "python", "python3", "pip", "pip3" };
 
-    // Exit code 3 = nothing to prepare here (no cache mounted, or not a project of this kind): not a failure, and nothing to tell the model.
+    // Exit code 3 = no project-specific preparation. For a locked Node project missing its cache, exit code 4 is a host prerequisite failure.
     internal const int NotApplicableExitCode = 3;
+    internal const int MissingNodeCacheExitCode = 4;
 
     // The cache mount is read-only and npm writes to its cache, so it works on a copy in the tmpfs (same recipe as NodeProjectVerifier).
     internal const string NodeScript =
-        "[ -d /npm-cache ] && [ -f package-lock.json ] || exit 3; " +
+        "[ -f package-lock.json ] || exit 3; " +
         "[ -d node_modules ] && exit 0; " +
+        "[ -d /npm-cache ] || exit 4; " +
         "cp -r /npm-cache /tmp/npm-cache && npm ci --offline --ignore-scripts --no-audit --no-fund --cache /tmp/npm-cache";
 
     // --user installs under $HOME (/tmp/home), outside the workspace, and the image's own python finds it without a virtualenv.
@@ -59,12 +61,19 @@ public static class OfflineToolchainPreparation
     /// what is now installed, or why it could not be installed (the worker's command still runs afterwards).
     /// </summary>
     public static async Task<string?> PrepareAsync(IIsolatedExecutionSession session, string? executable, CancellationToken ct)
+        => (await PrepareWithReceiptAsync(session, executable, ct).ConfigureAwait(false))?.Note;
+
+    internal sealed record PreparationReceipt(bool Succeeded, string Note);
+
+    internal static async Task<PreparationReceipt?> PrepareWithReceiptAsync(
+        IIsolatedExecutionSession session, string? executable, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(session);
         if (ScriptFor(executable) is not { } script) return null;
 
         var run = await session.RunAsync(new IsolatedCommandRequest(["sh", "-c", script], Timeout: TimeSpan.FromMinutes(5)), ct).ConfigureAwait(false);
-        return Describe(executable!, run.Status, run.ExitCode, run.Stderr, run.Stdout);
+        var note = Describe(executable!, run.Status, run.ExitCode, run.Stderr, run.Stdout);
+        return note is null ? null : new PreparationReceipt(run.Status == IsolatedCommandStatus.Completed && run.ExitCode == 0, note);
     }
 
     internal static string? Describe(string executable, IsolatedCommandStatus status, int? exitCode, string? stderr, string? stdout)
@@ -78,6 +87,10 @@ public static class OfflineToolchainPreparation
         }
 
         if (exitCode == NotApplicableExitCode) return null;
+        if (node && exitCode == MissingNodeCacheExitCode)
+        {
+            return "[environment] 宿主没有提供离线 npm 缓存，无法按 package-lock.json 准备依赖。";
+        }
 
         var detail = string.IsNullOrWhiteSpace(stderr) ? stdout : stderr;
         detail = string.IsNullOrWhiteSpace(detail) ? "(no output)" : detail.Trim();

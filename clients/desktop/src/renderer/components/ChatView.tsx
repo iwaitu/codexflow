@@ -9,6 +9,7 @@ import { BrowserApprovalCard } from './BrowserApprovalCard';
 import { BusinessSkillApprovalCard } from './BusinessSkillApprovalCard';
 import { ChatTurnNavigation, collectChatTurns } from './ChatTurnNavigation';
 import { ComputerApprovalCard } from './ComputerApprovalCard';
+import { JobActivity, JobFailureDetails } from './JobActivity';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { MessageItem } from './MessageItem';
 import { PlanApprovalCard } from './PlanApprovalCard';
@@ -684,6 +685,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     />
                   )}
                 </div>
+
+                {job.status === 'Running' && (
+                  <div className="min-w-0 basis-full">
+                    <JobActivity jobId={jobId} announce />
+                  </div>
+                )}
+
+                {job.failure && (
+                  <div className="min-w-0 basis-full">
+                    <JobFailureDetails failure={job.failure} />
+                  </div>
+                )}
 
                 {job.status === 'Completed' && job.jobType === 'ForgeWorker' && jobId && (
                   <button

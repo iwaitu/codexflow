@@ -31,6 +31,8 @@ public class JobFailureClassifierTests
     [InlineData("scope_violation", JobFailureKind.ScopeBoundary, JobFailureRemedy.ChangePlanOrScope, false)]
     [InlineData("provider_parameter_incompatibility", JobFailureKind.Infrastructure, JobFailureRemedy.FixEnvironment, false)]
     [InlineData("git_service_unavailable", JobFailureKind.Infrastructure, JobFailureRemedy.FixEnvironment, false)]
+    [InlineData(JobFailureClassifier.RepositoryOwnershipCode, JobFailureKind.Infrastructure, JobFailureRemedy.FixEnvironment, false)]
+    [InlineData(JobFailureClassifier.ShadowWorktreeCreationCode, JobFailureKind.Infrastructure, JobFailureRemedy.RetryWithGuidance, true)]
     public void EveryKnownCode_HasAKindAndARemedy_AndOnlyTheRemediesThatCanChangeTheOutcomeAreRetryable(
         string code, JobFailureKind kind, JobFailureRemedy remedy, bool retryable)
     {

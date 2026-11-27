@@ -134,6 +134,18 @@ internal static class WorkerProjectionHelpers
     /// <summary>The structured failure of a failed job; null for any other status (a cancelled job did not fail).</summary>
     public static BackgroundJobFailureDto? ResolveFailure(string? status, string? errorMessage, string? resultPayloadJson)
     {
+        if (status == "Completed" && BackgroundJobService.HasUncommittedCompletion(resultPayloadJson))
+        {
+            return new BackgroundJobFailureDto
+            {
+                Code = "artifact_commit_failed",
+                Kind = "infrastructure",
+                Remedy = "retry_with_guidance",
+                Retryable = true,
+                Message = "作业报告了改动，验收产物仍停在基线。请继续执行原作业。"
+            };
+        }
+
         if (status is not ("Failed" or "FailedRecoveryNeeded"))
         {
             return null;
@@ -145,7 +157,7 @@ internal static class WorkerProjectionHelpers
             Code = failure.Code,
             Kind = ToWireName(failure.Kind.ToString()),
             Remedy = ToWireName(failure.Remedy.ToString()),
-            Retryable = failure.Retryable,
+            Retryable = failure.Retryable || failure.CanRecheckRepositoryOwnership || failure.CanRecheckWorkspace,
             Message = failure.Message,
             RefusedPaths = failure.RefusedPaths.ToArray(),
             Evidence = failure.Evidence.ToArray()
@@ -177,13 +189,14 @@ internal static class WorkerProjectionHelpers
         }
 
         var verdict = NormalizeVerificationValue(payload["verificationVerdict"]?.Value<string>());
-        var summary = NormalizeVerificationValue(payload["verificationSummary"]?.Value<string>())
-            ?? NormalizeVerificationValue(payload["summary"]?.Value<string>());
+        var passed = payload["verificationPassed"]?.Value<bool?>();
+        var summary = NormalizeVerificationValue(payload["verificationSummary"]?.Value<string>());
         var evidence = ParseVerificationEvidence(payload["verificationEvidence"] as JArray);
         var issues = ParseVerificationIssues(payload["verificationIssues"] as JArray);
         var checklist = ParseVerificationChecklist(payload["verificationChecklist"] as JObject);
 
-        if (string.IsNullOrWhiteSpace(verdict)
+        if (passed is null
+            && string.IsNullOrWhiteSpace(verdict)
             && string.IsNullOrWhiteSpace(summary)
             && evidence.Length == 0
             && issues.Length == 0
@@ -195,9 +208,8 @@ internal static class WorkerProjectionHelpers
         return new BackgroundJobVerificationDto
         {
             Verdict = verdict ?? string.Empty,
-            Passed = payload["verificationPassed"]?.Value<bool?>()
-                ?? string.Equals(verdict, "pass", StringComparison.OrdinalIgnoreCase),
-            Summary = summary,
+            Passed = passed ?? string.Equals(verdict, "pass", StringComparison.OrdinalIgnoreCase),
+            Summary = summary ?? NormalizeVerificationValue(payload["summary"]?.Value<string>()),
             Issues = issues,
             Evidence = evidence,
             Checklist = checklist

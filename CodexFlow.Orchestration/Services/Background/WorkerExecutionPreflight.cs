@@ -111,7 +111,8 @@ internal static class WorkerExecutionPreflight
         // Verified retained shadow (if any) first: it may legitimately stand in for a main repository that is currently missing.
         var shadow = payload["shadowWorktreePath"]?.Value<string>();
         var shadowVerified = false;
-        var sanitized = false;
+        var isForge = WorkerJobTypes.TryResolveWorkerType(job.JobType, out var wt) && wt == CodexFlow.Core.Protocols.WorkerType.Forge;
+        var sanitized = isForge && TryRestoreCleanedShadowWorkspace(payload, worktreeKey);
         if (!string.IsNullOrWhiteSpace(shadow))
         {
             shadowVerified = Directory.Exists(shadow) &&
@@ -171,7 +172,6 @@ internal static class WorkerExecutionPreflight
         // through (an empty path would fall back to the process working directory).
         var main = payload["mainWorkspacePath"]?.Value<string>();
         var work = payload["workspacePath"]?.Value<string>();
-        var isForge = WorkerJobTypes.TryResolveWorkerType(job.JobType, out var wt) && wt == CodexFlow.Core.Protocols.WorkerType.Forge;
         if (isForge)
         {
             if (string.IsNullOrWhiteSpace(main) && string.IsNullOrWhiteSpace(work) && !shadowVerified)
@@ -206,11 +206,89 @@ internal static class WorkerExecutionPreflight
         return WorkerPreflightOutcome.Allow(sanitized ? payload : null);
     }
 
+    // Legacy cleanup wrote a timestamp and historical shadow path but left workspacePath dangling.
+    // Only a positively identified missing shadow is normalized. EvaluateAsync still authorizes the main path.
+    private static bool TryRestoreCleanedShadowWorkspace(JObject payload, string worktreeKey)
+    {
+        if (payload["worktreeRetained"]?.Type != JTokenType.Boolean ||
+            payload["worktreeRetained"]!.Value<bool>() ||
+            payload["worktreeCleanedAtUtc"]?.Type is not (JTokenType.Date or JTokenType.String) ||
+            payload["shadowWorktreePath"]?.Type is not (null or JTokenType.Null) ||
+            payload["mainWorkspacePath"]?.Value<string>() is not { Length: > 0 } main ||
+            payload["workspacePath"]?.Value<string>() is not { Length: > 0 } workspace ||
+            payload["lastShadowWorktreePath"]?.Value<string>() is not { Length: > 0 } historicalShadow ||
+            !SamePath(workspace, historicalShadow))
+        {
+            return false;
+        }
+
+        try
+        {
+            if (!Path.IsPathFullyQualified(main) || !Path.IsPathFullyQualified(workspace) ||
+                !SamePath(workspace, GitService.BuildShadowPath(main, worktreeKey)) ||
+                Path.Exists(workspace) || ContainsLinkInMissingPath(workspace))
+            {
+                return false;
+            }
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            return false;
+        }
+
+        RestoreMainWorkspace(payload, main, workspace);
+        return true;
+    }
+
+    private static bool ContainsLinkInMissingPath(string path)
+    {
+        for (var directory = new DirectoryInfo(path); directory is not null; directory = directory.Parent)
+        {
+            if (directory.LinkTarget is not null ||
+                (directory.Exists && (directory.Attributes & FileAttributes.ReparsePoint) != 0))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    internal static void RecordCleanedShadow(JObject payload, string mainWorkspace, string? shadow, DateTime cleanedAtUtc)
+    {
+        if (!string.IsNullOrWhiteSpace(shadow))
+        {
+            payload["lastShadowWorktreePath"] = shadow;
+            RestoreMainWorkspace(payload, mainWorkspace, shadow);
+        }
+
+        payload.Remove("shadowWorktreePath");
+        payload["worktreeRetained"] = false;
+        payload["worktreeCleanedAtUtc"] = cleanedAtUtc;
+    }
+
+    private static void RestoreMainWorkspace(JObject payload, string mainWorkspace, string shadow)
+    {
+        if (payload["workspacePath"]?.Value<string>() is { Length: > 0 } workspace && SamePath(workspace, shadow))
+        {
+            payload["workspacePath"] = mainWorkspace;
+        }
+    }
+
     private static bool SamePath(string a, string b)
-        => string.Equals(
-            Path.TrimEndingDirectorySeparator(Path.GetFullPath(a)),
-            Path.TrimEndingDirectorySeparator(Path.GetFullPath(b)),
-            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+    {
+        try
+        {
+            return string.Equals(
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(a)),
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(b)),
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or NotSupportedException)
+        {
+            return false;
+        }
+    }
 
     /// <summary>
     /// A retained shadow is verified only if ALL hold: no link anywhere in its own path, inside the application's shadow root, git's

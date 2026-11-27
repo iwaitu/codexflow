@@ -30,7 +30,11 @@ internal static class ForgeQualityRetry
 
     public static bool ShouldRetry(JObject? result, JObject? payload)
     {
-        if (result == null || result["success"]?.Value<bool?>() == true)
+        if (result == null || result["success"]?.Value<bool?>() == true ||
+            ForgeFailureContext.IsVerificationFailure(result) ||
+            result["scopeDenials"] is JArray { Count: > 0 } ||
+            (result["changedFiles"] is JArray { Count: > 0 } &&
+             result["detailCode"]?.Value<string>() is "recovery_exhausted" or "recovery_exhausted_unexecuted_write_intent" or "max_rounds_reached"))
         {
             return false;
         }
@@ -40,6 +44,10 @@ internal static class ForgeQualityRetry
                RetryableDetailCodes.Contains(detailCode) &&
                (payload?["qualityRetryCount"]?.Value<int?>() ?? 0) < MaxRetries;
     }
+
+    public static string Reason(JObject result) => result["detailCode"]?.Value<string>() == "dependency_contract_unmet"
+        ? "dependency_contract_unmet"
+        : "forge_attempt_changed_nothing";
 
     /// <summary>Appends the facts of the failed attempt to the task prompt (the original prompt is kept and never nested) and counts the retry.</summary>
     public static void Apply(JObject payload, JObject result)

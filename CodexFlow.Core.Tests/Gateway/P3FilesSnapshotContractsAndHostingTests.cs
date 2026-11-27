@@ -423,6 +423,11 @@ public sealed class P3FilesSnapshotContractsAndHostingTests : IDisposable
 
         // Publish concurrent external event while turn is active -> monotonic cursor must preserve prior events
         await host.Gateway.PublishEventAsync(sessionId, new GatewaySseEvent { Type = GatewaySseEventType.SystemMessage, Payload = new { content = "ext" } });
+        await host.Gateway.PublishEventAsync(sessionId, new GatewaySseEvent
+        {
+            Type = GatewaySseEventType.TaskStatus,
+            Payload = new { type = "tool_result", jobId = "forge-job", name = "ivilson_read", success = true, result = "background result" }
+        });
 
         // R3-B3: Production external path ToolOutputEventThrottler -> ICodexGateway.PublishEventAsync -> SessionChannel
         await using (var throttler = new CodexFlow.Core.Execution.Approval.ToolOutputEventThrottler(

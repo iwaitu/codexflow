@@ -85,7 +85,9 @@ public sealed class MainSessionJobOutcomeDispatcher(
             return;
         }
 
-        var conversationId = await outcomes.FindAnnouncementConversationAsync(job.SessionId, userId, job.TaskId, ct).ConfigureAwait(false);
+        // Failure recovery belongs to the plan's conversation. A matching worker thread would hide it there.
+        var conversationId = await outcomes.FindAnnouncementConversationAsync(
+            job.SessionId, userId, succeeded ? job.TaskId : null, ct).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(conversationId))
         {
             logger.LogInformation("Job {JobId}: session {SessionId} has no conversation to announce it in", jobId, job.SessionId);

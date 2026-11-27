@@ -2,6 +2,7 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+using CodexFlow.Core.Abstractions;
 using CodexFlow.Core.Services;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -37,6 +38,24 @@ public sealed class GitServiceShadowWorktreeTests : IDisposable
         await File.WriteAllTextAsync(Path.Combine(_workspacePath, "source.txt"), "safe commit");
         Assert.True(await _gitService.CommitAsync(_workspacePath, "commit without invoking project hooks"));
         Assert.False(File.Exists(Path.Combine(_workspacePath, "hook-ran.txt")));
+    }
+
+    [Fact]
+    public async Task CommitAsync_UsesAgentIdentityWhenTheRepositoryHasNone()
+    {
+        Directory.CreateDirectory(_workspacePath);
+        Assert.True(await _gitService.InitRepositoryAsync(_workspacePath));
+        var config = Path.Combine(_workspacePath, ".git", "config");
+        var original = File.ReadAllLines(config);
+        File.WriteAllLines(config, original.Where(line => !line.TrimStart().StartsWith("name =", StringComparison.Ordinal) &&
+                                                         !line.TrimStart().StartsWith("email =", StringComparison.Ordinal)));
+        var withoutIdentity = File.ReadAllText(config);
+        var before = await _gitService.GetHeadHashAsync(_workspacePath);
+
+        await File.WriteAllTextAsync(Path.Combine(_workspacePath, "candidate.txt"), "candidate");
+        Assert.True(await _gitService.CommitAsync(_workspacePath, "publish scoped candidate"));
+        Assert.NotEqual(before, await _gitService.GetHeadHashAsync(_workspacePath));
+        Assert.Equal(withoutIdentity, File.ReadAllText(config));
     }
 
     [Fact]
@@ -111,6 +130,27 @@ public sealed class GitServiceShadowWorktreeTests : IDisposable
         {
             await _gitService.RemoveShadowWorktreeAsync(_workspacePath, taskId);
         }
+    }
+
+    [Theory]
+    [InlineData(128, "fatal: detected dubious ownership in repository at 'D:/codeup/repo'\r\nTo add an exception", true)]
+    [InlineData(128, "fatal: unsafe repository ('/repo' is owned by someone else)", true)]
+    [InlineData(128, "fatal: invalid reference: refs/heads/missing", false)]
+    [InlineData(0, "fatal: detected dubious ownership in repository at '/repo'", false)]
+    public void IsRepositoryOwnershipError_RecognizesOnlyGitOwnershipFailures(int exitCode, string stderr, bool expected)
+    {
+        Assert.Equal(expected, GitService.IsRepositoryOwnershipError(exitCode, stderr));
+    }
+
+    [Fact]
+    public async Task CreateShadowWorktreeWithDiagnosticsAsync_KeepsMissingBaselineDistinctFromOwnership()
+    {
+        Assert.True(await _gitService.InitRepositoryAsync(_workspacePath));
+        var result = await ((IShadowWorktreeCreationDiagnostics)_gitService)
+            .CreateShadowWorktreeWithDiagnosticsAsync(_workspacePath, TaskId, "refs/heads/missing-baseline");
+
+        Assert.Null(result.Path);
+        Assert.Equal(ShadowWorktreeCreationFailure.GitError, result.Failure);
     }
 
     [Fact]

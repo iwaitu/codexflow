@@ -68,6 +68,20 @@ internal readonly struct ToolObservationMetadata
         return null;
     }
 
+    public bool IsTrue(string key) => _value switch
+    {
+        JsonElement element => FindProperty(element, key).ValueKind == JsonValueKind.True,
+        JObject obj => obj.GetValue(key, StringComparison.OrdinalIgnoreCase) is JValue { Value: true },
+        _ => false
+    };
+
+    public ToolObservationMetadata GetObject(string key) => _value switch
+    {
+        JsonElement element => From(FindProperty(element, key)),
+        JObject obj => From(obj.GetValue(key, StringComparison.OrdinalIgnoreCase) as JObject),
+        _ => default
+    };
+
     public bool HasField(params string[] keys)
     {
         foreach (var key in keys)

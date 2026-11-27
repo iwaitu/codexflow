@@ -2,6 +2,8 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+using CodexFlow.Core.Protocols;
+
 namespace CodexFlow.Core.Runtime;
 
 /// <summary>
@@ -44,7 +46,8 @@ public static class TransientFailures
 
     /// <summary>As <see cref="IsTransientProviderFailure"/>, plus host-environment failures (workspace not mounted yet, git could not start).</summary>
     public static bool IsTransientWorkerFailure(string? detailCode, string? message) =>
-        IsTransientProviderFailure(detailCode, message) || ContainsAny(detailCode + "\n" + message, EnvironmentMarkers);
+        !string.Equals(detailCode, JobFailureClassifier.RepositoryOwnershipCode, StringComparison.OrdinalIgnoreCase) &&
+        (IsTransientProviderFailure(detailCode, message) || ContainsAny(detailCode + "\n" + message, EnvironmentMarkers));
 
     /// <summary>An exception thrown while talking to the model endpoint that is worth retrying. Cancellation the caller asked for is never transient.</summary>
     public static bool IsTransientTransport(Exception ex, CancellationToken ct)
