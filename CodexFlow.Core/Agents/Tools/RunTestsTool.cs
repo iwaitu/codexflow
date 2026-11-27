@@ -7,6 +7,7 @@ using CodexFlow.Core.Execution;
 using CodexFlow.Core.Models;
 using CodexFlow.Core.Planning.Artifacts;
 using CodexFlow.Core.TDD;
+using CodexFlow.Core.TDD.Adapters;
 using Microsoft.Extensions.Logging;
 using System.Globalization;
 using System.Text.Json.Nodes;
@@ -23,7 +24,7 @@ public class RunTestsTool : ICodexTool
     private readonly ILogger<RunTestsTool> _logger;
 
     public string Name => "run_tests";
-    public string Description => "运行指定路径的单元测试。支持 C#, Python, Java, Node.js。参数：test_file_path (测试文件路径), language (可选)。Few-shot: run_tests({\"test_file_path\":\"CodexFlow.Tests/FullPipeline_IntegrationTests.cs\",\"language\":\"csharp\"})。";
+    public string Description => "运行指定路径的单元测试。支持 csharp、python、java、typescript（Jest）和 javascript（Node.js 内置测试运行器）。参数：test_file_path（测试路径），language（可选）。示例：run_tests({\"test_file_path\":\"tests/module.test.mjs\",\"language\":\"javascript\"})。";
     public ToolCategory Category => ToolCategory.Analysis;
     public IReadOnlyList<int> AllowedStages => [2, 3, 4];
 
@@ -43,7 +44,7 @@ public class RunTestsTool : ICodexTool
         ToolArgumentNormalizer.NormalizeInPlace(arguments);
 
         var testPath = arguments.GetValueOrDefault("test_file_path")?.ToString();
-        var language = arguments.GetValueOrDefault("language")?.ToString();
+        var language = arguments.GetValueOrDefault("language")?.ToString()?.Trim();
         var timeoutSecondsRaw = arguments.GetValueOrDefault("timeout_seconds")?.ToString();
 
         if (string.IsNullOrEmpty(testPath))
@@ -72,10 +73,20 @@ public class RunTestsTool : ICodexTool
         {
             language = DetectLanguage(resolvedTestPath ?? testPath);
         }
+        else if (string.Equals(language, "js", StringComparison.OrdinalIgnoreCase))
+        {
+            language = "javascript";
+        }
 
         var adapter = _adapters.FirstOrDefault(a => a.Language.Equals(language, StringComparison.OrdinalIgnoreCase));
         if (adapter == null)
             return CodexToolResult.Error($"Unsupported language: {language}. Available: {string.Join(", ", _adapters.Select(a => a.Language))}");
+
+        if (adapter is NodeTestAdapter &&
+            !ToolPathResolver.IsSafeReadTarget(resolvedTestPath ?? testPath, baseRoot, out var pathError))
+        {
+            return CodexToolResult.Error(pathError);
+        }
 
         StructuredLog.Information(_logger, "Running tests for {Path} using {Framework}...", testPath, adapter.FrameworkName);
 
@@ -113,6 +124,11 @@ public class RunTestsTool : ICodexTool
                 frozenArgv[i + 1] = authorization.EffectiveArgv[i];
             }
 
+            var preparation = session.Layout.Backend == ExecutionBackend.Docker && adapter is NodeTestAdapter &&
+                File.Exists(Path.Combine(baseRoot, "package-lock.json"))
+                ? await OfflineToolchainPreparation.PrepareWithReceiptAsync(session, "node", ct).ConfigureAwait(false)
+                : null;
+
             await using var outputThrottler = new CodexFlow.Core.Execution.Approval.ToolOutputEventThrottler(
                 _gate.Gateway,
                 context.SessionId,
@@ -145,7 +161,12 @@ public class RunTestsTool : ICodexTool
             return CodexToolResult.Succeeded(
                 PlanToolJson.Write(new RunTestsPayload(
                     result.Success, result.PassedCount, result.FailedCount, result.FailureDetails, result.OutputSummary)),
-                ToolResultMetadata.FromJson(new JsonObject { ["testResult"] = ToolResultMetadata.ToNode(result, SourceGeneratedToolJsonContext.Default.TestExecutionResult) })
+                ToolResultMetadata.FromJson(new JsonObject
+                {
+                    ["testResult"] = ToolResultMetadata.ToNode(result, SourceGeneratedToolJsonContext.Default.TestExecutionResult),
+                    ["exitCode"] = run.ExitCode,
+                    ["dependencyPreparationFailed"] = preparation is { Succeeded: false }
+                })
             );
         }
         catch (IOException ex)
@@ -211,6 +232,15 @@ public class RunTestsTool : ICodexTool
             var normalizedForAdapter = Path.IsPathRooted(target)
                 ? ToRelativePath(workspacePath, target)
                 : target;
+            if (adapter is NodeTestAdapter)
+            {
+                normalizedForAdapter = normalizedForAdapter.Replace(Path.DirectorySeparatorChar, '/');
+                if (Directory.Exists(target))
+                {
+                    normalizedForAdapter += "/**/*.{test,spec}.{js,mjs,cjs}";
+                }
+            }
+
             return adapter.GetTestCommand(normalizedForAdapter);
         }
 
@@ -328,6 +358,7 @@ public class RunTestsTool : ICodexTool
             ".CS" => "csharp",
             ".PY" => "python",
             ".JAVA" => "java",
+            ".MJS" or ".CJS" => "javascript",
             ".TS" or ".JS" or ".TSX" or ".JSX" => "typescript",
             _ => "unknown"
         };

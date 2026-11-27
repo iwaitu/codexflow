@@ -683,7 +683,8 @@ public sealed class SessionChannel : IAsyncDisposable
                 else _lastCompletedToolOutputsTruncated = true;
             }
         }
-        else if (string.Equals(sseEvent.Type, GatewaySseEventType.TaskStatus, StringComparison.Ordinal))
+        else if (string.Equals(sseEvent.Type, GatewaySseEventType.TaskStatus, StringComparison.Ordinal) &&
+                 string.IsNullOrWhiteSpace(ReadPayloadString(sseEvent.Payload, "jobId")))
         {
             var subType = ReadPayloadString(sseEvent.Payload, "type");
             if (string.Equals(subType, "tool_result", StringComparison.Ordinal))

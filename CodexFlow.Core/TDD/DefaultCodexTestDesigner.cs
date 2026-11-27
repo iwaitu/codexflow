@@ -36,6 +36,7 @@ public class DefaultCodexTestDesigner : ICodexTestDesigner
             adapterList.Add(new CSharpXUnitAdapter());
             adapterList.Add(new PythonPytestAdapter());
             adapterList.Add(new NodeJestAdapter());
+            adapterList.Add(new NodeTestAdapter());
             adapterList.Add(new JavaJUnitAdapter());
         }
         _adapters = adapterList;

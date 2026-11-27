@@ -223,12 +223,22 @@ public sealed class PlanTaskDispatchService(
                 TaskId: latestSession.ActiveTaskId);
         }
 
-        var target = await ResolveNextActionableTaskAsync(request.SessionId, latestSession, ct).ConfigureAwait(false);
-        if (target == null)
+        var next = await ResolveNextActionableTaskAsync(
+            request.SessionId, latestSession, request.EnforcePlanArtifactGate, ct).ConfigureAwait(false);
+        if (next == null)
         {
             return new PlanTaskDispatchResult(
                 PlanTaskDispatchStatus.NoActionableTask,
                 "✅ 当前计划中没有待执行任务，所有任务已完成或正在执行。");
+        }
+
+        var target = next.Value.Task;
+        if (next.Value.Blocked)
+        {
+            return new PlanTaskDispatchResult(
+                PlanTaskDispatchStatus.RecoveryNotEligible,
+                $"任务 [{target.Id}] 已停止，仍属于获批计划。请从作业面板继续该任务，或批准新的计划。",
+                target.Id, target.Title);
         }
 
         var workerType = ResolveWorkerTypeForTask(target);
@@ -329,6 +339,16 @@ public sealed class PlanTaskDispatchService(
                 jobPayload["planVersion"] = boundPlan.Version;
                 jobPayload["planHash"] = PlanArtifactSupport.ComputeMarkdownHash(boundPlan.Markdown);
                 jobPayload["requiredTaskIds"] = OrchestrationPayloadJson.Array(boundPlan.Tasks.Select(t => t.Id).Order(StringComparer.Ordinal).ToArray());
+
+                if (workerType == WorkerType.Forge &&
+                    await PlanTaskRetryBinding.FindLatestAsync(jobs, request.SessionId, target.Id, jobType, boundPlan, ct)
+                        .ConfigureAwait(false) is { } previous)
+                {
+                    return new PlanTaskDispatchResult(
+                        PlanTaskDispatchStatus.RecoveryNotEligible,
+                        $"任务 [{target.Id}] 已有作业 {previous.JobId}（{previous.Status}）。请根据宿主记录恢复原作业，或在批准的计划更新后重新派发。",
+                        target.Id, target.Title, previous.JobId, jobType, workerType, previous.StatusCode);
+                }
             }
         }
 
@@ -464,6 +484,13 @@ public sealed class PlanTaskDispatchService(
         var userId = payload?["userId"]?.Value<string>() ?? string.Empty;
         var workspacePath = ResolveContinuationWorkspacePath(payload);
         var resultPayload = TryParseJobPayload(resultPayloadJson);
+        if (ForgeArtifactManifestFactory.HasUncommittedResult(resultPayload))
+        {
+            return new PlanTaskDispatchResult(PlanTaskDispatchStatus.RecoveryNotEligible,
+                "作业报告了改动，产物提交仍停在基线。恢复同一任务后才能推进计划。",
+                completedJob.TaskId, JobId: completedJob.JobId);
+        }
+
         var previousCommitHash = ExtractCommitHash(resultPayload);
         var previousChangedFiles = ExtractChangedFiles(resultPayload);
         var retainedWorktree = ExtractRetainedWorktreeContext(resultPayload, payload);
@@ -548,6 +575,11 @@ public sealed class PlanTaskDispatchService(
         }
 
         var resultPayload = TryParseJobPayload(resultPayloadJson);
+        if (resultPayload is not null && ForgeFailureContext.IsVerificationFailure(resultPayload))
+        {
+            return new PlanTaskDispatchResult(PlanTaskDispatchStatus.RecoveryNotEligible,
+                "任务验收被阻塞。请按宿主的检查回执处理，等待复验或有针对性的恢复。", recoveryJob.TaskId, JobId: recoveryJob.JobId);
+        }
         if (resultPayload?["recoveryNeeded"]?.Value<bool>() != true ||
             !string.Equals(resultPayload["resumeStrategy"]?.Value<string>(), "continue_worker", StringComparison.OrdinalIgnoreCase))
         {
@@ -776,13 +808,14 @@ public sealed class PlanTaskDispatchService(
             "5. 完成后输出结构化结论、根因判断和下一步建议。\n";
     }
 
-    private async Task<CodexTask?> ResolveNextActionableTaskAsync(string sessionId, CodexSession latestSession, CancellationToken ct)
+    private async Task<(CodexTask Task, bool Blocked)?> ResolveNextActionableTaskAsync(
+        string sessionId, CodexSession latestSession, bool enforcePlan, CancellationToken ct)
     {
         var snapshot = await TryGetTaskListSnapshotAsync(sessionId, ct).ConfigureAwait(false);
         if (snapshot?.Items.Count > 0)
         {
             var nextSnapshotTask = snapshot.Items
-                .Where(item => IsActionableTaskListStatus(item.Status))
+                .Where(item => IsActionableTaskListStatus(item.Status, enforcePlan))
                 .OrderBy(item => item.Index)
                 .FirstOrDefault();
 
@@ -798,9 +831,11 @@ public sealed class PlanTaskDispatchService(
             var planTask = latestSession.Plan.FirstOrDefault(t =>
                 string.Equals(t.Id, nextSnapshotTask.Id, StringComparison.OrdinalIgnoreCase));
 
+            var snapshotStatus = MapSnapshotTaskStatus(nextSnapshotTask.Status);
+            var blocked = enforcePlan && snapshotStatus == CodexTaskStatus.Skipped;
             if (planTask != null)
             {
-                return planTask;
+                return (planTask, blocked);
             }
 
             logger.LogWarning(
@@ -810,17 +845,20 @@ public sealed class PlanTaskDispatchService(
                 nextSnapshotTask.Title,
                 nextSnapshotTask.Status);
 
-            return new CodexTask
+            return (new CodexTask
             {
                 Id = nextSnapshotTask.Id,
                 Title = nextSnapshotTask.Title,
                 Description = nextSnapshotTask.Description,
-                Status = MapSnapshotTaskStatus(nextSnapshotTask.Status),
+                Status = snapshotStatus,
                 TaskType = CodexTaskClassifier.CodeTaskType
-            };
+            }, blocked);
         }
 
-        return latestSession.Plan.FirstOrDefault(t => t.Status is CodexTaskStatus.Pending or CodexTaskStatus.Failed);
+        var task = latestSession.Plan.FirstOrDefault(t =>
+            t.Status is CodexTaskStatus.Pending or CodexTaskStatus.Failed ||
+            enforcePlan && t.Status == CodexTaskStatus.Skipped);
+        return task is null ? null : (task, enforcePlan && task.Status == CodexTaskStatus.Skipped);
     }
 
     private async Task<TaskListSnapshot?> TryGetTaskListSnapshotAsync(string sessionId, CancellationToken ct)
@@ -853,14 +891,13 @@ public sealed class PlanTaskDispatchService(
         }
     }
 
-    private static bool IsActionableTaskListStatus(string? status)
-        => !string.IsNullOrWhiteSpace(status) &&
-           status.Trim().ToLowerInvariant() switch
-           {
-               "pending" => true,
-               "failed" => true,
-               _ => false
-           };
+    internal static bool IsActionableTaskListStatus(string? status, bool enforcePlan)
+        => status?.Trim().ToLowerInvariant() switch
+        {
+            "pending" or "failed" => true,
+            "skipped" or "cancelled" or "canceled" => enforcePlan,
+            _ => false
+        };
 
     private static CodexTaskStatus MapSnapshotTaskStatus(string? status)
         => string.IsNullOrWhiteSpace(status)
@@ -871,7 +908,7 @@ public sealed class PlanTaskDispatchService(
                 "completedwithwarnings" => CodexTaskStatus.CompletedWithWarnings,
                 "running" => CodexTaskStatus.Executing,
                 "failed" => CodexTaskStatus.Failed,
-                "skipped" => CodexTaskStatus.Skipped,
+                "skipped" or "cancelled" or "canceled" => CodexTaskStatus.Skipped,
                 _ => CodexTaskStatus.Pending
             };
 

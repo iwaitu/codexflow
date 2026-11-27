@@ -1,9 +1,35 @@
 import React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import { ChatView } from '@renderer/components/ChatView';
+import { JobsPanel } from '@renderer/components/JobsPanel';
 import type { UiToolCall } from '@renderer/lib/sessionRecovery';
 import { useAppStore } from '@renderer/stores/useAppStore';
+import { usePreferencesStore } from '@renderer/stores/usePreferencesStore';
+
+function createChatProps() {
+  return {
+    sessionId: 'sess-tool-test',
+    conversationId: 'conv-1',
+    messages: [{ id: 'm1', role: 'assistant' as const, content: '已完成实测' }],
+    messagesTruncated: false,
+    streamingContent: '',
+    streamingThinking: '',
+    isThinkingStreaming: false,
+    toolCalls: [],
+    pendingApprovals: [],
+    currentPlan: null,
+    jobs: [],
+    verificationReceipts: {},
+    workerBar: { status: 'idle' as const, message: null },
+    executionBackend: 'Local',
+    controlPlaneAvailable: true,
+    onApprovalResolved: vi.fn(),
+    onPlanActionSubmitted: vi.fn(),
+    onVerifyJob: vi.fn(),
+    onSwitchManaged: vi.fn(),
+  };
+}
 
 function createSampleToolCalls(): UiToolCall[] {
   return [
@@ -33,6 +59,7 @@ function createSampleToolCalls(): UiToolCall[] {
 describe('turn tool visibility lifecycle', () => {
   beforeEach(() => {
     useAppStore.getState().setActiveSession('sess-tool-test');
+    usePreferencesStore.getState().resetForTests();
   });
 
   it('tracks tool calls while turn is running and clears them on SSE done', () => {
@@ -121,6 +148,59 @@ describe('turn tool visibility lifecycle', () => {
     expect(state.turnNotice).toBe('本回合已取消。');
   });
 
+  it('shows background tool activity in both job views without altering the foreground turn', () => {
+    const store = useAppStore.getState();
+    const runningJob = { jobId: 'job-1', taskId: 'T1', status: 'Running', latestMessage: '上一次失败' };
+    store.setJobs([runningJob]);
+
+    function RunningJobViews() {
+      const jobs = useAppStore((state) => state.jobs);
+      return (
+        <>
+          <ChatView {...createChatProps()} jobs={jobs} isTurnRunning={false} />
+          <JobsPanel auth={null} sessionId="sess-tool-test" jobs={jobs} verificationReceipts={{}}
+            executionBackend="Local" onVerifyJob={vi.fn()} onJobsMutated={vi.fn()} />
+        </>
+      );
+    }
+    render(<RunningJobViews />);
+    expect(screen.getAllByText('作业正在运行，等待工具活动…')).toHaveLength(2);
+    expect(screen.queryByText('上一次失败')).not.toBeInTheDocument();
+
+    act(() => store.applySseEvent({
+      id: 1, event: 'tool_call',
+      data: { type: 'tool_call', jobId: 'job-1', taskId: 'T1', name: 'ivilson_read', callId: 'bg' },
+    }));
+    expect(screen.getAllByText('正在调用 ivilson_read')).toHaveLength(2);
+    expect(useAppStore.getState().isTurnRunning).toBe(false);
+    expect(useAppStore.getState().toolCalls).toEqual([]);
+
+    act(() => {
+      store.applySseEvent({ id: 2, event: 'tool_call', data: { type: 'tool_call', name: 'ivilson_read', callId: 'chat' } });
+      store.applySseEvent({
+        id: 3, event: 'task_status',
+        data: { type: 'tool_result', jobId: 'job-1', name: 'ivilson_read', success: true, result: 'private output' },
+      });
+      store.setJobs([runningJob]);
+    });
+    expect(screen.getAllByText('最近完成 · ivilson_read')).toHaveLength(2);
+    expect(screen.queryByText('private output')).not.toBeInTheDocument();
+    expect(useAppStore.getState().toolCalls[0]?.status).toBe('called');
+
+    act(() => store.applySseEvent({
+      id: 4, event: 'error',
+      data: { error: 'runtime_error', message: 'background error details', jobId: 'job-1' },
+    }));
+    expect(screen.getAllByText('作业遇到运行错误，等待最终结果…')).toHaveLength(2);
+    expect(useAppStore.getState().isTurnRunning).toBe(true);
+    expect(useAppStore.getState().turnNotice).toBeNull();
+
+    act(() => store.setJobs([{ ...runningJob, status: 'Failed', latestMessage: '本次作业失败' }]));
+    expect(screen.getByText('本次作业失败')).toBeVisible();
+    expect(screen.queryByText('作业遇到运行错误，等待最终结果…')).not.toBeInTheDocument();
+    expect(useAppStore.getState().jobActivity).toEqual({});
+  });
+
   it('renders only pending and running tools and removes them as soon as they finish', () => {
     const toolCalls: UiToolCall[] = [
       ...createSampleToolCalls(),
@@ -128,33 +208,7 @@ describe('turn tool visibility lifecycle', () => {
       { ...createSampleToolCalls()[0]!, key: 'asked', name: 'computer_screen_info', status: 'called' },
       { ...createSampleToolCalls()[0]!, key: 'failed', name: 'computer_screenshot', status: 'failed', outputStderr: 'capture failed' },
     ];
-    const baseProps = {
-      sessionId: 'sess-tool-test',
-      conversationId: 'conv-1',
-      messages: [
-        {
-          id: 'm1',
-          role: 'assistant' as const,
-          content: '已完成实测',
-        },
-      ],
-      messagesTruncated: false,
-      streamingContent: '',
-      streamingThinking: '',
-      isThinkingStreaming: false,
-      toolCalls,
-      pendingApprovals: [],
-      currentPlan: null,
-      jobs: [],
-      verificationReceipts: {},
-      workerBar: { status: 'idle' as const, message: null },
-      executionBackend: 'Local',
-      controlPlaneAvailable: true,
-      onApprovalResolved: vi.fn(),
-      onPlanActionSubmitted: vi.fn(),
-      onVerifyJob: vi.fn(),
-      onSwitchManaged: vi.fn(),
-    };
+    const baseProps = { ...createChatProps(), toolCalls };
 
     const { rerender } = render(<ChatView {...baseProps} isTurnRunning={true} />);
     expect(screen.queryByText('ivilson_read')).not.toBeInTheDocument();

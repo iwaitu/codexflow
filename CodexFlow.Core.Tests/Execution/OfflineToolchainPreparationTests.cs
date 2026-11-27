@@ -24,8 +24,8 @@ public class OfflineToolchainPreparationTests
         Assert.NotNull(script);
         Assert.Contains("npm ci --offline --ignore-scripts", script, StringComparison.Ordinal);
         Assert.Contains("/npm-cache", script, StringComparison.Ordinal);
-        // no lockfile or no cache: nothing to prepare, and that is not a failure
-        Assert.Contains("[ -d /npm-cache ] && [ -f package-lock.json ] || exit 3", script, StringComparison.Ordinal);
+        Assert.Contains("[ -f package-lock.json ] || exit 3", script, StringComparison.Ordinal);
+        Assert.Contains("[ -d /npm-cache ] || exit 4", script, StringComparison.Ordinal);
         Assert.Null(OfflineToolchainPreparation.EnvFor(executable));
     }
 

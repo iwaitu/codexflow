@@ -1,6 +1,6 @@
 {
   "name": "codexflow-desktop",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "private": true,
   "description": "CodexFlow Electron desktop client MVP",
   "main": "./out/main/index.js",

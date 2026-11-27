@@ -33,7 +33,16 @@ public sealed class ForgeArtifactVerificationService(
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(TimeSpan.FromMinutes(20));
-        try { return await VerifyCoreAsync(userId, request, deadline.Token); }
+        try
+        {
+            var receipt = await VerifyCoreAsync(userId, request, deadline.Token);
+            logger?.LogInformation(
+                "Artifact verification result for job {JobId}. Failure={FailureCode} Identity={IdentityVerified} Build={BuildPassed} Tests={TestsPassed} TestCount={TestCount} Audit={AuditState} AuditReason={AuditReason} Layers={Layers}",
+                request.JobId, receipt.FailureCode, receipt.IdentityVerified, receipt.BuildPassed,
+                receipt.TestsPassed, receipt.TestCount, receipt.Audit?.State, receipt.Audit?.ReasonCode,
+                receipt.Audit is { } audit ? string.Join(", ", audit.Layers.Select(layer => $"{layer.Name}:{layer.State}:{layer.ReasonCode}")) : null);
+            return receipt;
+        }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (OperationCanceledException) { return Failed("ArtifactVerificationTimeout"); }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or System.Xml.XmlException or

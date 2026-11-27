@@ -45,6 +45,11 @@ function dispatchDesktopNotification(titleKey: I18nKey, body: string): void {
 export type ConversationMode = 'continue-current' | 'reuse-master' | 'new-thread';
 export type InspectorTab = 'files' | 'changes' | 'jobs' | 'browser' | 'computer' | 'terminal';
 
+type JobActivity = (
+  | { kind: 'calling' | 'returned' | 'failed'; toolName: string }
+  | { kind: 'error' }
+) & { observedAt: number };
+
 export interface ConversationTitleUpdate {
   conversationId: string;
   title: string;
@@ -66,6 +71,7 @@ export interface ReconcileOptions {
 let activeSnapshotAbort: AbortController | null = null;
 let activeApprovalsAbort: AbortController | null = null;
 let activeContextWindowAbort: AbortController | null = null;
+let jobRefreshGeneration = 0;
 
 function computeInstanceKey(connection: BackendConnectionPublicInfo): string | null {
   if (!connection.instanceId && !connection.targetBaseUrl && !connection.baseUrl) {
@@ -113,6 +119,7 @@ export interface AppState {
   computerState: ComputerSessionStateDto | null;
   currentPlan: SessionPlan | null;
   jobs: BackgroundJob[];
+  jobActivity: Record<string, JobActivity>;
   verificationReceipts: Record<string, VerificationReceipt>;
   workerBar: WorkerBarState;
   contextWindow: SessionContextWindow | null;
@@ -172,29 +179,44 @@ function selectConversation(state: AppState, activeConversationId: string | null
   return { activeConversationId, contextWindow: null };
 }
 
-function refreshTurnMetadataAfterFinish(
-  get: () => AppState,
-  set: (partial: Partial<AppState> | ((state: AppState) => Partial<AppState> | AppState)) => void,
-  includeJobs: boolean,
-): void {
+function refreshSessionJobs(get: () => AppState): void {
   const conn = get().connection;
   const sid = get().activeSessionId;
   const targetGen = get().sessionGeneration;
+  const connectionGen = get().connectionGeneration;
   if (!conn?.baseUrl || !conn.accessToken || !sid) {
     return;
   }
+  const refreshGen = ++jobRefreshGeneration;
   const auth = { baseUrl: conn.baseUrl, accessToken: conn.accessToken };
-  void get().refreshContextWindow();
+  void apiClient
+    .listJobs(auth, sid)
+    .then((jobs) => {
+      const current = get();
+      if (refreshGen === jobRefreshGeneration &&
+          current.activeSessionId === sid && current.sessionGeneration === targetGen &&
+          current.connectionGeneration === connectionGen) {
+        current.setJobs(jobs);
+      }
+    })
+    .catch(() => undefined);
+}
 
+function keepRunningJobActivity(jobs: BackgroundJob[], activity: AppState['jobActivity']): AppState['jobActivity'] {
+  const retained: [string, JobActivity][] = [];
+  for (const { jobId, status } of jobs) {
+    if (jobId && status === 'Running' && Object.hasOwn(activity, jobId)) {
+      const latest = activity[jobId];
+      if (latest) retained.push([jobId, latest]);
+    }
+  }
+  return Object.fromEntries(retained);
+}
+
+function refreshTurnMetadataAfterFinish(get: () => AppState, includeJobs: boolean): void {
+  void get().refreshContextWindow();
   if (includeJobs) {
-    void apiClient
-      .listJobs(auth, sid)
-      .then((jobs) => {
-        if (get().activeSessionId === sid && get().sessionGeneration === targetGen) {
-          set({ jobs });
-        }
-      })
-      .catch(() => undefined);
+    refreshSessionJobs(get);
   }
 }
 
@@ -289,9 +311,29 @@ function reduceSseEvent(
     set({
       channelEpoch: payloadEpoch,
       asOfEventId: evt.id ?? 0,
+      jobActivity: {},
     });
   } else if (evt.id !== undefined && evt.id > state.asOfEventId) {
     set({ asOfEventId: evt.id });
+  }
+
+  const jobId = typeof evtData.jobId === 'string' ? evtData.jobId : '';
+  if (jobId && (evt.event === 'tool_call' || evt.event === 'error' ||
+      (evt.event === 'task_status' && evtData.type === 'tool_result'))) {
+    const toolName = typeof evtData.name === 'string' ? evtData.name.trim().slice(0, 80) : '';
+    if (evt.event === 'error' || toolName) {
+      const current = get();
+      const observedAt = Date.now();
+      const activity: JobActivity = evt.event === 'error'
+        ? { kind: 'error', observedAt }
+        : { kind: evt.event === 'tool_call' ? 'calling' : evtData.success === false ? 'failed' : 'returned', toolName, observedAt };
+      set({ jobActivity: { ...current.jobActivity, [jobId]: activity } });
+      if (!Object.hasOwn(current.jobActivity, jobId) &&
+          !current.jobs.some((job) => job.jobId === jobId && job.status === 'Running')) {
+        refreshSessionJobs(get);
+      }
+    }
+    return;
   }
 
   switch (evt.event) {
@@ -498,6 +540,11 @@ function reduceSseEvent(
     }
 
     case 'task_status': {
+      if (typeof evtData.taskId === 'string' && (evtData.status === 'completed' || evtData.status === 'failed')) {
+        refreshSessionJobs(get);
+        return;
+      }
+
       const d = evtData as { name?: string | null; callId?: string | null; success?: boolean | null };
       if (d.name || d.callId) {
         set((s) => {
@@ -843,13 +890,13 @@ function reduceSseEvent(
 
     case 'worker_started':
       set({ workerBar: { status: 'started', message: String(evtData.content ?? evtData.text ?? '后台 Worker 正在执行...') } });
-      refreshTurnMetadataAfterFinish(get, set, true);
+      refreshTurnMetadataAfterFinish(get, true);
       return;
     case 'worker_waiting_user': {
       const workerMsg = String(evtData.content ?? evtData.text ?? '后台 Worker 等待用户审批');
       set({ workerBar: { status: 'waiting_user', message: workerMsg } });
       dispatchDesktopNotification('notify.workerWaitingTitle', workerMsg);
-      refreshTurnMetadataAfterFinish(get, set, true);
+      refreshTurnMetadataAfterFinish(get, true);
       return;
     }
     case 'worker_completed':
@@ -857,11 +904,11 @@ function reduceSseEvent(
         workerBar: { status: 'completed', message: String(evtData.content ?? evtData.text ?? '后台 Worker 已完成') },
         workspaceRevision: s.workspaceRevision + 1,
       }));
-      refreshTurnMetadataAfterFinish(get, set, true);
+      refreshTurnMetadataAfterFinish(get, true);
       return;
     case 'worker_failed':
       set({ workerBar: { status: 'failed', message: String(evtData.content ?? evtData.text ?? '后台 Worker 失败') } });
-      refreshTurnMetadataAfterFinish(get, set, true);
+      refreshTurnMetadataAfterFinish(get, true);
       return;
 
     case 'file_tree_updated':
@@ -912,7 +959,7 @@ function reduceSseEvent(
       if (hadActiveTurn) {
         dispatchDesktopNotification('notify.turnErrorTitle', msg);
       }
-      refreshTurnMetadataAfterFinish(get, set, false);
+      refreshTurnMetadataAfterFinish(get, false);
       return;
     }
 
@@ -953,7 +1000,7 @@ function reduceSseEvent(
           translate(prefs.language, 'notify.turnDoneBody'),
         );
       }
-      refreshTurnMetadataAfterFinish(get, set, true);
+      refreshTurnMetadataAfterFinish(get, true);
       return;
     }
 
@@ -1002,6 +1049,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   computerState: null,
   currentPlan: null,
   jobs: [],
+  jobActivity: {},
   verificationReceipts: {},
   workerBar: { status: 'idle', message: null },
   contextWindow: null,
@@ -1070,6 +1118,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         computerState: null,
         currentPlan: null,
         jobs: [],
+        jobActivity: {},
         verificationReceipts: {},
         workerBar: { status: 'idle', message: null },
         contextWindow: null,
@@ -1094,6 +1143,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         instanceKey: nextKey ?? prevKey,
         connectionGeneration: s.connectionGeneration + 1,
         bufferedSseEvents: [],
+        jobActivity: {},
         contextWindow: null,
       }));
       return;
@@ -1132,6 +1182,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       computerState: null,
       currentPlan: null,
       jobs: [],
+      jobActivity: {},
       verificationReceipts: {},
       contextWindow: null,
       workerBar: { status: 'idle', message: null },
@@ -1206,7 +1257,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       // channelEpoch immediately so subsequent current-epoch buffered events aren't rejected
       // as mismatched if snapshot fetch fails (F1 failure-recovery path).
       if (payloadEpoch && payloadEpoch !== state.channelEpoch) {
-        set({ channelEpoch: payloadEpoch, asOfEventId: 0 });
+        set({ channelEpoch: payloadEpoch, asOfEventId: 0, jobActivity: {} });
       }
       if (evt.event !== 'heartbeat' && evt.event !== 'replay_gap') {
         set((s) => ({
@@ -1241,6 +1292,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       currentPlan: recovered.currentPlan,
       toolCalls: recovered.toolCalls,
       jobs: snapshot.jobs ?? [],
+      jobActivity: recovered.channelEpoch === s.channelEpoch
+        ? keepRunningJobActivity(snapshot.jobs ?? [], s.jobActivity)
+        : {},
       activeWorkMode: snapWorkMode,
       activeModeVersion: snapModeVersion,
       planModeActive: snapPlanActive,
@@ -1273,7 +1327,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       reconcileGeneration: targetReconcileGen,
       isReconcilingSnapshot: true,
       ...(options?.expectedEpoch && options.expectedEpoch !== s.channelEpoch
-        ? { channelEpoch: options.expectedEpoch, asOfEventId: 0 }
+        ? { channelEpoch: options.expectedEpoch, asOfEventId: 0, jobActivity: {} }
         : {}),
       bufferedSseEvents: s.bufferedSseEvents.filter((b) => b.connectionGeneration === targetConnGen),
     }));
@@ -1526,7 +1580,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     }
   },
-  setJobs: (jobs) => set({ jobs }),
+  setJobs: (jobs) => set((s) => ({ jobs, jobActivity: keepRunningJobActivity(jobs, s.jobActivity) })),
   setPlan: (currentPlan) => set({ currentPlan }),
   setSessionPolicyState: (policy) =>
     set((s) => ({

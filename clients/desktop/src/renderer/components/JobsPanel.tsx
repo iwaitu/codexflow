@@ -8,6 +8,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { apiClient, type ApiAuthContext, type BackgroundJob, type VerificationReceipt } from '../lib/apiClient';
+import { JobActivity, JobFailureDetails } from './JobActivity';
 import { isUnverifiedWithoutIsolation, resolveJobVerificationKind, VerificationBadge } from './VerificationBadge';
 
 interface JobsPanelProps {
@@ -134,17 +135,27 @@ export const JobsPanel: React.FC<JobsPanelProps> = ({
                   </div>
                 )}
 
-                {(job.latestMessage || job.summary || job.waitingReason) && (
+                {status === 'Running' ? (
+                  <div className="mt-2">
+                    <JobActivity jobId={jobId} />
+                  </div>
+                ) : (job.latestMessage || job.summary || job.waitingReason) && (
                   <p className="mt-2 text-[11px] leading-relaxed text-slate-300">
                     {job.waitingReason || job.latestMessage || job.summary}
                   </p>
                 )}
 
-                {job.failure?.message && (
-                  <div className="mt-2 rounded border border-rose-500/30 bg-rose-950/30 px-2 py-1.5 text-[11px] text-rose-200">
-                    {job.failure.message}
-                    {job.failure.remedy ? `（建议：${job.failure.remedy}）` : ''}
+                {job.failure && (
+                  <div className="mt-2">
+                    <JobFailureDetails failure={job.failure} />
                   </div>
+                )}
+
+                {receipt?.failureCode && (
+                  <p className="mt-2 break-words text-[11px] text-rose-200">
+                    验收失败 · {receipt.failureCode}
+                    {receipt.message && receipt.message !== receipt.failureCode ? ` · ${receipt.message}` : ''}
+                  </p>
                 )}
 
                 {job.resumeGuidance && (

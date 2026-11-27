@@ -131,6 +131,7 @@ public static class OrchestrationServiceCollectionExtensions
         services.AddScoped<ITestFrameworkAdapter, CSharpXUnitAdapter>();
         services.AddScoped<ITestFrameworkAdapter, PythonPytestAdapter>();
         services.AddScoped<ITestFrameworkAdapter, NodeJestAdapter>();
+        services.AddScoped<ITestFrameworkAdapter, NodeTestAdapter>();
         services.AddScoped<ITestFrameworkAdapter, JavaJUnitAdapter>();
         // 瑷诲唺 Semantic Diff 鏈嶅嫏 (鏀寔澶氳獮瑷€)
         services.AddScoped<ILanguageSemanticDiffProvider, RoslynSemanticDiffProvider>();

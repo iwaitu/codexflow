@@ -51,6 +51,19 @@ internal static class ForgeArtifactManifestFactory
         return manifest;
     }
 
+    internal static bool HasUncommittedResult(JObject? result)
+    {
+        if (result?["changedFiles"] is not JArray { Count: > 0 } ||
+            result["artifactManifest"] is not JObject manifest)
+        {
+            return false;
+        }
+
+        var head = manifest.GetValue("HeadCommit", StringComparison.OrdinalIgnoreCase)?.Value<string>();
+        var baseline = manifest.GetValue("BaseCommit", StringComparison.OrdinalIgnoreCase)?.Value<string>();
+        return !string.IsNullOrEmpty(head) && string.Equals(head, baseline, StringComparison.OrdinalIgnoreCase);
+    }
+
     internal static ForgeArtifactManifest? ParseManifest(string? json)
     {
         if (string.IsNullOrWhiteSpace(json)) return null;

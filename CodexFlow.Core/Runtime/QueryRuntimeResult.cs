@@ -93,6 +93,9 @@ public sealed record QueryRuntimeResult
     /// </summary>
     public bool VerifiedWithoutChange { get; init; }
 
+    /// <summary>Terminal verification receipts for the current attempt. They do not attest to final candidate content.</summary>
+    public IReadOnlyList<RuntimeVerificationReceipt> VerificationReceipts { get; init; } = [];
+
     /// <summary>Query ID（用于 telemetry 关联）</summary>
     public Guid QueryId { get; init; } = Guid.NewGuid();
 }

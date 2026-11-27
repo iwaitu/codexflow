@@ -11,7 +11,7 @@ using Microsoft.Extensions.Logging;
 
 namespace CodexFlow.Core.Services;
 
-public class GitService : IGitService
+public class GitService : IGitService, IShadowWorktreeCreationDiagnostics
 {
     private readonly ILogger<GitService> _logger;
     private const int MaxShadowSegmentLength = 24;
@@ -21,7 +21,8 @@ public class GitService : IGitService
         _logger = logger;
     }
 
-    private static async Task<(int ExitCode, string Output, string Error)> RunGitCommandAsync(string path, string args)
+    private static async Task<(int ExitCode, string Output, string Error)> RunGitCommandAsync(
+        string path, string args, bool invariantMessages = false)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -38,6 +39,11 @@ public class GitService : IGitService
         };
 
         ApplySanitizedGitEnvironment(startInfo);
+        if (invariantMessages)
+        {
+            startInfo.Environment["LC_ALL"] = "C";
+        }
+
         return await ExecuteGitProcessAsync(startInfo, TimeSpan.FromSeconds(30)).ConfigureAwait(false);
     }
 
@@ -536,21 +542,33 @@ public class GitService : IGitService
     }
 
     public async Task<string?> CreateShadowWorktreeAsync(string mainPath, string taskId, string baseBranch)
+        => (await CreateShadowWorktreeWithDiagnosticsAsync(mainPath, taskId, baseBranch).ConfigureAwait(false)).Path;
+
+    Task<ShadowWorktreeCreationResult> IShadowWorktreeCreationDiagnostics.CreateShadowWorktreeWithDiagnosticsAsync(
+        string mainPath, string taskId, string baseBranch)
+        => CreateShadowWorktreeWithDiagnosticsAsync(mainPath, taskId, baseBranch);
+
+    private async Task<ShadowWorktreeCreationResult> CreateShadowWorktreeWithDiagnosticsAsync(
+        string mainPath, string taskId, string baseBranch)
     {
         ArgumentNullException.ThrowIfNull(mainPath);
         ArgumentNullException.ThrowIfNull(taskId);
         ArgumentNullException.ThrowIfNull(baseBranch);
 
+        // Check Git ownership before touching a previous attempt's worktree or branch.
+        var headResult = await ReadShadowRepositoryHeadAsync(mainPath).ConfigureAwait(false);
+        if (IsRepositoryOwnershipError(headResult.ExitCode, headResult.Error))
+        {
+            StructuredLog.Warning(_logger, "Shadow worktree ownership check failed (exit {Code}): {Error}", headResult.ExitCode, headResult.Error);
+            return new(null, ShadowWorktreeCreationFailure.RepositoryOwnership);
+        }
+
         var shadowPath = BuildShadowPath(mainPath, taskId);
         var branchName = $"task-{taskId}";
 
-        // 1. 确保影子目录的父目录存在
-        Directory.CreateDirectory(Path.GetDirectoryName(shadowPath)!);
-
-        // 2. 检测实际的基础分支名（git init 可能用 master 而不是 main）。
+        // 检测实际的基础分支名（git init 可能用 master 而不是 main）。
         //    If the caller passed an explicit ref/commit, keep it as the worktree baseline.
         var actualBase = baseBranch;
-        var headResult = await RunGitCommandAsync(mainPath, "rev-parse --abbrev-ref HEAD").ConfigureAwait(false);
         if (IsDefaultBranchPlaceholder(baseBranch) &&
             headResult.ExitCode == 0 &&
             !string.IsNullOrWhiteSpace(headResult.Output))
@@ -564,7 +582,9 @@ public class GitService : IGitService
             }
         }
 
-        // 3. 检查工作树是否已存在
+        Directory.CreateDirectory(Path.GetDirectoryName(shadowPath)!);
+
+        // 检查工作树是否已存在
         if (Directory.Exists(shadowPath))
         {
             StructuredLog.Information(_logger, "Shadow path {Path} already exists. Attempting to prune or reuse.", shadowPath);
@@ -580,7 +600,7 @@ public class GitService : IGitService
 
         await RemoveAssociatedShadowWorktreesAsync(mainPath, shadowPath, branchName).ConfigureAwait(false);
 
-        // 4. 每次任务都从最新基线重建 task 分支，避免复用旧分支导致历史漂移
+        // 每次任务都从最新基线重建 task 分支，避免复用旧分支导致历史漂移
         var branchDelete = await DeleteShadowBranchAsync(mainPath, branchName).ConfigureAwait(false);
         if (branchDelete.ExitCode != 0)
         {
@@ -597,16 +617,30 @@ public class GitService : IGitService
 
         var worktreeCmd = $"worktree add -b {QuoteGitArgument(branchName)} {QuoteGitArgument(shadowPath)} {QuoteGitArgument(actualBase)}";
 
-        // 5. 使用 git worktree add
-        var result = await RunGitCommandAsync(mainPath, worktreeCmd).ConfigureAwait(false);
+        var result = await RunGitCommandAsync(mainPath, worktreeCmd, invariantMessages: true).ConfigureAwait(false);
 
-        if (result.ExitCode != 0)
+        if (result.ExitCode == 0)
         {
-            StructuredLog.Warning(_logger, "git worktree add failed (exit {Code}): {Err}", result.ExitCode, result.Output + result.Error);
+            return new(shadowPath, ShadowWorktreeCreationFailure.None);
         }
 
-        return result.ExitCode == 0 ? shadowPath : null;
+        StructuredLog.Warning(_logger, "git worktree add failed (exit {Code}): {Err}", result.ExitCode, result.Output + result.Error);
+        return new(null, IsRepositoryOwnershipError(result.ExitCode, result.Error)
+            ? ShadowWorktreeCreationFailure.RepositoryOwnership
+            : ShadowWorktreeCreationFailure.GitError);
     }
+
+    internal static bool IsRepositoryOwnershipError(int exitCode, string error)
+        => exitCode == 128 &&
+           error.Split('\n').Any(line =>
+               line.StartsWith("fatal: detected dubious ownership in repository at ", StringComparison.Ordinal) ||
+               line.StartsWith("fatal: unsafe repository (", StringComparison.Ordinal));
+
+    internal static async Task<bool> CanReadShadowRepositoryAsync(string path)
+        => (await ReadShadowRepositoryHeadAsync(path).ConfigureAwait(false)).ExitCode == 0;
+
+    private static Task<(int ExitCode, string Output, string Error)> ReadShadowRepositoryHeadAsync(string path)
+        => RunGitCommandAsync(path, "rev-parse --abbrev-ref HEAD", invariantMessages: true);
 
     public async Task<bool> RemoveShadowWorktreeAsync(string mainPath, string taskId)
     {
@@ -761,7 +795,7 @@ public class GitService : IGitService
 
     private sealed record GitWorktreeEntry(string Path, string? Branch);
 
-    private static string BuildShadowPath(string mainPath, string taskId)
+    internal static string BuildShadowPath(string mainPath, string taskId)
     {
         var repoName = Path.GetFileName(mainPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
         if (string.IsNullOrWhiteSpace(repoName)) repoName = "workspace";
@@ -821,8 +855,28 @@ public class GitService : IGitService
         ArgumentNullException.ThrowIfNull(path);
         ArgumentNullException.ThrowIfNull(message);
 
-        await RunGitCommandAsync(path, "add .").ConfigureAwait(false);
-        var result = await RunGitCommandAsync(path, $"commit -m \"{message.Replace("\"", "\\\"", StringComparison.Ordinal)}\"").ConfigureAwait(false);
+        var staged = await RunGitCommandAsync(path, "add .").ConfigureAwait(false);
+        if (staged.ExitCode != 0)
+        {
+            StructuredLog.Warning(_logger, "Git staging failed (exit {Code}).", staged.ExitCode);
+            return false;
+        }
+
+        var command = $"commit -m {QuoteGitArgument(message)}";
+        var result = await RunGitCommandAsync(path, command, invariantMessages: true).ConfigureAwait(false);
+        if (result.ExitCode != 0 &&
+            (result.Error.Contains("identity unknown", StringComparison.OrdinalIgnoreCase) ||
+             result.Error.Contains("unable to auto-detect email address", StringComparison.OrdinalIgnoreCase)))
+        {
+            // Use the identity assigned to CodexFlow-managed repositories without editing a user's repository config.
+            result = await RunGitCommandAsync(path,
+                "-c user.name=IvilsonAgent -c user.email=agent@ivilson.com " + command, invariantMessages: true).ConfigureAwait(false);
+        }
+
+        if (result.ExitCode != 0)
+        {
+            StructuredLog.Warning(_logger, "Git commit failed (exit {Code}).", result.ExitCode);
+        }
         return result.ExitCode == 0;
     }
 

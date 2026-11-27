@@ -21,7 +21,9 @@ internal sealed record RunCommandCompletionMetadata(
     int? ExitCode,
     string Status,
     string Stdout,
-    string Stderr);
+    string Stderr,
+    bool DependencyPreparationFailed = false,
+    bool ScopedExportRejected = false);
 
 /// <summary>
 /// 在工作区执行白名单命令（替代 MCP run_command）。
@@ -263,7 +265,9 @@ public class RunCommandTool(
         if (output.Length > maxChars) output = output[..maxChars] + $"\n... (truncated, total {originalOutputLength} chars)";
         if (errors.Length > maxChars) errors = errors[..maxChars] + $"\n... (truncated, total {originalErrorLength} chars)";
 
-        var result = new RunCommandCompletionMetadata(commandTaskId, snapshot.ExitCode, snapshot.Status.ToString(), output, errors);
+        var result = new RunCommandCompletionMetadata(commandTaskId, snapshot.ExitCode, snapshot.Status.ToString(), output, errors,
+            snapshot.Events.Any(static entry => entry.Stream == "dependency_preparation_failed"),
+            snapshot.Events.Any(static entry => entry.Stream == "scoped_export_rejected"));
 
         var environmentNote = BuildEnvironmentNote(executable, image, options.CommandImage) is { } note ? "\n" + note : string.Empty;
         if (BuildStreamText(snapshot, EnvironmentStream) is { Length: > 0 } prepared) environmentNote += "\n" + prepared;
@@ -345,9 +349,13 @@ public class RunCommandTool(
         {
             if (forcedMinimalEnv is null)
             {
-                if (await OfflineToolchainPreparation.PrepareAsync(session, originalCommand, token).ConfigureAwait(false) is { } prepared)
+                if (await OfflineToolchainPreparation.PrepareWithReceiptAsync(session, originalCommand, token).ConfigureAwait(false) is { } prepared)
                 {
-                    sink.Add(EnvironmentStream, prepared);
+                    sink.Add(EnvironmentStream, prepared.Note);
+                    if (!prepared.Succeeded)
+                    {
+                        sink.Add("dependency_preparation_failed", "Offline dependency preparation failed.");
+                    }
                 }
 
                 prepEnv = OfflineToolchainPreparation.EnvFor(originalCommand);
@@ -399,6 +407,7 @@ public class RunCommandTool(
         var export = await session.ExportScopedChangesAsync(token).ConfigureAwait(false);
         if (!export.Decision.IsAllowed)
         {
+            sink.Add("scoped_export_rejected", export.Decision.ReasonCode);
             sink.Add("stderr", $"[{export.Decision.ReasonCode}] {export.Decision.Message}");
             foreach (var r in export.Rejected.Take(20))
             {

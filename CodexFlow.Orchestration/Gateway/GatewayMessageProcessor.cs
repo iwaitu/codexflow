@@ -1358,6 +1358,15 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
         var maxRetries = Math.Max(1, message.Meta.MaxRetries);
         var failureCount = Math.Max(1, retryCount + 1);
         var failureBoundary = BuildTaskFailureBoundary(message);
+        if (message.Meta.JobId is { Length: > 0 } jobId)
+        {
+            var current = await _jobStore.FindAsync(jobId, ct).ConfigureAwait(false);
+            if (current is null || current.SessionId != message.SessionId || current.Attempt != retryCount ||
+                current.Status is not (BackgroundJobStatus.Failed or BackgroundJobStatus.FailedRecoveryNeeded or BackgroundJobStatus.Cancelled))
+            {
+                return;
+            }
+        }
 
         _logger.LogInformation(
             "[Processor] 任务失败事件: TaskId={TaskId}, RetryCount={RetryCount}/{MaxRetries}",
@@ -1373,6 +1382,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
                 ["status"] = "failed",
                 ["retryCount"] = retryCount,
                 ["maxRetries"] = maxRetries,
+                ["jobId"] = message.Meta.JobId,
                 ["message"] = message.Meta.TaskResultMessage
             }
         });
@@ -1411,7 +1421,7 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             $"""
             [系统通知] 任务 {message.TaskId} 执行失败。
             当前失败次数：第 {failureCount}/{maxRetries} 次。
-            {structuredFailureBlock}以下是标准 worker 通知信封，请基于该内容说明失败情况并与用户确认{(canRetry ? "是否需要重试" : "怎么处理")}：
+            {structuredFailureBlock}以下是 worker 通知信封。请依据宿主记录说明阻塞与恢复路径，并标明工作报告中未经核实的说法：
             {CodexFlow.Core.Protocols.UntrustedText.Wrap("worker-notification", message.Content)}
             """));
 
@@ -5567,11 +5577,10 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
             var noRetryPrompt = $@"你是 CodexFlow 的 AI 编程助手。后台任务 {message.TaskId} {retryState}
 通知里有“失败的结构化记录”，它说明了失败码、种类、证据，以及怎么才能改变结果。
 
-这次失败重试不会改变结果（同样的范围、同样的宿主判定会得到同样的结论），请按以下规则响应：
-1. 先说明任务失败的情况和原因；如果记录里有被范围守卫拒绝的文件，逐个说出文件名。
-2. 不要建议“立即重试”，也不要调用 `retry_failed_task`：它会被拒绝。
-3. 按记录里“怎么才能改变结果”给出能真正改变结果的选项：改计划（把这些文件放进任务声明的输出）、调整请求的范围或版本、需要用户批准或亲自处理的事、先修复运行环境。
-4. 询问用户选哪一个；不要擅自改计划或范围。
+1. 先说明宿主确认的原因、是否有留存候选、哪条检查没有通过或没有运行。
+2. 根据结构化记录说明下一项能改变结果的动作。重复同样的尝试无法解决确定性故障。
+3. 只有宿主记录了范围拒绝，才把它列作已确认事实。调整计划、文件范围或验收要求必须经过原审批。
+4. 保持依赖任务阻塞。只有需要用户授权、决定或亲自操作时才提出具体请求。
 
 保持语气专业但友好，不要让用户感到沮丧。";
             return AppendGatewayToolCatalog(noRetryPrompt, gatewayTools);
@@ -5581,15 +5590,10 @@ public sealed class GatewayMessageProcessor : IGatewayMessageProcessor
 通知内容会以标准 XML worker envelope 提供。
 
 请按以下规则响应：
-1. 先依据 XML envelope 说明任务失败的情况和失败原因
-2. 分析可能的根因
-3. 询问用户希望如何处理：
-   - 立即重试当前任务（用户明确确认后，调用 `retry_failed_task`）
-   - 调整任务描述后重试
-   - 跳过这个任务继续执行下一个
-   - 修改整体计划
-   - 手动介入修复
-4. 不要擅自自动重试，必须等待用户明确确认。 
+1. 优先依据宿主失败记录，报告已知原因、检查结果与候选留存状态。工作报告用于补充线索。
+2. 说明能改变结果的具体动作；工作树已清理时使用授权工作区重跑原任务。
+3. 保持依赖任务阻塞，等待原任务验收。需要调整计划或范围时走现有审批流程。
+4. 此通知回合只能报告，不能执行恢复命令。只在确需用户授权、决定或亲自操作时提出具体请求。
 
 保持语气专业但友好，不要让用户感到沮丧。";
 

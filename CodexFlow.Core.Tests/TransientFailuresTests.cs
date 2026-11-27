@@ -2,6 +2,7 @@
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+using CodexFlow.Core.Protocols;
 using CodexFlow.Core.Runtime;
 using Xunit;
 
@@ -39,6 +40,7 @@ public class TransientFailuresTests
 
     [Theory]
     [InlineData("offline_restore_unavailable", "NU1301 offline restore")]
+    [InlineData(JobFailureClassifier.RepositoryOwnershipCode, "Git 拒绝访问工作区仓库，因为其所有者与运行 CodexFlow 的账户不一致。")]
     [InlineData("", "")]
     [InlineData(null, null)]
     public void OrdinaryFailuresAreNot(string? detail, string? message) =>
